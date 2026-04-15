@@ -26,18 +26,28 @@ ORDER BY AVG(salary) DESC;
 
 ## Installation
 
-**CLI Binary** — download from [Releases](https://github.com/SouravRoy-ETL/slothdb/releases/latest):
+**Linux / macOS** — one command:
 
-| Platform | Command |
-|----------|---------|
-| Windows | Download `slothdb.exe` and run |
-| Linux | `chmod +x slothdb && ./slothdb` |
-| macOS | `chmod +x slothdb && ./slothdb` |
+```bash
+curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash
+```
+
+Then just run:
+```bash
+slothdb
+```
+
+**Windows** — download [`slothdb.exe`](https://github.com/SouravRoy-ETL/slothdb/releases/latest) from Releases and run it.
 
 **Python:**
 
 ```bash
 pip install slothdb
+```
+
+**Homebrew** (coming soon):
+```bash
+brew install slothdb
 ```
 
 **Build from source:**
