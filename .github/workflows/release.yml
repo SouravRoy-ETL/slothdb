@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: |
+        cmake -B build -DSLOTHDB_BUILD_SHELL=ON
+        cmake --build build --config Release
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: slothdb-windows-x64
+        path: build/src/Release/slothdb_shell.exe
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: |
+        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release
+        cmake --build build -j$(nproc)
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: slothdb-linux-x64
+        path: build/src/slothdb_shell
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: |
+        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release
+        cmake --build build -j$(sysctl -n hw.ncpu)
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: slothdb-macos
+        path: build/src/slothdb_shell
+
+  release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v4
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          slothdb-windows-x64/slothdb_shell.exe
+          slothdb-linux-x64/slothdb_shell
+          slothdb-macos/slothdb_shell
+        generate_release_notes: true
