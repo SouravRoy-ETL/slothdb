@@ -42,3 +42,6 @@ EXAMPLES.md
 skills/
 .claude-plugin/
 *.parquet
+python/dist/
+python/*.egg-info/
+python/build/
