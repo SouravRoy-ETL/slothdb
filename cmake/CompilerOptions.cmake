@@ -6,6 +6,7 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
     add_compile_options(-Wno-unused-parameter -Wno-sign-compare -Wno-unused-variable)
     add_compile_options(-Wno-missing-field-initializers -Wno-unused-function)
+    add_compile_options(-Wno-reorder -Wno-unused-but-set-variable -Wno-maybe-uninitialized)
 
     if(SLOTHDB_SANITIZERS)
         add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)

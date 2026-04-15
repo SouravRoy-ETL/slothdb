@@ -4,6 +4,7 @@
 #include "slothdb/common/string_util.hpp"
 #include "slothdb/storage/data_table.hpp"
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 
