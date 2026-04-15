@@ -1,0 +1,43 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.sln
+*.vcxproj*
+
+# Compiled objects
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exe
+
+# Test artifacts
+test_*.db
+test_*.csv
+test_*.json
+test_*.parquet
+test_*.slothdb
+*.slothdb
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude
+.claude/
+CLAUDE.md
+EXAMPLES.md
+skills/
+.claude-plugin/

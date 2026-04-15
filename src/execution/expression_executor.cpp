@@ -1,0 +1,1456 @@
+#include "slothdb/execution/expression_executor.hpp"
+#include "slothdb/binder/binder.hpp"
+#include "slothdb/planner/planner.hpp"
+#include "slothdb/execution/physical_planner.hpp"
+#include "slothdb/common/exception.hpp"
+#include "slothdb/common/string_util.hpp"
+#include "slothdb/common/types/string_type.hpp"
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <ctime>
+#include <regex>
+
+namespace slothdb {
+
+static bool LikeMatch(const std::string &str, const std::string &pattern);
+
+void ExpressionExecutor::Execute(const BoundExpression &expr, DataChunk &input,
+                                  Vector &result, idx_t count) {
+    switch (expr.GetExpressionType()) {
+    case BoundExpressionType::COLUMN_REF:
+        ExecuteColumnRef(static_cast<const BoundColumnRef &>(expr), input, result, count);
+        break;
+    case BoundExpressionType::CONSTANT:
+        ExecuteConstant(static_cast<const BoundConstant &>(expr), result, count);
+        break;
+    case BoundExpressionType::COMPARISON:
+        ExecuteComparison(static_cast<const BoundComparison &>(expr), input, result, count);
+        break;
+    case BoundExpressionType::CONJUNCTION:
+        ExecuteConjunction(static_cast<const BoundConjunction &>(expr), input, result, count);
+        break;
+    case BoundExpressionType::ARITHMETIC:
+        ExecuteArithmetic(static_cast<const BoundArithmetic &>(expr), input, result, count);
+        break;
+    case BoundExpressionType::NEGATION:
+        ExecuteNegation(static_cast<const BoundNegation &>(expr), input, result, count);
+        break;
+    case BoundExpressionType::IS_NULL:
+        ExecuteIsNull(static_cast<const BoundIsNull &>(expr), input, result, count);
+        break;
+    case BoundExpressionType::UNARY_MINUS:
+        ExecuteUnaryMinus(static_cast<const BoundUnaryMinus &>(expr), input, result, count);
+        break;
+    case BoundExpressionType::FUNCTION:
+        ExecuteFunction(static_cast<const BoundFunction &>(expr), input, result, count);
+        break;
+    case BoundExpressionType::CAST:
+        ExecuteCast(static_cast<const BoundCast &>(expr), input, result, count);
+        break;
+    case BoundExpressionType::SUBQUERY:
+        ExecuteSubquery(static_cast<const BoundSubqueryExpression &>(expr), input, result, count);
+        break;
+    default:
+        throw NotImplementedException("Expression executor for type");
+    }
+}
+
+Value ExpressionExecutor::ExecuteScalar(const BoundExpression &expr) {
+    if (expr.GetExpressionType() == BoundExpressionType::CONSTANT) {
+        return static_cast<const BoundConstant &>(expr).value;
+    }
+    // Handle unary minus on constant (e.g., -5 in INSERT VALUES).
+    if (expr.GetExpressionType() == BoundExpressionType::UNARY_MINUS) {
+        auto &um = static_cast<const BoundUnaryMinus &>(expr);
+        auto child_val = ExecuteScalar(*um.child);
+        if (child_val.IsNull()) return child_val;
+        switch (child_val.type().id()) {
+        case LogicalTypeId::INTEGER:
+            return Value::INTEGER(-child_val.GetValue<int32_t>());
+        case LogicalTypeId::BIGINT:
+            return Value::BIGINT(-child_val.GetValue<int64_t>());
+        case LogicalTypeId::DOUBLE:
+            return Value::DOUBLE(-child_val.GetValue<double>());
+        case LogicalTypeId::FLOAT:
+            return Value::FLOAT(-child_val.GetValue<float>());
+        default:
+            break;
+        }
+    }
+    // Handle function on constants (e.g., CAST in INSERT).
+    if (expr.GetExpressionType() == BoundExpressionType::CAST) {
+        auto &cast = static_cast<const BoundCast &>(expr);
+        auto child_val = ExecuteScalar(*cast.child);
+        if (child_val.IsNull()) return child_val;
+        auto str = child_val.ToString();
+        switch (cast.GetReturnType().id()) {
+        case LogicalTypeId::INTEGER: return Value::INTEGER(std::stoi(str));
+        case LogicalTypeId::BIGINT: return Value::BIGINT(std::stoll(str));
+        case LogicalTypeId::DOUBLE: return Value::DOUBLE(std::stod(str));
+        case LogicalTypeId::VARCHAR: return Value::VARCHAR(str);
+        default: return Value::VARCHAR(str);
+        }
+    }
+    throw InternalException("ExecuteScalar only supports constants and unary minus");
+}
+
+void ExpressionExecutor::ExecuteColumnRef(const BoundColumnRef &expr, DataChunk &input,
+                                           Vector &result, idx_t count) {
+    auto &src = input.GetVector(expr.column_index);
+    auto physical = src.GetType().GetInternalType();
+    idx_t type_size = GetTypeIdSize(physical);
+
+    if (physical == PhysicalType::VARCHAR) {
+        for (idx_t i = 0; i < count; i++) {
+            result.SetValue(i, src.GetValue(i));
+        }
+    } else if (type_size > 0) {
+        std::memcpy(result.GetData(), src.GetData(), count * type_size);
+        if (!src.GetValidity().AllValid()) {
+            for (idx_t i = 0; i < count; i++) {
+                if (!src.GetValidity().RowIsValid(i)) {
+                    result.GetValidity().SetInvalid(i);
+                }
+            }
+        }
+    }
+}
+
+void ExpressionExecutor::ExecuteConstant(const BoundConstant &expr, Vector &result,
+                                          idx_t count) {
+    for (idx_t i = 0; i < count; i++) {
+        result.SetValue(i, expr.value);
+    }
+}
+
+// Compare dispatch.
+template <typename T>
+void ExpressionExecutor::CompareTyped(const std::string &op, Vector &left, Vector &right,
+                                       Vector &result, idx_t count) {
+    auto *ldata = left.GetData<T>();
+    auto *rdata = right.GetData<T>();
+    auto *out = result.GetData<bool>();
+
+    for (idx_t i = 0; i < count; i++) {
+        if (!left.GetValidity().RowIsValid(i) || !right.GetValidity().RowIsValid(i)) {
+            result.GetValidity().SetInvalid(i);
+            out[i] = false;
+            continue;
+        }
+        if (op == "=")       out[i] = ldata[i] == rdata[i];
+        else if (op == "!=") out[i] = ldata[i] != rdata[i];
+        else if (op == "<>") out[i] = ldata[i] != rdata[i];
+        else if (op == "<")  out[i] = ldata[i] < rdata[i];
+        else if (op == ">")  out[i] = ldata[i] > rdata[i];
+        else if (op == "<=") out[i] = ldata[i] <= rdata[i];
+        else if (op == ">=") out[i] = ldata[i] >= rdata[i];
+        else out[i] = false;
+    }
+}
+
+void ExpressionExecutor::ExecuteComparison(const BoundComparison &expr, DataChunk &input,
+                                            Vector &result, idx_t count) {
+    Vector left(expr.left->GetReturnType(), count);
+    Vector right(expr.right->GetReturnType(), count);
+    Execute(*expr.left, input, left, count);
+    Execute(*expr.right, input, right, count);
+
+    // Handle LIKE / ILIKE specially.
+    if (expr.op == "LIKE" || expr.op == "ILIKE") {
+        auto *out = result.GetData<bool>();
+        for (idx_t i = 0; i < count; i++) {
+            if (!left.GetValidity().RowIsValid(i) || !right.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+                out[i] = false;
+            } else {
+                auto str = left.GetData<string_t>()[i].GetString();
+                auto pattern = right.GetData<string_t>()[i].GetString();
+                if (expr.op == "ILIKE") {
+                    // Case-insensitive: lowercase both.
+                    for (auto &c : str) c = static_cast<char>(std::tolower(c));
+                    for (auto &c : pattern) c = static_cast<char>(std::tolower(c));
+                }
+                out[i] = LikeMatch(str, pattern);
+            }
+        }
+        return;
+    }
+
+    auto left_phys = left.GetType().GetInternalType();
+    auto right_phys = right.GetType().GetInternalType();
+
+    // If types match, use typed comparison for speed.
+    if (left_phys == right_phys) {
+        switch (left_phys) {
+        case PhysicalType::INT32:
+            CompareTyped<int32_t>(expr.op, left, right, result, count); break;
+        case PhysicalType::INT64:
+            CompareTyped<int64_t>(expr.op, left, right, result, count); break;
+        case PhysicalType::INT16:
+            CompareTyped<int16_t>(expr.op, left, right, result, count); break;
+        case PhysicalType::INT8:
+            CompareTyped<int8_t>(expr.op, left, right, result, count); break;
+        case PhysicalType::FLOAT:
+            CompareTyped<float>(expr.op, left, right, result, count); break;
+        case PhysicalType::DOUBLE:
+            CompareTyped<double>(expr.op, left, right, result, count); break;
+        case PhysicalType::VARCHAR:
+            CompareTyped<string_t>(expr.op, left, right, result, count); break;
+        default:
+            throw NotImplementedException("Comparison for type " + left.GetType().ToString());
+        }
+    } else {
+        // Mixed types: use Value-based comparison (handles coercion).
+        auto *out = result.GetData<bool>();
+        for (idx_t i = 0; i < count; i++) {
+            auto lv = left.GetValue(i), rv = right.GetValue(i);
+            if (lv.IsNull() || rv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                out[i] = false;
+            } else {
+                // Convert both to double for numeric comparison.
+                double ld = std::stod(lv.ToString());
+                double rd = std::stod(rv.ToString());
+                if (expr.op == "=") out[i] = ld == rd;
+                else if (expr.op == "!=" || expr.op == "<>") out[i] = ld != rd;
+                else if (expr.op == "<") out[i] = ld < rd;
+                else if (expr.op == ">") out[i] = ld > rd;
+                else if (expr.op == "<=") out[i] = ld <= rd;
+                else if (expr.op == ">=") out[i] = ld >= rd;
+                else out[i] = false;
+            }
+        }
+    }
+}
+
+void ExpressionExecutor::ExecuteConjunction(const BoundConjunction &expr, DataChunk &input,
+                                             Vector &result, idx_t count) {
+    Vector left(LogicalType::BOOLEAN(), count);
+    Vector right(LogicalType::BOOLEAN(), count);
+    Execute(*expr.left, input, left, count);
+    Execute(*expr.right, input, right, count);
+
+    auto *ldata = left.GetData<bool>();
+    auto *rdata = right.GetData<bool>();
+    auto *out = result.GetData<bool>();
+
+    for (idx_t i = 0; i < count; i++) {
+        if (expr.op == "AND") {
+            out[i] = ldata[i] && rdata[i];
+        } else {
+            out[i] = ldata[i] || rdata[i];
+        }
+    }
+}
+
+template <typename T>
+void ExpressionExecutor::ArithmeticTyped(const std::string &op, Vector &left, Vector &right,
+                                          Vector &result, idx_t count) {
+    auto *ldata = left.GetData<T>();
+    auto *rdata = right.GetData<T>();
+    auto *out = result.GetData<T>();
+
+    for (idx_t i = 0; i < count; i++) {
+        if (!left.GetValidity().RowIsValid(i) || !right.GetValidity().RowIsValid(i)) {
+            result.GetValidity().SetInvalid(i);
+            continue;
+        }
+        if (op == "+")       out[i] = ldata[i] + rdata[i];
+        else if (op == "-")  out[i] = ldata[i] - rdata[i];
+        else if (op == "*")  out[i] = ldata[i] * rdata[i];
+        else if (op == "/")  out[i] = rdata[i] != 0 ? ldata[i] / rdata[i] : T{};
+        else out[i] = T{};
+    }
+}
+
+void ExpressionExecutor::ExecuteArithmetic(const BoundArithmetic &expr, DataChunk &input,
+                                            Vector &result, idx_t count) {
+    Vector left(expr.left->GetReturnType(), count);
+    Vector right(expr.right->GetReturnType(), count);
+    Execute(*expr.left, input, left, count);
+    Execute(*expr.right, input, right, count);
+
+    // Handle % modulo for integers.
+    if (expr.op == "%") {
+        auto physical = result.GetType().GetInternalType();
+        if (physical == PhysicalType::INT32) {
+            auto *ld = left.GetData<int32_t>(), *rd = right.GetData<int32_t>();
+            auto *out = result.GetData<int32_t>();
+            for (idx_t i = 0; i < count; i++)
+                out[i] = rd[i] != 0 ? ld[i] % rd[i] : 0;
+        } else if (physical == PhysicalType::INT64) {
+            auto *ld = left.GetData<int64_t>(), *rd = right.GetData<int64_t>();
+            auto *out = result.GetData<int64_t>();
+            for (idx_t i = 0; i < count; i++)
+                out[i] = rd[i] != 0 ? ld[i] % rd[i] : 0;
+        } else {
+            // Float modulo via fmod.
+            auto *ld = left.GetData<double>(), *rd = right.GetData<double>();
+            auto *out = result.GetData<double>();
+            for (idx_t i = 0; i < count; i++)
+                out[i] = rd[i] != 0 ? std::fmod(ld[i], rd[i]) : 0;
+        }
+        return;
+    }
+
+    // Handle || for string concatenation.
+    if (expr.op == "||") {
+        for (idx_t i = 0; i < count; i++) {
+            auto lv = left.GetValue(i), rv = right.GetValue(i);
+            if (lv.IsNull() || rv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+            } else {
+                result.SetValue(i, Value::VARCHAR(lv.ToString() + rv.ToString()));
+            }
+        }
+        return;
+    }
+
+    auto physical = result.GetType().GetInternalType();
+    switch (physical) {
+    case PhysicalType::INT32:
+        ArithmeticTyped<int32_t>(expr.op, left, right, result, count); break;
+    case PhysicalType::INT64:
+        ArithmeticTyped<int64_t>(expr.op, left, right, result, count); break;
+    case PhysicalType::FLOAT:
+        ArithmeticTyped<float>(expr.op, left, right, result, count); break;
+    case PhysicalType::DOUBLE:
+        ArithmeticTyped<double>(expr.op, left, right, result, count); break;
+    default:
+        throw NotImplementedException("Arithmetic for type " + result.GetType().ToString());
+    }
+}
+
+void ExpressionExecutor::ExecuteNegation(const BoundNegation &expr, DataChunk &input,
+                                          Vector &result, idx_t count) {
+    Vector child(LogicalType::BOOLEAN(), count);
+    Execute(*expr.child, input, child, count);
+    auto *cdata = child.GetData<bool>();
+    auto *out = result.GetData<bool>();
+    for (idx_t i = 0; i < count; i++) {
+        out[i] = !cdata[i];
+    }
+}
+
+void ExpressionExecutor::ExecuteIsNull(const BoundIsNull &expr, DataChunk &input,
+                                        Vector &result, idx_t count) {
+    Vector child(expr.child->GetReturnType(), count);
+    Execute(*expr.child, input, child, count);
+    auto *out = result.GetData<bool>();
+    for (idx_t i = 0; i < count; i++) {
+        bool is_null = !child.GetValidity().RowIsValid(i);
+        out[i] = expr.is_not ? !is_null : is_null;
+    }
+}
+
+void ExpressionExecutor::ExecuteUnaryMinus(const BoundUnaryMinus &expr, DataChunk &input,
+                                            Vector &result, idx_t count) {
+    Vector child(expr.child->GetReturnType(), count);
+    Execute(*expr.child, input, child, count);
+
+    auto physical = result.GetType().GetInternalType();
+    switch (physical) {
+    case PhysicalType::INT32: {
+        auto *src = child.GetData<int32_t>();
+        auto *dst = result.GetData<int32_t>();
+        for (idx_t i = 0; i < count; i++) dst[i] = -src[i];
+        break;
+    }
+    case PhysicalType::INT64: {
+        auto *src = child.GetData<int64_t>();
+        auto *dst = result.GetData<int64_t>();
+        for (idx_t i = 0; i < count; i++) dst[i] = -src[i];
+        break;
+    }
+    case PhysicalType::DOUBLE: {
+        auto *src = child.GetData<double>();
+        auto *dst = result.GetData<double>();
+        for (idx_t i = 0; i < count; i++) dst[i] = -src[i];
+        break;
+    }
+    default:
+        throw NotImplementedException("Unary minus for type");
+    }
+}
+
+// ============================================================================
+// Function execution (CASE, IN, scalar functions)
+// ============================================================================
+
+static bool LikeMatch(const std::string &str, const std::string &pattern) {
+    // Simple LIKE: % = any sequence, _ = any single char.
+    size_t si = 0, pi = 0;
+    size_t star_p = std::string::npos, star_s = 0;
+    while (si < str.size()) {
+        if (pi < pattern.size() && (pattern[pi] == str[si] || pattern[pi] == '_')) {
+            si++; pi++;
+        } else if (pi < pattern.size() && pattern[pi] == '%') {
+            star_p = pi++; star_s = si;
+        } else if (star_p != std::string::npos) {
+            pi = star_p + 1; si = ++star_s;
+        } else {
+            return false;
+        }
+    }
+    while (pi < pattern.size() && pattern[pi] == '%') pi++;
+    return pi == pattern.size();
+}
+
+void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &input,
+                                          Vector &result, idx_t count) {
+    auto &name = expr.function_name;
+
+    // CASE(when1, then1, when2, then2, ..., [else])
+    if (name == "CASE") {
+        for (idx_t i = 0; i < count; i++) {
+            bool matched = false;
+            // Arguments: pairs of (when, then), optional last else.
+            for (size_t a = 0; a + 1 < expr.arguments.size(); a += 2) {
+                Vector when_vec(LogicalType::BOOLEAN(), count);
+                Execute(*expr.arguments[a], input, when_vec, count);
+                if (when_vec.GetValidity().RowIsValid(i) && when_vec.GetData<bool>()[i]) {
+                    Vector then_vec(expr.GetReturnType(), count);
+                    Execute(*expr.arguments[a + 1], input, then_vec, count);
+                    result.SetValue(i, then_vec.GetValue(i));
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                // Check for ELSE clause (odd number of arguments).
+                if (expr.arguments.size() % 2 == 1) {
+                    Vector else_vec(expr.GetReturnType(), count);
+                    Execute(*expr.arguments.back(), input, else_vec, count);
+                    result.SetValue(i, else_vec.GetValue(i));
+                } else {
+                    result.GetValidity().SetInvalid(i);
+                }
+            }
+        }
+        return;
+    }
+
+    // BETWEEN(value, low, high)
+    if (name == "BETWEEN") {
+        auto *out = result.GetData<bool>();
+        for (idx_t i = 0; i < count; i++) {
+            Vector val_vec(expr.arguments[0]->GetReturnType(), count);
+            Vector low_vec(expr.arguments[1]->GetReturnType(), count);
+            Vector high_vec(expr.arguments[2]->GetReturnType(), count);
+            Execute(*expr.arguments[0], input, val_vec, count);
+            Execute(*expr.arguments[1], input, low_vec, count);
+            Execute(*expr.arguments[2], input, high_vec, count);
+            auto v = val_vec.GetValue(i);
+            auto lo = low_vec.GetValue(i);
+            auto hi = high_vec.GetValue(i);
+            if (v.IsNull() || lo.IsNull() || hi.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                out[i] = false;
+            } else {
+                out[i] = !(v < lo) && !(hi < v);
+            }
+        }
+        return;
+    }
+
+    // IN(value, list...)
+    if (name == "IN") {
+        auto *out = result.GetData<bool>();
+        for (idx_t i = 0; i < count; i++) {
+            Vector val_vec(expr.arguments[0]->GetReturnType(), count);
+            Execute(*expr.arguments[0], input, val_vec, count);
+            auto val = val_vec.GetValue(i);
+            bool found = false;
+            for (size_t a = 1; a < expr.arguments.size(); a++) {
+                Vector list_vec(expr.arguments[a]->GetReturnType(), count);
+                Execute(*expr.arguments[a], input, list_vec, count);
+                if (val == list_vec.GetValue(i)) {
+                    found = true;
+                    break;
+                }
+            }
+            out[i] = found;
+        }
+        return;
+    }
+
+    // ---- Scalar string functions ----
+
+    if (name == "LENGTH") {
+        auto *out = result.GetData<int32_t>();
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            if (!arg.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+            } else {
+                out[i] = static_cast<int32_t>(arg.GetData<string_t>()[i].GetSize());
+            }
+        }
+        return;
+    }
+
+    if (name == "UPPER" || name == "LOWER") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            if (!arg.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+            } else {
+                auto s = arg.GetData<string_t>()[i].GetString();
+                for (auto &c : s) {
+                    c = name == "UPPER" ? static_cast<char>(std::toupper(c))
+                                        : static_cast<char>(std::tolower(c));
+                }
+                result.SetValue(i, Value::VARCHAR(s));
+            }
+        }
+        return;
+    }
+
+    if (name == "SUBSTRING" || name == "SUBSTR") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector start_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, start_vec, count);
+        bool has_len = expr.arguments.size() > 2;
+        Vector len_vec(LogicalType::INTEGER(), count);
+        if (has_len) Execute(*expr.arguments[2], input, len_vec, count);
+
+        for (idx_t i = 0; i < count; i++) {
+            if (!str_vec.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+            } else {
+                auto s = str_vec.GetData<string_t>()[i].GetString();
+                int32_t start = start_vec.GetValue(i).GetValue<int32_t>() - 1; // 1-based
+                if (start < 0) start = 0;
+                int32_t len = has_len
+                    ? len_vec.GetValue(i).GetValue<int32_t>()
+                    : static_cast<int32_t>(s.size()) - start;
+                result.SetValue(i, Value::VARCHAR(s.substr(start, len)));
+            }
+        }
+        return;
+    }
+
+    if (name == "REPLACE") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector from_vec(expr.arguments[1]->GetReturnType(), count);
+        Vector to_vec(expr.arguments[2]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, from_vec, count);
+        Execute(*expr.arguments[2], input, to_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto from = from_vec.GetValue(i).GetValue<std::string>();
+            auto to = to_vec.GetValue(i).GetValue<std::string>();
+            size_t pos = 0;
+            while ((pos = s.find(from, pos)) != std::string::npos) {
+                s.replace(pos, from.length(), to);
+                pos += to.length();
+            }
+            result.SetValue(i, Value::VARCHAR(s));
+        }
+        return;
+    }
+
+    if (name == "CONCAT") {
+        for (idx_t i = 0; i < count; i++) {
+            std::string concat_result;
+            for (auto &arg : expr.arguments) {
+                Vector v(arg->GetReturnType(), count);
+                Execute(*arg, input, v, count);
+                auto val = v.GetValue(i);
+                if (!val.IsNull()) concat_result += val.ToString();
+            }
+            result.SetValue(i, Value::VARCHAR(concat_result));
+        }
+        return;
+    }
+
+    if (name == "TRIM" || name == "LTRIM" || name == "RTRIM") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = arg.GetValue(i).GetValue<std::string>();
+            if (name == "TRIM" || name == "LTRIM") {
+                s.erase(0, s.find_first_not_of(" \t\n\r"));
+            }
+            if (name == "TRIM" || name == "RTRIM") {
+                s.erase(s.find_last_not_of(" \t\n\r") + 1);
+            }
+            result.SetValue(i, Value::VARCHAR(s));
+        }
+        return;
+    }
+
+    // ---- Scalar math functions ----
+
+    if (name == "ABS") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        auto physical = arg.GetType().GetInternalType();
+        for (idx_t i = 0; i < count; i++) {
+            if (!arg.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            switch (physical) {
+            case PhysicalType::INT32:
+                result.GetData<int32_t>()[i] = std::abs(arg.GetData<int32_t>()[i]); break;
+            case PhysicalType::INT64:
+                result.GetData<int64_t>()[i] = std::abs(arg.GetData<int64_t>()[i]); break;
+            case PhysicalType::DOUBLE:
+                result.GetData<double>()[i] = std::abs(arg.GetData<double>()[i]); break;
+            case PhysicalType::FLOAT:
+                result.GetData<float>()[i] = std::abs(arg.GetData<float>()[i]); break;
+            default: break;
+            }
+        }
+        return;
+    }
+
+    if (name == "CEIL" || name == "CEILING" || name == "FLOOR" || name == "ROUND") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            if (!arg.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            double val = 0;
+            auto phys = arg.GetType().GetInternalType();
+            if (phys == PhysicalType::DOUBLE) val = arg.GetData<double>()[i];
+            else if (phys == PhysicalType::FLOAT) val = arg.GetData<float>()[i];
+            else if (phys == PhysicalType::INT32) val = arg.GetData<int32_t>()[i];
+            else if (phys == PhysicalType::INT64) val = static_cast<double>(arg.GetData<int64_t>()[i]);
+
+            if (name == "CEIL" || name == "CEILING") val = std::ceil(val);
+            else if (name == "FLOOR") val = std::floor(val);
+            else if (name == "ROUND") val = std::round(val);
+
+            result.GetData<double>()[i] = val;
+        }
+        return;
+    }
+
+    if (name == "SQRT" || name == "POWER" || name == "MOD") {
+        Vector arg1(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg1, count);
+        if (name == "SQRT") {
+            for (idx_t i = 0; i < count; i++) {
+                auto val = arg1.GetValue(i);
+                if (val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+                double d = (val.type().id() == LogicalTypeId::INTEGER)
+                    ? val.GetValue<int32_t>() : val.GetValue<double>();
+                result.GetData<double>()[i] = std::sqrt(d);
+            }
+        } else {
+            Vector arg2(expr.arguments[1]->GetReturnType(), count);
+            Execute(*expr.arguments[1], input, arg2, count);
+            for (idx_t i = 0; i < count; i++) {
+                auto v1 = arg1.GetValue(i), v2 = arg2.GetValue(i);
+                if (v1.IsNull() || v2.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+                double d1 = v1.ToString().empty() ? 0 : std::stod(v1.ToString());
+                double d2 = v2.ToString().empty() ? 0 : std::stod(v2.ToString());
+                if (name == "POWER") result.GetData<double>()[i] = std::pow(d1, d2);
+                else result.GetData<double>()[i] = std::fmod(d1, d2);
+            }
+        }
+        return;
+    }
+
+    // ---- Additional string functions ----
+
+    if (name == "POSITION" || name == "STRPOS") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector sub_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, sub_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto sub = sub_vec.GetValue(i).GetValue<std::string>();
+            auto pos = s.find(sub);
+            result.SetValue(i, Value::INTEGER(pos == std::string::npos ? 0 : static_cast<int32_t>(pos + 1)));
+        }
+        return;
+    }
+
+    if (name == "LEFT" || name == "RIGHT") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector n_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, n_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto n = n_vec.GetValue(i).GetValue<int32_t>();
+            if (n < 0) n = 0;
+            auto un = static_cast<size_t>(n);
+            result.SetValue(i, Value::VARCHAR(
+                name == "LEFT" ? s.substr(0, un) : s.substr(s.size() > un ? s.size() - un : 0)));
+        }
+        return;
+    }
+
+    if (name == "LPAD" || name == "RPAD") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector len_vec(expr.arguments[1]->GetReturnType(), count);
+        Vector pad_vec(expr.arguments[2]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, len_vec, count);
+        Execute(*expr.arguments[2], input, pad_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto target_len = static_cast<size_t>(len_vec.GetValue(i).GetValue<int32_t>());
+            auto pad = pad_vec.GetValue(i).GetValue<std::string>();
+            while (s.size() < target_len && !pad.empty()) {
+                if (name == "LPAD") s = pad + s; else s = s + pad;
+            }
+            if (s.size() > target_len) s = s.substr(name == "LPAD" ? s.size() - target_len : 0, target_len);
+            result.SetValue(i, Value::VARCHAR(s));
+        }
+        return;
+    }
+
+    if (name == "REVERSE") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = arg.GetValue(i).GetValue<std::string>();
+            std::reverse(s.begin(), s.end());
+            result.SetValue(i, Value::VARCHAR(s));
+        }
+        return;
+    }
+
+    if (name == "REPEAT") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector n_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, n_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto n = n_vec.GetValue(i).GetValue<int32_t>();
+            std::string r;
+            for (int j = 0; j < n; j++) r += s;
+            result.SetValue(i, Value::VARCHAR(r));
+        }
+        return;
+    }
+
+    if (name == "STARTS_WITH" || name == "PREFIX") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector pre_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, pre_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto p = pre_vec.GetValue(i).GetValue<std::string>();
+            result.SetValue(i, Value::BOOLEAN(s.substr(0, p.size()) == p));
+        }
+        return;
+    }
+
+    if (name == "ENDS_WITH" || name == "SUFFIX") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector suf_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, suf_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto sf = suf_vec.GetValue(i).GetValue<std::string>();
+            bool match = s.size() >= sf.size() && s.substr(s.size() - sf.size()) == sf;
+            result.SetValue(i, Value::BOOLEAN(match));
+        }
+        return;
+    }
+
+    if (name == "CONTAINS") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector sub_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, sub_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto sub = sub_vec.GetValue(i).GetValue<std::string>();
+            result.SetValue(i, Value::BOOLEAN(s.find(sub) != std::string::npos));
+        }
+        return;
+    }
+
+    if (name == "SPLIT_PART") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector delim_vec(expr.arguments[1]->GetReturnType(), count);
+        Vector idx_vec(expr.arguments[2]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, delim_vec, count);
+        Execute(*expr.arguments[2], input, idx_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto d = delim_vec.GetValue(i).GetValue<std::string>();
+            auto idx = idx_vec.GetValue(i).GetValue<int32_t>();
+            auto parts = StringUtil::Split(s, d.empty() ? ',' : d[0]);
+            if (idx >= 1 && idx <= static_cast<int32_t>(parts.size()))
+                result.SetValue(i, Value::VARCHAR(parts[idx - 1]));
+            else
+                result.SetValue(i, Value::VARCHAR(""));
+        }
+        return;
+    }
+
+    // ---- Additional math functions ----
+
+    if (name == "LOG" || name == "LN") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            result.GetData<double>()[i] = std::log(d);
+        }
+        return;
+    }
+
+    if (name == "LOG2") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            result.GetData<double>()[i] = std::log2(d);
+        }
+        return;
+    }
+
+    if (name == "LOG10") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            result.GetData<double>()[i] = std::log10(d);
+        }
+        return;
+    }
+
+    if (name == "EXP") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            result.GetData<double>()[i] = std::exp(d);
+        }
+        return;
+    }
+
+    if (name == "SIGN") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            result.SetValue(i, Value::INTEGER(d > 0 ? 1 : (d < 0 ? -1 : 0)));
+        }
+        return;
+    }
+
+    if (name == "PI") {
+        for (idx_t i = 0; i < count; i++) {
+            result.GetData<double>()[i] = 3.14159265358979323846;
+        }
+        return;
+    }
+
+    if (name == "RANDOM" || name == "RAND") {
+        for (idx_t i = 0; i < count; i++) {
+            result.GetData<double>()[i] = static_cast<double>(std::rand()) / RAND_MAX;
+        }
+        return;
+    }
+
+    if (name == "LEAST") {
+        for (idx_t i = 0; i < count; i++) {
+            Value min_val;
+            bool first = true;
+            for (auto &a : expr.arguments) {
+                Vector v(a->GetReturnType(), count);
+                Execute(*a, input, v, count);
+                auto val = v.GetValue(i);
+                if (val.IsNull()) continue;
+                if (first || val < min_val) { min_val = val; first = false; }
+            }
+            if (first) result.GetValidity().SetInvalid(i);
+            else result.SetValue(i, min_val);
+        }
+        return;
+    }
+
+    if (name == "GREATEST") {
+        for (idx_t i = 0; i < count; i++) {
+            Value max_val;
+            bool first = true;
+            for (auto &a : expr.arguments) {
+                Vector v(a->GetReturnType(), count);
+                Execute(*a, input, v, count);
+                auto val = v.GetValue(i);
+                if (val.IsNull()) continue;
+                if (first || val > max_val) { max_val = val; first = false; }
+            }
+            if (first) result.GetValidity().SetInvalid(i);
+            else result.SetValue(i, max_val);
+        }
+        return;
+    }
+
+    if (name == "INITCAP") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = arg.GetValue(i).GetValue<std::string>();
+            bool cap_next = true;
+            for (auto &c : s) {
+                if (std::isalpha(c)) {
+                    c = cap_next ? static_cast<char>(std::toupper(c)) : static_cast<char>(std::tolower(c));
+                    cap_next = false;
+                } else {
+                    cap_next = true;
+                }
+            }
+            result.SetValue(i, Value::VARCHAR(s));
+        }
+        return;
+    }
+
+    if (name == "SIN" || name == "COS" || name == "TAN" ||
+        name == "ASIN" || name == "ACOS" || name == "ATAN") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            if (name == "SIN") result.GetData<double>()[i] = std::sin(d);
+            else if (name == "COS") result.GetData<double>()[i] = std::cos(d);
+            else if (name == "TAN") result.GetData<double>()[i] = std::tan(d);
+            else if (name == "ASIN") result.GetData<double>()[i] = std::asin(d);
+            else if (name == "ACOS") result.GetData<double>()[i] = std::acos(d);
+            else if (name == "ATAN") result.GetData<double>()[i] = std::atan(d);
+        }
+        return;
+    }
+
+    if (name == "ATAN2") {
+        Vector a1(expr.arguments[0]->GetReturnType(), count);
+        Vector a2(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, a1, count);
+        Execute(*expr.arguments[1], input, a2, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v1 = a1.GetValue(i), v2 = a2.GetValue(i);
+            if (v1.IsNull() || v2.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d1 = (v1.type().id() == LogicalTypeId::INTEGER) ? v1.GetValue<int32_t>() : v1.GetValue<double>();
+            double d2 = (v2.type().id() == LogicalTypeId::INTEGER) ? v2.GetValue<int32_t>() : v2.GetValue<double>();
+            result.GetData<double>()[i] = std::atan2(d1, d2);
+        }
+        return;
+    }
+
+    if (name == "DEGREES") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            result.GetData<double>()[i] = d * 180.0 / 3.14159265358979323846;
+        }
+        return;
+    }
+
+    if (name == "RADIANS") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            result.GetData<double>()[i] = d * 3.14159265358979323846 / 180.0;
+        }
+        return;
+    }
+
+    if (name == "TRUNC" || name == "TRUNCATE") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = v.GetValue<double>();
+            result.GetData<double>()[i] = std::trunc(d);
+        }
+        return;
+    }
+
+    // ---- Additional date functions ----
+
+    if (name == "DATE_DIFF" || name == "DATEDIFF") {
+        auto part = StringUtil::Upper(
+            ExpressionExecutor::ExecuteScalar(*expr.arguments[0]).GetValue<std::string>());
+        Vector ts1(expr.arguments[1]->GetReturnType(), count);
+        Vector ts2(expr.arguments[2]->GetReturnType(), count);
+        Execute(*expr.arguments[1], input, ts1, count);
+        Execute(*expr.arguments[2], input, ts2, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v1 = ts1.GetValue(i), v2 = ts2.GetValue(i);
+            if (v1.IsNull() || v2.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t m1 = v1.GetValue<int64_t>(), m2 = v2.GetValue<int64_t>();
+            int64_t diff_sec = (m2 - m1) / 1000000;
+            int64_t r = 0;
+            if (part == "SECOND") r = diff_sec;
+            else if (part == "MINUTE") r = diff_sec / 60;
+            else if (part == "HOUR") r = diff_sec / 3600;
+            else if (part == "DAY") r = diff_sec / 86400;
+            result.SetValue(i, Value::BIGINT(r));
+        }
+        return;
+    }
+
+    if (name == "DATE_ADD" || name == "DATEADD") {
+        auto part = StringUtil::Upper(
+            ExpressionExecutor::ExecuteScalar(*expr.arguments[0]).GetValue<std::string>());
+        Vector n_vec(expr.arguments[1]->GetReturnType(), count);
+        Vector ts_vec(expr.arguments[2]->GetReturnType(), count);
+        Execute(*expr.arguments[1], input, n_vec, count);
+        Execute(*expr.arguments[2], input, ts_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto n_val = n_vec.GetValue(i);
+            int64_t n = (n_val.type().id() == LogicalTypeId::INTEGER)
+                ? n_val.GetValue<int32_t>() : n_val.GetValue<int64_t>();
+            auto ts_val = ts_vec.GetValue(i);
+            int64_t ts = (ts_val.type().id() == LogicalTypeId::INTEGER)
+                ? ts_val.GetValue<int32_t>() : ts_val.GetValue<int64_t>();
+            int64_t add_micros = 0;
+            if (part == "SECOND") add_micros = n * 1000000;
+            else if (part == "MINUTE") add_micros = n * 60 * 1000000;
+            else if (part == "HOUR") add_micros = n * 3600 * 1000000;
+            else if (part == "DAY") add_micros = n * 86400LL * 1000000;
+            result.SetValue(i, Value::BIGINT(ts + add_micros));
+        }
+        return;
+    }
+
+    if (name == "STRFTIME" || name == "FORMAT_TIMESTAMP") {
+        // Simple format: return ISO-like string.
+        Vector ts_vec(expr.arguments.size() > 1 ? expr.arguments[1]->GetReturnType()
+                                                 : expr.arguments[0]->GetReturnType(), count);
+        Execute(expr.arguments.size() > 1 ? *expr.arguments[1] : *expr.arguments[0], input, ts_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = ts_vec.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t micros = v.GetValue<int64_t>();
+            auto seconds = static_cast<time_t>(micros / 1000000);
+            struct tm tm_buf;
+#ifdef _MSC_VER
+            gmtime_s(&tm_buf, &seconds);
+#else
+            gmtime_r(&seconds, &tm_buf);
+#endif
+            char buf[64];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_buf);
+            result.SetValue(i, Value::VARCHAR(std::string(buf)));
+        }
+        return;
+    }
+
+    // ---- Null handling functions ----
+
+    if (name == "COALESCE") {
+        for (idx_t i = 0; i < count; i++) {
+            bool found = false;
+            for (auto &arg : expr.arguments) {
+                Vector v(arg->GetReturnType(), count);
+                Execute(*arg, input, v, count);
+                auto val = v.GetValue(i);
+                if (!val.IsNull()) {
+                    result.SetValue(i, val);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) result.GetValidity().SetInvalid(i);
+        }
+        return;
+    }
+
+    if (name == "NULLIF") {
+        Vector arg1(expr.arguments[0]->GetReturnType(), count);
+        Vector arg2(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg1, count);
+        Execute(*expr.arguments[1], input, arg2, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v1 = arg1.GetValue(i), v2 = arg2.GetValue(i);
+            if (v1 == v2) result.GetValidity().SetInvalid(i);
+            else result.SetValue(i, v1);
+        }
+        return;
+    }
+
+    // ---- Regex functions ----
+
+    if (name == "REGEXP_MATCHES" || name == "REGEXP_MATCH") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector pat_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, pat_vec, count);
+        auto *out = result.GetData<bool>();
+        for (idx_t i = 0; i < count; i++) {
+            if (!str_vec.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto p = pat_vec.GetValue(i).GetValue<std::string>();
+            try {
+                std::regex re(p);
+                out[i] = std::regex_search(s, re);
+            } catch (...) {
+                out[i] = false;
+            }
+        }
+        return;
+    }
+
+    if (name == "REGEXP_REPLACE") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector pat_vec(expr.arguments[1]->GetReturnType(), count);
+        Vector rep_vec(expr.arguments[2]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, pat_vec, count);
+        Execute(*expr.arguments[2], input, rep_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto p = pat_vec.GetValue(i).GetValue<std::string>();
+            auto r = rep_vec.GetValue(i).GetValue<std::string>();
+            try {
+                std::regex re(p);
+                result.SetValue(i, Value::VARCHAR(std::regex_replace(s, re, r)));
+            } catch (...) {
+                result.SetValue(i, Value::VARCHAR(s));
+            }
+        }
+        return;
+    }
+
+    if (name == "REGEXP_EXTRACT") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector pat_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, pat_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto s = str_vec.GetValue(i).GetValue<std::string>();
+            auto p = pat_vec.GetValue(i).GetValue<std::string>();
+            try {
+                std::regex re(p);
+                std::smatch m;
+                if (std::regex_search(s, m, re) && m.size() > 1) {
+                    result.SetValue(i, Value::VARCHAR(m[1].str()));
+                } else if (std::regex_search(s, m, re)) {
+                    result.SetValue(i, Value::VARCHAR(m[0].str()));
+                } else {
+                    result.GetValidity().SetInvalid(i);
+                }
+            } catch (...) {
+                result.GetValidity().SetInvalid(i);
+            }
+        }
+        return;
+    }
+
+    // ---- Timestamp/Date functions ----
+
+    if (name == "NOW" || name == "CURRENT_TIMESTAMP") {
+        auto now = std::chrono::system_clock::now();
+        auto epoch = std::chrono::duration_cast<std::chrono::microseconds>(
+            now.time_since_epoch()).count();
+        for (idx_t i = 0; i < count; i++) {
+            result.SetValue(i, Value::BIGINT(epoch));
+        }
+        return;
+    }
+
+    if (name == "CURRENT_DATE") {
+        auto now = std::chrono::system_clock::now();
+        auto time_t_now = std::chrono::system_clock::to_time_t(now);
+        struct tm tm_buf;
+#ifdef _MSC_VER
+        localtime_s(&tm_buf, &time_t_now);
+#else
+        localtime_r(&time_t_now, &tm_buf);
+#endif
+        // Encode as YYYYMMDD integer.
+        int32_t date_val = (tm_buf.tm_year + 1900) * 10000 +
+                           (tm_buf.tm_mon + 1) * 100 +
+                           tm_buf.tm_mday;
+        for (idx_t i = 0; i < count; i++) {
+            result.SetValue(i, Value::INTEGER(date_val));
+        }
+        return;
+    }
+
+    if (name == "EXTRACT" || name == "DATE_PART") {
+        // EXTRACT(part, timestamp_expr)
+        // part is a string constant, timestamp is microseconds since epoch.
+        auto part_str = ExpressionExecutor::ExecuteScalar(*expr.arguments[0])
+                            .GetValue<std::string>();
+        auto part = StringUtil::Upper(part_str);
+
+        Vector ts_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[1], input, ts_vec, count);
+
+        for (idx_t i = 0; i < count; i++) {
+            auto ts_val = ts_vec.GetValue(i);
+            if (ts_val.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            int64_t micros = 0;
+            if (ts_val.type().id() == LogicalTypeId::BIGINT)
+                micros = ts_val.GetValue<int64_t>();
+            else if (ts_val.type().id() == LogicalTypeId::INTEGER)
+                micros = static_cast<int64_t>(ts_val.GetValue<int32_t>()) * 1000000;
+
+            auto seconds = micros / 1000000;
+            auto time_t_val = static_cast<time_t>(seconds);
+            struct tm tm_buf;
+#ifdef _MSC_VER
+            gmtime_s(&tm_buf, &time_t_val);
+#else
+            gmtime_r(&time_t_val, &tm_buf);
+#endif
+            int64_t extracted = 0;
+            if (part == "YEAR") extracted = tm_buf.tm_year + 1900;
+            else if (part == "MONTH") extracted = tm_buf.tm_mon + 1;
+            else if (part == "DAY") extracted = tm_buf.tm_mday;
+            else if (part == "HOUR") extracted = tm_buf.tm_hour;
+            else if (part == "MINUTE") extracted = tm_buf.tm_min;
+            else if (part == "SECOND") extracted = tm_buf.tm_sec;
+            else if (part == "EPOCH") extracted = seconds;
+            else if (part == "DOW") extracted = tm_buf.tm_wday;
+
+            result.SetValue(i, Value::BIGINT(extracted));
+        }
+        return;
+    }
+
+    if (name == "DATE_TRUNC") {
+        auto part = StringUtil::Upper(
+            ExpressionExecutor::ExecuteScalar(*expr.arguments[0]).GetValue<std::string>());
+        Vector ts_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[1], input, ts_vec, count);
+
+        for (idx_t i = 0; i < count; i++) {
+            auto ts_val = ts_vec.GetValue(i);
+            if (ts_val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t micros = ts_val.GetValue<int64_t>();
+            auto seconds = micros / 1000000;
+            auto time_t_val = static_cast<time_t>(seconds);
+            struct tm tm_buf;
+#ifdef _MSC_VER
+            gmtime_s(&tm_buf, &time_t_val);
+#else
+            gmtime_r(&time_t_val, &tm_buf);
+#endif
+            if (part == "YEAR") { tm_buf.tm_mon = 0; tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
+            else if (part == "MONTH") { tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
+            else if (part == "DAY") { tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
+            else if (part == "HOUR") { tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
+
+            auto truncated = static_cast<int64_t>(
+#ifdef _MSC_VER
+                _mkgmtime(&tm_buf)
+#else
+                timegm(&tm_buf)
+#endif
+            ) * 1000000;
+            result.SetValue(i, Value::BIGINT(truncated));
+        }
+        return;
+    }
+
+    if (name == "TO_TIMESTAMP" || name == "MAKE_TIMESTAMP") {
+        // Convert epoch seconds to timestamp (microseconds).
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto val = arg.GetValue(i);
+            if (val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t epoch_sec = 0;
+            if (val.type().id() == LogicalTypeId::INTEGER)
+                epoch_sec = val.GetValue<int32_t>();
+            else if (val.type().id() == LogicalTypeId::BIGINT)
+                epoch_sec = val.GetValue<int64_t>();
+            else if (val.type().id() == LogicalTypeId::DOUBLE)
+                epoch_sec = static_cast<int64_t>(val.GetValue<double>());
+            result.SetValue(i, Value::BIGINT(epoch_sec * 1000000));
+        }
+        return;
+    }
+
+    if (name == "EPOCH_MS") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto val = arg.GetValue(i);
+            if (val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t micros = val.GetValue<int64_t>();
+            result.SetValue(i, Value::DOUBLE(static_cast<double>(micros) / 1000.0));
+        }
+        return;
+    }
+
+    throw NotImplementedException("Function execution for: " + name);
+}
+
+// ============================================================================
+// CAST execution
+// ============================================================================
+
+void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
+                                      Vector &result, idx_t count) {
+    Vector child(expr.child->GetReturnType(), count);
+    Execute(*expr.child, input, child, count);
+
+    auto to_type = expr.GetReturnType().id();
+
+    for (idx_t i = 0; i < count; i++) {
+        auto val = child.GetValue(i);
+        if (val.IsNull()) {
+            result.GetValidity().SetInvalid(i);
+            continue;
+        }
+
+        // Convert via string as a universal fallback.
+        auto str = val.ToString();
+        try {
+            switch (to_type) {
+            case LogicalTypeId::INTEGER:
+                result.SetValue(i, Value::INTEGER(std::stoi(str))); break;
+            case LogicalTypeId::BIGINT:
+                result.SetValue(i, Value::BIGINT(std::stoll(str))); break;
+            case LogicalTypeId::DOUBLE:
+                result.SetValue(i, Value::DOUBLE(std::stod(str))); break;
+            case LogicalTypeId::FLOAT:
+                result.SetValue(i, Value::FLOAT(std::stof(str))); break;
+            case LogicalTypeId::VARCHAR:
+                result.SetValue(i, Value::VARCHAR(str)); break;
+            case LogicalTypeId::BOOLEAN:
+                result.SetValue(i, Value::BOOLEAN(str == "true" || str == "1")); break;
+            default:
+                result.SetValue(i, Value::VARCHAR(str)); break;
+            }
+        } catch (...) {
+            if (expr.is_try) {
+                result.GetValidity().SetInvalid(i); // TRY_CAST returns NULL
+            } else {
+                throw ConversionException("Cannot cast '" + str + "' to " +
+                                           expr.GetReturnType().ToString());
+            }
+        }
+    }
+}
+
+// Static member.
+Catalog *ExpressionExecutor::catalog_ = nullptr;
+
+// ============================================================================
+// Subquery execution
+// ============================================================================
+
+void ExpressionExecutor::ExecuteSubquery(const BoundSubqueryExpression &expr,
+                                          DataChunk &input, Vector &result, idx_t count) {
+    if (!catalog_) {
+        throw InternalException("Catalog not set for subquery execution");
+    }
+
+    auto *parsed_query = static_cast<SelectStatement *>(expr.parsed_query.get());
+    if (!parsed_query) {
+        throw InternalException("Subquery has no parsed query");
+    }
+
+    // Bind and execute the subquery.
+    Binder binder(*catalog_);
+    auto bound = binder.Bind(*parsed_query);
+    auto logical = Planner::Plan(*bound);
+    PhysicalPlanner pp(*catalog_);
+    auto physical = pp.Plan(*logical);
+    physical->Init();
+
+    // Collect subquery results.
+    std::vector<std::vector<Value>> sub_rows;
+    DataChunk chunk;
+    while (true) {
+        if (!physical->GetData(chunk)) break;
+        for (idx_t i = 0; i < chunk.size(); i++) {
+            std::vector<Value> row;
+            for (idx_t c = 0; c < chunk.ColumnCount(); c++)
+                row.push_back(chunk.GetValue(c, i));
+            sub_rows.push_back(std::move(row));
+        }
+    }
+
+    auto *out = result.GetData<bool>();
+
+    switch (expr.subtype) {
+    case BoundSubqueryExpression::Type::EXISTS:
+        for (idx_t i = 0; i < count; i++) {
+            out[i] = !sub_rows.empty();
+        }
+        break;
+
+    case BoundSubqueryExpression::Type::NOT_EXISTS:
+        for (idx_t i = 0; i < count; i++) {
+            out[i] = sub_rows.empty();
+        }
+        break;
+
+    case BoundSubqueryExpression::Type::IN_SUBQUERY: {
+        // Check if child value exists in subquery first column.
+        if (expr.child) {
+            Vector child_vec(expr.child->GetReturnType(), count);
+            Execute(*expr.child, input, child_vec, count);
+            for (idx_t i = 0; i < count; i++) {
+                auto val = child_vec.GetValue(i);
+                bool found = false;
+                for (auto &row : sub_rows) {
+                    if (!row.empty() && row[0].ToString() == val.ToString()) {
+                        found = true;
+                        break;
+                    }
+                }
+                out[i] = found;
+            }
+        }
+        break;
+    }
+
+    case BoundSubqueryExpression::Type::SCALAR:
+        // Return the first value of the first row.
+        for (idx_t i = 0; i < count; i++) {
+            if (!sub_rows.empty() && !sub_rows[0].empty()) {
+                result.SetValue(i, sub_rows[0][0]);
+            } else {
+                result.GetValidity().SetInvalid(i);
+            }
+        }
+        break;
+    }
+}
+
+} // namespace slothdb

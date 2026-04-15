@@ -1,0 +1,155 @@
+#include "slothdb/api/slothdb.h"
+#include "slothdb/main/database.hpp"
+#include "slothdb/main/connection.hpp"
+#include <cstring>
+#include <string>
+#include <vector>
+
+using namespace slothdb;
+
+struct slothdb_database {
+    std::unique_ptr<Database> db;
+};
+
+struct slothdb_connection {
+    std::unique_ptr<Connection> conn;
+};
+
+struct slothdb_result {
+    QueryResult result;
+    std::string error;
+    // Cache for string values (keeps pointers alive until result is freed).
+    std::vector<std::string> string_cache;
+};
+
+extern "C" {
+
+slothdb_status slothdb_open(const char *path, slothdb_database **out_db) {
+    if (!out_db) return SLOTHDB_INVALID;
+    try {
+        auto *db = new slothdb_database();
+        if (path && strlen(path) > 0) {
+            db->db = std::make_unique<Database>(std::string(path));
+        } else {
+            db->db = std::make_unique<Database>();
+        }
+        *out_db = db;
+        return SLOTHDB_OK;
+    } catch (...) {
+        return SLOTHDB_ERROR;
+    }
+}
+
+void slothdb_close(slothdb_database *db) {
+    delete db;
+}
+
+slothdb_status slothdb_connect(slothdb_database *db, slothdb_connection **out_conn) {
+    if (!db || !out_conn) return SLOTHDB_INVALID;
+    try {
+        auto *conn = new slothdb_connection();
+        conn->conn = std::make_unique<Connection>(*db->db);
+        *out_conn = conn;
+        return SLOTHDB_OK;
+    } catch (...) {
+        return SLOTHDB_ERROR;
+    }
+}
+
+void slothdb_disconnect(slothdb_connection *conn) {
+    delete conn;
+}
+
+slothdb_status slothdb_query(slothdb_connection *conn, const char *sql,
+                              slothdb_result **out_result) {
+    if (!conn || !sql || !out_result) return SLOTHDB_INVALID;
+    auto *res = new slothdb_result();
+    try {
+        res->result = conn->conn->Query(sql);
+        *out_result = res;
+        return SLOTHDB_OK;
+    } catch (const std::exception &e) {
+        res->error = e.what();
+        *out_result = res;
+        return SLOTHDB_ERROR;
+    }
+}
+
+const char *slothdb_result_error(slothdb_result *result) {
+    if (!result) return "";
+    return result->error.c_str();
+}
+
+uint64_t slothdb_column_count(slothdb_result *result) {
+    if (!result) return 0;
+    return result->result.ColumnCount();
+}
+
+uint64_t slothdb_row_count(slothdb_result *result) {
+    if (!result) return 0;
+    return result->result.RowCount();
+}
+
+const char *slothdb_column_name(slothdb_result *result, uint64_t col) {
+    if (!result || col >= result->result.ColumnCount()) return "";
+    return result->result.column_names[col].c_str();
+}
+
+slothdb_type slothdb_column_type(slothdb_result *result, uint64_t col) {
+    if (!result || col >= result->result.ColumnCount()) return SLOTHDB_TYPE_INVALID;
+    auto id = result->result.column_types[col].id();
+    switch (id) {
+    case LogicalTypeId::BOOLEAN: return SLOTHDB_TYPE_BOOLEAN;
+    case LogicalTypeId::INTEGER: return SLOTHDB_TYPE_INTEGER;
+    case LogicalTypeId::BIGINT: return SLOTHDB_TYPE_BIGINT;
+    case LogicalTypeId::FLOAT: return SLOTHDB_TYPE_FLOAT;
+    case LogicalTypeId::DOUBLE: return SLOTHDB_TYPE_DOUBLE;
+    case LogicalTypeId::VARCHAR: return SLOTHDB_TYPE_VARCHAR;
+    default: return SLOTHDB_TYPE_INVALID;
+    }
+}
+
+int slothdb_value_is_null(slothdb_result *result, uint64_t row, uint64_t col) {
+    if (!result || row >= result->result.RowCount()) return 1;
+    return result->result.GetValue(row, col).IsNull() ? 1 : 0;
+}
+
+int32_t slothdb_value_int32(slothdb_result *result, uint64_t row, uint64_t col) {
+    if (!result || row >= result->result.RowCount()) return 0;
+    auto &val = result->result.GetValue(row, col);
+    if (val.IsNull()) return 0;
+    return val.GetValue<int32_t>();
+}
+
+int64_t slothdb_value_int64(slothdb_result *result, uint64_t row, uint64_t col) {
+    if (!result || row >= result->result.RowCount()) return 0;
+    auto &val = result->result.GetValue(row, col);
+    if (val.IsNull()) return 0;
+    if (val.type().id() == LogicalTypeId::INTEGER) return val.GetValue<int32_t>();
+    return val.GetValue<int64_t>();
+}
+
+double slothdb_value_double(slothdb_result *result, uint64_t row, uint64_t col) {
+    if (!result || row >= result->result.RowCount()) return 0.0;
+    auto &val = result->result.GetValue(row, col);
+    if (val.IsNull()) return 0.0;
+    return val.GetValue<double>();
+}
+
+const char *slothdb_value_varchar(slothdb_result *result, uint64_t row, uint64_t col) {
+    if (!result || row >= result->result.RowCount()) return "";
+    auto &val = result->result.GetValue(row, col);
+    if (val.IsNull()) return "NULL";
+    result->string_cache.push_back(val.ToString());
+    return result->string_cache.back().c_str();
+}
+
+void slothdb_free_result(slothdb_result *result) {
+    delete result;
+}
+
+const char *slothdb_version(void) {
+    return "SlothDB 0.1.0";
+}
+
+} /* extern "C" */
