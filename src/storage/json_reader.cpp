@@ -237,6 +237,8 @@ void JSONReader::DetectSchema() {
         }
     }
 
+    // Sort keys for deterministic column order across platforms.
+    std::sort(keys.begin(), keys.end());
     column_names_ = keys;
     column_types_.clear();
     for (auto &key : keys) {
