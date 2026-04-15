@@ -164,6 +164,14 @@ void ExtensionManager::FreeDynLib(void *handle) {
 }
 
 bool ExtensionManager::LoadExtension(const std::string &path) {
+    // Security: reject absolute paths and path traversal.
+    if (path.find("..") != std::string::npos)
+        throw IOException("Extension path cannot contain '..'");
+    // Only allow loading from current directory or 'extensions/' subdirectory.
+    bool is_relative = (path.find(':') == std::string::npos && path[0] != '/' && path[0] != '\\');
+    if (!is_relative)
+        throw IOException("Extension loading restricted to relative paths only");
+
     auto handle = LoadDynLib(path);
     if (!handle) {
         throw IOException("Cannot load extension: " + path);

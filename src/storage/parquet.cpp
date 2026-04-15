@@ -327,17 +327,31 @@ void ParquetReader::ReadMetadata() {
         throw IOException(ErrorCode::CORRUPT_DATA, "Not a Parquet file (bad end magic)");
 
     // Read footer.
+    // Validate footer_size against file bounds.
+    if (footer_size > file_size - 8)
+        throw IOException(ErrorCode::CORRUPT_DATA, "Parquet footer size exceeds file");
+    if (footer_size < 16)
+        throw IOException(ErrorCode::CORRUPT_DATA, "Parquet footer too small");
+
     auto footer_offset = static_cast<std::streamoff>(file_size) - 8 - footer_size;
     std::vector<uint8_t> footer(footer_size);
     file.seekg(footer_offset);
     file.read(reinterpret_cast<char *>(footer.data()), footer_size);
 
+    // Bounds-checked read helper.
+    auto safe_read = [&](size_t &p, void *dst, size_t n) {
+        if (p + n > footer.size())
+            throw IOException(ErrorCode::CORRUPT_DATA, "Parquet footer truncated");
+        std::memcpy(dst, &footer[p], n);
+        p += n;
+    };
+
     // Parse footer.
     size_t pos = 0;
     uint32_t num_rg;
-    std::memcpy(&num_rg, &footer[pos], 4); pos += 4;
+    safe_read(pos, &num_rg, 4);
 
-    std::memcpy(&meta_.num_rows, &footer[pos], 8); pos += 8;
+    safe_read(pos, &meta_.num_rows, 8);
 
     uint32_t num_cols;
     std::memcpy(&num_cols, &footer[pos], 4); pos += 4;

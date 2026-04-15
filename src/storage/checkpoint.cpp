@@ -256,10 +256,18 @@ void Checkpoint::Load(Catalog &catalog, const std::string &path) {
     bm.OpenFile(path);
 
     auto header = bm.ReadHeader();
+    auto file_size = bm.GetFileSize();
+
+    // Validate header fields.
+    if (header.data_offset < sizeof(FileHeader) || header.data_offset > file_size)
+        throw IOException(ErrorCode::CORRUPT_DATA, "Invalid data_offset in database file");
+
     idx_t offset = header.data_offset;
 
     // Read number of tables.
     auto num_tables = ReadU32(bm, offset);
+    if (num_tables > 100000)
+        throw IOException(ErrorCode::CORRUPT_DATA, "Unreasonable table count in database file");
 
     for (uint32_t t = 0; t < num_tables; t++) {
         // Read table name.
@@ -284,6 +292,8 @@ void Checkpoint::Load(Catalog &catalog, const std::string &path) {
 
         // Read row data.
         auto row_count = ReadU64(bm, offset);
+        if (row_count > 1000000000ULL) // 1 billion row sanity limit
+            throw IOException(ErrorCode::CORRUPT_DATA, "Unreasonable row count in database file");
         idx_t rows_read = 0;
         while (rows_read < row_count) {
             DataChunk chunk;

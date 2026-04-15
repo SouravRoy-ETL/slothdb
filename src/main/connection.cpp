@@ -217,8 +217,6 @@ QueryResult Connection::Query(const std::string &sql) {
                 std::vector<ColumnDefinition> new_cols = old_cols;
                 new_cols[rename_idx].name = alter.new_column_name;
 
-                auto old_storage_ptr = std::shared_ptr<DataTable>(&entry->GetStorage(),
-                    [](DataTable*){});  // non-owning
 
                 // We need the actual shared_ptr. Just rebuild.
                 auto new_storage = std::make_shared<DataTable>(old_types);
@@ -521,7 +519,15 @@ QueryResult Connection::Query(const std::string &sql) {
                     std::vector<LogicalType>{LogicalType::BIGINT()});
                 entry.SetStorage(storage);
 
-                for (int64_t v = start_val; v <= stop_val; v += step_val) {
+                if (step_val == 0) throw InvalidInputException("GENERATE_SERIES step cannot be 0");
+                static constexpr int64_t MAX_SERIES_ROWS = 10000000; // 10M limit
+                int64_t est_rows = (step_val > 0) ? (stop_val - start_val) / step_val + 1 : 0;
+                if (est_rows > MAX_SERIES_ROWS || est_rows < 0)
+                    throw InvalidInputException("GENERATE_SERIES would produce too many rows (limit: 10M)");
+
+                for (int64_t v = start_val;
+                     (step_val > 0) ? (v <= stop_val) : (v >= stop_val);
+                     v += step_val) {
                     DataChunk chunk;
                     chunk.Initialize({LogicalType::BIGINT()});
                     chunk.SetValue(0, 0, Value::BIGINT(v));
@@ -941,9 +947,12 @@ QueryResult Connection::Query(const std::string &sql) {
                         storage->Append(cte_chunk);
                     }
 
-                    // 2. Iterate recursive case until no new rows (max 1000 iterations).
+                    // 2. Iterate recursive case (max 1000 iterations, 10M total rows).
+                    static constexpr idx_t MAX_RECURSIVE_ROWS = 10000000;
                     for (int iter = 0; iter < 1000; iter++) {
                         idx_t prev_count = storage->Count();
+                        if (prev_count > MAX_RECURSIVE_ROWS)
+                            throw InternalException("Recursive CTE exceeded 10M row limit");
 
                         Binder rec_binder(db_.GetCatalog());
                         auto rec_bound = rec_binder.Bind(*cte.query->set_right);

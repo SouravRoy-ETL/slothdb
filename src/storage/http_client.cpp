@@ -185,6 +185,14 @@ HTTPResponse HTTPClient::DoHTTPGet(const std::string &host, int port,
         return response;
     }
 
+    // Validate host and path against header injection.
+    if (host.find('\r') != std::string::npos || host.find('\n') != std::string::npos ||
+        path.find('\r') != std::string::npos || path.find('\n') != std::string::npos) {
+        close(sockfd);
+        response.error = "Invalid characters in URL (possible header injection)";
+        return response;
+    }
+
     // Send HTTP request.
     std::string request = "GET " + path + " HTTP/1.1\r\n"
                           "Host: " + host + "\r\n"
@@ -192,13 +200,19 @@ HTTPResponse HTTPClient::DoHTTPGet(const std::string &host, int port,
                           "User-Agent: SlothDB/0.1\r\n\r\n";
     send(sockfd, request.c_str(), request.size(), 0);
 
-    // Read response.
+    // Read response (with size limit).
+    static constexpr size_t MAX_RESPONSE_SIZE = 100 * 1024 * 1024; // 100 MB
     char buf[4096];
     std::string raw_response;
     while (true) {
         auto n = recv(sockfd, buf, sizeof(buf), 0);
         if (n <= 0) break;
         raw_response.append(buf, n);
+        if (raw_response.size() > MAX_RESPONSE_SIZE) {
+            close(sockfd);
+            response.error = "Response exceeds maximum size (100 MB)";
+            return response;
+        }
     }
     close(sockfd);
 
