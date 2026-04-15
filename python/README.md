@@ -1,264 +1,172 @@
-# SlothDB
-
-**An embedded analytical database engine.** Zero dependencies. Single file. GPU accelerated.
-
-[![CI](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg)](https://github.com/SouravRoy-ETL/slothdb/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-325%20passed-brightgreen)]()
-[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)]()
-[![GitHub release](https://img.shields.io/github/v/release/SouravRoy-ETL/slothdb)](https://github.com/SouravRoy-ETL/slothdb/releases)
+<p align="center">
+  <h1 align="center">SlothDB</h1>
+  <p align="center">
+    <b>An embedded analytical database engine</b><br>
+    Zero dependencies &middot; Single file &middot; GPU accelerated
+  </p>
+  <p align="center">
+    <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest"><img src="https://img.shields.io/github/v/release/SouravRoy-ETL/slothdb?label=release" alt="Release"></a>
+    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+    <a href="https://github.com/SouravRoy-ETL/slothdb/stargazers"><img src="https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social" alt="Stars"></a>
+  </p>
+</p>
 
 ---
 
-## Get Started in 30 Seconds
-
-### 1. Download
-
-Go to **[Releases](https://github.com/SouravRoy-ETL/slothdb/releases/latest)** and download for your platform:
-
-| Platform | File | How to run |
-|----------|------|------------|
-| **Windows** | `slothdb.exe` | Double-click or run in terminal |
-| **Linux** | `slothdb` | `chmod +x slothdb && ./slothdb` |
-| **macOS** | `slothdb` | `chmod +x slothdb && ./slothdb` |
-
-### 2. Run it
-
-```
-$ ./slothdb
-
-SlothDB Shell vSlothDB 0.1.0
-Connected to in-memory database
-
-slothdb> SELECT 'Hello World!' AS greeting;
-greeting
----------------
-Hello World!
-(1 row)
-```
-
-### 3. Try with sample data
-
-Create a CSV file called `employees.csv`:
-```csv
-name,department,salary,hire_year
-Alice,Engineering,120000,2020
-Bob,Engineering,110000,2019
-Charlie,Sales,95000,2021
-Diana,Sales,105000,2020
-Eve,Marketing,98000,2022
-Frank,Engineering,130000,2018
-Grace,Sales,115000,2019
-Hank,Marketing,92000,2023
-```
-
-Now query it directly (no import needed!):
+SlothDB is a fast, in-process OLAP database for analytics. It runs inside your application with no server, no setup, and no external dependencies. Query CSV, Parquet, JSON, Excel, and more — directly from SQL.
 
 ```sql
--- Query CSV file directly
-slothdb> SELECT * FROM 'employees.csv';
-
--- Average salary by department
-slothdb> SELECT department, COUNT(*) AS headcount, AVG(salary) AS avg_salary
-   ...> FROM 'employees.csv'
-   ...> GROUP BY department;
-
--- Top earner per department (QUALIFY - Snowflake feature!)
-slothdb> SELECT name, department, salary,
-   ...>   ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC)
-   ...> FROM 'employees.csv'
-   ...> QUALIFY ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) = 1;
-
--- Export results to Parquet
-slothdb> CREATE TABLE emp AS SELECT * FROM 'employees.csv';
-slothdb> COPY emp TO 'employees.parquet' WITH (FORMAT PARQUET);
-
--- Read the Parquet file back
-slothdb> SELECT * FROM 'employees.parquet' WHERE salary > 100000;
+SELECT department, COUNT(*), AVG(salary)
+FROM 'employees.parquet'
+WHERE hire_year >= 2020
+GROUP BY department
+ORDER BY AVG(salary) DESC;
 ```
 
-### 4. Use a persistent database
+## Installation
 
-```
-$ ./slothdb mydata.slothdb
+**CLI Binary** — download from [Releases](https://github.com/SouravRoy-ETL/slothdb/releases/latest):
 
-slothdb> CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR);
-slothdb> INSERT INTO users VALUES (1, 'Alice', 'alice@example.com');
-slothdb> .quit
+| Platform | Command |
+|----------|---------|
+| Windows | Download `slothdb.exe` and run |
+| Linux | `chmod +x slothdb && ./slothdb` |
+| macOS | `chmod +x slothdb && ./slothdb` |
 
-$ ./slothdb mydata.slothdb
-slothdb> SELECT * FROM users;  -- Data is still here!
-```
-
----
-
-## SlothDB vs DuckDB — Side by Side
-
-Both work the same way. If you know DuckDB, you know SlothDB:
-
-| Task | DuckDB | SlothDB |
-|------|--------|---------|
-| **Start CLI** | `./duckdb` | `./slothdb` |
-| **Open database** | `./duckdb mydb.duckdb` | `./slothdb mydb.slothdb` |
-| **Query CSV** | `SELECT * FROM 'data.csv'` | `SELECT * FROM 'data.csv'` |
-| **Query Parquet** | `SELECT * FROM 'data.parquet'` | `SELECT * FROM 'data.parquet'` |
-| **Query JSON** | `SELECT * FROM 'data.json'` | `SELECT * FROM 'data.json'` |
-| **Export** | `COPY t TO 'out.parquet'` | `COPY t TO 'out.parquet' WITH (FORMAT PARQUET)` |
-| **Window functions** | `ROW_NUMBER() OVER (...)` | `ROW_NUMBER() OVER (...)` |
-| **QUALIFY** | `QUALIFY row_num = 1` | `QUALIFY row_num = 1` |
-
-### What SlothDB adds over DuckDB
-
-| Feature | SlothDB | DuckDB |
-|---------|---------|--------|
-| GPU acceleration (CUDA + Metal) | Built-in | Not available |
-| Structured error codes | Every error has a stable numeric code | Free-form strings that change between versions |
-| Stable extension C ABI | Extensions never break across versions | Extensions break frequently |
-| Read Excel files | `SELECT * FROM 'report.xlsx'` | Requires extension install |
-| Read Avro files | `SELECT * FROM read_avro('data.avro')` | Requires extension install |
-| Read SQLite databases | `SELECT * FROM sqlite_scan('db', 'table')` | Requires extension install |
-
----
-
-## Python
+**Python:**
 
 ```bash
 pip install slothdb
 ```
 
-```python
-import slothdb
-
-# Connect (in-memory or persistent)
-db = slothdb.connect()
-# db = slothdb.connect("analytics.slothdb")
-
-# Run SQL
-result = db.sql("SELECT 42 AS answer, 'hello' AS greeting")
-print(result)
-# answer     | greeting
-# -----------+-----------
-# 42         | hello
-
-# Query files
-result = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000")
-
-# Convert to pandas
-df = result.fetchdf()
-print(df)
-```
-
----
-
-## C/C++ Embedding
-
-```c
-#include "slothdb/api/slothdb.h"
-
-int main() {
-    slothdb_database *db;
-    slothdb_connection *conn;
-    slothdb_result *result;
-
-    slothdb_open("analytics.slothdb", &db);
-    slothdb_connect(db, &conn);
-
-    slothdb_query(conn, "CREATE TABLE t (x INTEGER, name VARCHAR)", &result);
-    slothdb_free_result(result);
-
-    slothdb_query(conn, "INSERT INTO t VALUES (42, 'hello')", &result);
-    slothdb_free_result(result);
-
-    slothdb_query(conn, "SELECT * FROM t", &result);
-    for (uint64_t r = 0; r < slothdb_row_count(result); r++) {
-        printf("%s: %s\n",
-            slothdb_column_name(result, 0),
-            slothdb_value_varchar(result, r, 0));
-    }
-    slothdb_free_result(result);
-
-    slothdb_disconnect(conn);
-    slothdb_close(db);
-}
-```
-
----
-
-## Build from Source
+**Build from source:**
 
 ```bash
 git clone https://github.com/SouravRoy-ETL/slothdb.git
 cd slothdb
 cmake -B build -DSLOTHDB_BUILD_SHELL=ON
 cmake --build build --config Release
-
-# Run CLI
 ./build/src/Release/slothdb
-
-# Run tests (325 tests, 131K assertions)
-./build/test/Release/slothdb_tests
 ```
 
-### Build Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `SLOTHDB_BUILD_SHELL` | OFF | Build the CLI shell |
-| `SLOTHDB_BUILD_TESTS` | ON | Build test suite |
-| `SLOTHDB_CUDA` | OFF | Enable NVIDIA GPU acceleration |
-| `SLOTHDB_METAL` | OFF | Enable Apple Silicon GPU acceleration |
-
----
-
-## Full SQL Reference
-
-130+ SQL features. [See complete reference](docs/SQL_REFERENCE.md).
-
-**Highlights:**
-- All standard SQL: SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER
-- Joins: INNER, LEFT, RIGHT, FULL, CROSS
-- Aggregates: COUNT, SUM, AVG, MIN, MAX, STDDEV, MEDIAN, STRING_AGG
-- Window functions: ROW_NUMBER, RANK, DENSE_RANK, NTILE, LEAD, LAG
-- QUALIFY clause (Snowflake-style)
-- CTEs: WITH, WITH RECURSIVE
-- Set operations: UNION, INTERSECT, EXCEPT
-- MERGE (upsert), TRUNCATE, EXPLAIN
-- 40+ scalar functions (string, math, date, regex)
-- Transactions: BEGIN, COMMIT, ROLLBACK
-
-**File formats (all built-in, no extensions needed):**
-
-| Format | Read | Write | Function |
-|--------|------|-------|----------|
-| CSV | Yes | Yes | `read_csv()` / `COPY TO` |
-| JSON / NDJSON | Yes | Yes | `read_json()` / `COPY TO FORMAT JSON` |
-| Parquet | Yes | Yes | `read_parquet()` / `COPY TO FORMAT PARQUET` |
-| Arrow IPC | Yes | Yes | `read_arrow()` |
-| Avro | Yes | - | `read_avro()` |
-| Excel (.xlsx) | Yes | - | `read_xlsx()` |
-| SQLite | Yes | - | `sqlite_scan()` |
-
----
-
-## Architecture
+## Quick Start
 
 ```
-SQL String → Parser → Binder → Planner → Optimizer → Executor → Results
-                                                         |
-                                              GPU Engine (CUDA/Metal)
-                                              or CPU (vectorized, parallel)
+$ ./slothdb
+
+slothdb> CREATE TABLE t (name VARCHAR, score INTEGER);
+slothdb> INSERT INTO t VALUES ('Alice', 95), ('Bob', 87), ('Charlie', 92);
+slothdb> SELECT name, score, RANK() OVER (ORDER BY score DESC) FROM t;
+name            | score           | expr
+----------------+-----------------+----------------
+Alice           | 95              | 1
+Charlie         | 92              | 2
+Bob             | 87              | 3
 ```
 
-- **Storage:** Columnar with row groups, compression (RLE, dictionary, bitpacking), zone maps
-- **Execution:** Vectorized (2048 values/batch), morsel-driven parallelism, GPU offload for >100K rows
-- **Persistence:** Single `.slothdb` file, auto-save on close
+Query files without importing:
 
----
+```sql
+SELECT * FROM 'data.csv';                              -- CSV
+SELECT * FROM read_parquet('logs/*.parquet');           -- Parquet with globs
+SELECT * FROM read_json('events.json');                -- JSON
+SELECT * FROM read_xlsx('report.xlsx');                -- Excel
+SELECT * FROM sqlite_scan('app.db', 'users');          -- SQLite
 
-## Contributing
+COPY results TO 'output.parquet' WITH (FORMAT PARQUET); -- Export
+```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome!
+Persistent database:
+
+```
+$ ./slothdb analytics.slothdb    # data saved automatically
+```
+
+## Why SlothDB?
+
+SlothDB is designed as a modern alternative to [DuckDB](https://duckdb.org) with additional capabilities:
+
+| | SlothDB | DuckDB |
+|-|---------|--------|
+| **GPU acceleration** | CUDA + Apple Metal | — |
+| **Structured errors** | Stable numeric error codes | Free-form strings |
+| **Extension ABI** | Stable C ABI, never breaks | Breaks across versions |
+| **File formats** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in | CSV, Parquet, JSON built-in; others need extensions |
+| **QUALIFY** | Yes | Yes |
+| **Zero dependencies** | Yes | Yes |
+
+## Python
+
+```python
+import slothdb
+
+db = slothdb.connect()                    # in-memory
+db = slothdb.connect("analytics.slothdb") # persistent
+
+result = db.sql("""
+    SELECT department, COUNT(*), AVG(salary) 
+    FROM 'employees.csv' 
+    GROUP BY department
+""")
+print(result)
+df = result.fetchdf()  # → pandas DataFrame
+```
+
+## C/C++ Embedding
+
+```c
+#include "slothdb/api/slothdb.h"
+
+slothdb_database *db;
+slothdb_connection *conn;
+slothdb_result *result;
+
+slothdb_open("analytics.slothdb", &db);
+slothdb_connect(db, &conn);
+slothdb_query(conn, "SELECT 42 AS answer", &result);
+printf("%d\n", slothdb_value_int32(result, 0, 0));
+slothdb_free_result(result);
+slothdb_disconnect(conn);
+slothdb_close(db);
+```
+
+## Features
+
+- **130+ SQL features** — SELECT, JOINs, CTEs, window functions, aggregates, MERGE, EXPLAIN, transactions ([full reference](docs/SQL_REFERENCE.md))
+- **QUALIFY clause** — filter on window function results (Snowflake-style)
+- **7 file formats** — CSV, JSON, Parquet, Arrow, Avro, Excel, SQLite — all built-in, no extensions
+- **GPU acceleration** — CUDA (NVIDIA) and Metal (Apple Silicon) for large-scale analytics
+- **Single-file persistence** — `.slothdb` format with auto-save
+- **Query optimizer** — constant folding, filter pushdown, TopN optimization
+- **Vectorized execution** — columnar engine processing 2,048 values per batch
+- **Parallel execution** — morsel-driven parallelism across all CPU cores
+- **Compression** — RLE, dictionary, bitpacking with zone maps for scan skipping
+- **Extension system** — stable C ABI for third-party extensions
+- **325 tests** — 131,000+ assertions across all subsystems
+
+## Documentation
+
+- [SQL Reference](docs/SQL_REFERENCE.md) — complete list of SQL features, functions, and types
+- [Sample Data](examples/) — CSV and JSON files to try with SlothDB
+- [Contributing](CONTRIBUTING.md) — how to build, test, and submit changes
+- [Extension API](include/slothdb/extension/extension_api.h) — build custom extensions
+
+## Development
+
+```bash
+cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=ON
+cmake --build build --config Release
+ctest --test-dir build -C Release    # run 325 tests
+```
+
+| Build Option | Description |
+|-------------|-------------|
+| `-DSLOTHDB_BUILD_SHELL=ON` | Build CLI |
+| `-DSLOTHDB_CUDA=ON` | Enable NVIDIA GPU |
+| `-DSLOTHDB_METAL=ON` | Enable Apple GPU |
+| `-DSLOTHDB_SANITIZERS=ON` | Enable ASan/UBSan |
 
 ## License
 
-MIT
+[MIT](LICENSE)
