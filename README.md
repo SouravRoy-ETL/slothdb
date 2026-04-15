@@ -26,28 +26,19 @@ ORDER BY AVG(salary) DESC;
 
 ## Installation
 
-**Linux / macOS** — one command:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash
-```
+| Platform | Command |
+|----------|---------|
+| **Linux / macOS** | `curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh \| bash` |
+| **Ubuntu / Debian** | `sudo dpkg -i slothdb_0.1.0_amd64.deb` ([download .deb](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
+| **Fedora / RHEL** | `sudo rpm -i slothdb-0.1.0.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
+| **Arch Linux** | `makepkg -si` (use [PKGBUILD](packaging/arch/PKGBUILD)) |
+| **macOS (Homebrew)** | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
+| **Windows** | Download [`slothdb.exe`](https://github.com/SouravRoy-ETL/slothdb/releases/latest) |
+| **Python** | `pip install slothdb` |
 
 Then just run:
 ```bash
 slothdb
-```
-
-**Windows** — download [`slothdb.exe`](https://github.com/SouravRoy-ETL/slothdb/releases/latest) from Releases and run it.
-
-**Python:**
-
-```bash
-pip install slothdb
-```
-
-**Homebrew** (coming soon):
-```bash
-brew install slothdb
 ```
 
 **Build from source:**

@@ -25,13 +25,38 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: |
-        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release
+        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
         cmake --build build -j$(nproc)
-    - name: Upload
+        strip build/src/slothdb
+    - name: Build .deb package
+      run: |
+        mkdir -p pkg/DEBIAN pkg/usr/local/bin pkg/usr/share/doc/slothdb
+        cp build/src/slothdb pkg/usr/local/bin/
+        cp README.md LICENSE pkg/usr/share/doc/slothdb/
+        cat > pkg/DEBIAN/control << 'EOF'
+        Package: slothdb
+        Version: 0.1.0
+        Section: database
+        Priority: optional
+        Architecture: amd64
+        Depends: libc6 (>= 2.31)
+        Maintainer: Sourav Roy <souravroy7864@gmail.com>
+        Description: Embedded analytical database engine
+         Zero dependencies. GPU accelerated. 130+ SQL features.
+        Homepage: https://github.com/SouravRoy-ETL/slothdb
+        EOF
+        sed -i 's/^        //' pkg/DEBIAN/control
+        dpkg-deb --build pkg slothdb_0.1.0_amd64.deb
+    - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
         name: slothdb-linux-x64
         path: build/src/slothdb
+    - name: Upload .deb
+      uses: actions/upload-artifact@v4
+      with:
+        name: slothdb-deb
+        path: slothdb_0.1.0_amd64.deb
 
   build-macos:
     runs-on: macos-latest
@@ -39,7 +64,7 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: |
-        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release
+        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
         cmake --build build -j$(sysctl -n hw.ncpu)
     - name: Upload
       uses: actions/upload-artifact@v4
@@ -61,4 +86,5 @@ jobs:
           slothdb-windows-x64/slothdb.exe
           slothdb-linux-x64/slothdb
           slothdb-macos/slothdb
+          slothdb-deb/slothdb_0.1.0_amd64.deb
         generate_release_notes: true

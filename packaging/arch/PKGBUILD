@@ -1,0 +1,27 @@
+# Maintainer: Sourav Roy <souravroy7864@gmail.com>
+pkgname=slothdb
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="An embedded analytical database engine. Zero dependencies. GPU accelerated."
+arch=('x86_64')
+url="https://github.com/SouravRoy-ETL/slothdb"
+license=('MIT')
+makedepends=('cmake' 'gcc')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/SouravRoy-ETL/slothdb/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    cmake -B build \
+        -DSLOTHDB_BUILD_SHELL=ON \
+        -DSLOTHDB_BUILD_TESTS=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr
+    cmake --build build -j$(nproc)
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 build/src/slothdb "$pkgdir/usr/bin/slothdb"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
