@@ -2,9 +2,62 @@
 
 **An embedded analytical database engine.** Zero dependencies. Single file. Blazing fast.
 
+[![CI](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg)](https://github.com/SouravRoy-ETL/slothdb/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests](https://img.shields.io/badge/tests-325%20passed-brightgreen)]()
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)]()
+
 SlothDB is a production-grade in-process OLAP database written in C++20. It runs inside your application — no server, no setup, no external libraries. Think **DuckDB, but with GPU acceleration, structured errors, and a stable extension API**.
 
+## Demo
+
+```
+$ slothdb_shell
+
+SlothDB Shell vSlothDB 0.1.0
+Connected to in-memory database
+
+slothdb> CREATE TABLE employees (name VARCHAR, dept VARCHAR, salary INTEGER);
+OK
+
+slothdb> INSERT INTO employees VALUES
+   ...>   ('Alice', 'Engineering', 120000), ('Bob', 'Engineering', 110000),
+   ...>   ('Charlie', 'Sales', 95000), ('Diana', 'Sales', 105000),
+   ...>   ('Eve', 'Marketing', 98000);
+OK
+
+-- Window functions with RANK
+slothdb> SELECT name, dept, salary, RANK() OVER (ORDER BY salary DESC) FROM employees;
+name            | dept            | salary          | expr
+----------------+-----------------+-----------------+----------------
+Alice           | Engineering     | 120000          | 1
+Bob             | Engineering     | 110000          | 2
+Diana           | Sales           | 105000          | 3
+Eve             | Marketing       | 98000           | 4
+Charlie         | Sales           | 95000           | 5
+(5 rows)
+
+-- QUALIFY: get top earner per department (Snowflake-style!)
+slothdb> SELECT name, dept, salary,
+   ...>   ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)
+   ...> FROM employees
+   ...> QUALIFY ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) = 1;
+name            | dept            | salary          | expr
+----------------+-----------------+-----------------+----------------
+Alice           | Engineering     | 120000          | 1
+Diana           | Sales           | 105000          | 1
+Eve             | Marketing       | 98000           | 1
+(3 rows)
+
+-- Query Parquet files directly
+slothdb> SELECT * FROM read_parquet('data.parquet') WHERE amount > 1000;
+
+-- Query CSV with auto-detection
+slothdb> SELECT * FROM 'sales.csv' LIMIT 5;
+```
+
 ```sql
+-- More examples
 SELECT department, COUNT(*), AVG(salary)
 FROM read_parquet('employees.parquet')
 WHERE hire_date > '2020-01-01'
