@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+setup.py
+slothdb/__init__.py
+slothdb.egg-info/PKG-INFO
+slothdb.egg-info/SOURCES.txt
+slothdb.egg-info/dependency_links.txt
+slothdb.egg-info/top_level.txt

@@ -1,3 +1,26 @@
+Metadata-Version: 2.4
+Name: slothdb
+Version: 0.1.0
+Summary: An embedded analytical database engine. Zero dependencies. GPU accelerated.
+Home-page: https://github.com/SouravRoy-ETL/slothdb
+Author: Sourav Roy
+Author-email: Sourav Roy <souravroy7864@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/SouravRoy-ETL/slothdb
+Project-URL: Repository, https://github.com/SouravRoy-ETL/slothdb
+Project-URL: Issues, https://github.com/SouravRoy-ETL/slothdb/issues
+Keywords: database,olap,analytics,sql,embedded,parquet,gpu
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Database
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Dynamic: author
+Dynamic: home-page
+Dynamic: requires-python
+
 # SlothDB
 
 **An embedded analytical database engine.** Zero dependencies. Single file. Blazing fast.
@@ -79,43 +102,14 @@ LIMIT 10;
 | Zero dependencies | Yes | Yes | Yes |
 | Single-file database | `.slothdb` | `.duckdb` | `.sqlite` |
 
-## Installation
+## Quick Start
 
-### Python (pip)
-
-```bash
-pip install slothdb
-```
-
-```python
-import slothdb
-
-db = slothdb.connect()  # in-memory
-# db = slothdb.connect("analytics.slothdb")  # persistent
-
-result = db.sql("SELECT 42 AS answer")
-print(result)
-
-result = db.sql("SELECT * FROM read_csv('data.csv')")
-df = result.fetchdf()  # convert to pandas DataFrame
-```
-
-### Download Binary
-
-Download pre-built binaries from [Releases](https://github.com/SouravRoy-ETL/slothdb/releases):
-
-| Platform | Download |
-|----------|----------|
-| Windows x64 | `slothdb_shell.exe` |
-| Linux x64 | `slothdb_shell` |
-| macOS (Apple Silicon) | `slothdb_shell` |
-
-### Build from Source
+### Build from source
 
 ```bash
-git clone https://github.com/SouravRoy-ETL/slothdb.git
+git clone https://github.com/user/slothdb.git
 cd slothdb
-cmake -B build -DSLOTHDB_BUILD_SHELL=ON
+cmake -B build
 cmake --build build --config Release
 ```
 
