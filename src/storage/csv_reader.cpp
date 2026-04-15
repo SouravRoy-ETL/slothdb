@@ -98,7 +98,7 @@ std::vector<LogicalType> CSVReader::DetectTypes(idx_t sample_size) {
 
             // Try integer.
             try {
-                std::stoll(f);
+                (void)std::stoll(f);
                 if (types[i].id() == LogicalTypeId::VARCHAR) {
                     types[i] = LogicalType::BIGINT();
                 }
@@ -107,7 +107,7 @@ std::vector<LogicalType> CSVReader::DetectTypes(idx_t sample_size) {
 
             // Try double.
             try {
-                std::stod(f);
+                (void)std::stod(f);
                 if (types[i].id() == LogicalTypeId::VARCHAR ||
                     types[i].id() == LogicalTypeId::BIGINT) {
                     types[i] = LogicalType::DOUBLE();
