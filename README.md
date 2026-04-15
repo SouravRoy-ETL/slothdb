@@ -2,7 +2,7 @@
 
 **An embedded analytical database engine.** Zero dependencies. Single file. Blazing fast.
 
-(https://github.com/SouravRoy-ETL/slothdb/actions)
+[![CI](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg)](https://github.com/SouravRoy-ETL/slothdb/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-325%20passed-brightgreen)]()
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)]()
