@@ -116,14 +116,20 @@ void ArrowIPCReader::Parse() {
     if (std::memcmp(magic, ARROW_MAGIC, 6) != 0)
         throw IOException(ErrorCode::CORRUPT_DATA, "Not an Arrow IPC file");
 
-    // Read schema.
+    // Read schema with validation.
     uint32_t num_cols;
     file.read(reinterpret_cast<char *>(&num_cols), 4);
+    if (!file.good() || num_cols > 10000)
+        throw IOException(ErrorCode::CORRUPT_DATA, "Invalid Arrow column count");
     for (uint32_t c = 0; c < num_cols; c++) {
         uint32_t name_len;
         file.read(reinterpret_cast<char *>(&name_len), 4);
+        if (!file.good() || name_len > 1000000)
+            throw IOException(ErrorCode::CORRUPT_DATA, "Invalid Arrow column name length");
         std::string name(name_len, '\0');
         file.read(name.data(), name_len);
+        if (!file.good())
+            throw IOException(ErrorCode::CORRUPT_DATA, "Truncated Arrow file");
         column_names_.push_back(name);
 
         uint8_t type_id;
@@ -134,6 +140,8 @@ void ArrowIPCReader::Parse() {
     // Read rows.
     int64_t total_rows;
     file.read(reinterpret_cast<char *>(&total_rows), 8);
+    if (!file.good() || total_rows < 0 || total_rows > 1000000000LL)
+        throw IOException(ErrorCode::CORRUPT_DATA, "Invalid Arrow row count");
 
     for (int64_t r = 0; r < total_rows; r++) {
         std::vector<Value> row;

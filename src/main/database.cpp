@@ -1,5 +1,6 @@
 #include "slothdb/main/database.hpp"
 #include "slothdb/storage/checkpoint.hpp"
+#include <cstdio>
 
 #ifdef _MSC_VER
 #include <io.h>
@@ -38,10 +39,13 @@ Database::Database(DatabaseConfig config)
 }
 
 Database::~Database() {
-    // If path is set, save on close.
+    // If path is set, save on close (atomic: write to .tmp then rename).
     if (!config_.path.empty() && catalog_) {
         try {
-            Checkpoint::Save(*catalog_, config_.path);
+            auto tmp_path = config_.path + ".tmp";
+            Checkpoint::Save(*catalog_, tmp_path);
+            std::remove(config_.path.c_str());
+            std::rename(tmp_path.c_str(), config_.path.c_str());
         } catch (...) {
             // Don't throw from destructor.
         }

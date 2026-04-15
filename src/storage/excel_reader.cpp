@@ -28,8 +28,11 @@ std::string ExcelReader::ExtractZipEntry(const std::vector<uint8_t> &zip_data,
         std::memcpy(&name_len, &zip_data[pos + 26], 2);
         std::memcpy(&extra_len, &zip_data[pos + 28], 2);
 
+        // Bounds check before reading name and data.
+        if (pos + 30 + name_len + extra_len > zip_data.size()) break;
         auto name = std::string(reinterpret_cast<const char *>(&zip_data[pos + 30]), name_len);
         auto data_start = pos + 30 + name_len + extra_len;
+        if (data_start + compressed_size > zip_data.size()) break;
 
         if (name == entry_name) {
             if (compression == 0) {

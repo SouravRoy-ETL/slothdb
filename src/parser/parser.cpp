@@ -561,7 +561,11 @@ std::string Parser::ParseTypeName() {
 // ============================================================================
 
 ParsedExprPtr Parser::ParseExpression() {
-    return ParseOr();
+    if (++expr_depth_ > MAX_EXPR_DEPTH)
+        ThrowError("Expression nesting too deep (limit: 256)");
+    auto result = ParseOr();
+    expr_depth_--;
+    return result;
 }
 
 ParsedExprPtr Parser::ParseOr() {

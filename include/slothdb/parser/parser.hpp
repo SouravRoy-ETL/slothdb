@@ -64,6 +64,8 @@ private:
 
     std::vector<Token> tokens_;
     size_t pos_;
+    int expr_depth_ = 0;
+    static constexpr int MAX_EXPR_DEPTH = 256;
 };
 
 } // namespace slothdb

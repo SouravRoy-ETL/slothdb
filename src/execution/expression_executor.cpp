@@ -733,6 +733,8 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         for (idx_t i = 0; i < count; i++) {
             auto s = str_vec.GetValue(i).GetValue<std::string>();
             auto n = n_vec.GetValue(i).GetValue<int32_t>();
+            if (n < 0) n = 0;
+            if (n > 65536) throw InvalidInputException("REPEAT count too large (max: 65536)");
             std::string r;
             for (int j = 0; j < n; j++) r += s;
             result.SetValue(i, Value::VARCHAR(r));

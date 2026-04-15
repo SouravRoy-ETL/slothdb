@@ -224,10 +224,12 @@ void CSVWriter::WriteRow(const std::vector<Value> &row) {
             file_ << options_.null_string;
         } else {
             auto str = row[i].ToString();
-            // Quote if contains delimiter, quote, or newline.
+            // Quote if contains delimiter, quote, newline, or starts with formula chars.
             bool needs_quote = str.find(options_.delimiter) != std::string::npos ||
                                str.find(options_.quote) != std::string::npos ||
-                               str.find('\n') != std::string::npos;
+                               str.find('\n') != std::string::npos ||
+                               (!str.empty() && (str[0] == '=' || str[0] == '+' ||
+                                str[0] == '-' || str[0] == '@'));
             if (needs_quote) {
                 file_ << options_.quote;
                 for (char c : str) {
