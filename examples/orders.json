@@ -1,0 +1,10 @@
+[
+  {"order_id": 1, "customer": "Alice", "product": "Widget", "amount": 99.99, "quantity": 2},
+  {"order_id": 2, "customer": "Bob", "product": "Gadget", "amount": 249.99, "quantity": 1},
+  {"order_id": 3, "customer": "Alice", "product": "Gadget", "amount": 249.99, "quantity": 3},
+  {"order_id": 4, "customer": "Charlie", "product": "Widget", "amount": 99.99, "quantity": 5},
+  {"order_id": 5, "customer": "Bob", "product": "Doohickey", "amount": 49.99, "quantity": 10},
+  {"order_id": 6, "customer": "Diana", "product": "Widget", "amount": 99.99, "quantity": 1},
+  {"order_id": 7, "customer": "Alice", "product": "Doohickey", "amount": 49.99, "quantity": 4},
+  {"order_id": 8, "customer": "Charlie", "product": "Gadget", "amount": 249.99, "quantity": 2}
+]
