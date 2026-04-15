@@ -328,12 +328,13 @@ void ParquetReader::ReadMetadata() {
 
     // Read footer.
     // Validate footer_size against file bounds.
-    if (footer_size > file_size - 8)
+    auto file_sz = static_cast<size_t>(file_size);
+    if (footer_size > file_sz - 8)
         throw IOException(ErrorCode::CORRUPT_DATA, "Parquet footer size exceeds file");
     if (footer_size < 16)
         throw IOException(ErrorCode::CORRUPT_DATA, "Parquet footer too small");
 
-    auto footer_offset = static_cast<std::streamoff>(file_size) - 8 - footer_size;
+    auto footer_offset = static_cast<std::streamoff>(file_sz - 8 - footer_size);
     std::vector<uint8_t> footer(footer_size);
     file.seekg(footer_offset);
     file.read(reinterpret_cast<char *>(footer.data()), footer_size);
