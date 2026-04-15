@@ -41,3 +41,4 @@ CLAUDE.md
 EXAMPLES.md
 skills/
 .claude-plugin/
+*.parquet

@@ -19,13 +19,11 @@ jobs:
       run: ctest --test-dir build -C Release --output-on-failure
 
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
-    - name: Install deps
-      run: sudo apt-get update && sudo apt-get install -y cmake g++
     - name: Configure
-      run: cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release
+      run: cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20
     - name: Build
       run: cmake --build build -j$(nproc)
     - name: Test
@@ -36,7 +34,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Configure
-      run: cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release
+      run: cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20
     - name: Build
       run: cmake --build build -j$(sysctl -n hw.ncpu)
     - name: Test
