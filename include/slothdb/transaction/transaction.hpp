@@ -79,7 +79,7 @@ public:
     txn_id_t GetCurrentTimestamp() const { return current_ts_.load(); }
 
 private:
-    std::mutex lock_;
+    mutable std::mutex lock_;
     std::atomic<txn_id_t> next_txn_id_{1};
     std::atomic<txn_id_t> current_ts_{0};
     std::vector<std::unique_ptr<Transaction>> active_transactions_;
