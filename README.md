@@ -18,14 +18,14 @@ Go to **[Releases](https://github.com/SouravRoy-ETL/slothdb/releases/latest)** a
 
 | Platform | File | How to run |
 |----------|------|------------|
-| **Windows** | `slothdb_shell.exe` | Double-click or run in terminal |
-| **Linux** | `slothdb_shell` | `chmod +x slothdb_shell && ./slothdb_shell` |
-| **macOS** | `slothdb_shell` | `chmod +x slothdb_shell && ./slothdb_shell` |
+| **Windows** | `slothdb.exe` | Double-click or run in terminal |
+| **Linux** | `slothdb` | `chmod +x slothdb && ./slothdb` |
+| **macOS** | `slothdb` | `chmod +x slothdb && ./slothdb` |
 
 ### 2. Run it
 
 ```
-$ ./slothdb_shell
+$ ./slothdb
 
 SlothDB Shell vSlothDB 0.1.0
 Connected to in-memory database
@@ -80,13 +80,13 @@ slothdb> SELECT * FROM 'employees.parquet' WHERE salary > 100000;
 ### 4. Use a persistent database
 
 ```
-$ ./slothdb_shell mydata.slothdb
+$ ./slothdb mydata.slothdb
 
 slothdb> CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR);
 slothdb> INSERT INTO users VALUES (1, 'Alice', 'alice@example.com');
 slothdb> .quit
 
-$ ./slothdb_shell mydata.slothdb
+$ ./slothdb mydata.slothdb
 slothdb> SELECT * FROM users;  -- Data is still here!
 ```
 
@@ -98,8 +98,8 @@ Both work the same way. If you know DuckDB, you know SlothDB:
 
 | Task | DuckDB | SlothDB |
 |------|--------|---------|
-| **Start CLI** | `./duckdb` | `./slothdb_shell` |
-| **Open database** | `./duckdb mydb.duckdb` | `./slothdb_shell mydb.slothdb` |
+| **Start CLI** | `./duckdb` | `./slothdb` |
+| **Open database** | `./duckdb mydb.duckdb` | `./slothdb mydb.slothdb` |
 | **Query CSV** | `SELECT * FROM 'data.csv'` | `SELECT * FROM 'data.csv'` |
 | **Query Parquet** | `SELECT * FROM 'data.parquet'` | `SELECT * FROM 'data.parquet'` |
 | **Query JSON** | `SELECT * FROM 'data.json'` | `SELECT * FROM 'data.json'` |
@@ -193,7 +193,7 @@ cmake -B build -DSLOTHDB_BUILD_SHELL=ON
 cmake --build build --config Release
 
 # Run CLI
-./build/src/Release/slothdb_shell
+./build/src/Release/slothdb
 
 # Run tests (325 tests, 131K assertions)
 ./build/test/Release/slothdb_tests

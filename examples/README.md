@@ -5,7 +5,7 @@ Use these files to try SlothDB:
 ```bash
 # Start SlothDB in this directory
 cd examples
-../slothdb_shell
+../slothdb
 
 # Query CSV
 slothdb> SELECT * FROM 'employees.csv';

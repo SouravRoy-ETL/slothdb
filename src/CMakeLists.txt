@@ -13,15 +13,16 @@ file(GLOB_RECURSE SLOTHDB_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/extension/*.cpp"
 )
 
-add_library(slothdb STATIC ${SLOTHDB_SOURCES})
+add_library(slothdb_lib STATIC ${SLOTHDB_SOURCES})
+set_target_properties(slothdb_lib PROPERTIES OUTPUT_NAME "slothdb")
 
-target_include_directories(slothdb PUBLIC
+target_include_directories(slothdb_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
 
-# CLI Shell
+# CLI
 if(SLOTHDB_BUILD_SHELL)
-    add_executable(slothdb_shell ${CMAKE_SOURCE_DIR}/tools/shell/shell.cpp)
-    target_link_libraries(slothdb_shell PRIVATE slothdb)
-    target_include_directories(slothdb_shell PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_executable(slothdb ${CMAKE_SOURCE_DIR}/tools/shell/shell.cpp)
+    target_link_libraries(slothdb PRIVATE slothdb_lib)
+    target_include_directories(slothdb PRIVATE ${CMAKE_SOURCE_DIR}/include)
 endif()

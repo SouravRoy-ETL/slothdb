@@ -17,7 +17,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: slothdb-windows-x64
-        path: build/src/Release/slothdb_shell.exe
+        path: build/src/Release/slothdb.exe
 
   build-linux:
     runs-on: ubuntu-24.04
@@ -31,7 +31,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: slothdb-linux-x64
-        path: build/src/slothdb_shell
+        path: build/src/slothdb
 
   build-macos:
     runs-on: macos-latest
@@ -45,7 +45,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: slothdb-macos
-        path: build/src/slothdb_shell
+        path: build/src/slothdb
 
   release:
     needs: [build-windows, build-linux, build-macos]
@@ -58,7 +58,7 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          slothdb-windows-x64/slothdb_shell.exe
-          slothdb-linux-x64/slothdb_shell
-          slothdb-macos/slothdb_shell
+          slothdb-windows-x64/slothdb.exe
+          slothdb-linux-x64/slothdb
+          slothdb-macos/slothdb
         generate_release_notes: true
