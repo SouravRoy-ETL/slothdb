@@ -200,7 +200,8 @@ slothdb_close(db);
 
 ## Documentation
 
-- [SQL Reference](docs/SQL_REFERENCE.md) — complete list of SQL features, functions, and types
+- **[Full Documentation](docs/DOCUMENTATION.md)** — complete guide with every SQL command, Python API, C/C++ API, and examples
+- [SQL Reference](docs/SQL_REFERENCE.md) — quick reference of SQL features, functions, and types
 - [Sample Data](examples/) — CSV and JSON files to try with SlothDB
 - [Contributing](CONTRIBUTING.md) — how to build, test, and submit changes
 - [Extension API](include/slothdb/extension/extension_api.h) — build custom extensions
