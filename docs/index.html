@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SlothDB — Embedded Analytical Database Engine</title>
+    <meta name="description" content="Query CSV, Parquet, JSON, and Excel with SQL. Zero dependencies. GPU accelerated. An open-source embedded OLAP database.">
+    <meta name="keywords" content="SlothDB, embedded database, OLAP, analytical database, SQL, CSV, Parquet, JSON, Excel, GPU, CUDA, Metal, DuckDB alternative">
+    <meta property="og:title" content="SlothDB — Embedded Analytical Database Engine">
+    <meta property="og:description" content="Query CSV, Parquet, JSON, and Excel with SQL. Zero dependencies. GPU accelerated.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://souravroy-etl.github.io/slothdb/">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦥</text></svg>">
+    <style>
+        :root {
+            --indigo: #6366f1;
+            --violet: #8b5cf6;
+            --navy: #1e1b4b;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+            --gradient: linear-gradient(135deg, var(--indigo), var(--violet));
+            --code-bg: #0d1117;
+            --code-border: #30363d;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            color: var(--gray-800);
+            line-height: 1.6;
+            background: #fff;
+        }
+
+        /* Navigation */
+        nav {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            background: rgba(255,255,255,0.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--gray-200);
+            z-index: 100;
+            padding: 0 2rem;
+        }
+        .nav-inner {
+            max-width: 1100px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 64px;
+        }
+        .nav-logo {
+            font-weight: 800;
+            font-size: 1.25rem;
+            color: var(--navy);
+            text-decoration: none;
+        }
+        .nav-logo span { background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .nav-links { display: flex; gap: 2rem; align-items: center; }
+        .nav-links a {
+            color: var(--gray-600);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+        .nav-links a:hover { color: var(--indigo); }
+        .nav-github {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            background: var(--gray-900);
+            color: #fff !important;
+            padding: 0.4rem 1rem;
+            border-radius: 8px;
+            font-size: 0.85rem !important;
+            transition: background 0.2s;
+        }
+        .nav-github:hover { background: var(--gray-700); }
+
+        /* Hero */
+        .hero {
+            padding: 10rem 2rem 6rem;
+            text-align: center;
+            background: linear-gradient(180deg, #f8f7ff 0%, #fff 100%);
+        }
+        .hero-logo { width: 340px; max-width: 80%; margin-bottom: 2rem; }
+        .hero h1 {
+            font-size: 3.2rem;
+            font-weight: 800;
+            color: var(--navy);
+            letter-spacing: -0.03em;
+            margin-bottom: 1rem;
+            line-height: 1.15;
+        }
+        .hero h1 .accent { background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .hero p {
+            font-size: 1.25rem;
+            color: var(--gray-500);
+            max-width: 600px;
+            margin: 0 auto 2.5rem;
+        }
+        .hero-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: var(--gradient);
+            color: #fff;
+            box-shadow: 0 4px 14px rgba(99,102,241,0.35);
+        }
+        .btn-primary:hover { box-shadow: 0 6px 20px rgba(99,102,241,0.5); transform: translateY(-1px); }
+        .btn-secondary {
+            background: var(--gray-100);
+            color: var(--gray-800);
+            border: 1px solid var(--gray-200);
+        }
+        .btn-secondary:hover { background: var(--gray-200); }
+
+        /* Install bar */
+        .install-bar {
+            max-width: 580px;
+            margin: 2.5rem auto 0;
+            background: var(--code-bg);
+            border: 1px solid var(--code-border);
+            border-radius: 10px;
+            padding: 1rem 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+        .install-bar code {
+            color: #c9d1d9;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.9rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .install-bar code .prompt { color: var(--indigo); }
+        .copy-btn {
+            background: none;
+            border: 1px solid var(--code-border);
+            color: var(--gray-400);
+            padding: 0.3rem 0.7rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+        .copy-btn:hover { color: #fff; border-color: var(--gray-400); }
+
+        /* Sections */
+        section { padding: 5rem 2rem; }
+        .container { max-width: 1100px; margin: 0 auto; }
+        .section-label {
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.75rem;
+        }
+        .section-title {
+            font-size: 2.2rem;
+            font-weight: 800;
+            color: var(--navy);
+            letter-spacing: -0.02em;
+            margin-bottom: 1rem;
+        }
+        .section-subtitle {
+            font-size: 1.1rem;
+            color: var(--gray-500);
+            max-width: 600px;
+            margin-bottom: 3rem;
+        }
+
+        /* Code blocks */
+        .code-window {
+            background: var(--code-bg);
+            border: 1px solid var(--code-border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .code-header {
+            background: #161b22;
+            padding: 0.6rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            border-bottom: 1px solid var(--code-border);
+        }
+        .code-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--code-border);
+        }
+        .code-header span {
+            color: var(--gray-400);
+            font-size: 0.8rem;
+            margin-left: 0.5rem;
+        }
+        .code-window pre {
+            padding: 1.25rem;
+            overflow-x: auto;
+            font-size: 0.88rem;
+            line-height: 1.7;
+        }
+        .code-window code {
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            color: #c9d1d9;
+        }
+        .code-window .comment { color: #8b949e; }
+        .code-window .keyword { color: #ff7b72; }
+        .code-window .string { color: #a5d6ff; }
+        .code-window .function { color: #d2a8ff; }
+        .code-window .number { color: #79c0ff; }
+
+        /* Feature grid */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }
+        .feature-card {
+            padding: 1.75rem;
+            border: 1px solid var(--gray-200);
+            border-radius: 12px;
+            transition: all 0.2s;
+        }
+        .feature-card:hover {
+            border-color: var(--indigo);
+            box-shadow: 0 4px 20px rgba(99,102,241,0.08);
+        }
+        .feature-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(139,92,246,0.1));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1rem;
+            font-size: 1.2rem;
+        }
+        .feature-card h3 {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--navy);
+            margin-bottom: 0.5rem;
+        }
+        .feature-card p {
+            font-size: 0.92rem;
+            color: var(--gray-500);
+            line-height: 1.6;
+        }
+
+        /* File formats */
+        .formats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 1rem;
+            margin-bottom: 3rem;
+        }
+        .format-card {
+            text-align: center;
+            padding: 1.5rem 1rem;
+            border: 1px solid var(--gray-200);
+            border-radius: 12px;
+            transition: all 0.2s;
+        }
+        .format-card:hover { border-color: var(--indigo); transform: translateY(-2px); }
+        .format-icon { font-size: 1.8rem; margin-bottom: 0.5rem; }
+        .format-name { font-weight: 700; color: var(--navy); font-size: 0.95rem; }
+        .format-desc { font-size: 0.75rem; color: var(--gray-400); margin-top: 0.2rem; }
+
+        /* Comparison table */
+        .comparison { background: var(--gray-50); }
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #fff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        }
+        .comparison-table th {
+            text-align: left;
+            padding: 1rem 1.25rem;
+            font-weight: 700;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--gray-500);
+            border-bottom: 2px solid var(--gray-200);
+        }
+        .comparison-table th:nth-child(2) { color: var(--indigo); }
+        .comparison-table td {
+            padding: 0.85rem 1.25rem;
+            font-size: 0.92rem;
+            border-bottom: 1px solid var(--gray-100);
+        }
+        .comparison-table tr:last-child td { border-bottom: none; }
+        .comparison-table td:first-child { font-weight: 600; color: var(--gray-700); }
+        .check { color: #10b981; font-weight: 700; }
+        .cross { color: var(--gray-300); }
+
+        /* API tabs */
+        .api-section { background: var(--gray-50); }
+        .api-tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid var(--gray-200);
+        }
+        .api-tab {
+            padding: 0.75rem 1.5rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--gray-400);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.2s;
+            background: none;
+            border-top: none;
+            border-left: none;
+            border-right: none;
+        }
+        .api-tab:hover { color: var(--gray-600); }
+        .api-tab.active {
+            color: var(--indigo);
+            border-bottom-color: var(--indigo);
+        }
+        .api-panel { display: none; }
+        .api-panel.active { display: block; }
+
+        /* CTA */
+        .cta {
+            text-align: center;
+            background: linear-gradient(180deg, #fff 0%, #f8f7ff 100%);
+            padding: 6rem 2rem;
+        }
+        .cta h2 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: var(--navy);
+            margin-bottom: 1rem;
+        }
+        .cta p {
+            font-size: 1.15rem;
+            color: var(--gray-500);
+            margin-bottom: 2rem;
+        }
+
+        /* Footer */
+        footer {
+            padding: 3rem 2rem;
+            border-top: 1px solid var(--gray-200);
+            text-align: center;
+        }
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.5rem;
+        }
+        .footer-links a {
+            color: var(--gray-500);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: color 0.2s;
+        }
+        .footer-links a:hover { color: var(--indigo); }
+        .footer-copy {
+            color: var(--gray-400);
+            font-size: 0.85rem;
+        }
+
+        /* Two column layout */
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 3rem;
+            align-items: start;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.2rem; }
+            .hero p { font-size: 1.05rem; }
+            .section-title { font-size: 1.75rem; }
+            .two-col { grid-template-columns: 1fr; }
+            .nav-links { gap: 1rem; }
+            .nav-links a:not(.nav-github) { display: none; }
+            .features-grid { grid-template-columns: 1fr; }
+            .formats-grid { grid-template-columns: repeat(3, 1fr); }
+            .install-bar { flex-direction: column; }
+        }
+
+        /* Hamburger menu for mobile */
+        .mobile-menu { display: none; }
+        @media (max-width: 768px) {
+            .mobile-menu {
+                display: block;
+                background: none;
+                border: none;
+                font-size: 1.5rem;
+                cursor: pointer;
+                color: var(--gray-600);
+            }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Navigation -->
+<nav>
+    <div class="nav-inner">
+        <a href="#" class="nav-logo">Sloth<span>DB</span></a>
+        <div class="nav-links">
+            <a href="#features">Features</a>
+            <a href="#formats">File Formats</a>
+            <a href="#comparison">vs DuckDB</a>
+            <a href="#apis">APIs</a>
+            <a href="DOCUMENTATION.md">Docs</a>
+            <a href="https://github.com/SouravRoy-ETL/slothdb" class="nav-github">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                GitHub
+            </a>
+        </div>
+    </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+    <img src="assets/logo.svg" alt="SlothDB" class="hero-logo">
+    <h1>Query your files with <span class="accent">SQL</span></h1>
+    <p>An embedded analytical database engine. Zero dependencies. GPU accelerated. Just point SQL at CSV, Parquet, JSON, or Excel.</p>
+    <div class="hero-buttons">
+        <a href="#install" class="btn btn-primary">Get Started</a>
+        <a href="DOCUMENTATION.md" class="btn btn-secondary">Documentation</a>
+        <a href="https://github.com/SouravRoy-ETL/slothdb" class="btn btn-secondary">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            Star on GitHub
+        </a>
+    </div>
+    <div class="install-bar" id="install">
+        <code><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash</code>
+        <button class="copy-btn" onclick="copyInstall()">Copy</button>
+    </div>
+</section>
+
+<!-- Demo -->
+<section>
+    <div class="container">
+        <div class="two-col">
+            <div>
+                <p class="section-label">See it in action</p>
+                <h2 class="section-title">SQL on any file. Instantly.</h2>
+                <p class="section-subtitle">No import step. No schema definition. No waiting. Just query your files and get results.</p>
+                <div style="display: flex; flex-direction: column; gap: 1rem;">
+                    <div class="feature-card" style="border-left: 3px solid var(--indigo);">
+                        <h3>Auto-detection</h3>
+                        <p>SlothDB detects file format by extension. <code>SELECT * FROM 'data.csv'</code> just works.</p>
+                    </div>
+                    <div class="feature-card" style="border-left: 3px solid var(--violet);">
+                        <h3>Glob patterns</h3>
+                        <p>Query multiple files: <code>read_csv('logs/2024-*.csv')</code></p>
+                    </div>
+                    <div class="feature-card" style="border-left: 3px solid #10b981;">
+                        <h3>Export anywhere</h3>
+                        <p>Convert between formats: CSV to Parquet, JSON to CSV, and more.</p>
+                    </div>
+                </div>
+            </div>
+            <div>
+                <div class="code-window">
+                    <div class="code-header">
+                        <div class="code-dot"></div><div class="code-dot"></div><div class="code-dot"></div>
+                        <span>slothdb</span>
+                    </div>
+                    <pre><code><span class="comment">-- Query a CSV file</span>
+<span class="keyword">SELECT</span> department, <span class="function">COUNT</span>(*), <span class="function">ROUND</span>(<span class="function">AVG</span>(salary))
+<span class="keyword">FROM</span> <span class="string">'employees.csv'</span>
+<span class="keyword">GROUP BY</span> department
+<span class="keyword">ORDER BY</span> <span class="function">AVG</span>(salary) <span class="keyword">DESC</span>;
+
+<span class="comment">-- Query Parquet with filter pushdown</span>
+<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="function">read_parquet</span>(<span class="string">'events.parquet'</span>)
+<span class="keyword">WHERE</span> event_date > <span class="string">'2024-01-01'</span>;
+
+<span class="comment">-- Convert CSV to Parquet</span>
+<span class="keyword">COPY</span> (<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="string">'big.csv'</span>)
+<span class="keyword">TO</span> <span class="string">'big.parquet'</span> <span class="keyword">WITH</span> (FORMAT PARQUET);
+
+<span class="comment">-- Top earner per department (QUALIFY)</span>
+<span class="keyword">SELECT</span> name, department, salary
+<span class="keyword">FROM</span> <span class="string">'employees.parquet'</span>
+<span class="keyword">QUALIFY</span> <span class="function">ROW_NUMBER</span>() <span class="keyword">OVER</span> (
+    <span class="keyword">PARTITION BY</span> department
+    <span class="keyword">ORDER BY</span> salary <span class="keyword">DESC</span>
+) = <span class="number">1</span>;</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- File Formats -->
+<section id="formats" style="background: var(--gray-50);">
+    <div class="container">
+        <p class="section-label">Built-in file formats</p>
+        <h2 class="section-title">7 formats. Zero extensions.</h2>
+        <p class="section-subtitle">Everything is built in. No extensions to install, no dependencies to manage.</p>
+
+        <div class="formats-grid">
+            <div class="format-card">
+                <div class="format-icon">&#128196;</div>
+                <div class="format-name">CSV</div>
+                <div class="format-desc">Auto-detect schema</div>
+            </div>
+            <div class="format-card">
+                <div class="format-icon">&#9881;&#65039;</div>
+                <div class="format-name">Parquet</div>
+                <div class="format-desc">Columnar, compressed</div>
+            </div>
+            <div class="format-card">
+                <div class="format-icon">{ }</div>
+                <div class="format-name">JSON</div>
+                <div class="format-desc">Arrays + NDJSON</div>
+            </div>
+            <div class="format-card">
+                <div class="format-icon">&#128202;</div>
+                <div class="format-name">Excel</div>
+                <div class="format-desc">XLSX support</div>
+            </div>
+            <div class="format-card">
+                <div class="format-icon">&#10132;</div>
+                <div class="format-name">Arrow IPC</div>
+                <div class="format-desc">Feather format</div>
+            </div>
+            <div class="format-card">
+                <div class="format-icon">&#128230;</div>
+                <div class="format-name">Avro</div>
+                <div class="format-desc">Schema evolution</div>
+            </div>
+            <div class="format-card">
+                <div class="format-icon">&#128451;</div>
+                <div class="format-name">SQLite</div>
+                <div class="format-desc">Direct B-tree scan</div>
+            </div>
+        </div>
+
+        <div class="code-window">
+            <div class="code-header">
+                <div class="code-dot"></div><div class="code-dot"></div><div class="code-dot"></div>
+                <span>Query any file format</span>
+            </div>
+            <pre><code><span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="string">'data.csv'</span>;                              <span class="comment">-- CSV</span>
+<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="function">read_parquet</span>(<span class="string">'events/*.parquet'</span>);          <span class="comment">-- Parquet with globs</span>
+<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="string">'events.json'</span>;                            <span class="comment">-- JSON / NDJSON</span>
+<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="function">read_xlsx</span>(<span class="string">'report.xlsx'</span>);                 <span class="comment">-- Excel</span>
+<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="function">read_avro</span>(<span class="string">'events.avro'</span>);                 <span class="comment">-- Avro</span>
+<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="function">read_arrow</span>(<span class="string">'data.feather'</span>);               <span class="comment">-- Arrow IPC</span>
+<span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="function">sqlite_scan</span>(<span class="string">'app.db'</span>, <span class="string">'users'</span>);         <span class="comment">-- SQLite</span></code></pre>
+        </div>
+    </div>
+</section>
+
+<!-- Features -->
+<section id="features">
+    <div class="container">
+        <p class="section-label">Why SlothDB</p>
+        <h2 class="section-title">Everything you need. Nothing you don't.</h2>
+        <p class="section-subtitle">A production-grade analytical engine with zero external dependencies.</p>
+
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">&#9889;</div>
+                <h3>GPU Acceleration</h3>
+                <p>CUDA (NVIDIA) and Metal (Apple Silicon). Aggregation, sorting, and filtering offloaded automatically when data exceeds 100K rows.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128203;</div>
+                <h3>130+ SQL Features</h3>
+                <p>JOINs, window functions, CTEs (recursive), QUALIFY, MERGE, subqueries, set operations, 70+ built-in functions.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128640;</div>
+                <h3>Vectorized Engine</h3>
+                <p>Columnar execution processing 2,048 values per batch. Morsel-driven parallelism across all CPU cores.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128190;</div>
+                <h3>Single-File Persistence</h3>
+                <p>Save your database to a <code>.slothdb</code> file. Atomic checkpoint with write-then-rename. Crash-safe.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128230;</div>
+                <h3>Compression + Zone Maps</h3>
+                <p>RLE, dictionary, bitpacking codecs with automatic selection. Zone maps skip non-matching row groups.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128268;</div>
+                <h3>Stable Extension ABI</h3>
+                <p>C ABI guarantees backward compatibility. Extensions built for v1.0 work on v2.0 and beyond. Zero maintenance.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Comparison -->
+<section id="comparison" class="comparison">
+    <div class="container">
+        <p class="section-label">Comparison</p>
+        <h2 class="section-title">SlothDB vs DuckDB</h2>
+        <p class="section-subtitle">DuckDB is great. SlothDB takes it further.</p>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Feature</th>
+                    <th>SlothDB</th>
+                    <th>DuckDB</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>GPU acceleration</td>
+                    <td><span class="check">CUDA + Metal</span></td>
+                    <td><span class="cross">CPU only</span></td>
+                </tr>
+                <tr>
+                    <td>Extension stability</td>
+                    <td><span class="check">Stable C ABI</span></td>
+                    <td>C++ internals (breaks on upgrade)</td>
+                </tr>
+                <tr>
+                    <td>Error handling</td>
+                    <td><span class="check">Numeric codes</span></td>
+                    <td>Free-form strings</td>
+                </tr>
+                <tr>
+                    <td>Built-in formats</td>
+                    <td><span class="check">7 formats</span></td>
+                    <td>3 (others need extensions)</td>
+                </tr>
+                <tr>
+                    <td>QUALIFY clause</td>
+                    <td><span class="check">Yes</span></td>
+                    <td><span class="check">Yes</span></td>
+                </tr>
+                <tr>
+                    <td>Crash-safe persistence</td>
+                    <td><span class="check">Atomic checkpoint</span></td>
+                    <td><span class="check">Yes</span></td>
+                </tr>
+                <tr>
+                    <td>Zero dependencies</td>
+                    <td><span class="check">Yes</span></td>
+                    <td><span class="check">Yes</span></td>
+                </tr>
+                <tr>
+                    <td>SQL features</td>
+                    <td><span class="check">130+</span></td>
+                    <td><span class="check">130+</span></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<!-- APIs -->
+<section id="apis" class="api-section">
+    <div class="container">
+        <p class="section-label">Use it everywhere</p>
+        <h2 class="section-title">CLI, Python, C/C++</h2>
+        <p class="section-subtitle">One engine, multiple interfaces. Pick the one that fits your workflow.</p>
+
+        <div class="api-tabs">
+            <button class="api-tab active" onclick="showTab('cli')">CLI Shell</button>
+            <button class="api-tab" onclick="showTab('python')">Python</button>
+            <button class="api-tab" onclick="showTab('c')">C / C++</button>
+        </div>
+
+        <div id="tab-cli" class="api-panel active">
+            <div class="code-window">
+                <div class="code-header">
+                    <div class="code-dot"></div><div class="code-dot"></div><div class="code-dot"></div>
+                    <span>terminal</span>
+                </div>
+                <pre><code><span class="comment"># Start an in-memory session</span>
+<span class="prompt">$</span> slothdb
+
+<span class="comment"># Or use a persistent database</span>
+<span class="prompt">$</span> slothdb analytics.slothdb
+
+<span class="comment"># One-liner queries</span>
+<span class="prompt">$</span> slothdb -c <span class="string">"SELECT COUNT(*) FROM 'sales.csv'"</span>
+
+<span class="comment"># Interactive session</span>
+slothdb> <span class="keyword">SELECT</span> * <span class="keyword">FROM</span> <span class="string">'employees.csv'</span> <span class="keyword">LIMIT</span> <span class="number">5</span>;
+slothdb> <span class="keyword">CREATE TABLE</span> sales <span class="keyword">AS SELECT</span> * <span class="keyword">FROM</span> <span class="function">read_parquet</span>(<span class="string">'sales.parquet'</span>);
+slothdb> <span class="keyword">SELECT</span> region, <span class="function">SUM</span>(revenue) <span class="keyword">FROM</span> sales <span class="keyword">GROUP BY</span> region;
+slothdb> .quit</code></pre>
+            </div>
+        </div>
+
+        <div id="tab-python" class="api-panel">
+            <div class="code-window">
+                <div class="code-header">
+                    <div class="code-dot"></div><div class="code-dot"></div><div class="code-dot"></div>
+                    <span>app.py</span>
+                </div>
+                <pre><code><span class="keyword">import</span> slothdb
+
+<span class="comment"># Connect</span>
+db = slothdb.<span class="function">connect</span>()                     <span class="comment"># in-memory</span>
+db = slothdb.<span class="function">connect</span>(<span class="string">"analytics.slothdb"</span>)  <span class="comment"># persistent</span>
+
+<span class="comment"># Query files directly</span>
+result = db.<span class="function">sql</span>(<span class="string">"SELECT * FROM 'sales.csv' WHERE region = 'US'"</span>)
+
+<span class="comment"># Get a pandas DataFrame</span>
+df = result.<span class="function">fetchdf</span>()
+
+<span class="comment"># Window functions, CTEs, QUALIFY — full SQL</span>
+result = db.<span class="function">sql</span>(<span class="string">"""
+    SELECT name, department, salary
+    FROM 'employees.parquet'
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY department ORDER BY salary DESC
+    ) = 1
+"""</span>)
+
+<span class="comment"># Context manager</span>
+<span class="keyword">with</span> slothdb.<span class="function">connect</span>(<span class="string">"data.slothdb"</span>) <span class="keyword">as</span> db:
+    db.<span class="function">execute</span>(<span class="string">"CREATE TABLE t AS SELECT * FROM 'data.csv'"</span>)
+    <span class="function">print</span>(db.<span class="function">sql</span>(<span class="string">"SELECT COUNT(*) FROM t"</span>))</code></pre>
+            </div>
+        </div>
+
+        <div id="tab-c" class="api-panel">
+            <div class="code-window">
+                <div class="code-header">
+                    <div class="code-dot"></div><div class="code-dot"></div><div class="code-dot"></div>
+                    <span>main.c</span>
+                </div>
+                <pre><code><span class="keyword">#include</span> <span class="string">"slothdb/api/slothdb.h"</span>
+
+<span class="keyword">int</span> <span class="function">main</span>() {
+    slothdb_database *db;
+    slothdb_connection *conn;
+    slothdb_result *result;
+
+    <span class="function">slothdb_open</span>(<span class="string">"analytics.slothdb"</span>, &db);
+    <span class="function">slothdb_connect</span>(db, &conn);
+
+    <span class="comment">// Query a CSV file directly</span>
+    <span class="function">slothdb_query</span>(conn,
+        <span class="string">"SELECT region, SUM(revenue) "</span>
+        <span class="string">"FROM read_csv('sales.csv') "</span>
+        <span class="string">"GROUP BY region"</span>, &result);
+
+    <span class="keyword">for</span> (uint64_t r = <span class="number">0</span>; r < <span class="function">slothdb_row_count</span>(result); r++)
+        <span class="function">printf</span>(<span class="string">"%s: %s\n"</span>,
+            <span class="function">slothdb_value_varchar</span>(result, r, <span class="number">0</span>),
+            <span class="function">slothdb_value_varchar</span>(result, r, <span class="number">1</span>));
+
+    <span class="function">slothdb_free_result</span>(result);
+    <span class="function">slothdb_disconnect</span>(conn);
+    <span class="function">slothdb_close</span>(db);
+    <span class="keyword">return</span> <span class="number">0</span>;
+}</code></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Install section -->
+<section id="install-section">
+    <div class="container">
+        <p class="section-label">Installation</p>
+        <h2 class="section-title">Get started in seconds</h2>
+        <p class="section-subtitle">Choose your platform. Zero dependencies required.</p>
+
+        <div class="features-grid">
+            <div class="feature-card">
+                <h3>Linux / macOS</h3>
+                <div class="code-window" style="margin-top: 0.75rem;">
+                    <pre style="padding: 0.75rem;"><code><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/
+  SouravRoy-ETL/slothdb/main/install.sh | bash</code></pre>
+                </div>
+            </div>
+            <div class="feature-card">
+                <h3>Windows</h3>
+                <p style="margin-top: 0.5rem;">Download <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest" style="color: var(--indigo); font-weight: 600;">slothdb.exe</a> from the latest release.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Python</h3>
+                <div class="code-window" style="margin-top: 0.75rem;">
+                    <pre style="padding: 0.75rem;"><code><span class="prompt">$</span> pip install slothdb</code></pre>
+                </div>
+            </div>
+            <div class="feature-card">
+                <h3>Ubuntu / Debian</h3>
+                <div class="code-window" style="margin-top: 0.75rem;">
+                    <pre style="padding: 0.75rem;"><code><span class="prompt">$</span> sudo dpkg -i slothdb_0.1.0_amd64.deb</code></pre>
+                </div>
+            </div>
+            <div class="feature-card">
+                <h3>Build from Source</h3>
+                <div class="code-window" style="margin-top: 0.75rem;">
+                    <pre style="padding: 0.75rem;"><code><span class="prompt">$</span> git clone https://github.com/
+  SouravRoy-ETL/slothdb.git
+<span class="prompt">$</span> cd slothdb
+<span class="prompt">$</span> cmake -B build -DSLOTHDB_BUILD_SHELL=ON
+<span class="prompt">$</span> cmake --build build --config Release</code></pre>
+                </div>
+            </div>
+            <div class="feature-card">
+                <h3>Arch Linux</h3>
+                <div class="code-window" style="margin-top: 0.75rem;">
+                    <pre style="padding: 0.75rem;"><code><span class="prompt">$</span> makepkg -si  <span class="comment"># using PKGBUILD</span></code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- CTA -->
+<section class="cta">
+    <h2>Ready to try SlothDB?</h2>
+    <p>Install in one line. Query your first file in 30 seconds.</p>
+    <div class="hero-buttons">
+        <a href="https://github.com/SouravRoy-ETL/slothdb" class="btn btn-primary">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            View on GitHub
+        </a>
+        <a href="DOCUMENTATION.md" class="btn btn-secondary">Read the Docs</a>
+        <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest" class="btn btn-secondary">Download Latest</a>
+    </div>
+</section>
+
+<!-- Footer -->
+<footer>
+    <div class="footer-links">
+        <a href="DOCUMENTATION.md">Documentation</a>
+        <a href="DOCUMENTATION.md#6-python-api">Python API</a>
+        <a href="DOCUMENTATION.md#7-cc-api">C/C++ API</a>
+        <a href="DOCUMENTATION.md#4-sql-guide">SQL Guide</a>
+        <a href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
+        <a href="https://github.com/SouravRoy-ETL/slothdb/releases">Releases</a>
+        <a href="https://github.com/SouravRoy-ETL/slothdb/issues">Issues</a>
+    </div>
+    <p class="footer-copy">MIT License. Built by <a href="https://github.com/SouravRoy-ETL" style="color: var(--indigo); text-decoration: none;">Sourav Roy</a>.</p>
+</footer>
+
+<script>
+function showTab(name) {
+    document.querySelectorAll('.api-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.api-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    event.target.classList.add('active');
+}
+
+function copyInstall() {
+    const cmd = 'curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash';
+    navigator.clipboard.writeText(cmd).then(() => {
+        const btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy', 2000);
+    });
+}
+
+// Smooth scroll for anchor links
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+    anchor.addEventListener('click', function(e) {
+        e.preventDefault();
+        const target = document.querySelector(this.getAttribute('href'));
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+});
+</script>
+
+</body>
+</html>
