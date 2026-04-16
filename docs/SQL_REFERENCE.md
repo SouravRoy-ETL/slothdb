@@ -120,11 +120,19 @@ COMMIT [TRANSACTION];
 ROLLBACK [TRANSACTION];
 ```
 
+### Views (Virtual)
+Views re-execute on every query — views on files always return fresh data.
+```sql
+CREATE VIEW name AS SELECT ...;
+CREATE VIEW sales AS SELECT * FROM read_csv('sales.csv');  -- re-reads file each query
+CREATE VIEW events AS SELECT * FROM read_parquet('events.parquet');
+CREATE OR REPLACE VIEW name AS SELECT ...;
+DROP VIEW name;
+```
+
 ### Other
 ```sql
 EXPLAIN SELECT ...;
-CREATE VIEW name AS SELECT ...;
-CREATE OR REPLACE VIEW name AS SELECT ...;
 TRUNCATE TABLE name;
 ```
 

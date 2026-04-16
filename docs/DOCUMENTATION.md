@@ -307,6 +307,7 @@ CREATE TABLE summary AS
 | One-off analysis on a file | Query directly: `SELECT * FROM 'file.csv'` |
 | Same data queried multiple times | Persistent database: `slothdb data.slothdb` |
 | Huge CSV queried repeatedly | Convert to Parquet first |
+| File that changes often | Create a view: `CREATE VIEW v AS SELECT * FROM read_csv('file.csv')` |
 | Only need a subset of the data | Filter during import with `CREATE TABLE AS` |
 | Multiple file formats, joined together | Import all into persistent DB, then join |
 
@@ -379,16 +380,37 @@ DROP TABLE IF EXISTS employees;
 
 ### Views
 
+Views are **virtual** — they re-execute the underlying query every time you access them. This means views on files always return fresh data.
+
 ```sql
+-- View on a table
 CREATE VIEW active_employees AS
     SELECT * FROM employees WHERE status = 'active';
 
-CREATE OR REPLACE VIEW active_employees AS
-    SELECT * FROM employees WHERE end_date IS NULL;
+-- View on a CSV file — always reads the latest data from disk
+CREATE VIEW sales AS SELECT * FROM read_csv('sales.csv');
 
-DROP VIEW active_employees;
-DROP VIEW IF EXISTS active_employees;
+-- View on Parquet with filtering
+CREATE VIEW recent_events AS
+    SELECT * FROM read_parquet('events.parquet') WHERE event_date > '2024-01-01';
+
+-- View on Excel
+CREATE VIEW quarterly AS SELECT * FROM read_xlsx('Q4_report.xlsx');
+
+-- View on SQLite
+CREATE VIEW legacy_users AS SELECT * FROM sqlite_scan('old_app.db', 'users');
+
+-- Now query views like tables — data is always fresh
+SELECT region, SUM(revenue) FROM sales GROUP BY region;
+SELECT COUNT(*) FROM recent_events;
+
+-- Replace or drop views
+CREATE OR REPLACE VIEW sales AS SELECT * FROM read_parquet('sales.parquet');
+DROP VIEW sales;
+DROP VIEW IF EXISTS sales;
 ```
+
+**Why this matters:** If the underlying file changes (new rows added, updated data), the view automatically reflects it on the next query. No need to re-import or refresh.
 
 ### SELECT — Querying Data
 

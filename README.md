@@ -85,13 +85,24 @@ SELECT * FROM read_avro('events.avro');
 SELECT * FROM sqlite_scan('app.db', 'users');
 ```
 
+**Create views on files — always returns fresh data:**
+
+```sql
+CREATE VIEW sales AS SELECT * FROM read_csv('sales.csv');
+CREATE VIEW events AS SELECT * FROM read_parquet('events.parquet');
+CREATE VIEW report AS SELECT * FROM read_xlsx('report.xlsx');
+
+-- Query views like tables — re-reads the file each time
+SELECT region, SUM(revenue) FROM sales GROUP BY region;
+```
+
 **Export results to any format:**
 
 ```sql
 COPY (SELECT * FROM 'big.csv' WHERE year >= 2024) TO 'filtered.parquet' WITH (FORMAT PARQUET);
 ```
 
-> **[Full file format guide](docs/DOCUMENTATION.md#2-query-your-files)** — CSV, Parquet, JSON, Excel, Arrow, Avro, SQLite with examples
+> **[Full file format guide](docs/DOCUMENTATION.md#2-query-your-files)** — CSV, Parquet, JSON, Excel, Arrow, Avro, SQLite, virtual views
 
 ## Persistent Database
 
@@ -190,7 +201,7 @@ DuckDB needs extensions for Excel, Avro, SQLite. SlothDB ships **7 formats out o
 | Category | Details |
 |----------|---------|
 | **SQL** | 130+ features — JOINs, CTEs (recursive), window functions, QUALIFY, MERGE, subqueries, set operations |
-| **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in with auto-detection and glob patterns |
+| **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in with auto-detection, glob patterns, and virtual views |
 | **Functions** | 70+ functions — string, math, date/time, aggregate, regex, trigonometric |
 | **Performance** | Vectorized columnar engine (2,048 values/batch), morsel-driven parallelism, GPU offload |
 | **Storage** | Single-file `.slothdb` persistence, RLE/dictionary/bitpacking compression, zone maps |
