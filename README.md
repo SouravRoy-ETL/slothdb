@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">SlothDB</h1>
+  <img src="assets/logo.svg" width="400" alt="SlothDB Logo">
   <p align="center">
     <b>An embedded analytical database engine</b><br>
     Zero dependencies &middot; Single file &middot; GPU accelerated
