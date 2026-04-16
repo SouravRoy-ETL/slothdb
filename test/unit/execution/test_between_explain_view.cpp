@@ -73,6 +73,32 @@ TEST_CASE("CREATE VIEW - basic") {
     CHECK(r.GetValue(0, 0).GetValue<std::string>() == "Alice");
 }
 
+TEST_CASE("CREATE VIEW - virtual re-execution") {
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE data (id INTEGER, val VARCHAR)");
+    conn.Query("INSERT INTO data VALUES (1, 'a'), (2, 'b')");
+
+    // Create a view over the table.
+    conn.Query("CREATE VIEW data_view AS SELECT * FROM data");
+
+    auto r = conn.Query("SELECT COUNT(*) FROM data_view");
+    CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 2);
+
+    // Insert more data into the underlying table.
+    conn.Query("INSERT INTO data VALUES (3, 'c'), (4, 'd')");
+
+    // The view should reflect the updated data.
+    r = conn.Query("SELECT COUNT(*) FROM data_view");
+    CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 4);
+
+    // Delete from underlying table.
+    conn.Query("DELETE FROM data WHERE id > 2");
+
+    r = conn.Query("SELECT COUNT(*) FROM data_view");
+    CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 2);
+}
+
 TEST_CASE("CREATE OR REPLACE VIEW") {
     Database db;
     Connection conn(db);

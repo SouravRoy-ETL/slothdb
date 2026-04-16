@@ -166,6 +166,7 @@ public:
     std::string view_name;
     std::unique_ptr<SelectStatement> query;
     bool or_replace = false;
+    std::string original_sql; // The original SELECT SQL for virtual view re-execution.
 };
 
 // TRUNCATE TABLE statement.

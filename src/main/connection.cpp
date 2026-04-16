@@ -92,35 +92,38 @@ QueryResult Connection::Query(const std::string &sql) {
             continue;
         }
 
-        // Handle CREATE VIEW: store the view query, materialize on access.
+        // Handle CREATE VIEW: store the SQL query for virtual re-execution.
         if (stmt->GetType() == StatementType::CREATE_VIEW) {
             auto &cv = static_cast<CreateViewStatement &>(*stmt);
-            // Materialize the view as a table for now.
-            // Execute the view query and store results.
-            Binder binder(db_.GetCatalog());
-            auto bound = binder.Bind(*cv.query);
-            auto logical = Planner::Plan(*bound);
-            PhysicalPlanner pp(db_.GetCatalog());
-            auto physical = pp.Plan(*logical);
-            physical->Init();
 
-            auto &sel = static_cast<BoundSelectStatement &>(*bound);
-            std::vector<ColumnDefinition> cols;
-            for (idx_t i = 0; i < sel.result_names.size(); i++) {
-                cols.emplace_back(sel.result_names[i], sel.result_types[i]);
+            // Extract the SELECT SQL from the original statement.
+            // Find "AS" in the SQL and take everything after it.
+            std::string view_sql;
+            {
+                auto upper_sql = StringUtil::Upper(sql);
+                auto as_pos = upper_sql.find(" AS ");
+                if (as_pos != std::string::npos) {
+                    view_sql = sql.substr(as_pos + 4);
+                    // Trim trailing semicolons and whitespace.
+                    while (!view_sql.empty() && (view_sql.back() == ';' || view_sql.back() == ' ' || view_sql.back() == '\n' || view_sql.back() == '\r'))
+                        view_sql.pop_back();
+                }
             }
+
+            // Execute the view query once to determine column names and types.
+            auto view_result = Query(view_sql);
 
             if (cv.or_replace) db_.GetCatalog().DropTable(cv.view_name);
 
-            auto &entry = db_.GetCatalog().CreateTable(cv.view_name, std::move(cols));
-            auto storage = std::make_shared<DataTable>(sel.result_types);
-            entry.SetStorage(storage);
-
-            DataChunk chunk;
-            while (true) {
-                if (!physical->GetData(chunk)) break;
-                storage->Append(chunk);
+            std::vector<ColumnDefinition> cols;
+            for (idx_t i = 0; i < view_result.column_names.size(); i++) {
+                cols.emplace_back(view_result.column_names[i], view_result.column_types[i]);
             }
+
+            auto &entry = db_.GetCatalog().CreateTable(cv.view_name, std::move(cols));
+            auto storage = std::make_shared<DataTable>(view_result.column_types);
+            entry.SetStorage(storage);
+            entry.SetViewQuery(view_sql);
             continue;
         }
 
@@ -489,10 +492,35 @@ QueryResult Connection::Query(const std::string &sql) {
             continue;
         }
 
-        // Handle table functions (GENERATE_SERIES) in FROM clause.
+        // Handle virtual views: if FROM references a view, re-execute the stored query
+        // and replace the view's storage with fresh data from the file.
         std::vector<std::string> temp_tables;
         if (stmt->GetType() == StatementType::SELECT) {
             auto &sel = static_cast<SelectStatement &>(*stmt);
+
+            // Expand virtual views in the FROM clause.
+            auto expand_view = [&](TableRef &ref) {
+                if (ref.is_table_function) return;
+                auto *entry = db_.GetCatalog().GetTable(ref.table_name);
+                if (entry && entry->IsView()) {
+                    // Re-execute the view's stored query to get fresh data.
+                    auto view_result = Query(entry->GetViewQuery());
+                    auto storage = std::make_shared<DataTable>(view_result.column_types);
+                    for (auto &row : view_result.rows) {
+                        DataChunk chunk;
+                        chunk.Initialize(view_result.column_types);
+                        for (idx_t c = 0; c < row.size(); c++)
+                            chunk.SetValue(c, 0, row[c]);
+                        storage->Append(chunk);
+                    }
+                    entry->SetStorage(storage);
+                }
+            };
+
+            if (sel.from_table && !sel.from_table->is_table_function) {
+                expand_view(*sel.from_table);
+                if (sel.from_table->right) expand_view(*sel.from_table->right);
+            }
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "GENERATE_SERIES") {
                 // Evaluate args as constants.

@@ -41,10 +41,17 @@ public:
     const DataTable &GetStorage() const { return *storage_; }
     void SetStorage(std::shared_ptr<DataTable> storage) { storage_ = std::move(storage); }
 
+    // Virtual view support: stores the original SQL query for re-execution.
+    bool IsView() const { return is_view_; }
+    void SetViewQuery(const std::string &sql) { view_query_ = sql; is_view_ = true; }
+    const std::string &GetViewQuery() const { return view_query_; }
+
 private:
     std::string schema_;
     std::vector<ColumnDefinition> columns_;
     std::shared_ptr<DataTable> storage_;
+    bool is_view_ = false;
+    std::string view_query_;
 };
 
 } // namespace slothdb
