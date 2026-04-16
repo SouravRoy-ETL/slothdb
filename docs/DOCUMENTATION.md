@@ -1,90 +1,60 @@
 # SlothDB Documentation
 
-Complete guide to using SlothDB — the embedded analytical database engine.
+The complete guide to SlothDB — query CSV, Parquet, JSON, and Excel files with SQL. No server, no setup, no dependencies.
 
 ---
 
-**Table of Contents**
+## Table of Contents
 
-- [Getting Started](#getting-started)
-  - [Installation](#installation)
-  - [CLI Shell](#cli-shell)
-  - [Persistent vs In-Memory](#persistent-vs-in-memory)
-- [SQL Reference](#sql-reference)
-  - [Data Types](#data-types)
-  - [DDL — Creating and Modifying Tables](#ddl--creating-and-modifying-tables)
-  - [DML — Querying and Modifying Data](#dml--querying-and-modifying-data)
-  - [Joins](#joins)
-  - [Subqueries](#subqueries)
-  - [Common Table Expressions (CTEs)](#common-table-expressions-ctes)
-  - [Set Operations](#set-operations)
-  - [Window Functions](#window-functions)
-  - [QUALIFY](#qualify)
-  - [Transactions](#transactions)
-  - [EXPLAIN](#explain)
-  - [COPY — Import and Export](#copy--import-and-export)
-- [Functions](#functions)
-  - [Aggregate Functions](#aggregate-functions)
-  - [String Functions](#string-functions)
-  - [Math Functions](#math-functions)
-  - [Trigonometric Functions](#trigonometric-functions)
-  - [Date/Time Functions](#datetime-functions)
-  - [Null Handling Functions](#null-handling-functions)
-  - [Regex Functions](#regex-functions)
-  - [Type Casting](#type-casting)
-  - [Conditional Expressions](#conditional-expressions)
-- [File I/O — Querying External Files](#file-io--querying-external-files)
-  - [CSV](#csv)
-  - [Parquet](#parquet)
-  - [JSON / NDJSON](#json--ndjson)
-  - [Excel (XLSX)](#excel-xlsx)
-  - [Arrow IPC](#arrow-ipc)
-  - [Avro](#avro)
-  - [SQLite](#sqlite)
-  - [Auto-Detection](#auto-detection)
-  - [Glob Patterns](#glob-patterns)
-  - [GENERATE_SERIES](#generate_series)
-- [Importing Large Datasets](#importing-large-datasets)
-- [Python API](#python-api)
-  - [Installation](#python-installation)
-  - [Connecting](#connecting)
-  - [Running Queries](#running-queries)
-  - [Query Results](#query-results)
-  - [Pandas Integration](#pandas-integration)
-  - [Context Manager](#context-manager)
-  - [Full Python Example](#full-python-example)
-- [C/C++ API](#cc-api)
-  - [Including SlothDB](#including-slothdb)
-  - [Database Lifecycle](#database-lifecycle)
-  - [Executing Queries](#executing-queries)
-  - [Reading Results](#reading-results)
-  - [Error Handling](#error-handling)
-  - [Full C Example](#full-c-example)
-  - [Full C++ Example](#full-c-example-1)
-  - [Building with CMake](#building-with-cmake)
-- [CLI Shell Reference](#cli-shell-reference)
-  - [Shell Commands](#shell-commands)
-  - [Command-Line Flags](#command-line-flags)
-- [GPU Acceleration](#gpu-acceleration)
-- [Extensions](#extensions)
+| Section | What you'll learn |
+|---------|-------------------|
+| [1. Getting Started](#1-getting-started) | Install and run your first query in 30 seconds |
+| [2. Query Your Files](#2-query-your-files) | Analyze CSV, Parquet, JSON, Excel, Avro, Arrow, and SQLite files |
+| [3. Working with Large Datasets](#3-working-with-large-datasets) | Import, persist, and optimize queries on millions of rows |
+| [4. SQL Guide](#4-sql-guide) | Tables, joins, window functions, CTEs, MERGE, and more |
+| [5. All Functions](#5-all-functions) | 70+ built-in functions — string, math, date, aggregate, regex |
+| [6. Python API](#6-python-api) | Use SlothDB from Python with pandas integration |
+| [7. C/C++ API](#7-cc-api) | Embed SlothDB in C/C++ applications |
+| [8. CLI Shell](#8-cli-shell) | Shell commands, flags, and tips |
+| [9. GPU Acceleration](#9-gpu-acceleration) | CUDA and Metal for 20-100x faster analytics |
+| [10. Extensions](#10-extensions) | Build and load custom extensions |
 
 ---
 
-## Getting Started
+## 1. Getting Started
 
-### Installation
+### Install
 
 | Platform | Command |
 |----------|---------|
 | **Linux / macOS** | `curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh \| bash` |
-| **Ubuntu / Debian** | `sudo dpkg -i slothdb_0.1.0_amd64.deb` |
-| **Fedora / RHEL** | `sudo rpm -i slothdb-0.1.0.rpm` |
-| **Arch Linux** | `makepkg -si` using the provided PKGBUILD |
-| **macOS (Homebrew)** | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
-| **Windows** | Download `slothdb.exe` from [Releases](https://github.com/SouravRoy-ETL/slothdb/releases/latest) |
+| **Windows** | Download [`slothdb.exe`](https://github.com/SouravRoy-ETL/slothdb/releases/latest) |
 | **Python** | `pip install slothdb` |
+| **Ubuntu / Debian** | `sudo dpkg -i slothdb_0.1.0_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
+| **Fedora / RHEL** | `sudo rpm -i slothdb-0.1.0.rpm` (build from [spec](../packaging/rpm/slothdb.spec)) |
+| **Arch Linux** | `makepkg -si` using the provided [PKGBUILD](../packaging/arch/PKGBUILD) |
+| **macOS (Homebrew)** | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
+| **Build from source** | See [below](#build-from-source) |
 
-**Build from source:**
+### Your First Query
+
+```bash
+$ slothdb
+slothdb> SELECT 'Hello, World!' AS greeting;
+greeting
+---------------
+Hello, World!
+```
+
+That's it. You have a full SQL engine running. Now let's do something useful — query a real file:
+
+```bash
+slothdb> SELECT * FROM 'sales.csv' LIMIT 5;
+```
+
+SlothDB auto-detects the file format and runs SQL on it. No import step, no schema definition, no waiting.
+
+### Build from Source
 
 ```bash
 git clone https://github.com/SouravRoy-ETL/slothdb.git
@@ -95,63 +65,278 @@ cmake --build build --config Release
 build\src\Release\slothdb.exe  # Windows
 ```
 
-### CLI Shell
+---
 
-```bash
-slothdb                          # in-memory database
-slothdb analytics.slothdb        # persistent database
-slothdb -c "SELECT 42"           # run a single query
+## 2. Query Your Files
+
+This is what SlothDB is built for. Point SQL at any file and get results instantly. No importing, no schema setup, no extensions to install.
+
+### CSV
+
+```sql
+-- Just query it
+SELECT * FROM 'sales.csv';
+
+-- Or use the explicit function
+SELECT * FROM read_csv('sales.csv');
+
+-- Real-world: aggregate a CSV without importing
+SELECT department, COUNT(*) AS headcount, ROUND(AVG(salary)) AS avg_salary
+FROM 'employees.csv'
+GROUP BY department
+ORDER BY avg_salary DESC;
+
+-- Query multiple files at once with glob patterns
+SELECT * FROM read_csv('logs/2024-*.csv');
 ```
 
-Once inside the shell:
+### Parquet
 
-```
-slothdb> SELECT 'Hello, World!' AS greeting;
-greeting
----------------
-Hello, World!
-```
+Parquet is the **recommended format for large data**. SlothDB reads only the columns you SELECT and skips row groups that don't match your WHERE clause.
 
-### Persistent vs In-Memory
+```sql
+-- Query a Parquet file
+SELECT * FROM read_parquet('events.parquet');
 
-```bash
-# In-memory — data is lost when you exit
-slothdb
+-- Only the 'user_id' and 'event' columns are read from disk
+SELECT user_id, event FROM read_parquet('events.parquet') WHERE event = 'purchase';
 
-# Persistent — data is saved to a .slothdb file
-slothdb mydata.slothdb
+-- Query partitioned Parquet datasets
+SELECT * FROM read_parquet('data/year=2024/*.parquet');
 ```
 
-All `CREATE TABLE` and `INSERT` operations are automatically persisted when using a file-backed database.
+**Why Parquet over CSV?**
+
+| | CSV | Parquet |
+|-|-----|---------|
+| Read speed | Scans entire file | Reads only needed columns |
+| File size | Raw text | 5-10x smaller (compressed) |
+| Schema | Auto-detected (can be wrong) | Embedded in file (always correct) |
+| Filter pushdown | No | Yes — skips non-matching row groups |
+
+**Convert CSV to Parquet** for faster future queries:
+
+```sql
+COPY (SELECT * FROM 'huge_data.csv') TO 'huge_data.parquet' WITH (FORMAT PARQUET);
+
+-- Now this runs much faster
+SELECT category, SUM(amount) FROM read_parquet('huge_data.parquet') GROUP BY category;
+```
+
+### JSON
+
+Supports both JSON arrays (`[{...}, {...}]`) and newline-delimited JSON (NDJSON — one object per line).
+
+```sql
+-- JSON array
+SELECT * FROM read_json('users.json');
+
+-- NDJSON (one JSON object per line — common in logging)
+SELECT * FROM read_json('server_logs.ndjson');
+
+-- Auto-detect
+SELECT * FROM 'events.json';
+
+-- Aggregate JSON data
+SELECT status, COUNT(*) FROM 'api_responses.json' GROUP BY status;
+```
+
+### Excel
+
+```sql
+-- Read the first sheet
+SELECT * FROM read_xlsx('quarterly_report.xlsx');
+
+-- Auto-detect
+SELECT * FROM 'quarterly_report.xlsx';
+
+-- Analyze spreadsheet data with SQL
+SELECT region, SUM(revenue) AS total
+FROM 'sales_report.xlsx'
+GROUP BY region
+ORDER BY total DESC;
+```
+
+### Arrow IPC (Feather)
+
+```sql
+SELECT * FROM read_arrow('data.arrow');
+SELECT * FROM read_arrow('data.feather');
+```
+
+### Avro
+
+```sql
+SELECT * FROM read_avro('events.avro');
+```
+
+### SQLite
+
+Read tables directly from SQLite database files. No libsqlite3 needed — SlothDB reads the B-tree pages directly.
+
+```sql
+-- Read a table from a SQLite database
+SELECT * FROM sqlite_scan('app.db', 'users');
+
+-- Join SlothDB data with a SQLite table
+SELECT e.name, s.score
+FROM employees e
+JOIN sqlite_scan('legacy_system.db', 'scores') s ON e.id = s.employee_id;
+```
+
+### Auto-Detection
+
+When you use a string literal in the `FROM` clause, SlothDB detects the format by extension:
+
+```sql
+SELECT * FROM 'data.csv';        -- CSV
+SELECT * FROM 'data.parquet';    -- Parquet
+SELECT * FROM 'data.json';      -- JSON
+SELECT * FROM 'report.xlsx';    -- Excel
+SELECT * FROM 'data.arrow';     -- Arrow IPC
+SELECT * FROM 'data.avro';      -- Avro
+```
+
+### Exporting Data
+
+Write query results to any format:
+
+```sql
+-- Export to CSV
+COPY employees TO 'backup.csv';
+
+-- Export to Parquet (best for large data)
+COPY employees TO 'backup.parquet' WITH (FORMAT PARQUET);
+
+-- Export to JSON
+COPY employees TO 'backup.json' WITH (FORMAT JSON);
+
+-- Export filtered results
+COPY (SELECT * FROM employees WHERE salary > 100000) TO 'top_earners.csv';
+
+-- Custom CSV delimiter
+COPY employees TO 'data.tsv' WITH (DELIMITER '\t', HEADER TRUE);
+```
+
+### Generate Sequences
+
+```sql
+-- Numbers 1 to 100
+SELECT * FROM GENERATE_SERIES(1, 100);
+
+-- Even numbers
+SELECT * FROM GENERATE_SERIES(0, 100, 2);
+
+-- Use in calculations
+SELECT n, n * n AS square, SQRT(n) AS root
+FROM GENERATE_SERIES(1, 20) gs(n);
+```
 
 ---
 
-## SQL Reference
+## 3. Working with Large Datasets
+
+### Strategy 1: Query Files Directly (simplest)
+
+For one-off analysis, just query the file. SlothDB streams through it without loading everything into memory:
+
+```sql
+SELECT region, SUM(revenue)
+FROM read_csv('10gb_sales.csv')
+GROUP BY region;
+```
+
+### Strategy 2: Persistent Database (best for repeated queries)
+
+If you'll query the same data multiple times, import it into a persistent database:
+
+```bash
+slothdb analytics.slothdb    # data persists across sessions
+```
+
+```sql
+-- Import once
+CREATE TABLE sales AS SELECT * FROM read_csv('sales_2024.csv');
+CREATE TABLE events AS SELECT * FROM read_parquet('events.parquet');
+
+-- Now queries are instant — no file parsing overhead
+SELECT region, SUM(revenue) FROM sales GROUP BY region;
+SELECT event_type, COUNT(*) FROM events GROUP BY event_type;
+```
+
+Next time you open the same `.slothdb` file, your tables are still there:
+
+```bash
+slothdb analytics.slothdb
+slothdb> SELECT COUNT(*) FROM sales;  -- data persisted from last session
+```
+
+### Strategy 3: Convert to Parquet First (best for large CSVs)
+
+If you have a large CSV you'll query often, convert it to Parquet once:
+
+```sql
+-- One-time conversion (CSV → Parquet)
+COPY (SELECT * FROM read_csv('huge.csv')) TO 'huge.parquet' WITH (FORMAT PARQUET);
+
+-- Every future query is 5-10x faster
+SELECT category, COUNT(*) FROM read_parquet('huge.parquet') GROUP BY category;
+```
+
+### Strategy 4: Import Only What You Need
+
+Don't import the entire dataset if you only need a subset:
+
+```sql
+-- Filter during import — only loads matching rows
+CREATE TABLE recent AS
+    SELECT * FROM read_csv('all_data.csv')
+    WHERE year >= 2023 AND region = 'US';
+
+-- Import specific columns only
+CREATE TABLE summary AS
+    SELECT product_id, SUM(qty) AS total_qty, SUM(revenue) AS total_revenue
+    FROM read_parquet('transactions.parquet')
+    GROUP BY product_id;
+```
+
+### Which Strategy to Use?
+
+| Scenario | Best approach |
+|----------|---------------|
+| One-off analysis on a file | Query directly: `SELECT * FROM 'file.csv'` |
+| Same data queried multiple times | Persistent database: `slothdb data.slothdb` |
+| Huge CSV queried repeatedly | Convert to Parquet first |
+| Only need a subset of the data | Filter during import with `CREATE TABLE AS` |
+| Multiple file formats, joined together | Import all into persistent DB, then join |
+
+---
+
+## 4. SQL Guide
 
 ### Data Types
 
-| Type | Aliases | Size | Description |
-|------|---------|------|-------------|
-| `BOOLEAN` | `BOOL` | 1 byte | `TRUE` / `FALSE` |
-| `TINYINT` | `INT1` | 1 byte | -128 to 127 |
-| `SMALLINT` | `INT2` | 2 bytes | -32,768 to 32,767 |
-| `INTEGER` | `INT`, `INT4` | 4 bytes | -2.1B to 2.1B |
-| `BIGINT` | `INT8` | 8 bytes | -9.2e18 to 9.2e18 |
-| `HUGEINT` | | 16 bytes | 128-bit signed integer |
-| `FLOAT` | `REAL`, `FLOAT4` | 4 bytes | 32-bit floating point |
-| `DOUBLE` | `FLOAT8` | 8 bytes | 64-bit floating point |
-| `DECIMAL(p,s)` | `NUMERIC` | varies | Fixed-point decimal |
-| `VARCHAR` | `TEXT`, `STRING` | varies | Variable-length string |
-| `BLOB` | `BYTEA` | varies | Binary data |
-| `DATE` | | 4 bytes | Calendar date |
-| `TIME` | | 8 bytes | Time of day |
-| `TIMESTAMP` | | 8 bytes | Date and time (microsecond precision) |
+| Type | Aliases | Description |
+|------|---------|-------------|
+| `BOOLEAN` | `BOOL` | `TRUE` / `FALSE` |
+| `TINYINT` | `INT1` | 8-bit integer (-128 to 127) |
+| `SMALLINT` | `INT2` | 16-bit integer |
+| `INTEGER` | `INT`, `INT4` | 32-bit integer |
+| `BIGINT` | `INT8` | 64-bit integer |
+| `HUGEINT` | | 128-bit integer |
+| `FLOAT` | `REAL`, `FLOAT4` | 32-bit float |
+| `DOUBLE` | `FLOAT8` | 64-bit float |
+| `DECIMAL(p,s)` | `NUMERIC` | Fixed-point decimal |
+| `VARCHAR` | `TEXT`, `STRING` | Variable-length string |
+| `BLOB` | `BYTEA` | Binary data |
+| `DATE` | | Calendar date |
+| `TIME` | | Time of day |
+| `TIMESTAMP` | | Date and time (microsecond precision) |
 
-### DDL — Creating and Modifying Tables
-
-**CREATE TABLE**
+### Creating Tables
 
 ```sql
+-- Define a table with columns and constraints
 CREATE TABLE employees (
     id INTEGER PRIMARY KEY,
     name VARCHAR NOT NULL,
@@ -160,25 +345,19 @@ CREATE TABLE employees (
     hire_date DATE
 );
 
--- Only create if it doesn't already exist
 CREATE TABLE IF NOT EXISTS employees (...);
 
--- Create from a query result
+-- Create a table from a query
 CREATE TABLE top_earners AS
     SELECT * FROM employees WHERE salary > 100000;
 
--- Create from a file
+-- Create a table from a file
 CREATE TABLE logs AS SELECT * FROM read_csv('server_logs.csv');
+CREATE TABLE events AS SELECT * FROM read_parquet('events.parquet');
+CREATE TABLE users AS SELECT * FROM read_json('users.json');
 ```
 
-**DROP TABLE**
-
-```sql
-DROP TABLE employees;
-DROP TABLE IF EXISTS employees;
-```
-
-**ALTER TABLE**
+### Modifying Tables
 
 ```sql
 -- Add a column
@@ -189,130 +368,129 @@ ALTER TABLE employees DROP COLUMN email;
 
 -- Rename a column
 ALTER TABLE employees RENAME COLUMN dept TO department;
-```
 
-**TRUNCATE**
-
-```sql
--- Remove all rows, keep the table structure
+-- Remove all rows (keep structure)
 TRUNCATE TABLE employees;
+
+-- Delete the table entirely
+DROP TABLE employees;
+DROP TABLE IF EXISTS employees;
 ```
 
-**Views**
+### Views
 
 ```sql
--- Create a view
 CREATE VIEW active_employees AS
     SELECT * FROM employees WHERE status = 'active';
 
--- Replace an existing view
 CREATE OR REPLACE VIEW active_employees AS
     SELECT * FROM employees WHERE end_date IS NULL;
 
--- Drop a view
 DROP VIEW active_employees;
 DROP VIEW IF EXISTS active_employees;
 ```
 
-### DML — Querying and Modifying Data
-
-**SELECT**
+### SELECT — Querying Data
 
 ```sql
--- Basic select
+-- All columns
 SELECT * FROM employees;
 
--- With columns and aliases
+-- Specific columns with aliases
 SELECT name, salary * 12 AS annual_salary FROM employees;
 
 -- Filtering
-SELECT * FROM employees WHERE department = 'Engineering' AND salary > 80000;
+SELECT * FROM employees
+WHERE department = 'Engineering' AND salary > 80000;
 
 -- Sorting
-SELECT * FROM employees ORDER BY salary DESC NULLS LAST;
+SELECT * FROM employees ORDER BY salary DESC;
+SELECT * FROM employees ORDER BY hire_date ASC NULLS LAST;
 
 -- Pagination
 SELECT * FROM employees ORDER BY id LIMIT 20 OFFSET 40;
 
--- Distinct
+-- Distinct values
 SELECT DISTINCT department FROM employees;
+
+-- Grouping with aggregation
+SELECT department, COUNT(*) AS cnt, AVG(salary) AS avg_sal
+FROM employees
+GROUP BY department
+HAVING AVG(salary) > 80000
+ORDER BY avg_sal DESC;
 ```
 
-**INSERT**
+### INSERT, UPDATE, DELETE
 
 ```sql
--- Single row
+-- Insert rows
 INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 95000, '2022-01-15');
 
--- Multiple rows
+-- Insert multiple rows
 INSERT INTO employees VALUES
     (2, 'Bob', 'Sales', 72000, '2021-06-01'),
     (3, 'Charlie', 'Engineering', 110000, '2020-03-22');
 
--- Specific columns
+-- Insert specific columns
 INSERT INTO employees (id, name, department) VALUES (4, 'Diana', 'Marketing');
 
 -- Insert from a query
 INSERT INTO archive SELECT * FROM employees WHERE hire_date < '2020-01-01';
-```
 
-**UPDATE**
-
-```sql
+-- Update rows
 UPDATE employees SET salary = salary * 1.10 WHERE department = 'Engineering';
-UPDATE employees SET department = 'Product', salary = 95000 WHERE id = 4;
-```
 
-**DELETE**
-
-```sql
+-- Delete rows
 DELETE FROM employees WHERE id = 3;
-DELETE FROM employees WHERE hire_date < '2019-01-01';
-DELETE FROM employees;  -- delete all rows
+DELETE FROM employees;  -- all rows
 ```
 
-**MERGE** (upsert)
+### MERGE (Upsert)
+
+Insert or update in a single statement:
 
 ```sql
 MERGE INTO employees AS target
-USING new_data AS source
+USING new_hires AS source
 ON target.id = source.id
 WHEN MATCHED THEN
     UPDATE SET salary = source.salary, department = source.department
 WHEN NOT MATCHED THEN
-    INSERT (id, name, department, salary) VALUES (source.id, source.name, source.department, source.salary);
+    INSERT (id, name, department, salary)
+    VALUES (source.id, source.name, source.department, source.salary);
 ```
 
 ### Joins
 
 ```sql
--- Inner join
-SELECT e.name, d.department_name
+-- INNER JOIN — only matching rows
+SELECT e.name, d.dept_name
 FROM employees e
 INNER JOIN departments d ON e.dept_id = d.id;
 
--- Left join — all employees, even without a department
-SELECT e.name, d.department_name
+-- LEFT JOIN — all employees, even without a department
+SELECT e.name, d.dept_name
 FROM employees e
 LEFT JOIN departments d ON e.dept_id = d.id;
 
--- Right join
-SELECT e.name, d.department_name
+-- RIGHT JOIN — all departments, even without employees
+SELECT e.name, d.dept_name
 FROM employees e
 RIGHT JOIN departments d ON e.dept_id = d.id;
 
--- Full outer join
-SELECT e.name, d.department_name
+-- FULL OUTER JOIN — all rows from both tables
+SELECT e.name, d.dept_name
 FROM employees e
 FULL OUTER JOIN departments d ON e.dept_id = d.id;
 
--- Cross join — cartesian product
+-- CROSS JOIN — every combination
 SELECT * FROM colors CROSS JOIN sizes;
 
--- Natural join — joins on columns with matching names
+-- NATURAL JOIN — auto-matches on same-named columns
 SELECT * FROM orders NATURAL JOIN customers;
 
--- Join using — shorthand when column names match
+-- JOIN USING — shorthand when column names match
 SELECT * FROM orders JOIN customers USING (customer_id);
 
 -- Self join
@@ -325,26 +503,30 @@ SELECT o.id, c.name, p.product_name
 FROM orders o
 JOIN customers c ON o.customer_id = c.id
 JOIN products p ON o.product_id = p.id;
+
+-- Join a table with a CSV file
+SELECT e.name, s.score
+FROM employees e
+JOIN read_csv('scores.csv') s ON e.id = s.employee_id;
 ```
 
 ### Subqueries
 
 ```sql
--- Subquery in WHERE
+-- In WHERE clause
 SELECT * FROM employees
 WHERE salary > (SELECT AVG(salary) FROM employees);
 
--- Subquery in FROM
+-- In FROM clause
 SELECT dept, avg_salary
 FROM (SELECT department AS dept, AVG(salary) AS avg_salary
       FROM employees GROUP BY department) sub
 WHERE avg_salary > 80000;
 
--- EXISTS
+-- EXISTS / NOT EXISTS
 SELECT * FROM customers c
 WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
 
--- NOT EXISTS
 SELECT * FROM customers c
 WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
 
@@ -373,22 +555,17 @@ WITH
     )
 SELECT * FROM top_depts ORDER BY avg_sal DESC;
 
--- Recursive CTE (e.g., org chart traversal)
+-- Recursive CTE — org chart traversal
 WITH RECURSIVE org_chart(id, name, manager_id, level) AS (
-    -- Base case: CEO (no manager)
     SELECT id, name, manager_id, 0 AS level
     FROM employees WHERE manager_id IS NULL
-
     UNION ALL
-
-    -- Recursive case: employees under each manager
     SELECT e.id, e.name, e.manager_id, oc.level + 1
-    FROM employees e
-    JOIN org_chart oc ON e.manager_id = oc.id
+    FROM employees e JOIN org_chart oc ON e.manager_id = oc.id
 )
 SELECT * FROM org_chart ORDER BY level, name;
 
--- Recursive CTE: generate a number sequence
+-- Recursive CTE — generate a sequence
 WITH RECURSIVE nums(n) AS (
     SELECT 1
     UNION ALL
@@ -397,60 +574,35 @@ WITH RECURSIVE nums(n) AS (
 SELECT n FROM nums;
 ```
 
-### Set Operations
-
-```sql
--- UNION — combine results, remove duplicates
-SELECT name FROM employees_us
-UNION
-SELECT name FROM employees_eu;
-
--- UNION ALL — combine results, keep duplicates (faster)
-SELECT name FROM employees_us
-UNION ALL
-SELECT name FROM employees_eu;
-
--- INTERSECT — rows that appear in both
-SELECT customer_id FROM orders_2024
-INTERSECT
-SELECT customer_id FROM orders_2025;
-
--- EXCEPT — rows in first but not in second
-SELECT customer_id FROM newsletter_subscribers
-EXCEPT
-SELECT customer_id FROM unsubscribed;
-```
-
 ### Window Functions
 
-Window functions compute values across a set of rows related to the current row without collapsing them.
+Compute values across related rows without collapsing them — essential for ranking, running totals, and comparisons.
 
 ```sql
--- ROW_NUMBER — unique sequential number per partition
+-- ROW_NUMBER — unique rank per partition
 SELECT name, department, salary,
-    ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rank
+    ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS dept_rank
 FROM employees;
 
--- RANK — same salary gets same rank, with gaps
+-- RANK — same value = same rank, with gaps (1, 2, 2, 4)
 SELECT name, salary,
     RANK() OVER (ORDER BY salary DESC) AS rank
 FROM employees;
 
--- DENSE_RANK — same salary gets same rank, no gaps
+-- DENSE_RANK — same value = same rank, no gaps (1, 2, 2, 3)
 SELECT name, salary,
     DENSE_RANK() OVER (ORDER BY salary DESC) AS dense_rank
 FROM employees;
 
--- NTILE — divide rows into N equal buckets
+-- NTILE — split into N equal buckets
 SELECT name, salary,
     NTILE(4) OVER (ORDER BY salary DESC) AS quartile
 FROM employees;
 
--- LAG / LEAD — access previous/next row's value
+-- LAG / LEAD — compare with previous/next row
 SELECT date, revenue,
-    LAG(revenue, 1) OVER (ORDER BY date) AS prev_day_revenue,
-    LEAD(revenue, 1) OVER (ORDER BY date) AS next_day_revenue,
-    revenue - LAG(revenue, 1) OVER (ORDER BY date) AS daily_change
+    revenue - LAG(revenue) OVER (ORDER BY date) AS daily_change,
+    LEAD(revenue) OVER (ORDER BY date) AS tomorrow
 FROM daily_sales;
 
 -- FIRST_VALUE / LAST_VALUE
@@ -458,38 +610,53 @@ SELECT name, department, salary,
     FIRST_VALUE(name) OVER (PARTITION BY department ORDER BY salary DESC) AS top_earner
 FROM employees;
 
--- Running totals with SUM OVER
+-- Running total
 SELECT date, amount,
     SUM(amount) OVER (ORDER BY date) AS running_total
 FROM transactions;
 
--- Moving average
+-- Cumulative average
 SELECT date, revenue,
     AVG(revenue) OVER (ORDER BY date) AS cumulative_avg
 FROM daily_sales;
 ```
 
-### QUALIFY
+### QUALIFY — Filter on Window Results
 
-Filter rows based on window function results — no subquery needed. Inspired by Snowflake.
+Snowflake-style filtering on window functions. No subquery needed.
 
 ```sql
--- Get the highest-paid employee per department
+-- Top earner per department — one line instead of a subquery
 SELECT name, department, salary
 FROM employees
 QUALIFY ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) = 1;
 
--- Get top 3 products per category by revenue
+-- Top 3 products per category
 SELECT product_name, category, revenue
 FROM products
 QUALIFY RANK() OVER (PARTITION BY category ORDER BY revenue DESC) <= 3;
 
--- Without QUALIFY, you'd need a subquery:
+-- Without QUALIFY, you'd need this:
 SELECT * FROM (
-    SELECT name, department, salary,
-        ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn
     FROM employees
 ) sub WHERE rn = 1;
+```
+
+### Set Operations
+
+```sql
+-- UNION — combine and deduplicate
+SELECT name FROM employees_us UNION SELECT name FROM employees_eu;
+
+-- UNION ALL — combine, keep duplicates (faster)
+SELECT name FROM employees_us UNION ALL SELECT name FROM employees_eu;
+
+-- INTERSECT — rows in both
+SELECT customer_id FROM orders_2024 INTERSECT SELECT customer_id FROM orders_2025;
+
+-- EXCEPT — rows in first but not second
+SELECT customer_id FROM subscribers EXCEPT SELECT customer_id FROM unsubscribed;
 ```
 
 ### Transactions
@@ -500,193 +667,22 @@ INSERT INTO accounts VALUES (1, 'Alice', 5000);
 UPDATE accounts SET balance = balance - 100 WHERE id = 1;
 COMMIT;
 
--- Roll back on error
+-- Undo changes
 BEGIN;
 DELETE FROM important_data;
-ROLLBACK;  -- undo the delete
+ROLLBACK;  -- nothing was deleted
 ```
 
 ### EXPLAIN
 
-See the query execution plan:
+See how SlothDB will execute your query:
 
 ```sql
 EXPLAIN SELECT department, AVG(salary)
-FROM employees
-WHERE hire_date > '2020-01-01'
+FROM employees WHERE hire_date > '2020-01-01'
 GROUP BY department;
 
--- Output shows: AGGREGATE → FILTER → SCAN employees
-```
-
-### COPY — Import and Export
-
-```sql
--- Export to CSV
-COPY employees TO 'employees_backup.csv';
-
--- Export to Parquet (compressed, columnar)
-COPY employees TO 'employees.parquet' WITH (FORMAT PARQUET);
-
--- Export to JSON
-COPY employees TO 'employees.json' WITH (FORMAT JSON);
-
--- Export query results
-COPY (SELECT * FROM employees WHERE salary > 100000) TO 'top_earners.csv';
-
--- Import from CSV
-COPY employees FROM 'new_hires.csv';
-
--- Import from JSON
-COPY employees FROM 'data.json' WITH (FORMAT JSON);
-
--- CSV options
-COPY employees TO 'data.tsv' WITH (DELIMITER '\t', HEADER TRUE);
-```
-
----
-
-## Functions
-
-### Aggregate Functions
-
-| Function | Description | Example |
-|----------|-------------|---------|
-| `COUNT(*)` | Count all rows | `SELECT COUNT(*) FROM t` |
-| `COUNT(col)` | Count non-NULL values | `SELECT COUNT(name) FROM t` |
-| `COUNT(DISTINCT col)` | Count unique values | `SELECT COUNT(DISTINCT dept) FROM t` |
-| `SUM(col)` | Sum of values | `SELECT SUM(salary) FROM t` |
-| `AVG(col)` | Average | `SELECT AVG(salary) FROM t` |
-| `MIN(col)` | Minimum value | `SELECT MIN(hire_date) FROM t` |
-| `MAX(col)` | Maximum value | `SELECT MAX(salary) FROM t` |
-| `STRING_AGG(col, sep)` | Concatenate strings | `SELECT STRING_AGG(name, ', ') FROM t` |
-| `STDDEV(col)` | Sample standard deviation | `SELECT STDDEV(salary) FROM t` |
-| `STDDEV_POP(col)` | Population standard deviation | `SELECT STDDEV_POP(salary) FROM t` |
-| `VARIANCE(col)` | Sample variance | `SELECT VARIANCE(salary) FROM t` |
-| `VAR_POP(col)` | Population variance | `SELECT VAR_POP(salary) FROM t` |
-| `MEDIAN(col)` | Median value | `SELECT MEDIAN(salary) FROM t` |
-| `BOOL_AND(col)` | Logical AND of all values | `SELECT BOOL_AND(is_active) FROM t` |
-| `BOOL_OR(col)` | Logical OR of all values | `SELECT BOOL_OR(is_active) FROM t` |
-
-Aliases: `GROUP_CONCAT` and `LISTAGG` work as aliases for `STRING_AGG`. `VAR_SAMP` works as an alias for `VARIANCE`. `STDDEV_SAMP` works as an alias for `STDDEV`.
-
-### String Functions
-
-| Function | Description | Example |
-|----------|-------------|---------|
-| `LENGTH(s)` | String length | `LENGTH('hello')` → `5` |
-| `UPPER(s)` | To uppercase | `UPPER('hello')` → `'HELLO'` |
-| `LOWER(s)` | To lowercase | `LOWER('HELLO')` → `'hello'` |
-| `CONCAT(s1, s2, ...)` | Concatenate strings | `CONCAT('a', 'b', 'c')` → `'abc'` |
-| `s1 \|\| s2` | Concatenation operator | `'hello' \|\| ' world'` → `'hello world'` |
-| `SUBSTRING(s, start, len)` | Extract substring | `SUBSTRING('hello', 2, 3)` → `'ell'` |
-| `REPLACE(s, from, to)` | Replace occurrences | `REPLACE('foo', 'o', 'a')` → `'faa'` |
-| `TRIM(s)` | Remove leading/trailing spaces | `TRIM('  hi  ')` → `'hi'` |
-| `LTRIM(s)` | Remove leading spaces | `LTRIM('  hi')` → `'hi'` |
-| `RTRIM(s)` | Remove trailing spaces | `RTRIM('hi  ')` → `'hi'` |
-| `LEFT(s, n)` | First n characters | `LEFT('hello', 3)` → `'hel'` |
-| `RIGHT(s, n)` | Last n characters | `RIGHT('hello', 3)` → `'llo'` |
-| `LPAD(s, len, pad)` | Pad left to length | `LPAD('42', 5, '0')` → `'00042'` |
-| `RPAD(s, len, pad)` | Pad right to length | `RPAD('hi', 5, '.')` → `'hi...'` |
-| `REVERSE(s)` | Reverse string | `REVERSE('hello')` → `'olleh'` |
-| `REPEAT(s, n)` | Repeat string n times | `REPEAT('ha', 3)` → `'hahaha'` |
-| `POSITION(sub IN s)` | Find substring position | `POSITION('ll' IN 'hello')` → `3` |
-| `STARTS_WITH(s, prefix)` | Check prefix | `STARTS_WITH('hello', 'he')` → `true` |
-| `ENDS_WITH(s, suffix)` | Check suffix | `ENDS_WITH('hello', 'lo')` → `true` |
-| `CONTAINS(s, sub)` | Check if contains | `CONTAINS('hello', 'ell')` → `true` |
-| `SPLIT_PART(s, delim, idx)` | Split and get part | `SPLIT_PART('a-b-c', '-', 2)` → `'b'` |
-| `INITCAP(s)` | Capitalize each word | `INITCAP('hello world')` → `'Hello World'` |
-
-Aliases: `CHAR_LENGTH` works as an alias for `LENGTH`. `SUBSTR` works as an alias for `SUBSTRING`. `STRPOS(s, sub)` works as an alias for `POSITION`. `PREFIX` and `SUFFIX` work as aliases for `STARTS_WITH` and `ENDS_WITH`.
-
-### Math Functions
-
-| Function | Description | Example |
-|----------|-------------|---------|
-| `ABS(x)` | Absolute value | `ABS(-5)` → `5` |
-| `CEIL(x)` | Round up | `CEIL(3.2)` → `4` |
-| `FLOOR(x)` | Round down | `FLOOR(3.8)` → `3` |
-| `ROUND(x)` | Round to nearest | `ROUND(3.5)` → `4` |
-| `SQRT(x)` | Square root | `SQRT(16)` → `4` |
-| `POWER(x, y)` | Exponentiation | `POWER(2, 10)` → `1024` |
-| `MOD(x, y)` | Modulo (remainder) | `MOD(10, 3)` → `1` |
-| `LOG(x)` | Natural logarithm | `LOG(2.718)` → `~1.0` |
-| `LOG2(x)` | Base-2 logarithm | `LOG2(8)` → `3` |
-| `LOG10(x)` | Base-10 logarithm | `LOG10(100)` → `2` |
-| `EXP(x)` | e raised to x | `EXP(1)` → `2.718...` |
-| `SIGN(x)` | Sign (-1, 0, or 1) | `SIGN(-42)` → `-1` |
-| `TRUNC(x)` | Truncate to integer | `TRUNC(3.9)` → `3` |
-| `PI()` | Pi constant | `PI()` → `3.14159...` |
-| `RANDOM()` | Random 0.0 to 1.0 | `RANDOM()` → `0.7231...` |
-| `LEAST(a, b, ...)` | Minimum of values | `LEAST(5, 3, 9)` → `3` |
-| `GREATEST(a, b, ...)` | Maximum of values | `GREATEST(5, 3, 9)` → `9` |
-
-Aliases: `CEILING` works as an alias for `CEIL`. `LN` works as an alias for `LOG`. `TRUNCATE` works as an alias for `TRUNC`. `RAND` works as an alias for `RANDOM`.
-
-### Trigonometric Functions
-
-| Function | Description |
-|----------|-------------|
-| `SIN(x)` | Sine (radians) |
-| `COS(x)` | Cosine (radians) |
-| `TAN(x)` | Tangent (radians) |
-| `ASIN(x)` | Arcsine |
-| `ACOS(x)` | Arccosine |
-| `ATAN(x)` | Arctangent |
-| `ATAN2(y, x)` | Two-argument arctangent |
-| `DEGREES(x)` | Radians to degrees |
-| `RADIANS(x)` | Degrees to radians |
-
-### Date/Time Functions
-
-| Function | Description | Example |
-|----------|-------------|---------|
-| `NOW()` | Current timestamp | `NOW()` |
-| `CURRENT_TIMESTAMP` | Current timestamp | `SELECT CURRENT_TIMESTAMP` |
-| `CURRENT_DATE` | Current date | `SELECT CURRENT_DATE` |
-| `EXTRACT(part FROM ts)` | Extract component | `EXTRACT(YEAR FROM ts)` |
-| `DATE_PART(part, ts)` | Extract component (alias) | `DATE_PART('month', ts)` |
-| `DATE_ADD(part, n, ts)` | Add interval | `DATE_ADD('day', 7, ts)` |
-| `DATE_DIFF(part, ts1, ts2)` | Difference between dates | `DATE_DIFF('day', start, end)` |
-| `DATE_TRUNC(part, ts)` | Truncate to unit | `DATE_TRUNC('month', ts)` |
-| `STRFTIME(fmt, ts)` | Format timestamp | `STRFTIME('%Y-%m-%d', ts)` |
-| `TO_TIMESTAMP(epoch)` | Epoch seconds to timestamp | `TO_TIMESTAMP(1700000000)` |
-| `EPOCH_MS(ts)` | Timestamp to epoch ms | `EPOCH_MS(ts)` |
-
-**EXTRACT parts:** `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `EPOCH`, `DOW` (day of week)
-
-**DATE_DIFF / DATE_ADD parts:** `SECOND`, `MINUTE`, `HOUR`, `DAY`
-
-Aliases: `DATEADD` works as an alias for `DATE_ADD`. `DATEDIFF` works as an alias for `DATE_DIFF`. `FORMAT_TIMESTAMP` works as an alias for `STRFTIME`. `MAKE_TIMESTAMP` works as an alias for `TO_TIMESTAMP`.
-
-### Null Handling Functions
-
-| Function | Description | Example |
-|----------|-------------|---------|
-| `COALESCE(a, b, ...)` | First non-NULL value | `COALESCE(phone, email, 'N/A')` |
-| `NULLIF(a, b)` | NULL if a = b, else a | `NULLIF(score, 0)` — avoid division by zero |
-
-### Regex Functions
-
-| Function | Description | Example |
-|----------|-------------|---------|
-| `REGEXP_MATCHES(s, pattern)` | Test if pattern matches | `REGEXP_MATCHES(email, '.*@.*\.com')` |
-| `REGEXP_REPLACE(s, pattern, repl)` | Replace matches | `REGEXP_REPLACE(phone, '[^0-9]', '')` |
-| `REGEXP_EXTRACT(s, pattern)` | Extract first match | `REGEXP_EXTRACT(url, 'https?://([^/]+)')` |
-
-Alias: `REGEXP_MATCH` works as an alias for `REGEXP_MATCHES`.
-
-### Type Casting
-
-```sql
--- CAST — error on invalid conversion
-SELECT CAST('42' AS INTEGER);
-SELECT CAST(3.14 AS VARCHAR);
-SELECT CAST('2024-01-15' AS DATE);
-
--- TRY_CAST — returns NULL instead of error
-SELECT TRY_CAST('not_a_number' AS INTEGER);  -- returns NULL
-SELECT TRY_CAST('42' AS INTEGER);            -- returns 42
+-- Shows: AGGREGATE → FILTER → SCAN employees
 ```
 
 ### Conditional Expressions
@@ -701,282 +697,238 @@ SELECT name,
     END AS level
 FROM employees;
 
--- CASE with value
-SELECT name,
-    CASE department
-        WHEN 'Engineering' THEN 'ENG'
-        WHEN 'Sales'       THEN 'SLS'
-        ELSE 'OTHER'
-    END AS dept_code
-FROM employees;
-
--- BETWEEN
-SELECT * FROM events WHERE event_date BETWEEN '2024-01-01' AND '2024-12-31';
-
--- IN
-SELECT * FROM employees WHERE department IN ('Engineering', 'Product', 'Design');
-
--- LIKE pattern matching
-SELECT * FROM employees WHERE name LIKE 'A%';       -- starts with A
-SELECT * FROM employees WHERE email LIKE '%@gmail%'; -- contains @gmail
-
--- ILIKE (case-insensitive LIKE)
-SELECT * FROM employees WHERE name ILIKE 'alice';
-
--- IS NULL / IS NOT NULL
+-- Pattern matching
+SELECT * FROM employees WHERE name LIKE 'A%';          -- starts with A
+SELECT * FROM employees WHERE name ILIKE 'alice';      -- case-insensitive
+SELECT * FROM employees WHERE salary BETWEEN 50000 AND 100000;
+SELECT * FROM employees WHERE department IN ('Engineering', 'Product');
 SELECT * FROM employees WHERE manager_id IS NULL;
-SELECT * FROM employees WHERE phone IS NOT NULL;
 ```
 
 ---
 
-## File I/O — Querying External Files
+## 5. All Functions
 
-SlothDB can query files directly without importing them into tables. All file formats are built-in — no extensions needed.
+### Aggregate Functions
 
-### CSV
+| Function | Description | Example |
+|----------|-------------|---------|
+| `COUNT(*)` | Count all rows | `SELECT COUNT(*) FROM t` |
+| `COUNT(col)` | Count non-NULL values | `SELECT COUNT(name) FROM t` |
+| `COUNT(DISTINCT col)` | Count unique values | `SELECT COUNT(DISTINCT dept) FROM t` |
+| `SUM(col)` | Sum | `SELECT SUM(salary) FROM t` |
+| `AVG(col)` | Average | `SELECT AVG(salary) FROM t` |
+| `MIN(col)` | Minimum | `SELECT MIN(hire_date) FROM t` |
+| `MAX(col)` | Maximum | `SELECT MAX(salary) FROM t` |
+| `STRING_AGG(col, sep)` | Concatenate strings | `SELECT STRING_AGG(name, ', ') FROM t` |
+| `MEDIAN(col)` | Median value | `SELECT MEDIAN(salary) FROM t` |
+| `STDDEV(col)` | Sample std deviation | `SELECT STDDEV(salary) FROM t` |
+| `STDDEV_POP(col)` | Population std deviation | `SELECT STDDEV_POP(salary) FROM t` |
+| `VARIANCE(col)` | Sample variance | `SELECT VARIANCE(salary) FROM t` |
+| `VAR_POP(col)` | Population variance | `SELECT VAR_POP(salary) FROM t` |
+| `BOOL_AND(col)` | Logical AND of all values | `SELECT BOOL_AND(active) FROM t` |
+| `BOOL_OR(col)` | Logical OR of all values | `SELECT BOOL_OR(active) FROM t` |
+
+**Aliases:** `GROUP_CONCAT`, `LISTAGG` = `STRING_AGG`. `STDDEV_SAMP` = `STDDEV`. `VAR_SAMP` = `VARIANCE`.
+
+All aggregate functions also work as **window aggregates**:
 
 ```sql
--- Read a CSV file
-SELECT * FROM read_csv('sales_data.csv');
-
--- Query with filtering (only matching rows are loaded)
-SELECT product, SUM(revenue)
-FROM read_csv('sales_data.csv')
-WHERE region = 'US'
-GROUP BY product;
-
--- Import into a table
-CREATE TABLE sales AS SELECT * FROM read_csv('sales_data.csv');
-
--- Auto-detect from file extension
-SELECT * FROM 'sales_data.csv';
+SELECT name, salary,
+    SUM(salary) OVER (PARTITION BY department) AS dept_total,
+    AVG(salary) OVER (ORDER BY hire_date) AS running_avg
+FROM employees;
 ```
 
-### Parquet
+### String Functions
 
-Best format for large datasets — columnar, compressed, with statistics for scan skipping.
+| Function | What it does | Example → Result |
+|----------|-------------|------------------|
+| `LENGTH(s)` | String length | `LENGTH('hello')` → `5` |
+| `UPPER(s)` | To uppercase | `UPPER('hello')` → `'HELLO'` |
+| `LOWER(s)` | To lowercase | `LOWER('HELLO')` → `'hello'` |
+| `CONCAT(s1, s2, ...)` | Join strings | `CONCAT('a', 'b')` → `'ab'` |
+| `s1 \|\| s2` | Join strings (operator) | `'hi' \|\| ' there'` → `'hi there'` |
+| `SUBSTRING(s, pos, len)` | Extract part | `SUBSTRING('hello', 2, 3)` → `'ell'` |
+| `REPLACE(s, from, to)` | Replace text | `REPLACE('foo', 'o', 'a')` → `'faa'` |
+| `TRIM(s)` | Remove whitespace | `TRIM('  hi  ')` → `'hi'` |
+| `LTRIM(s)` | Remove left whitespace | `LTRIM('  hi')` → `'hi'` |
+| `RTRIM(s)` | Remove right whitespace | `RTRIM('hi  ')` → `'hi'` |
+| `LEFT(s, n)` | First n characters | `LEFT('hello', 3)` → `'hel'` |
+| `RIGHT(s, n)` | Last n characters | `RIGHT('hello', 3)` → `'llo'` |
+| `LPAD(s, len, pad)` | Pad from left | `LPAD('42', 5, '0')` → `'00042'` |
+| `RPAD(s, len, pad)` | Pad from right | `RPAD('hi', 5, '.')` → `'hi...'` |
+| `REVERSE(s)` | Reverse | `REVERSE('hello')` → `'olleh'` |
+| `REPEAT(s, n)` | Repeat n times | `REPEAT('ha', 3)` → `'hahaha'` |
+| `POSITION(sub IN s)` | Find position | `POSITION('ll' IN 'hello')` → `3` |
+| `STARTS_WITH(s, pre)` | Starts with? | `STARTS_WITH('hello', 'he')` → `true` |
+| `ENDS_WITH(s, suf)` | Ends with? | `ENDS_WITH('hello', 'lo')` → `true` |
+| `CONTAINS(s, sub)` | Contains? | `CONTAINS('hello', 'ell')` → `true` |
+| `SPLIT_PART(s, d, i)` | Split and pick part | `SPLIT_PART('a-b-c', '-', 2)` → `'b'` |
+| `INITCAP(s)` | Capitalize words | `INITCAP('hello world')` → `'Hello World'` |
+
+**Aliases:** `CHAR_LENGTH` = `LENGTH`. `SUBSTR` = `SUBSTRING`. `STRPOS` = `POSITION`. `PREFIX` = `STARTS_WITH`. `SUFFIX` = `ENDS_WITH`.
+
+### Math Functions
+
+| Function | What it does | Example → Result |
+|----------|-------------|------------------|
+| `ABS(x)` | Absolute value | `ABS(-5)` → `5` |
+| `CEIL(x)` | Round up | `CEIL(3.2)` → `4` |
+| `FLOOR(x)` | Round down | `FLOOR(3.8)` → `3` |
+| `ROUND(x)` | Round to nearest | `ROUND(3.5)` → `4` |
+| `TRUNC(x)` | Truncate decimal | `TRUNC(3.9)` → `3` |
+| `SQRT(x)` | Square root | `SQRT(16)` → `4` |
+| `POWER(x, y)` | x to the power y | `POWER(2, 10)` → `1024` |
+| `MOD(x, y)` | Remainder | `MOD(10, 3)` → `1` |
+| `LOG(x)` | Natural log (ln) | `LOG(2.718)` → `~1.0` |
+| `LOG2(x)` | Log base 2 | `LOG2(8)` → `3` |
+| `LOG10(x)` | Log base 10 | `LOG10(100)` → `2` |
+| `EXP(x)` | e^x | `EXP(1)` → `2.718...` |
+| `SIGN(x)` | Sign (-1, 0, 1) | `SIGN(-42)` → `-1` |
+| `PI()` | Pi constant | `PI()` → `3.14159...` |
+| `RANDOM()` | Random [0, 1) | `RANDOM()` → `0.7231...` |
+| `LEAST(a, b, ...)` | Smallest value | `LEAST(5, 3, 9)` → `3` |
+| `GREATEST(a, b, ...)` | Largest value | `GREATEST(5, 3, 9)` → `9` |
+
+**Aliases:** `CEILING` = `CEIL`. `LN` = `LOG`. `TRUNCATE` = `TRUNC`. `RAND` = `RANDOM`.
+
+### Trigonometric Functions
+
+| Function | Description |
+|----------|-------------|
+| `SIN(x)`, `COS(x)`, `TAN(x)` | Trig functions (radians) |
+| `ASIN(x)`, `ACOS(x)`, `ATAN(x)` | Inverse trig |
+| `ATAN2(y, x)` | Two-argument arctangent |
+| `DEGREES(x)` | Radians → degrees |
+| `RADIANS(x)` | Degrees → radians |
+
+### Date/Time Functions
+
+| Function | What it does | Example |
+|----------|-------------|---------|
+| `NOW()` | Current timestamp | `SELECT NOW()` |
+| `CURRENT_TIMESTAMP` | Current timestamp | `SELECT CURRENT_TIMESTAMP` |
+| `CURRENT_DATE` | Current date | `SELECT CURRENT_DATE` |
+| `EXTRACT(part FROM ts)` | Get year/month/day/etc. | `EXTRACT(YEAR FROM ts)` |
+| `DATE_PART(part, ts)` | Same as EXTRACT | `DATE_PART('month', ts)` |
+| `DATE_ADD(part, n, ts)` | Add time interval | `DATE_ADD('day', 7, ts)` |
+| `DATE_DIFF(part, t1, t2)` | Time between two dates | `DATE_DIFF('day', start, end)` |
+| `DATE_TRUNC(part, ts)` | Truncate to unit | `DATE_TRUNC('month', ts)` |
+| `STRFTIME(fmt, ts)` | Format as string | `STRFTIME('%Y-%m-%d', ts)` |
+| `TO_TIMESTAMP(epoch)` | Epoch → timestamp | `TO_TIMESTAMP(1700000000)` |
+| `EPOCH_MS(ts)` | Timestamp → epoch ms | `EPOCH_MS(ts)` |
+
+**EXTRACT parts:** `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `EPOCH`, `DOW`
+
+**DATE_ADD / DATE_DIFF parts:** `DAY`, `HOUR`, `MINUTE`, `SECOND`
+
+**Aliases:** `DATEADD` = `DATE_ADD`. `DATEDIFF` = `DATE_DIFF`. `FORMAT_TIMESTAMP` = `STRFTIME`. `MAKE_TIMESTAMP` = `TO_TIMESTAMP`.
+
+### Null Handling
+
+| Function | What it does | Example |
+|----------|-------------|---------|
+| `COALESCE(a, b, ...)` | First non-NULL value | `COALESCE(phone, email, 'N/A')` |
+| `NULLIF(a, b)` | NULL if a = b | `NULLIF(divisor, 0)` — prevents division by zero |
+
+### Regex Functions
+
+| Function | What it does | Example |
+|----------|-------------|---------|
+| `REGEXP_MATCHES(s, pat)` | Does pattern match? | `REGEXP_MATCHES(email, '.*@.*\.com')` |
+| `REGEXP_REPLACE(s, pat, r)` | Replace matches | `REGEXP_REPLACE(phone, '[^0-9]', '')` |
+| `REGEXP_EXTRACT(s, pat)` | Extract first match | `REGEXP_EXTRACT(url, 'https?://([^/]+)')` |
+
+**Alias:** `REGEXP_MATCH` = `REGEXP_MATCHES`.
+
+### Type Casting
 
 ```sql
--- Read Parquet
-SELECT * FROM read_parquet('events.parquet');
+-- CAST — errors on invalid input
+SELECT CAST('42' AS INTEGER);
+SELECT CAST(3.14 AS VARCHAR);
 
--- Parquet pushes filters down to row groups for fast scans
-SELECT * FROM read_parquet('events.parquet') WHERE event_date > '2024-01-01';
-
--- Convert CSV to Parquet for faster future queries
-COPY (SELECT * FROM read_csv('huge.csv')) TO 'huge.parquet' WITH (FORMAT PARQUET);
-```
-
-### JSON / NDJSON
-
-Supports both JSON arrays (`[{...}, {...}]`) and newline-delimited JSON (one object per line).
-
-```sql
--- Read JSON
-SELECT * FROM read_json('users.json');
-
--- Read NDJSON (newline-delimited)
-SELECT * FROM read_json('events.ndjson');
-
--- Auto-detect
-SELECT * FROM 'events.json';
-```
-
-### Excel (XLSX)
-
-```sql
--- Read Excel file (first sheet)
-SELECT * FROM read_xlsx('report.xlsx');
-
--- Auto-detect
-SELECT * FROM 'report.xlsx';
-```
-
-### Arrow IPC
-
-```sql
--- Read Arrow IPC (Feather) file
-SELECT * FROM read_arrow('data.arrow');
-SELECT * FROM read_arrow('data.feather');
-```
-
-### Avro
-
-```sql
--- Read Avro file
-SELECT * FROM read_avro('events.avro');
-```
-
-### SQLite
-
-Read tables directly from SQLite database files — no libsqlite3 dependency needed.
-
-```sql
--- Scan a table from a SQLite database
-SELECT * FROM sqlite_scan('legacy_app.db', 'users');
-
--- Join SlothDB tables with SQLite data
-SELECT e.name, s.old_score
-FROM employees e
-JOIN sqlite_scan('old_system.db', 'scores') s ON e.id = s.employee_id;
-```
-
-### Auto-Detection
-
-When you query a string literal in the `FROM` clause, SlothDB auto-detects the format by file extension:
-
-```sql
-SELECT * FROM 'data.csv';        -- detected as CSV
-SELECT * FROM 'data.parquet';    -- detected as Parquet
-SELECT * FROM 'data.json';      -- detected as JSON
-SELECT * FROM 'report.xlsx';    -- detected as Excel
-SELECT * FROM 'data.arrow';     -- detected as Arrow IPC
-SELECT * FROM 'data.avro';      -- detected as Avro
-```
-
-### Glob Patterns
-
-Query multiple files at once:
-
-```sql
--- All CSV files in a directory
-SELECT * FROM read_csv('logs/*.csv');
-
--- All Parquet files
-SELECT * FROM read_parquet('data/year=2024/*.parquet');
-```
-
-### GENERATE_SERIES
-
-Generate a sequence of numbers:
-
-```sql
--- Numbers 1 to 10
-SELECT * FROM GENERATE_SERIES(1, 10);
-
--- Even numbers 0 to 100
-SELECT * FROM GENERATE_SERIES(0, 100, 2);
-
--- Use in queries
-SELECT gs.generate_series AS n, n * n AS square
-FROM GENERATE_SERIES(1, 10) gs;
+-- TRY_CAST — returns NULL instead of error
+SELECT TRY_CAST('not_a_number' AS INTEGER);  -- NULL
+SELECT TRY_CAST('42' AS INTEGER);            -- 42
 ```
 
 ---
 
-## Importing Large Datasets
+## 6. Python API
 
-For large datasets, here are the recommended approaches:
-
-**1. Query directly without importing (recommended for one-off analysis):**
-
-```sql
--- SlothDB streams through the file — doesn't load everything into memory
-SELECT region, SUM(revenue) FROM read_csv('huge_file.csv') GROUP BY region;
-```
-
-**2. Import into a persistent database (recommended for repeated queries):**
-
-```bash
-slothdb analytics.slothdb
-```
-
-```sql
--- Load from CSV
-CREATE TABLE sales AS SELECT * FROM read_csv('sales_2024.csv');
-
--- Load from Parquet (fastest)
-CREATE TABLE events AS SELECT * FROM read_parquet('events.parquet');
-
--- Load only what you need
-CREATE TABLE recent_sales AS
-    SELECT * FROM read_csv('all_sales.csv') WHERE year >= 2023;
-```
-
-**3. Convert to Parquet first (recommended for CSVs you'll query repeatedly):**
-
-```sql
--- Convert CSV to Parquet (one-time cost)
-COPY (SELECT * FROM read_csv('huge.csv')) TO 'huge.parquet' WITH (FORMAT PARQUET);
-
--- Now all future queries are much faster
-SELECT category, COUNT(*) FROM read_parquet('huge.parquet') GROUP BY category;
-```
-
-**Why Parquet is best for large data:**
-- Columnar — only reads columns in your SELECT
-- Compressed — 5-10x smaller than CSV
-- Row group statistics — SlothDB skips row groups that don't match your WHERE clause
-- No schema detection overhead — types are stored in the file
-
----
-
-## Python API
-
-### Python Installation
+### Install
 
 ```bash
 pip install slothdb
 ```
 
-Or build from source:
-
-```bash
-cd slothdb
-cmake -B build -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-cd python && pip install .
-```
-
-### Connecting
+### Quick Start
 
 ```python
 import slothdb
 
-# In-memory database
+# Connect (in-memory)
 db = slothdb.connect()
 
-# Persistent database (saved to file)
+# Connect (persistent — saves to file)
 db = slothdb.connect("analytics.slothdb")
 ```
 
-### Running Queries
+### Query Files Directly
 
 ```python
-# Execute SQL and get results
-result = db.sql("SELECT * FROM read_csv('data.csv')")
+import slothdb
 
-# DDL and DML statements
-db.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)")
-db.execute("INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25)")
+db = slothdb.connect()
 
-# Query tables
-result = db.sql("SELECT * FROM users WHERE age > 20")
+# Query a CSV file
+result = db.sql("SELECT * FROM 'sales.csv' LIMIT 10")
+print(result)
+
+# Aggregate a Parquet file
+result = db.sql("""
+    SELECT region, SUM(revenue) AS total
+    FROM read_parquet('sales.parquet')
+    GROUP BY region
+    ORDER BY total DESC
+""")
 print(result)
 ```
 
-### Query Results
+### Create Tables and Run Queries
 
 ```python
-result = db.sql("SELECT name, age FROM users")
+db = slothdb.connect("my.slothdb")
 
-# Access metadata
-print(result.column_names)   # ['name', 'age']
-print(result.column_count)   # 2
-print(result.row_count)      # number of rows
-print(len(result))           # same as row_count
+# Create table
+db.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)")
+db.execute("INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25)")
 
-# Fetch rows
-row = result.fetchone()      # first row as tuple: ('Alice', 30)
-rows = result.fetchall()     # all rows as list of tuples
-
-# Pretty print
+# Query
+result = db.sql("SELECT * FROM users WHERE age > 20")
 print(result)
 # name       | age
 # -----------+-----------
 # Alice      | 30
 # Bob        | 25
+```
+
+### Working with Results
+
+```python
+result = db.sql("SELECT name, age FROM users")
+
+# Metadata
+result.column_names   # ['name', 'age']
+result.column_count   # 2
+result.row_count      # number of rows
+len(result)           # same as row_count
+
+# Fetch data
+result.fetchone()     # first row as tuple: ('Alice', 30)
+result.fetchall()     # all rows as list of tuples
 ```
 
 ### Pandas Integration
@@ -985,59 +937,57 @@ print(result)
 import slothdb
 
 db = slothdb.connect()
-db.execute("CREATE TABLE t AS SELECT * FROM read_csv('sales.csv')")
+result = db.sql("""
+    SELECT region, SUM(revenue) AS total
+    FROM read_csv('sales.csv')
+    GROUP BY region
+""")
 
-result = db.sql("SELECT region, SUM(revenue) AS total FROM t GROUP BY region")
-df = result.fetchdf()  # returns a pandas DataFrame
-
+df = result.fetchdf()  # pandas DataFrame
 print(df)
-#       region    total
-# 0    US-East  1250000
-# 1    US-West   980000
-# 2     Europe   730000
+#     region    total
+# 0  US-East  1250000
+# 1  US-West   980000
+# 2   Europe   730000
 ```
 
 ### Context Manager
 
 ```python
-# Automatically closes connection when done
 with slothdb.connect("analytics.slothdb") as db:
-    db.execute("INSERT INTO logs VALUES (1, 'event', NOW())")
+    db.execute("INSERT INTO logs VALUES (1, 'click', NOW())")
     result = db.sql("SELECT COUNT(*) FROM logs")
     print(result.fetchone())
+# connection is automatically closed
 ```
 
-### Full Python Example
+### End-to-End Example
 
 ```python
 import slothdb
 
-# Connect to persistent database
 db = slothdb.connect("company.slothdb")
 
-# Create table and load data
+# Load CSV into a persistent table
 db.execute("""
     CREATE TABLE IF NOT EXISTS employees AS
     SELECT * FROM read_csv('employees.csv')
 """)
 
-# Analytical query with window functions
+# Analytics with window functions
 result = db.sql("""
-    SELECT
-        name,
-        department,
-        salary,
+    SELECT name, department, salary,
         AVG(salary) OVER (PARTITION BY department) AS dept_avg,
-        RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS dept_rank
+        RANK() OVER (PARTITION BY department ORDER BY salary DESC) AS rank
     FROM employees
-    ORDER BY department, dept_rank
+    ORDER BY department, rank
 """)
 
-# Export to pandas
+# To pandas
 df = result.fetchdf()
 print(df.head(20))
 
-# Export results to Parquet
+# Export to Parquet
 db.execute("""
     COPY (SELECT * FROM employees WHERE hire_date >= '2023-01-01')
     TO 'recent_hires.parquet' WITH (FORMAT PARQUET)
@@ -1046,81 +996,73 @@ db.execute("""
 db.close()
 ```
 
+### Python API Reference
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `slothdb.connect(path="")` | `Connection` | Connect to a database. Empty = in-memory. |
+| `conn.sql(query)` | `QueryResult` | Execute query and return results |
+| `conn.execute(query)` | `QueryResult` | Execute statement (alias for sql) |
+| `conn.close()` | — | Close the connection |
+| `result.column_names` | `list[str]` | Column names |
+| `result.column_count` | `int` | Number of columns |
+| `result.row_count` | `int` | Number of rows |
+| `result.fetchone()` | `tuple` | First row |
+| `result.fetchall()` | `list[tuple]` | All rows |
+| `result.fetchdf()` | `DataFrame` | Convert to pandas (requires pandas) |
+
 ---
 
-## C/C++ API
+## 7. C/C++ API
 
-### Including SlothDB
+### Quick Start
 
 ```c
 #include "slothdb/api/slothdb.h"
-```
 
-Link against the `slothdb` library when building.
-
-### Database Lifecycle
-
-```c
 slothdb_database *db;
 slothdb_connection *conn;
+slothdb_result *result;
 
-// Open database (empty string or NULL for in-memory)
-slothdb_open("analytics.slothdb", &db);  // persistent
-slothdb_open("", &db);                   // in-memory
-slothdb_open(NULL, &db);                 // in-memory
-
-// Create a connection
+slothdb_open("analytics.slothdb", &db);   // or "" for in-memory
 slothdb_connect(db, &conn);
+slothdb_query(conn, "SELECT 42 AS answer", &result);
 
-// ... use the connection ...
+printf("Answer: %d\n", slothdb_value_int32(result, 0, 0));
 
-// Clean up
+slothdb_free_result(result);
 slothdb_disconnect(conn);
 slothdb_close(db);
 ```
 
-### Executing Queries
+### Query and Read Results
 
 ```c
 slothdb_result *result;
-slothdb_status status;
+slothdb_status status = slothdb_query(conn,
+    "SELECT name, salary FROM employees ORDER BY salary DESC", &result);
 
-status = slothdb_query(conn, "SELECT 42 AS answer", &result);
 if (status != SLOTHDB_OK) {
-    const char *error = slothdb_result_error(result);
-    fprintf(stderr, "Query failed: %s\n", error);
+    fprintf(stderr, "Error: %s\n", slothdb_result_error(result));
     slothdb_free_result(result);
     return;
 }
 
-// ... read results ...
+uint64_t rows = slothdb_row_count(result);
+uint64_t cols = slothdb_column_count(result);
 
-slothdb_free_result(result);
-```
-
-### Reading Results
-
-```c
-slothdb_result *result;
-slothdb_query(conn, "SELECT name, salary FROM employees", &result);
-
-uint64_t num_cols = slothdb_column_count(result);
-uint64_t num_rows = slothdb_row_count(result);
-
-// Print column headers
-for (uint64_t c = 0; c < num_cols; c++) {
-    printf("%s\t", slothdb_column_name(result, c));
-}
+// Print headers
+for (uint64_t c = 0; c < cols; c++)
+    printf("%-20s", slothdb_column_name(result, c));
 printf("\n");
 
 // Print rows
-for (uint64_t r = 0; r < num_rows; r++) {
-    for (uint64_t c = 0; c < num_cols; c++) {
-        if (slothdb_value_is_null(result, r, c)) {
-            printf("NULL\t");
-        } else {
-            printf("%s\t", slothdb_value_varchar(result, r, c));
-        }
+for (uint64_t r = 0; r < rows; r++) {
+    for (uint64_t c = 0; c < cols; c++) {
+        if (slothdb_value_is_null(result, r, c))
+            printf("%-20s", "NULL");
+        else
+            printf("%-20s", slothdb_value_varchar(result, r, c));
     }
     printf("\n");
 }
@@ -1128,17 +1070,49 @@ for (uint64_t r = 0; r < num_rows; r++) {
 slothdb_free_result(result);
 ```
 
-**Value accessors by type:**
+### Query Files from C
+
+```c
+// Query a CSV file
+slothdb_query(conn, "SELECT * FROM read_csv('data.csv')", &result);
+
+// Query Parquet
+slothdb_query(conn,
+    "SELECT region, SUM(revenue) FROM read_parquet('sales.parquet') GROUP BY region",
+    &result);
+
+// Load file into a table
+slothdb_query(conn,
+    "CREATE TABLE events AS SELECT * FROM read_parquet('events.parquet')",
+    &result);
+slothdb_free_result(result);
+```
+
+### Error Handling
+
+```c
+slothdb_status status = slothdb_query(conn, sql, &result);
+
+switch (status) {
+    case SLOTHDB_OK:      /* success */                                    break;
+    case SLOTHDB_ERROR:   fprintf(stderr, "%s\n", slothdb_result_error(result)); break;
+    case SLOTHDB_INVALID: fprintf(stderr, "Invalid argument\n");           break;
+}
+
+slothdb_free_result(result);  // always free, even on error
+```
+
+### Value Accessor Functions
 
 | Function | Returns | Use for |
 |----------|---------|---------|
 | `slothdb_value_int32(result, row, col)` | `int32_t` | INTEGER columns |
 | `slothdb_value_int64(result, row, col)` | `int64_t` | BIGINT columns |
-| `slothdb_value_double(result, row, col)` | `double` | FLOAT/DOUBLE columns |
-| `slothdb_value_varchar(result, row, col)` | `const char*` | Any column (string representation) |
-| `slothdb_value_is_null(result, row, col)` | `int` | Check for NULL (1 = NULL) |
+| `slothdb_value_double(result, row, col)` | `double` | FLOAT / DOUBLE columns |
+| `slothdb_value_varchar(result, row, col)` | `const char*` | Any column as string |
+| `slothdb_value_is_null(result, row, col)` | `int` | 1 if NULL, 0 otherwise |
 
-**Other result functions:**
+### Result Metadata Functions
 
 | Function | Returns | Description |
 |----------|---------|-------------|
@@ -1146,41 +1120,19 @@ slothdb_free_result(result);
 | `slothdb_row_count(result)` | `uint64_t` | Number of rows |
 | `slothdb_column_name(result, col)` | `const char*` | Column name |
 | `slothdb_column_type(result, col)` | `slothdb_type` | Column type enum |
-| `slothdb_result_error(result)` | `const char*` | Error message (if query failed) |
-| `slothdb_version()` | `const char*` | SlothDB version string |
+| `slothdb_result_error(result)` | `const char*` | Error message |
+| `slothdb_version()` | `const char*` | Version string |
 
-**Type enum values:**
+### Type Enum
 
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `SLOTHDB_TYPE_BOOLEAN` | 2 | Boolean |
-| `SLOTHDB_TYPE_INTEGER` | 5 | 32-bit integer |
-| `SLOTHDB_TYPE_BIGINT` | 6 | 64-bit integer |
-| `SLOTHDB_TYPE_FLOAT` | 11 | 32-bit float |
-| `SLOTHDB_TYPE_DOUBLE` | 12 | 64-bit float |
-| `SLOTHDB_TYPE_VARCHAR` | 15 | String |
-
-### Error Handling
-
-```c
-slothdb_result *result;
-slothdb_status status = slothdb_query(conn, sql, &result);
-
-switch (status) {
-    case SLOTHDB_OK:
-        // Success — read results
-        break;
-    case SLOTHDB_ERROR:
-        fprintf(stderr, "Error: %s\n", slothdb_result_error(result));
-        break;
-    case SLOTHDB_INVALID:
-        fprintf(stderr, "Invalid argument\n");
-        break;
-}
-
-// Always free the result, even on error
-slothdb_free_result(result);
-```
+| Constant | Value |
+|----------|-------|
+| `SLOTHDB_TYPE_BOOLEAN` | 2 |
+| `SLOTHDB_TYPE_INTEGER` | 5 |
+| `SLOTHDB_TYPE_BIGINT` | 6 |
+| `SLOTHDB_TYPE_FLOAT` | 11 |
+| `SLOTHDB_TYPE_DOUBLE` | 12 |
+| `SLOTHDB_TYPE_VARCHAR` | 15 |
 
 ### Full C Example
 
@@ -1193,31 +1145,28 @@ int main() {
     slothdb_connection *conn;
     slothdb_result *result;
 
-    // Open persistent database
     slothdb_open("company.slothdb", &db);
     slothdb_connect(db, &conn);
 
-    // Create table
-    slothdb_query(conn, "CREATE TABLE IF NOT EXISTS employees ("
-                        "  id INTEGER PRIMARY KEY,"
-                        "  name VARCHAR NOT NULL,"
-                        "  salary DOUBLE"
-                        ")", &result);
+    // Create and populate
+    slothdb_query(conn,
+        "CREATE TABLE IF NOT EXISTS employees ("
+        "  id INTEGER PRIMARY KEY, name VARCHAR NOT NULL, salary DOUBLE"
+        ")", &result);
     slothdb_free_result(result);
 
-    // Insert data
-    slothdb_query(conn, "INSERT INTO employees VALUES "
-                        "(1, 'Alice', 95000),"
-                        "(2, 'Bob', 87000),"
-                        "(3, 'Charlie', 110000)", &result);
+    slothdb_query(conn,
+        "INSERT INTO employees VALUES "
+        "(1, 'Alice', 95000), (2, 'Bob', 87000), (3, 'Charlie', 110000)",
+        &result);
     slothdb_free_result(result);
 
-    // Query
-    slothdb_status status = slothdb_query(conn,
+    // Query with window function
+    slothdb_status s = slothdb_query(conn,
         "SELECT name, salary, RANK() OVER (ORDER BY salary DESC) AS rank "
         "FROM employees", &result);
 
-    if (status == SLOTHDB_OK) {
+    if (s == SLOTHDB_OK) {
         for (uint64_t r = 0; r < slothdb_row_count(result); r++) {
             printf("%s earns $%.0f (rank %s)\n",
                 slothdb_value_varchar(result, r, 0),
@@ -1233,14 +1182,13 @@ int main() {
 }
 ```
 
-### Full C++ Example
+### C++ RAII Wrapper
 
 ```cpp
 #include <iostream>
-#include <string>
+#include <stdexcept>
 #include "slothdb/api/slothdb.h"
 
-// RAII wrapper for SlothDB
 class SlothDB {
     slothdb_database *db_ = nullptr;
     slothdb_connection *conn_ = nullptr;
@@ -1255,52 +1203,39 @@ public:
     }
 
     void execute(const char *sql) {
-        slothdb_result *result;
-        slothdb_status s = slothdb_query(conn_, sql, &result);
-        if (s != SLOTHDB_OK) {
-            std::string err = slothdb_result_error(result);
-            slothdb_free_result(result);
+        slothdb_result *r;
+        if (slothdb_query(conn_, sql, &r) != SLOTHDB_OK) {
+            std::string err = slothdb_result_error(r);
+            slothdb_free_result(r);
             throw std::runtime_error(err);
         }
-        slothdb_free_result(result);
+        slothdb_free_result(r);
     }
 
     void query(const char *sql) {
-        slothdb_result *result;
-        slothdb_status s = slothdb_query(conn_, sql, &result);
-        if (s != SLOTHDB_OK) {
-            std::string err = slothdb_result_error(result);
-            slothdb_free_result(result);
+        slothdb_result *r;
+        if (slothdb_query(conn_, sql, &r) != SLOTHDB_OK) {
+            std::string err = slothdb_result_error(r);
+            slothdb_free_result(r);
             throw std::runtime_error(err);
         }
-
-        uint64_t cols = slothdb_column_count(result);
-        uint64_t rows = slothdb_row_count(result);
-
-        for (uint64_t c = 0; c < cols; c++)
-            std::cout << slothdb_column_name(result, c) << "\t";
+        for (uint64_t c = 0; c < slothdb_column_count(r); c++)
+            std::cout << slothdb_column_name(r, c) << "\t";
         std::cout << "\n";
-
-        for (uint64_t r = 0; r < rows; r++) {
-            for (uint64_t c = 0; c < cols; c++) {
-                if (slothdb_value_is_null(result, r, c))
-                    std::cout << "NULL\t";
-                else
-                    std::cout << slothdb_value_varchar(result, r, c) << "\t";
-            }
+        for (uint64_t row = 0; row < slothdb_row_count(r); row++) {
+            for (uint64_t c = 0; c < slothdb_column_count(r); c++)
+                std::cout << (slothdb_value_is_null(r, row, c)
+                    ? "NULL" : slothdb_value_varchar(r, row, c)) << "\t";
             std::cout << "\n";
         }
-        slothdb_free_result(result);
+        slothdb_free_result(r);
     }
 };
 
 int main() {
     SlothDB db("analytics.slothdb");
-
     db.execute("CREATE TABLE events AS SELECT * FROM read_csv('events.csv')");
     db.query("SELECT event_type, COUNT(*) FROM events GROUP BY event_type ORDER BY COUNT(*) DESC LIMIT 10");
-
-    return 0;
 }
 ```
 
@@ -1310,12 +1245,12 @@ int main() {
 cmake_minimum_required(VERSION 3.14)
 project(my_app)
 
-# Option A: SlothDB as a subdirectory
+# Option A: as subdirectory
 add_subdirectory(slothdb)
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE slothdb_lib)
 
-# Option B: Find installed SlothDB
+# Option B: find installed library
 find_library(SLOTHDB_LIB slothdb)
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE ${SLOTHDB_LIB})
@@ -1333,88 +1268,96 @@ cl /std:c++20 main.cpp /I path\to\include slothdb.lib
 
 ---
 
-## CLI Shell Reference
+## 8. CLI Shell
 
-### Shell Commands
+### Running SlothDB
+
+```bash
+slothdb                          # in-memory database
+slothdb analytics.slothdb        # persistent database (creates file if needed)
+slothdb -c "SELECT 42"           # run one query and exit
+```
+
+### Shell Dot-Commands
 
 | Command | Description |
 |---------|-------------|
 | `.help` | Show available commands |
-| `.quit` or `.exit` | Exit the shell |
-| `.tables` | List all tables in the database |
+| `.quit` / `.exit` | Exit the shell |
+| `.tables` | List all tables |
 | `.schema` | Show table schemas |
 | `.version` | Show SlothDB version |
 
-### Command-Line Flags
+### Practical Shell Examples
 
-```bash
-slothdb                            # in-memory database, interactive shell
-slothdb mydata.slothdb             # persistent database
-slothdb -c "SELECT 42 AS answer"   # run a query and exit
+**Explore a CSV file:**
+
+```
+$ slothdb
+slothdb> SELECT * FROM 'sales.csv' LIMIT 5;
+slothdb> SELECT COUNT(*) FROM 'sales.csv';
+slothdb> SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region;
+slothdb> .quit
 ```
 
-**Examples:**
+**Build a persistent analytics database:**
+
+```
+$ slothdb analytics.slothdb
+slothdb> CREATE TABLE sales AS SELECT * FROM read_csv('sales_2024.csv');
+slothdb> CREATE TABLE users AS SELECT * FROM read_json('users.json');
+slothdb> SELECT u.name, SUM(s.amount)
+   ...>   FROM sales s JOIN users u ON s.user_id = u.id
+   ...>   GROUP BY u.name ORDER BY SUM(s.amount) DESC LIMIT 10;
+slothdb> .quit
+
+$ slothdb analytics.slothdb    # next time, tables are still there
+slothdb> .tables
+slothdb> SELECT COUNT(*) FROM sales;
+```
+
+**Quick one-liners from the terminal:**
 
 ```bash
-# Quick one-liner query on a CSV
-slothdb -c "SELECT COUNT(*) FROM 'sales.csv'"
+# Count rows in a CSV
+slothdb -c "SELECT COUNT(*) FROM 'data.csv'"
 
-# Interactive exploration of a Parquet file
-slothdb
-slothdb> SELECT * FROM read_parquet('events.parquet') LIMIT 10;
-slothdb> SELECT event_type, COUNT(*) FROM read_parquet('events.parquet') GROUP BY event_type;
-slothdb> .quit
+# Top 5 departments by average salary
+slothdb -c "SELECT dept, AVG(salary) FROM 'employees.parquet' GROUP BY dept ORDER BY 2 DESC LIMIT 5"
 
-# Persistent database workflow
-slothdb analytics.slothdb
-slothdb> CREATE TABLE sales AS SELECT * FROM read_csv('sales.csv');
-slothdb> SELECT region, SUM(revenue) FROM sales GROUP BY region;
-slothdb> .quit
-
-# Next time, your data is still there
-slothdb analytics.slothdb
-slothdb> SELECT COUNT(*) FROM sales;
+# Convert CSV to Parquet
+slothdb -c "COPY (SELECT * FROM 'big.csv') TO 'big.parquet' WITH (FORMAT PARQUET)"
 ```
 
 ---
 
-## GPU Acceleration
+## 9. GPU Acceleration
 
-SlothDB automatically offloads heavy operations to the GPU when the dataset exceeds 100,000 rows.
+SlothDB automatically uses your GPU when the dataset exceeds 100,000 rows. No code changes needed — the same SQL runs faster.
 
-**Supported backends:**
-- **CUDA** — NVIDIA GPUs
-- **Metal** — Apple Silicon (M1/M2/M3/M4)
-- **CPU fallback** — automatic when no GPU is available
+**Supported GPUs:**
+- **NVIDIA** — via CUDA
+- **Apple Silicon** (M1/M2/M3/M4) — via Metal
+- No GPU? Automatic CPU fallback.
 
-**GPU-accelerated operations:**
-- Aggregation (GROUP BY, SUM, COUNT, AVG)
-- Sorting (ORDER BY)
-- Filtering (WHERE)
+**What gets accelerated:**
+- `GROUP BY` aggregations
+- `ORDER BY` sorting
+- `WHERE` filtering
 
 **Build with GPU support:**
 
 ```bash
-# NVIDIA CUDA
-cmake -B build -DSLOTHDB_CUDA=ON
-cmake --build build
-
-# Apple Metal
-cmake -B build -DSLOTHDB_METAL=ON
+cmake -B build -DSLOTHDB_CUDA=ON     # NVIDIA
+cmake -B build -DSLOTHDB_METAL=ON    # Apple Silicon
 cmake --build build
 ```
 
-No code changes needed — the same SQL runs on CPU or GPU automatically.
-
 ---
 
-## Extensions
+## 10. Extensions
 
-SlothDB supports dynamic extensions via a stable C ABI. Extensions built for one version are guaranteed to work on future versions.
-
-**Loading an extension:**
-
-Extensions are loaded as shared libraries (`.so` / `.dll` / `.dylib`).
+SlothDB supports custom extensions via a **stable C ABI**. Extensions built for v1.0 are guaranteed to work on v2.0 and beyond.
 
 **Building an extension:**
 
@@ -1423,8 +1366,9 @@ Extensions are loaded as shared libraries (`.so` / `.dll` / `.dylib`).
 
 SLOTHDB_EXTENSION_INIT(my_extension) {
     // Register custom functions, types, or table functions
-    // using the extension API
 }
 ```
 
-See [`include/slothdb/extension/extension_api.h`](../include/slothdb/extension/extension_api.h) for the full extension API.
+Extensions are loaded as shared libraries (`.so` / `.dll` / `.dylib`).
+
+See [`include/slothdb/extension/extension_api.h`](../include/slothdb/extension/extension_api.h) for the full API.
