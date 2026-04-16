@@ -1,20 +1,30 @@
 <p align="center">
   <img src="assets/logo.svg" width="400" alt="SlothDB Logo">
-  <p align="center">
-    <b>An embedded analytical database engine</b><br>
-    Zero dependencies &middot; Single file &middot; GPU accelerated
-  </p>
-  <p align="center">
-    <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-    <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest"><img src="https://img.shields.io/github/v/release/SouravRoy-ETL/slothdb?label=release" alt="Release"></a>
-    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-    <a href="https://github.com/SouravRoy-ETL/slothdb/stargazers"><img src="https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social" alt="Stars"></a>
-  </p>
+</p>
+
+<p align="center">
+  <b>Query CSV, Parquet, JSON, and Excel with SQL. No server. No setup. No dependencies.</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest"><img src="https://img.shields.io/github/v/release/SouravRoy-ETL/slothdb?label=release" alt="Release"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://github.com/SouravRoy-ETL/slothdb/stargazers"><img src="https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social" alt="Stars"></a>
+</p>
+
+<p align="center">
+  <a href="docs/DOCUMENTATION.md"><b>Documentation</b></a> &middot;
+  <a href="docs/DOCUMENTATION.md#2-query-your-files">File Formats</a> &middot;
+  <a href="docs/DOCUMENTATION.md#6-python-api">Python API</a> &middot;
+  <a href="docs/DOCUMENTATION.md#7-cc-api">C/C++ API</a> &middot;
+  <a href="docs/DOCUMENTATION.md#4-sql-guide">SQL Guide</a> &middot;
+  <a href="docs/DOCUMENTATION.md#5-all-functions">130+ Functions</a>
 </p>
 
 ---
 
-SlothDB is a fast, in-process OLAP database for analytics. It runs inside your application with no server, no setup, and no external dependencies. Query CSV, Parquet, JSON, Excel, and more — directly from SQL.
+SlothDB is an embedded analytical database engine. It runs inside your application — no server, no setup, no external dependencies. Just point SQL at your files:
 
 ```sql
 SELECT department, COUNT(*), AVG(salary)
@@ -24,130 +34,78 @@ GROUP BY department
 ORDER BY AVG(salary) DESC;
 ```
 
-## Installation
+## Install
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash
+
+# Windows — download slothdb.exe
+# https://github.com/SouravRoy-ETL/slothdb/releases/latest
+
+# Python
+pip install slothdb
+```
+
+<details>
+<summary><b>More platforms</b></summary>
 
 | Platform | Command |
 |----------|---------|
-| **Linux / macOS** | `curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh \| bash` |
-| **Ubuntu / Debian** | `sudo dpkg -i slothdb_0.1.0_amd64.deb` ([download .deb](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
-| **Fedora / RHEL** | `sudo rpm -i slothdb-0.1.0.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
-| **Arch Linux** | `makepkg -si` (use [PKGBUILD](packaging/arch/PKGBUILD)) |
-| **macOS (Homebrew)** | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
-| **Windows** | Download [`slothdb.exe`](https://github.com/SouravRoy-ETL/slothdb/releases/latest) |
-| **Python** | `pip install slothdb` |
+| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.0_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
+| Fedora / RHEL | `sudo rpm -i slothdb-0.1.0.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
+| Arch Linux | `makepkg -si` ([PKGBUILD](packaging/arch/PKGBUILD)) |
+| macOS (Homebrew) | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
+| Build from source | See [below](#build-from-source) |
 
-Then just run:
+</details>
+
+## Query Any File with SQL
+
+No import step. No schema definition. Just query:
+
+```sql
+-- CSV
+SELECT * FROM 'sales.csv';
+SELECT region, SUM(revenue) FROM read_csv('data/*.csv') GROUP BY region;
+
+-- Parquet (fastest — columnar, compressed, filter pushdown)
+SELECT * FROM read_parquet('events.parquet') WHERE event_date > '2024-01-01';
+
+-- JSON / NDJSON
+SELECT status, COUNT(*) FROM 'api_logs.json' GROUP BY status;
+
+-- Excel
+SELECT * FROM read_xlsx('quarterly_report.xlsx');
+
+-- Avro, Arrow IPC, SQLite — all built-in, no extensions
+SELECT * FROM read_avro('events.avro');
+SELECT * FROM sqlite_scan('app.db', 'users');
+```
+
+**Export results to any format:**
+
+```sql
+COPY (SELECT * FROM 'big.csv' WHERE year >= 2024) TO 'filtered.parquet' WITH (FORMAT PARQUET);
+```
+
+> **[Full file format guide](docs/DOCUMENTATION.md#2-query-your-files)** — CSV, Parquet, JSON, Excel, Arrow, Avro, SQLite with examples
+
+## Persistent Database
+
 ```bash
-slothdb
+slothdb analytics.slothdb    # creates or opens a .slothdb file
 ```
-
-**Build from source:**
-
-```bash
-git clone https://github.com/SouravRoy-ETL/slothdb.git
-cd slothdb
-cmake -B build -DSLOTHDB_BUILD_SHELL=ON
-cmake --build build --config Release
-./build/src/Release/slothdb
-```
-
-## Quick Start
-
-```
-$ ./slothdb
-
-slothdb> CREATE TABLE t (name VARCHAR, score INTEGER);
-slothdb> INSERT INTO t VALUES ('Alice', 95), ('Bob', 87), ('Charlie', 92);
-slothdb> SELECT name, score, RANK() OVER (ORDER BY score DESC) FROM t;
-name            | score           | expr
-----------------+-----------------+----------------
-Alice           | 95              | 1
-Charlie         | 92              | 2
-Bob             | 87              | 3
-```
-
-Query files without importing:
 
 ```sql
-SELECT * FROM 'data.csv';                              -- CSV
-SELECT * FROM read_parquet('logs/*.parquet');           -- Parquet with globs
-SELECT * FROM read_json('events.json');                -- JSON
-SELECT * FROM read_xlsx('report.xlsx');                -- Excel
-SELECT * FROM sqlite_scan('app.db', 'users');          -- SQLite
+CREATE TABLE sales AS SELECT * FROM read_csv('sales_2024.csv');
+CREATE TABLE events AS SELECT * FROM read_parquet('events.parquet');
 
-COPY results TO 'output.parquet' WITH (FORMAT PARQUET); -- Export
+-- Next session, tables are still here
+SELECT region, SUM(revenue) FROM sales GROUP BY region;
 ```
 
-Persistent database:
-
-```
-$ ./slothdb analytics.slothdb    # data saved automatically
-```
-
-## Why Switch from DuckDB to SlothDB?
-
-DuckDB is great. SlothDB is what comes next.
-
-### 1. GPU Acceleration — 20-100x faster on large datasets
-
-DuckDB runs on CPU only. SlothDB offloads aggregation, sorting, and filtering to your GPU — **CUDA** on NVIDIA, **Metal** on Apple Silicon. On a 10M-row GROUP BY, that's the difference between 5 seconds and 50 milliseconds.
-
-```sql
--- This runs on GPU automatically when data > 100K rows
-SELECT department, COUNT(*), AVG(salary) FROM employees GROUP BY department;
-```
-
-### 2. Your Extensions Will Never Break Again
-
-DuckDB extensions break on every release because they depend on internal C++ APIs. Teams waste days fixing extensions after upgrades. SlothDB's **stable C ABI** guarantees backward compatibility — an extension built for v1.0 works on v1.1, v2.0, and beyond. Zero maintenance.
-
-### 3. Errors You Can Actually Handle in Code
-
-DuckDB throws free-form error strings that change between versions. Your error-handling code breaks silently. SlothDB gives every error a **stable numeric code** + category — catch `ErrorCode::TABLE_NOT_FOUND` (2000) instead of parsing `"Table 'foo' not found"`.
-
-```cpp
-try { db.sql("SELECT * FROM nonexistent"); }
-catch (const SlothDBException &e) {
-    if (e.GetCode() == ErrorCode::TABLE_NOT_FOUND) { /* handle */ }
-    // Works in v1.0, v2.0, v10.0 — the code never changes.
-}
-```
-
-### 4. Every File Format Built In — No Extensions to Install
-
-DuckDB requires installing extensions for Excel, Avro, SQLite, and HTTP access. SlothDB ships everything **out of the box**:
-
-```sql
-SELECT * FROM 'report.xlsx';                           -- Excel (DuckDB: needs extension)
-SELECT * FROM read_avro('events.avro');                -- Avro (DuckDB: needs extension)
-SELECT * FROM sqlite_scan('app.db', 'users');          -- SQLite (DuckDB: needs extension)
-SELECT * FROM read_csv('data/*.csv');                  -- Glob patterns
-```
-
-### 5. QUALIFY — Snowflake's Best Feature, Built In
-
-Filter window function results without subqueries. One query instead of three:
-
-```sql
--- Get the top earner per department — no subquery needed
-SELECT name, department, salary
-FROM employees
-QUALIFY ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) = 1;
-```
-
-### Full Comparison
-
-| | SlothDB | DuckDB |
-|-|---------|--------|
-| **GPU acceleration** | CUDA + Apple Metal (20-100x on large data) | CPU only |
-| **Extension stability** | Stable C ABI — never breaks | C++ internal API — breaks every release |
-| **Error handling** | Numeric codes, stable across versions | Free-form strings, change between versions |
-| **Built-in formats** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite | CSV, Parquet, JSON (others need extensions) |
-| **QUALIFY clause** | Yes | Yes |
-| **Crash-safe persistence** | Atomic checkpoint (write-then-rename) | Yes |
-| **Memory safety** | Bounds-checked file parsing, DoS limits | Some unchecked paths |
-| **Zero dependencies** | Yes | Yes |
-| **SQL features** | 130+ | 130+ |
+> **[Working with large datasets](docs/DOCUMENTATION.md#3-working-with-large-datasets)** — when to query directly vs. import vs. convert to Parquet
 
 ## Python
 
@@ -157,16 +115,21 @@ import slothdb
 db = slothdb.connect()                    # in-memory
 db = slothdb.connect("analytics.slothdb") # persistent
 
+# Query files directly
+result = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000")
+df = result.fetchdf()  # pandas DataFrame
+
+# Window functions, CTEs, QUALIFY — full SQL
 result = db.sql("""
-    SELECT department, COUNT(*), AVG(salary) 
-    FROM 'employees.csv' 
-    GROUP BY department
+    SELECT name, department, salary
+    FROM 'employees.parquet'
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) = 1
 """)
-print(result)
-df = result.fetchdf()  # → pandas DataFrame
 ```
 
-## C/C++ Embedding
+> **[Full Python API reference](docs/DOCUMENTATION.md#6-python-api)** — connect, query, results, pandas integration, context manager
+
+## C/C++
 
 ```c
 #include "slothdb/api/slothdb.h"
@@ -177,50 +140,107 @@ slothdb_result *result;
 
 slothdb_open("analytics.slothdb", &db);
 slothdb_connect(db, &conn);
-slothdb_query(conn, "SELECT 42 AS answer", &result);
-printf("%d\n", slothdb_value_int32(result, 0, 0));
+slothdb_query(conn, "SELECT region, SUM(revenue) FROM read_csv('sales.csv') GROUP BY region", &result);
+
+for (uint64_t r = 0; r < slothdb_row_count(result); r++)
+    printf("%s: %s\n", slothdb_value_varchar(result, r, 0), slothdb_value_varchar(result, r, 1));
+
 slothdb_free_result(result);
 slothdb_disconnect(conn);
 slothdb_close(db);
 ```
 
+> **[Full C/C++ API reference](docs/DOCUMENTATION.md#7-cc-api)** — lifecycle, queries, results, error handling, CMake integration, RAII wrapper
+
+## Why SlothDB over DuckDB?
+
+### GPU Acceleration
+
+DuckDB is CPU-only. SlothDB offloads aggregation, sorting, and filtering to **CUDA** (NVIDIA) or **Metal** (Apple Silicon) — automatically, when data exceeds 100K rows.
+
+### Extensions That Never Break
+
+DuckDB extensions depend on internal C++ APIs and break on every release. SlothDB uses a **stable C ABI** — an extension built for v1.0 works on v2.0 and beyond.
+
+### Structured Error Codes
+
+DuckDB throws free-form strings. SlothDB gives every error a **stable numeric code** — catch `ErrorCode::TABLE_NOT_FOUND` (2000) instead of parsing `"Table 'foo' not found"`.
+
+### Every Format Built In
+
+DuckDB needs extensions for Excel, Avro, SQLite. SlothDB ships **7 formats out of the box** — CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite. Nothing to install.
+
+### Full Comparison
+
+| | SlothDB | DuckDB |
+|-|---------|--------|
+| GPU acceleration | CUDA + Metal | CPU only |
+| Extension stability | Stable C ABI | Breaks every release |
+| Error handling | Numeric codes | Free-form strings |
+| Built-in formats | 7 (CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite) | 3 (others need extensions) |
+| QUALIFY clause | Yes | Yes |
+| Crash-safe persistence | Atomic checkpoint | Yes |
+| Zero dependencies | Yes | Yes |
+| SQL features | 130+ | 130+ |
+
 ## Features
 
-- **130+ SQL features** — SELECT, JOINs, CTEs, window functions, aggregates, MERGE, EXPLAIN, transactions ([full reference](docs/SQL_REFERENCE.md))
-- **QUALIFY clause** — filter on window function results (Snowflake-style)
-- **7 file formats** — CSV, JSON, Parquet, Arrow, Avro, Excel, SQLite — all built-in, no extensions
-- **GPU acceleration** — CUDA (NVIDIA) and Metal (Apple Silicon) for large-scale analytics
-- **Single-file persistence** — `.slothdb` format with auto-save
-- **Query optimizer** — constant folding, filter pushdown, TopN optimization
-- **Vectorized execution** — columnar engine processing 2,048 values per batch
-- **Parallel execution** — morsel-driven parallelism across all CPU cores
-- **Compression** — RLE, dictionary, bitpacking with zone maps for scan skipping
-- **Extension system** — stable C ABI for third-party extensions
-- **325 tests** — 131,000+ assertions across all subsystems
+| Category | Details |
+|----------|---------|
+| **SQL** | 130+ features — JOINs, CTEs (recursive), window functions, QUALIFY, MERGE, subqueries, set operations |
+| **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in with auto-detection and glob patterns |
+| **Functions** | 70+ functions — string, math, date/time, aggregate, regex, trigonometric |
+| **Performance** | Vectorized columnar engine (2,048 values/batch), morsel-driven parallelism, GPU offload |
+| **Storage** | Single-file `.slothdb` persistence, RLE/dictionary/bitpacking compression, zone maps |
+| **Optimizer** | Constant folding, filter pushdown, TopN optimization |
+| **APIs** | CLI shell, Python (with pandas), C/C++ (stable ABI) |
+| **Reliability** | 325 tests, 131,000+ assertions, bounds-checked parsing, DoS limits |
 
 ## Documentation
 
-- **[Full Documentation](docs/DOCUMENTATION.md)** — complete guide with every SQL command, Python API, C/C++ API, and examples
-- [SQL Reference](docs/SQL_REFERENCE.md) — quick reference of SQL features, functions, and types
-- [Sample Data](examples/) — CSV and JSON files to try with SlothDB
-- [Contributing](CONTRIBUTING.md) — how to build, test, and submit changes
-- [Extension API](include/slothdb/extension/extension_api.h) — build custom extensions
+| | |
+|-|-|
+| **[Full Documentation](docs/DOCUMENTATION.md)** | Complete guide — install, file queries, SQL, Python, C/C++, GPU, extensions |
+| [Query Your Files](docs/DOCUMENTATION.md#2-query-your-files) | CSV, Parquet, JSON, Excel, Arrow, Avro, SQLite |
+| [Large Datasets](docs/DOCUMENTATION.md#3-working-with-large-datasets) | Import strategies, Parquet conversion, persistence |
+| [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide) | Joins, window functions, CTEs, QUALIFY, MERGE |
+| [All Functions](docs/DOCUMENTATION.md#5-all-functions) | 70+ built-in functions with examples |
+| [Python API](docs/DOCUMENTATION.md#6-python-api) | Connect, query, pandas, context manager |
+| [C/C++ API](docs/DOCUMENTATION.md#7-cc-api) | Lifecycle, queries, results, CMake, RAII |
+| [SQL Quick Reference](docs/SQL_REFERENCE.md) | One-page cheat sheet |
+| [Extension API](include/slothdb/extension/extension_api.h) | Build custom extensions |
 
-## Development
+## Build from Source
+
+```bash
+git clone https://github.com/SouravRoy-ETL/slothdb.git
+cd slothdb
+cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+./build/src/slothdb          # Linux/macOS
+build\src\Release\slothdb.exe  # Windows
+```
+
+**Run tests:**
 
 ```bash
 cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=ON
 cmake --build build --config Release
-ctest --test-dir build -C Release    # run 325 tests
+ctest --test-dir build -C Release    # 325 tests
 ```
 
 | Build Option | Description |
 |-------------|-------------|
-| `-DSLOTHDB_BUILD_SHELL=ON` | Build CLI |
-| `-DSLOTHDB_CUDA=ON` | Enable NVIDIA GPU |
-| `-DSLOTHDB_METAL=ON` | Enable Apple GPU |
+| `-DSLOTHDB_BUILD_SHELL=ON` | Build CLI shell |
+| `-DSLOTHDB_BUILD_TESTS=ON` | Build test suite |
+| `-DSLOTHDB_CUDA=ON` | Enable NVIDIA GPU acceleration |
+| `-DSLOTHDB_METAL=ON` | Enable Apple GPU acceleration |
 | `-DSLOTHDB_SANITIZERS=ON` | Enable ASan/UBSan |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions and contribution guidelines.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — use it however you want.
