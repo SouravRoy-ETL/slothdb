@@ -11,9 +11,11 @@
   <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest"><img src="https://img.shields.io/github/v/release/SouravRoy-ETL/slothdb?label=release" alt="Release"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/SouravRoy-ETL/slothdb/stargazers"><img src="https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social" alt="Stars"></a>
+  <a href="https://souravroy-etl.github.io/slothdb/"><img src="https://img.shields.io/badge/website-souravroy--etl.github.io/slothdb-6366f1?style=flat&logo=googlechrome&logoColor=white" alt="Website"></a>
 </p>
 
 <p align="center">
+  <a href="https://souravroy-etl.github.io/slothdb/"><b>Website</b></a> &middot;
   <a href="docs/DOCUMENTATION.md"><b>Documentation</b></a> &middot;
   <a href="docs/DOCUMENTATION.md#2-query-your-files">File Formats</a> &middot;
   <a href="docs/DOCUMENTATION.md#6-python-api">Python API</a> &middot;
