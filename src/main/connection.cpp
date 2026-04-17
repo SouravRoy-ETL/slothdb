@@ -697,17 +697,18 @@ QueryResult Connection::Query(const std::string &sql) {
                 }
             }
 
-            // Handle read_parquet table function.
+            // Handle read_parquet table function — schema only; scan is streamed
+            // at execution time via PhysicalParquetScan.
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "READ_PARQUET") {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
                     auto file_path = static_cast<ConstantExpression &>(*args[0]).value;
 
+                    // Open just to read the footer metadata (cheap).
                     ParquetReader reader(file_path);
                     auto col_names = reader.GetColumnNames();
                     auto col_types = reader.GetColumnTypes();
-                    auto rows = reader.ReadAll();
 
                     std::string tbl_name = sel.from_table->alias.empty()
                         ? "__read_parquet__" : sel.from_table->alias;
@@ -718,11 +719,13 @@ QueryResult Connection::Query(const std::string &sql) {
                     for (size_t i = 0; i < col_names.size(); i++)
                         cols.emplace_back(col_names[i], col_types[i]);
 
+                    if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-
-                    BulkLoadRows(*storage, col_types, rows);
+                    // Mark as parquet file-backed: PhysicalPlanner::PlanGet will
+                    // dispatch to PhysicalParquetScan instead of PhysicalTableScan.
+                    entry.SetParquetPath(file_path);
                     temp_tables.push_back(tbl_name);
                 }
             }

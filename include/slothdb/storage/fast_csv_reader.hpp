@@ -7,6 +7,14 @@
 #include <string>
 #include <vector>
 #include <cstdio>
+#include <cstring>
+
+#if defined(_M_X64) || defined(__x86_64__) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#endif
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 namespace slothdb {
 
@@ -40,6 +48,11 @@ public:
     // Other columns get NULL but delimiters are still scanned (for line boundaries).
     idx_t ReadChunkProjected(DataChunk &chunk, const std::vector<LogicalType> &types,
                               const std::vector<bool> &projection);
+
+    // Ultra-fast GROUP BY COUNT(*) on a single VARCHAR column. Takes a callback
+    // that receives (data, len) per row. Bypasses vector writes entirely.
+    template<class Fn>
+    idx_t ForEachVarcharCol(idx_t col_idx, idx_t num_cols, Fn &&fn);
 
     // Count remaining rows without parsing fields (fast path for COUNT(*)).
     idx_t CountRows();
@@ -77,5 +90,59 @@ private:
     bool owns_buffer_ = true;
     void *mmap_handle_ = nullptr;
 };
+
+template<class Fn>
+idx_t FastCSVReader::ForEachVarcharCol(idx_t col_idx, idx_t num_cols, Fn &&fn) {
+    if (has_header_ && !header_read_) ReadHeader();
+    (void)num_cols;
+    idx_t count = 0;
+    const char delim = delimiter_;
+
+    auto scan_to_delim = [&](const char *p) -> const char * {
+#if defined(_M_X64) || defined(__x86_64__) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+        const char *end = buffer_ + size_;
+        __m128i vd = _mm_set1_epi8(delim);
+        __m128i vn = _mm_set1_epi8('\n');
+        while (p + 16 <= end) {
+            __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i *>(p));
+            __m128i cmp = _mm_or_si128(_mm_cmpeq_epi8(chunk, vd), _mm_cmpeq_epi8(chunk, vn));
+            int mask = _mm_movemask_epi8(cmp);
+            if (mask) {
+#ifdef _MSC_VER
+                unsigned long idx; _BitScanForward(&idx, (unsigned long)mask);
+                return p + idx;
+#else
+                return p + __builtin_ctz(mask);
+#endif
+            }
+            p += 16;
+        }
+        while (p < end && *p != delim && *p != '\n') p++;
+        return p;
+#else
+        const char *end = buffer_ + size_;
+        while (p < end && *p != delim && *p != '\n') p++;
+        return p;
+#endif
+    };
+
+    while (pos_ < size_) {
+        for (idx_t c = 0; c < col_idx; c++) {
+            const char *d = scan_to_delim(buffer_ + pos_);
+            if (d == buffer_ + size_ || *d != delim) { pos_ = size_; break; }
+            pos_ = (size_t)(d - buffer_ + 1);
+        }
+        if (pos_ >= size_) break;
+        const char *field_start = buffer_ + pos_;
+        const char *field_end = scan_to_delim(field_start);
+        size_t field_len = field_end - field_start;
+        fn(field_start, field_len);
+        pos_ = (size_t)(field_end - buffer_);
+        while (pos_ < size_ && buffer_[pos_] != '\n') pos_++;
+        if (pos_ < size_) pos_++;
+        count++;
+    }
+    return count;
+}
 
 } // namespace slothdb

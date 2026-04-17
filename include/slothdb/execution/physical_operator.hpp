@@ -35,6 +35,14 @@ public:
     // Get the next chunk of data. Returns false when done.
     virtual bool GetData(DataChunk &result) = 0;
 
+    // Projection pushdown: mark which output columns consumers need.
+    // Operators may use this to skip writing unneeded columns.
+    virtual void SetNeededOutputs(const std::vector<bool> &) {}
+
+    // LIMIT pushdown: hint how many rows the consumer will actually read.
+    // Sort-heavy operators can use this for partial_sort / nth_element.
+    virtual void SetRowLimit(idx_t) {}
+
     std::vector<std::unique_ptr<PhysicalOperator>> children;
 
 private:

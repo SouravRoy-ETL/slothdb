@@ -55,3 +55,6 @@ real-life-testing/tiny.csv
 real-life-testing/tiny.parquet
 real-life-testing/regions.csv
 real-life-testing/test.csv
+
+# Local benchmark data (CSV/parquet files + external binaries)
+real-life-testing/

@@ -11,6 +11,84 @@
 #include <thread>
 #include <atomic>
 
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#define SLOTHDB_HAS_SSE2 1
+#endif
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
+namespace slothdb_internal {
+
+// SSE2-inlined: find first byte equal to `target` starting at p (up to end).
+// Returns pointer to match or end if not found. Faster than memchr for
+// short-to-medium scans due to no function call overhead.
+static inline const char *find_char_simd(const char *p, const char *end, char target) {
+#ifdef SLOTHDB_HAS_SSE2
+    const __m128i tv = _mm_set1_epi8(target);
+    // Align first.
+    while (p < end && (reinterpret_cast<uintptr_t>(p) & 15)) {
+        if (*p == target) return p;
+        p++;
+    }
+    while (p + 16 <= end) {
+        __m128i chunk = _mm_load_si128(reinterpret_cast<const __m128i *>(p));
+        __m128i cmp = _mm_cmpeq_epi8(chunk, tv);
+        int mask = _mm_movemask_epi8(cmp);
+        if (mask) {
+#ifdef _MSC_VER
+            unsigned long idx;
+            _BitScanForward(&idx, static_cast<unsigned long>(mask));
+            return p + idx;
+#else
+            return p + __builtin_ctz(mask);
+#endif
+        }
+        p += 16;
+    }
+    while (p < end) { if (*p == target) return p; p++; }
+    return end;
+#else
+    while (p < end) { if (*p == target) return p; p++; }
+    return end;
+#endif
+}
+
+// Find first byte equal to either c1 or c2. Used for delim-or-newline scans.
+static inline const char *find_char2_simd(const char *p, const char *end, char c1, char c2) {
+#ifdef SLOTHDB_HAS_SSE2
+    const __m128i v1 = _mm_set1_epi8(c1);
+    const __m128i v2 = _mm_set1_epi8(c2);
+    while (p < end && (reinterpret_cast<uintptr_t>(p) & 15)) {
+        if (*p == c1 || *p == c2) return p;
+        p++;
+    }
+    while (p + 16 <= end) {
+        __m128i chunk = _mm_load_si128(reinterpret_cast<const __m128i *>(p));
+        __m128i cmp = _mm_or_si128(_mm_cmpeq_epi8(chunk, v1), _mm_cmpeq_epi8(chunk, v2));
+        int mask = _mm_movemask_epi8(cmp);
+        if (mask) {
+#ifdef _MSC_VER
+            unsigned long idx;
+            _BitScanForward(&idx, static_cast<unsigned long>(mask));
+            return p + idx;
+#else
+            return p + __builtin_ctz(mask);
+#endif
+        }
+        p += 16;
+    }
+    while (p < end) { if (*p == c1 || *p == c2) return p; p++; }
+    return end;
+#else
+    while (p < end) { if (*p == c1 || *p == c2) return p; p++; }
+    return end;
+#endif
+}
+
+} // namespace slothdb_internal
+
 #ifdef _WIN32
 #include <windows.h>
 #include <memoryapi.h>
@@ -51,7 +129,7 @@ FastCSVReader::FastCSVReader(const std::string &path, char delimiter, bool has_h
         CloseHandle(hFile);
         owns_buffer_ = true;
     } else if (file_size < 4 * 1024 * 1024) {
-        // Small files: just fread (avoids mmap overhead and edge cases).
+        // Small files: fread.
         size_ = file_size;
         buffer_ = static_cast<char *>(malloc(size_ + 1));
         if (!buffer_) { CloseHandle(hFile); throw InternalException("Out of memory"); }
@@ -62,7 +140,7 @@ FastCSVReader::FastCSVReader(const std::string &path, char delimiter, bool has_h
         CloseHandle(hFile);
         owns_buffer_ = true;
     } else {
-        // Large files: memory-map for zero-copy access.
+        // Large files: memory-map.
         size_ = file_size;
         HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
         CloseHandle(hFile);
@@ -73,11 +151,6 @@ FastCSVReader::FastCSVReader(const std::string &path, char delimiter, bool has_h
             CloseHandle(hMap);
             throw IOException(ErrorCode::FILE_READ_ERROR, "MapViewOfFile failed: " + path);
         }
-        // Prefetch all pages async — tells OS to start bringing the file into memory.
-        WIN32_MEMORY_RANGE_ENTRY range;
-        range.VirtualAddress = buffer_;
-        range.NumberOfBytes = size_;
-        PrefetchVirtualMemory(GetCurrentProcess(), 1, &range, 0);
         owns_buffer_ = false;
     }
 #else
@@ -121,14 +194,16 @@ FastCSVReader::FastCSVReader(const char *buffer, size_t start, size_t end, char 
 FastCSVReader::~FastCSVReader() {
     if (owns_buffer_) {
         free(buffer_);
-    } else if (buffer_) {
+    } else if (mmap_handle_) {
+        // Only unmap if we own the mmap handle — borrowed readers don't have one.
 #ifdef _WIN32
         UnmapViewOfFile(buffer_);
-        if (mmap_handle_) CloseHandle(mmap_handle_);
+        CloseHandle(mmap_handle_);
 #else
         munmap(buffer_, size_);
 #endif
     }
+    // If !owns_buffer_ && !mmap_handle_, the buffer is borrowed — do nothing.
 }
 
 void FastCSVReader::SkipLine() {
@@ -142,26 +217,21 @@ bool FastCSVReader::NextField(const char *&field_start, size_t &field_len) {
     char c = buffer_[pos_];
 
     // Check for end of line.
-    if (c == '\n') return false;
-    if (c == '\r') {
-        if (pos_ + 1 < size_ && buffer_[pos_ + 1] == '\n') return false;
-        return false;
-    }
+    if (c == '\n' || c == '\r') return false;
 
     // Quoted field.
     if (c == '"') {
-        pos_++; // skip opening quote
+        pos_++;
         field_start = buffer_ + pos_;
         size_t start = pos_;
         while (pos_ < size_ && buffer_[pos_] != '"') pos_++;
         field_len = pos_ - start;
-        if (pos_ < size_) pos_++; // skip closing quote
-        // Skip delimiter or whitespace after quote.
+        if (pos_ < size_) pos_++;
         if (pos_ < size_ && buffer_[pos_] == delimiter_) pos_++;
         return true;
     }
 
-    // Unquoted field — scan to delimiter or newline.
+    // Unquoted field — byte-by-byte scan (faster than memchr for short fields).
     field_start = buffer_ + pos_;
     size_t start = pos_;
     while (pos_ < size_ && buffer_[pos_] != delimiter_ &&
@@ -169,7 +239,6 @@ bool FastCSVReader::NextField(const char *&field_start, size_t &field_len) {
         pos_++;
     }
     field_len = pos_ - start;
-    // Skip delimiter.
     if (pos_ < size_ && buffer_[pos_] == delimiter_) pos_++;
     return true;
 }
@@ -452,6 +521,12 @@ idx_t FastCSVReader::ReadChunkProjected(DataChunk &chunk, const std::vector<Logi
     idx_t num_cols = static_cast<idx_t>(types.size());
     idx_t row_count = 0;
 
+    // Find last needed column — skip to newline after it (big perf win).
+    idx_t last_needed = 0;
+    for (idx_t c = 0; c < num_cols; c++) {
+        if (c < projection.size() && projection[c]) last_needed = c;
+    }
+
     // Pre-resolve raw data pointers per column.
     struct ColPtr {
         LogicalTypeId type_id;
@@ -476,10 +551,22 @@ idx_t FastCSVReader::ReadChunkProjected(DataChunk &chunk, const std::vector<Logi
         size_t len;
         idx_t col = 0;
 
-        while (col < num_cols) {
+        // Skip past all unneeded columns before the first needed one using inline SIMD.
+        idx_t skip_count = 0;
+        while (col <= last_needed && !col_ptrs[col].needed) { skip_count++; col++; }
+        if (skip_count > 0) {
+            for (idx_t s = 0; s < skip_count; s++) {
+                if (pos_ >= size_) break;
+                const char *d = slothdb_internal::find_char_simd(
+                    buffer_ + pos_, buffer_ + size_, delimiter_);
+                if (d == buffer_ + size_) { pos_ = size_; break; }
+                pos_ = (size_t)(d - buffer_ + 1);
+            }
+        }
+        while (col <= last_needed) {
             auto &cp = col_ptrs[col];
             if (!cp.needed) {
-                // Fast skip: find next delimiter or newline, no value capture.
+                // Byte-by-byte fallback for middle-of-row skipped cols.
                 if (pos_ >= size_) break;
                 if (buffer_[pos_] == '\n' || buffer_[pos_] == '\r') break;
                 if (buffer_[pos_] == '"') {
@@ -542,9 +629,12 @@ idx_t FastCSVReader::ReadChunkProjected(DataChunk &chunk, const std::vector<Logi
             col++;
         }
 
-        while (pos_ < size_ && buffer_[pos_] != '\n' && buffer_[pos_] != '\r') pos_++;
-        if (pos_ < size_ && buffer_[pos_] == '\r') pos_++;
-        if (pos_ < size_ && buffer_[pos_] == '\n') pos_++;
+        // Fast skip to newline using inline SIMD.
+        if (pos_ < size_) {
+            const char *nl = slothdb_internal::find_char_simd(
+                buffer_ + pos_, buffer_ + size_, '\n');
+            pos_ = (nl == buffer_ + size_) ? size_ : (size_t)(nl - buffer_ + 1);
+        }
 
         row_count++;
     }

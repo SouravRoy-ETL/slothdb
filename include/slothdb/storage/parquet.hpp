@@ -33,6 +33,11 @@ struct ParquetColumnMeta {
     bool has_stats = false;
     Value min_value;
     Value max_value;
+    // Standard-Parquet fields (populated when reading real Parquet files).
+    int32_t codec = 0; // 0=UNCOMPRESSED, 1=SNAPPY, 2=GZIP, ...
+    int64_t total_uncompressed_size = 0;
+    int64_t total_compressed_size = 0;
+    int64_t dict_page_offset = -1; // -1 if column has no dictionary page
 };
 
 struct ParquetRowGroup {
@@ -102,6 +107,9 @@ public:
     // Read a specific row group (for predicate pushdown).
     std::vector<std::vector<Value>> ReadRowGroup(idx_t rg_idx);
 
+    // Read a single column of a row group. Used by projection-aware scans.
+    std::vector<Value> ReadColumn(idx_t rg_idx, idx_t col_idx);
+
     // Streaming: read one row group directly into a DataChunk.
     // If projection is non-empty, only loads columns where projection[col]==true.
     // Returns rows read; chunk is filled.
@@ -124,6 +132,9 @@ private:
     std::string path_;
     ParquetFileMeta meta_;
     bool meta_read_ = false;
+    // True when the file is a standards-compliant Parquet (Thrift metadata),
+    // false when it is our legacy custom format.
+    bool is_standard_parquet_ = false;
 };
 
 } // namespace slothdb
