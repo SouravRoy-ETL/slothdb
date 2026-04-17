@@ -94,9 +94,18 @@ ParsedStmtPtr Parser::ParseStatement() {
     if (CheckKeyword(TokenType::KW_EXPLAIN)) return ParseExplainStatement();
     if (CheckKeyword(TokenType::KW_MERGE)) return ParseMergeStatement();
     // COPY table TO/FROM 'file.csv' [WITH (options)]
+    // COPY (SELECT ...) TO 'file' [WITH (options)]
     if (MatchKeyword(TokenType::KW_COPY)) {
         auto stmt = std::make_unique<CopyStatement>();
-        stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+        if (Match(TokenType::LPAREN)) {
+            // Subquery form.
+            auto inner = ParseSelectStatement();
+            stmt->source_query = std::unique_ptr<SelectStatement>(
+                static_cast<SelectStatement *>(inner.release()));
+            Expect(TokenType::RPAREN, "after COPY subquery");
+        } else {
+            stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+        }
 
         if (MatchKeyword(TokenType::KW_TO)) {
             stmt->is_from = false;
@@ -389,14 +398,20 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
                    !CheckKeyword(TokenType::KW_WHERE) &&
                    !CheckKeyword(TokenType::KW_GROUP) &&
                    !CheckKeyword(TokenType::KW_ORDER) &&
-                   !CheckKeyword(TokenType::KW_LIMIT)) {
+                   !CheckKeyword(TokenType::KW_LIMIT) &&
+                   !CheckKeyword(TokenType::KW_JOIN) &&
+                   !CheckKeyword(TokenType::KW_INNER) &&
+                   !CheckKeyword(TokenType::KW_LEFT) &&
+                   !CheckKeyword(TokenType::KW_RIGHT) &&
+                   !CheckKeyword(TokenType::KW_FULL) &&
+                   !CheckKeyword(TokenType::KW_CROSS) &&
+                   !CheckKeyword(TokenType::KW_ON) &&
+                   !CheckKeyword(TokenType::KW_HAVING) &&
+                   !CheckKeyword(TokenType::KW_QUALIFY)) {
             ref->alias = Advance().value;
         }
-        return ref;
-    }
-
-    // Handle string literal in FROM: SELECT * FROM 'file.csv' (auto-detect format).
-    if (Check(TokenType::STRING_LITERAL)) {
+    } else if (Check(TokenType::STRING_LITERAL)) {
+        // Handle string literal in FROM: SELECT * FROM 'file.csv' (auto-detect format).
         auto file_path = Advance().value;
         ref->table_name = "__FILE__";
         ref->is_table_function = true;
@@ -405,14 +420,24 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
 
         if (MatchKeyword(TokenType::KW_AS)) {
             ref->alias = Expect(TokenType::IDENTIFIER, "for alias").value;
-        } else if (Check(TokenType::IDENTIFIER)) {
+        } else if (Check(TokenType::IDENTIFIER) &&
+                   !CheckKeyword(TokenType::KW_WHERE) &&
+                   !CheckKeyword(TokenType::KW_GROUP) &&
+                   !CheckKeyword(TokenType::KW_ORDER) &&
+                   !CheckKeyword(TokenType::KW_LIMIT) &&
+                   !CheckKeyword(TokenType::KW_JOIN) &&
+                   !CheckKeyword(TokenType::KW_INNER) &&
+                   !CheckKeyword(TokenType::KW_LEFT) &&
+                   !CheckKeyword(TokenType::KW_RIGHT) &&
+                   !CheckKeyword(TokenType::KW_FULL) &&
+                   !CheckKeyword(TokenType::KW_CROSS) &&
+                   !CheckKeyword(TokenType::KW_ON)) {
             ref->alias = Advance().value;
         }
-        return ref;
-    }
-
-    // Handle GENERATE_SERIES(start, stop[, step]) as a table function.
-    if (MatchKeyword(TokenType::KW_GENERATE_SERIES)) {
+        // Fall through to JOIN handling.
+    } else if (CheckKeyword(TokenType::KW_GENERATE_SERIES)) {
+        // Handle GENERATE_SERIES(start, stop[, step]) as a table function.
+        Advance();
         ref->table_name = "GENERATE_SERIES";
         ref->is_table_function = true;
         Expect(TokenType::LPAREN, "after GENERATE_SERIES");
@@ -421,16 +446,14 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
         } while (Match(TokenType::COMMA));
         Expect(TokenType::RPAREN, "after GENERATE_SERIES args");
 
-        // Optional alias.
         if (MatchKeyword(TokenType::KW_AS)) {
             ref->alias = Expect(TokenType::IDENTIFIER, "for alias").value;
         } else if (Check(TokenType::IDENTIFIER)) {
             ref->alias = Advance().value;
         }
-        return ref;
-    }
-
-    ref->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+        // Fall through to JOIN handling.
+    } else {
+        ref->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
 
     // Optional alias.
     if (MatchKeyword(TokenType::KW_AS)) {
@@ -450,6 +473,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
                !CheckKeyword(TokenType::KW_HAVING)) {
         ref->alias = Advance().value;
     }
+    } // close else block from regular table name path
 
     // JOINs.
     while (true) {
@@ -477,25 +501,8 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
 
         Expect(TokenType::KW_JOIN, "after join type");
 
-        auto new_ref = std::make_unique<TableRef>();
-        new_ref->table_name = ref->table_name;
-        new_ref->alias = ref->alias;
-        new_ref->join_type = ref->join_type;
-        new_ref->right = std::move(ref->right);
-        new_ref->on_condition = std::move(ref->on_condition);
-
-        ref = std::make_unique<TableRef>();
-        ref->join_type = join_type;
-
-        auto right_table = std::make_unique<TableRef>();
-        right_table->table_name = Expect(TokenType::IDENTIFIER, "for joined table").value;
-        if (MatchKeyword(TokenType::KW_AS)) {
-            right_table->alias = Expect(TokenType::IDENTIFIER, "for table alias").value;
-        } else if (Check(TokenType::IDENTIFIER) &&
-                   !CheckKeyword(TokenType::KW_ON) &&
-                   !CheckKeyword(TokenType::KW_WHERE)) {
-            right_table->alias = Advance().value;
-        }
+        // Parse right side as a full table ref (supports read_csv, etc).
+        auto right_table = ParseTableRef();
 
         // ON condition (not for CROSS JOIN).
         ParsedExprPtr on_cond;
@@ -503,9 +510,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
             on_cond = ParseExpression();
         }
 
-        // Restructure: new_ref JOIN right_table ON cond
-        ref->table_name = new_ref->table_name;
-        ref->alias = new_ref->alias;
+        // Attach JOIN to the existing ref (preserve is_table_function, function_args, etc).
         ref->join_type = join_type;
         ref->right = std::move(right_table);
         ref->on_condition = std::move(on_cond);
@@ -849,7 +854,20 @@ ParsedExprPtr Parser::ParsePrimary() {
     // Keywords that can also be column names.
     if (CheckKeyword(TokenType::KW_GENERATE_SERIES) ||
         CheckKeyword(TokenType::KW_VIEW) || CheckKeyword(TokenType::KW_FILTER) ||
-        CheckKeyword(TokenType::KW_SAMPLE)) {
+        CheckKeyword(TokenType::KW_SAMPLE) ||
+        CheckKeyword(TokenType::KW_YEAR) || CheckKeyword(TokenType::KW_MONTH) ||
+        CheckKeyword(TokenType::KW_DAY) || CheckKeyword(TokenType::KW_HOUR) ||
+        CheckKeyword(TokenType::KW_MINUTE) || CheckKeyword(TokenType::KW_SECOND) ||
+        CheckKeyword(TokenType::KW_EPOCH) || CheckKeyword(TokenType::KW_DOW) ||
+        CheckKeyword(TokenType::KW_DATE) || CheckKeyword(TokenType::KW_TIME) ||
+        CheckKeyword(TokenType::KW_TIMESTAMP) ||
+        CheckKeyword(TokenType::KW_MATCHED) || CheckKeyword(TokenType::KW_CONFLICT) ||
+        CheckKeyword(TokenType::KW_DO) || CheckKeyword(TokenType::KW_NOTHING) ||
+        CheckKeyword(TokenType::KW_RETURNING) ||
+        CheckKeyword(TokenType::KW_ROWS) || CheckKeyword(TokenType::KW_RANGE) ||
+        CheckKeyword(TokenType::KW_PRECEDING) || CheckKeyword(TokenType::KW_FOLLOWING) ||
+        CheckKeyword(TokenType::KW_ROW) || CheckKeyword(TokenType::KW_CURRENT) ||
+        CheckKeyword(TokenType::KW_UNBOUNDED)) {
         auto name = Advance().value;
         if (Check(TokenType::LPAREN)) return ParseFunctionCall(name);
         if (Match(TokenType::DOT)) {

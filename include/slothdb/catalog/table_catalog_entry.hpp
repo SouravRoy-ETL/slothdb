@@ -46,12 +46,23 @@ public:
     void SetViewQuery(const std::string &sql) { view_query_ = sql; is_view_ = true; }
     const std::string &GetViewQuery() const { return view_query_; }
 
+    // File scan support: stores file path for streaming reads.
+    bool IsFileScan() const { return !file_path_.empty(); }
+    void SetFilePath(const std::string &path, char delim = ',') { file_path_ = path; file_delimiter_ = delim; file_format_ = "csv"; }
+    void SetParquetPath(const std::string &path) { file_path_ = path; file_format_ = "parquet"; }
+    const std::string &GetFilePath() const { return file_path_; }
+    char GetFileDelimiter() const { return file_delimiter_; }
+    const std::string &GetFileFormat() const { return file_format_; }
+
 private:
     std::string schema_;
     std::vector<ColumnDefinition> columns_;
     std::shared_ptr<DataTable> storage_;
     bool is_view_ = false;
     std::string view_query_;
+    std::string file_path_;
+    char file_delimiter_ = ',';
+    std::string file_format_ = "csv";
 };
 
 } // namespace slothdb

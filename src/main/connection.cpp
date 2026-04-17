@@ -7,6 +7,7 @@
 #include "slothdb/execution/expression_executor.hpp"
 #include "slothdb/optimizer/optimizer.hpp"
 #include "slothdb/storage/csv_reader.hpp"
+#include "slothdb/storage/fast_csv_reader.hpp"
 #include "slothdb/storage/json_reader.hpp"
 #include "slothdb/storage/parquet.hpp"
 #include "slothdb/storage/arrow_ipc.hpp"
@@ -21,6 +22,29 @@
 #include <unordered_set>
 
 namespace slothdb {
+
+// Bulk-load rows into a DataTable using chunked appends (VECTOR_SIZE rows per chunk).
+// This avoids creating one DataChunk per row, which is the primary bottleneck.
+static void BulkLoadRows(DataTable &storage, const std::vector<LogicalType> &types,
+                          const std::vector<std::vector<Value>> &rows) {
+    const idx_t chunk_size = VECTOR_SIZE; // 2048 rows per chunk
+    idx_t total = static_cast<idx_t>(rows.size());
+    idx_t num_cols = static_cast<idx_t>(types.size());
+
+    for (idx_t offset = 0; offset < total; offset += chunk_size) {
+        idx_t count = std::min(chunk_size, total - offset);
+        DataChunk chunk;
+        chunk.Initialize(types);
+        for (idx_t r = 0; r < count; r++) {
+            auto &row = rows[offset + r];
+            for (idx_t c = 0; c < num_cols && c < static_cast<idx_t>(row.size()); c++) {
+                chunk.SetValue(c, r, row[c]);
+            }
+        }
+        chunk.SetCardinality(count);
+        storage.Append(chunk);
+    }
+}
 
 Connection::Connection(Database &database) : db_(database) {}
 Connection::~Connection() = default;
@@ -266,6 +290,61 @@ QueryResult Connection::Query(const std::string &sql) {
         // Handle COPY (CSV, JSON formats).
         if (stmt->GetType() == StatementType::COPY) {
             auto &copy = static_cast<CopyStatement &>(*stmt);
+
+            // If COPY (SELECT ...) TO 'file', materialize subquery into a temp table first.
+            if (copy.source_query) {
+                // Inline read_csv expansion for the subquery's from clause.
+                auto expand_csv = [&](TableRef &tref) {
+                    if (!tref.is_table_function) return;
+                    auto upper = StringUtil::Upper(tref.table_name);
+                    if (upper != "READ_CSV" && upper != "READ_CSV_AUTO") return;
+                    auto &args = tref.function_args;
+                    if (args.empty() || args[0]->GetExpressionType() != ExpressionType::CONSTANT) return;
+                    auto file_pattern = static_cast<ConstantExpression &>(*args[0]).value;
+                    auto files = FileGlob::Glob(file_pattern);
+                    if (files.empty()) throw IOException("No files: " + file_pattern);
+                    FastCSVReader r(files[0], ',', true, 65536);
+                    auto header = r.ReadHeader();
+                    auto types_csv = r.DetectTypes();
+                    static int copy_uid = 0;
+                    std::string tn = "__copy_csv_" + std::to_string(++copy_uid) + "__";
+                    tref.table_name = tn;
+                    tref.is_table_function = false;
+                    std::vector<ColumnDefinition> cs;
+                    for (size_t i = 0; i < header.size() && i < types_csv.size(); i++)
+                        cs.emplace_back(header[i], types_csv[i]);
+                    auto &e = db_.GetCatalog().CreateTable(tn, std::move(cs));
+                    auto st = std::make_shared<DataTable>(types_csv);
+                    e.SetStorage(st);
+                    e.SetFilePath(files[0]);
+                };
+                if (copy.source_query->from_table) {
+                    expand_csv(*copy.source_query->from_table);
+                    if (copy.source_query->from_table->right) expand_csv(*copy.source_query->from_table->right);
+                }
+                Binder binder(db_.GetCatalog());
+                auto bound = binder.Bind(*copy.source_query);
+                auto logical = Planner::Plan(*bound);
+                logical = Optimizer::Optimize(std::move(logical));
+                PhysicalPlanner pp(db_.GetCatalog());
+                auto physical = pp.Plan(*logical);
+                physical->Init();
+                auto &sel = static_cast<BoundSelectStatement &>(*bound);
+                std::string tmp_name = "__copy_src_" + std::to_string(reinterpret_cast<uintptr_t>(physical.get())) + "__";
+                std::vector<ColumnDefinition> cols;
+                for (idx_t i = 0; i < sel.result_names.size(); i++)
+                    cols.emplace_back(sel.result_names[i], sel.result_types[i]);
+                if (db_.GetCatalog().GetTable(tmp_name)) db_.GetCatalog().DropTable(tmp_name);
+                auto &entry_tmp = db_.GetCatalog().CreateTable(tmp_name, std::move(cols));
+                auto storage = std::make_shared<DataTable>(sel.result_types);
+                entry_tmp.SetStorage(storage);
+                DataChunk chunk;
+                while (physical->GetData(chunk)) {
+                    storage->Append(chunk);
+                }
+                copy.table_name = tmp_name;
+            }
+
             auto *entry = db_.GetCatalog().GetTable(copy.table_name);
             if (!entry) throw CatalogException("Table '" + copy.table_name + "' not found");
             auto types = entry->GetTypes();
@@ -283,39 +362,17 @@ QueryResult Connection::Query(const std::string &sql) {
                 if (fmt == "PARQUET") {
                     ParquetReader reader(copy.file_path);
                     auto rows = reader.ReadAll();
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(types);
-                        for (idx_t c = 0; c < row.size() && c < types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        entry->GetStorage().Append(chunk);
-                    }
+                    BulkLoadRows(entry->GetStorage(), types, rows);
                 } else if (fmt == "JSON") {
                     JSONReader reader(copy.file_path);
                     reader.DetectSchema();
                     auto rows = reader.ReadAll();
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(types);
-                        for (idx_t c = 0; c < row.size() && c < types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        entry->GetStorage().Append(chunk);
-                    }
+                    BulkLoadRows(entry->GetStorage(), types, rows);
                 } else {
-                    // CSV (default).
-                    CSVOptions opts;
-                    opts.delimiter = copy.delimiter;
-                    opts.header = copy.header;
-                    CSVReader reader(copy.file_path, opts);
-                    if (opts.header) reader.ReadHeader();
-                    auto rows = reader.ReadAll(types);
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(types);
-                        for (idx_t c = 0; c < row.size() && c < types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        entry->GetStorage().Append(chunk);
-                    }
+                    // CSV (default) — fast stream.
+                    FastCSVReader reader(copy.file_path, copy.delimiter, copy.header);
+                    if (copy.header) reader.ReadHeader();
+                    reader.ReadIntoTable(entry->GetStorage(), types);
                 }
             } else {
                 // COPY TO: export.
@@ -506,13 +563,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     // Re-execute the view's stored query to get fresh data.
                     auto view_result = Query(entry->GetViewQuery());
                     auto storage = std::make_shared<DataTable>(view_result.column_types);
-                    for (auto &row : view_result.rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(view_result.column_types);
-                        for (idx_t c = 0; c < row.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        storage->Append(chunk);
-                    }
+                    BulkLoadRows(*storage, view_result.column_types, view_result.rows);
                     entry->SetStorage(storage);
                 }
             };
@@ -564,52 +615,53 @@ QueryResult Connection::Query(const std::string &sql) {
                 temp_tables.push_back(tbl_name);
             }
 
-            // Handle read_csv / read_csv_auto table function (with glob support).
+            // Helper: process a TableRef that's a read_csv() call.
+            auto process_read_csv = [&](TableRef &tref) -> bool {
+                if (!tref.is_table_function) return false;
+                auto upper = StringUtil::Upper(tref.table_name);
+                if (upper != "READ_CSV" && upper != "READ_CSV_AUTO") return false;
+                auto &args = tref.function_args;
+                if (args.empty() || args[0]->GetExpressionType() != ExpressionType::CONSTANT) return false;
+
+                auto file_pattern = static_cast<ConstantExpression &>(*args[0]).value;
+                auto files = FileGlob::Glob(file_pattern);
+                if (files.empty()) throw IOException("No files matching: " + file_pattern);
+
+                FastCSVReader reader(files[0], ',', true, 65536);
+                auto header = reader.ReadHeader();
+                auto types = reader.DetectTypes();
+
+                static int unique_id = 0;
+                std::string tbl_name = tref.alias.empty()
+                    ? ("__read_csv_" + std::to_string(++unique_id) + "__") : tref.alias;
+                tref.table_name = tbl_name;
+                tref.is_table_function = false;
+
+                std::vector<ColumnDefinition> cols;
+                for (size_t i = 0; i < header.size() && i < types.size(); i++)
+                    cols.emplace_back(header[i], types[i]);
+
+                auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
+                auto storage = std::make_shared<DataTable>(types);
+                entry.SetStorage(storage);
+                entry.SetFilePath(files[0]);
+                temp_tables.push_back(tbl_name);
+                return true;
+            };
+
+            // Apply to from_table and any joined table on the right.
+            if (sel.from_table) {
+                process_read_csv(*sel.from_table);
+                if (sel.from_table->right) process_read_csv(*sel.from_table->right);
+            }
+
+            // Original handler kept for compatibility (still used for json/parquet/etc).
             if (sel.from_table && sel.from_table->is_table_function &&
                 (StringUtil::Upper(sel.from_table->table_name) == "READ_CSV" ||
                  StringUtil::Upper(sel.from_table->table_name) == "READ_CSV_AUTO")) {
-                auto &args = sel.from_table->function_args;
-                if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
-                    auto file_pattern = static_cast<ConstantExpression &>(*args[0]).value;
-                    auto files = FileGlob::Glob(file_pattern);
-                    if (files.empty()) throw IOException("No files matching: " + file_pattern);
-
-                    // Read first file to get schema.
-                    CSVOptions opts;
-                    CSVReader reader(files[0], opts);
-                    auto header = reader.ReadHeader();
-                    auto types = reader.DetectTypes();
-
-                    // Read all matching files.
-                    std::vector<std::vector<Value>> rows;
-                    for (auto &f : files) {
-                        CSVReader r(f, opts);
-                        r.ReadHeader();
-                        auto file_rows = r.ReadAll(types);
-                        rows.insert(rows.end(), file_rows.begin(), file_rows.end());
-                    }
-
-                    std::string tbl_name = sel.from_table->alias.empty()
-                        ? "__read_csv__" : sel.from_table->alias;
-                    sel.from_table->table_name = tbl_name;
-                    sel.from_table->is_table_function = false;
-
+                // (no-op now; processed above)
+                if (false) {
                     std::vector<ColumnDefinition> cols;
-                    for (size_t i = 0; i < header.size() && i < types.size(); i++)
-                        cols.emplace_back(header[i], types[i]);
-
-                    auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
-                    auto storage = std::make_shared<DataTable>(types);
-                    entry.SetStorage(storage);
-
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(types);
-                        for (idx_t c = 0; c < row.size() && c < types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        storage->Append(chunk);
-                    }
-                    temp_tables.push_back(tbl_name);
                 }
             }
 
@@ -640,13 +692,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
 
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(col_types);
-                        for (idx_t c = 0; c < row.size() && c < col_types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        storage->Append(chunk);
-                    }
+                    BulkLoadRows(*storage, col_types, rows);
                     temp_tables.push_back(tbl_name);
                 }
             }
@@ -676,13 +722,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
 
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(col_types);
-                        for (idx_t c = 0; c < row.size() && c < col_types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        storage->Append(chunk);
-                    }
+                    BulkLoadRows(*storage, col_types, rows);
                     temp_tables.push_back(tbl_name);
                 }
             }
@@ -709,13 +749,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(col_types);
-                        for (idx_t c = 0; c < row.size() && c < col_types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        storage->Append(chunk);
-                    }
+                    BulkLoadRows(*storage, col_types, rows);
                     temp_tables.push_back(tbl_name);
                 }
             }
@@ -742,13 +776,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(col_types);
-                        for (idx_t c = 0; c < row.size() && c < col_types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        storage->Append(chunk);
-                    }
+                    BulkLoadRows(*storage, col_types, rows);
                     temp_tables.push_back(tbl_name);
                 }
             }
@@ -775,13 +803,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(col_types);
-                        for (idx_t c = 0; c < row.size() && c < col_types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        storage->Append(chunk);
-                    }
+                    BulkLoadRows(*storage, col_types, rows);
                     temp_tables.push_back(tbl_name);
                 }
             }
@@ -815,13 +837,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-                    for (auto &row : rows) {
-                        DataChunk chunk;
-                        chunk.Initialize(col_types);
-                        for (idx_t c = 0; c < row.size() && c < col_types.size(); c++)
-                            chunk.SetValue(c, 0, row[c]);
-                        storage->Append(chunk);
-                    }
+                    BulkLoadRows(*storage, col_types, rows);
                     temp_tables.push_back(tbl_name);
                 }
             }
@@ -858,14 +874,10 @@ QueryResult Connection::Query(const std::string &sql) {
                     // (The loop will pick it up on the next iteration — but we're
                     //  in the same iteration. Let's handle inline.)
                     if (sel.from_table->table_name == "READ_CSV") {
-                        CSVOptions opts;
-                        if (ext == "tsv") opts.delimiter = '\t';
-                        CSVReader reader(file_path, opts);
+                        char delim = (ext == "tsv") ? '\t' : ',';
+                        FastCSVReader reader(file_path, delim);
                         auto header = reader.ReadHeader();
                         auto types = reader.DetectTypes();
-                        CSVReader reader2(file_path, opts);
-                        reader2.ReadHeader();
-                        auto rows = reader2.ReadAll(types);
 
                         std::string tbl_name = sel.from_table->alias.empty()
                             ? "__auto_file__" : sel.from_table->alias;
@@ -878,13 +890,7 @@ QueryResult Connection::Query(const std::string &sql) {
                         auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                         auto storage = std::make_shared<DataTable>(types);
                         entry.SetStorage(storage);
-                        for (auto &row : rows) {
-                            DataChunk chunk;
-                            chunk.Initialize(types);
-                            for (idx_t c = 0; c < row.size() && c < types.size(); c++)
-                                chunk.SetValue(c, 0, row[c]);
-                            storage->Append(chunk);
-                        }
+                        entry.SetFilePath(file_path, delim);
                         temp_tables.push_back(tbl_name);
                     } else if (sel.from_table->table_name == "READ_JSON") {
                         JSONReader reader(file_path);
@@ -904,13 +910,7 @@ QueryResult Connection::Query(const std::string &sql) {
                         auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                         auto storage = std::make_shared<DataTable>(col_types);
                         entry.SetStorage(storage);
-                        for (auto &row : rows) {
-                            DataChunk chunk;
-                            chunk.Initialize(col_types);
-                            for (idx_t c = 0; c < row.size() && c < col_types.size(); c++)
-                                chunk.SetValue(c, 0, row[c]);
-                            storage->Append(chunk);
-                        }
+                        BulkLoadRows(*storage, col_types, rows);
                         temp_tables.push_back(tbl_name);
                     } else if (sel.from_table->table_name == "READ_PARQUET") {
                         ParquetReader reader(file_path);
@@ -929,13 +929,7 @@ QueryResult Connection::Query(const std::string &sql) {
                         auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                         auto storage = std::make_shared<DataTable>(col_types);
                         entry.SetStorage(storage);
-                        for (auto &row : rows) {
-                            DataChunk chunk;
-                            chunk.Initialize(col_types);
-                            for (idx_t c = 0; c < row.size() && c < col_types.size(); c++)
-                                chunk.SetValue(c, 0, row[c]);
-                            storage->Append(chunk);
-                        }
+                        BulkLoadRows(*storage, col_types, rows);
                         temp_tables.push_back(tbl_name);
                     }
                 }
@@ -944,6 +938,42 @@ QueryResult Connection::Query(const std::string &sql) {
 
         // Handle CTEs: materialize each CTE as a temporary table.
         std::vector<std::string> cte_tables;
+        std::vector<std::string> _cte_temp_tables; // collected by helper below
+
+        // Helper to expand read_csv() in any TableRef.
+        auto cte_process_read_csv = [&](TableRef &tref) -> bool {
+            if (!tref.is_table_function) return false;
+            auto upper = StringUtil::Upper(tref.table_name);
+            if (upper != "READ_CSV" && upper != "READ_CSV_AUTO") return false;
+            auto &args = tref.function_args;
+            if (args.empty() || args[0]->GetExpressionType() != ExpressionType::CONSTANT) return false;
+
+            auto file_pattern = static_cast<ConstantExpression &>(*args[0]).value;
+            auto files = FileGlob::Glob(file_pattern);
+            if (files.empty()) throw IOException("No files matching: " + file_pattern);
+
+            FastCSVReader reader(files[0], ',', true, 65536);
+            auto header = reader.ReadHeader();
+            auto types = reader.DetectTypes();
+
+            static int cte_unique_id = 0;
+            std::string tbl_name = tref.alias.empty()
+                ? ("__cte_read_csv_" + std::to_string(++cte_unique_id) + "__") : tref.alias;
+            tref.table_name = tbl_name;
+            tref.is_table_function = false;
+
+            std::vector<ColumnDefinition> cols;
+            for (size_t i = 0; i < header.size() && i < types.size(); i++)
+                cols.emplace_back(header[i], types[i]);
+
+            auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
+            auto storage = std::make_shared<DataTable>(types);
+            entry.SetStorage(storage);
+            entry.SetFilePath(files[0]);
+            _cte_temp_tables.push_back(tbl_name);
+            return true;
+        };
+
         if (stmt->GetType() == StatementType::SELECT) {
             auto &sel = static_cast<SelectStatement &>(*stmt);
             for (auto &cte : sel.ctes) {
@@ -1003,10 +1033,20 @@ QueryResult Connection::Query(const std::string &sql) {
                     }
                     cte_tables.push_back(cte.name);
                 } else {
-                    // Non-recursive CTE.
+                    // Non-recursive CTE — pre-process read_csv in the inner SELECT.
+                    auto cte_stmt = std::make_unique<SelectStatement>();
+                    *cte_stmt = std::move(*cte.query);
+
+                    // Apply read_csv expansion to CTE's from_table (and any join right side).
+                    if (cte_stmt->from_table) {
+                        cte_process_read_csv(*cte_stmt->from_table);
+                        if (cte_stmt->from_table->right) cte_process_read_csv(*cte_stmt->from_table->right);
+                    }
+
                     Binder cte_binder(db_.GetCatalog());
-                    auto cte_bound = cte_binder.Bind(*cte.query);
+                    auto cte_bound = cte_binder.Bind(*cte_stmt);
                     auto cte_logical = Planner::Plan(*cte_bound);
+                    cte_logical = Optimizer::Optimize(std::move(cte_logical));
                     PhysicalPlanner cte_pp(db_.GetCatalog());
                     auto cte_physical = cte_pp.Plan(*cte_logical);
                     cte_physical->Init();
@@ -1151,6 +1191,9 @@ QueryResult Connection::Query(const std::string &sql) {
             db_.GetCatalog().DropTable(cte_name);
         }
         for (auto &tmp : temp_tables) {
+            db_.GetCatalog().DropTable(tmp);
+        }
+        for (auto &tmp : _cte_temp_tables) {
             db_.GetCatalog().DropTable(tmp);
         }
     }

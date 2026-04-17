@@ -45,3 +45,13 @@ skills/
 python/dist/
 python/*.egg-info/
 python/build/
+real-life-testing/sales_10m.csv
+real-life-testing/sloth.parquet
+real-life-testing/sales_10m.parquet
+real-life-testing/sloth_sales.parquet
+real-life-testing/duckdb.exe
+real-life-testing/tmp.slothdb
+real-life-testing/tiny.csv
+real-life-testing/tiny.parquet
+real-life-testing/regions.csv
+real-life-testing/test.csv

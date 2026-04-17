@@ -9,6 +9,8 @@
 
 namespace slothdb {
 
+class DataTable;
+
 struct CSVOptions {
     char delimiter = ',';
     char quote = '"';
@@ -35,10 +37,19 @@ public:
     std::vector<std::vector<Value>> ReadBatch(const std::vector<LogicalType> &types,
                                                 idx_t batch_size);
 
+    // Read directly into a DataChunk (up to VECTOR_SIZE rows). Returns rows read.
+    // This is the fast path — avoids intermediate Value/vector allocations.
+    idx_t ReadChunk(DataChunk &chunk, const std::vector<LogicalType> &types);
+
+    // Stream all data directly into a DataTable in chunks. Fastest bulk load.
+    void ReadIntoTable(DataTable &table, const std::vector<LogicalType> &types);
+
     bool IsEOF() const { return eof_; }
 
 private:
     std::vector<std::string> ParseLine();
+    void SetValueDirect(DataChunk &chunk, idx_t col, idx_t row,
+                        const std::string &str, const LogicalType &type);
     Value ConvertValue(const std::string &str, const LogicalType &type);
 
     std::ifstream file_;

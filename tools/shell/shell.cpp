@@ -48,10 +48,23 @@ static void print_result(slothdb_result *result) {
 }
 
 int main(int argc, char *argv[]) {
-    printf("SlothDB Shell v%s\n", slothdb_version());
-    printf("Type .help for help, .quit to exit.\n\n");
+    // Parse command-line args.
+    const char *db_path = "";
+    const char *cmd_query = nullptr;
 
-    const char *db_path = (argc > 1) ? argv[1] : "";
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
+            cmd_query = argv[++i];
+        } else {
+            db_path = argv[i];
+        }
+    }
+
+    // If running a one-shot command, skip the banner.
+    if (!cmd_query) {
+        printf("SlothDB Shell v%s\n", slothdb_version());
+        printf("Type .help for help, .quit to exit.\n\n");
+    }
 
     slothdb_database *db = nullptr;
     slothdb_connection *conn = nullptr;
@@ -65,6 +78,24 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Failed to create connection\n");
         slothdb_close(db);
         return 1;
+    }
+
+    // One-shot command mode: run query and exit.
+    if (cmd_query) {
+        slothdb_result *result = nullptr;
+        slothdb_status status = slothdb_query(conn, cmd_query, &result);
+        if (status != SLOTHDB_OK) {
+            fprintf(stderr, "Error: %s\n", slothdb_result_error(result));
+            slothdb_free_result(result);
+            slothdb_disconnect(conn);
+            slothdb_close(db);
+            return 1;
+        }
+        print_result(result);
+        slothdb_free_result(result);
+        slothdb_disconnect(conn);
+        slothdb_close(db);
+        return 0;
     }
 
     if (strlen(db_path) > 0) {

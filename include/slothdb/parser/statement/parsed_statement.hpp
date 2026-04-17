@@ -86,6 +86,7 @@ public:
         std::string name;
         std::unique_ptr<SelectStatement> query;
         bool recursive = false;
+        std::string original_sql; // for re-executing through Connection::Query()
     };
     std::vector<CTE> ctes;
 };
@@ -199,6 +200,8 @@ public:
     std::string format = "CSV"; // CSV, JSON, PARQUET
     char delimiter = ',';
     bool header = true;
+    // Optional subquery: COPY (SELECT ...) TO 'file' — only valid for export.
+    std::unique_ptr<SelectStatement> source_query;
 };
 
 // Transaction control statements.

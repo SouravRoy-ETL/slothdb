@@ -1,5 +1,6 @@
 #pragma once
 
+#include "slothdb/common/types/data_chunk.hpp"
 #include "slothdb/common/types/logical_type.hpp"
 #include "slothdb/common/types/value.hpp"
 #include "slothdb/common/constants.hpp"
@@ -100,6 +101,14 @@ public:
 
     // Read a specific row group (for predicate pushdown).
     std::vector<std::vector<Value>> ReadRowGroup(idx_t rg_idx);
+
+    // Streaming: read one row group directly into a DataChunk.
+    // If projection is non-empty, only loads columns where projection[col]==true.
+    // Returns rows read; chunk is filled.
+    idx_t ReadRowGroupChunk(idx_t rg_idx, DataChunk &chunk,
+                             const std::vector<bool> &projection = {});
+
+    idx_t NumRowGroups() const { return static_cast<idx_t>(meta_.row_groups.size()); }
 
     // Check if a row group might contain rows matching a predicate.
     bool RowGroupMightMatch(idx_t rg_idx, idx_t col_idx,

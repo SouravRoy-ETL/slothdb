@@ -1,4 +1,5 @@
 #include "slothdb/storage/csv_reader.hpp"
+#include "slothdb/storage/data_table.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/string_util.hpp"
 #include <sstream>
@@ -195,6 +196,72 @@ std::vector<std::vector<Value>> CSVReader::ReadBatch(const std::vector<LogicalTy
         rows.push_back(std::move(row));
     }
     return rows;
+}
+
+void CSVReader::SetValueDirect(DataChunk &chunk, idx_t col, idx_t row,
+                                const std::string &str, const LogicalType &type) {
+    if (str.empty() || str == options_.null_string) {
+        chunk.SetValue(col, row, Value());
+        return;
+    }
+    try {
+        switch (type.id()) {
+        case LogicalTypeId::INTEGER:
+            chunk.SetValue(col, row, Value::INTEGER(std::stoi(str)));
+            return;
+        case LogicalTypeId::BIGINT:
+            chunk.SetValue(col, row, Value::BIGINT(std::stoll(str)));
+            return;
+        case LogicalTypeId::DOUBLE:
+            chunk.SetValue(col, row, Value::DOUBLE(std::stod(str)));
+            return;
+        case LogicalTypeId::FLOAT:
+            chunk.SetValue(col, row, Value::FLOAT(std::stof(str)));
+            return;
+        case LogicalTypeId::BOOLEAN:
+            chunk.SetValue(col, row, Value::BOOLEAN(str == "true" || str == "1" || str == "TRUE"));
+            return;
+        default:
+            chunk.SetValue(col, row, Value::VARCHAR(str));
+            return;
+        }
+    } catch (...) {
+        chunk.SetValue(col, row, Value::VARCHAR(str));
+    }
+}
+
+idx_t CSVReader::ReadChunk(DataChunk &chunk, const std::vector<LogicalType> &types) {
+    if (options_.header && !header_read_) ReadHeader();
+    chunk.Reset();
+
+    idx_t row_count = 0;
+    while (row_count < VECTOR_SIZE && !eof_) {
+        auto fields = ParseLine();
+        if (fields.empty()) break;
+
+        for (idx_t c = 0; c < static_cast<idx_t>(types.size()); c++) {
+            if (c < static_cast<idx_t>(fields.size())) {
+                SetValueDirect(chunk, c, row_count, fields[c], types[c]);
+            } else {
+                chunk.SetValue(c, row_count, Value());
+            }
+        }
+        row_count++;
+    }
+
+    chunk.SetCardinality(row_count);
+    return row_count;
+}
+
+void CSVReader::ReadIntoTable(DataTable &table, const std::vector<LogicalType> &types) {
+    DataChunk chunk;
+    chunk.Initialize(types);
+
+    while (!eof_) {
+        idx_t count = ReadChunk(chunk, types);
+        if (count == 0) break;
+        table.Append(chunk);
+    }
 }
 
 // ============================================================================

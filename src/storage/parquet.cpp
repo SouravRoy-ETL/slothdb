@@ -509,6 +509,41 @@ std::vector<std::vector<Value>> ParquetReader::ReadRowGroup(idx_t rg_idx) {
     return rows;
 }
 
+idx_t ParquetReader::ReadRowGroupChunk(idx_t rg_idx, DataChunk &chunk,
+                                        const std::vector<bool> &projection) {
+    if (rg_idx >= meta_.row_groups.size()) return 0;
+    auto &rg = meta_.row_groups[rg_idx];
+    idx_t num_cols = rg.columns.size();
+
+    // Read only projected columns (huge win for column-pruning queries).
+    std::vector<std::vector<Value>> columns(num_cols);
+    bool prune = !projection.empty();
+    for (idx_t c = 0; c < num_cols; c++) {
+        if (prune && c < projection.size() && !projection[c]) continue;
+        columns[c] = ReadColumnChunk(rg.columns[c]);
+    }
+
+    // Write directly into DataChunk vectors — pack VECTOR_SIZE rows per chunk.
+    idx_t total_rows = static_cast<idx_t>(rg.num_rows);
+    if (total_rows > VECTOR_SIZE) total_rows = VECTOR_SIZE; // first chunk only
+
+    for (idx_t r = 0; r < total_rows; r++) {
+        for (idx_t c = 0; c < num_cols; c++) {
+            if (prune && c < projection.size() && !projection[c]) {
+                chunk.GetVector(c).GetValidity().SetInvalid(r);
+                continue;
+            }
+            if (r < columns[c].size()) {
+                chunk.SetValue(c, r, columns[c][r]);
+            } else {
+                chunk.GetVector(c).GetValidity().SetInvalid(r);
+            }
+        }
+    }
+    chunk.SetCardinality(total_rows);
+    return total_rows;
+}
+
 std::vector<std::vector<Value>> ParquetReader::ReadAll() {
     std::vector<std::vector<Value>> all_rows;
     for (idx_t rg = 0; rg < meta_.row_groups.size(); rg++) {

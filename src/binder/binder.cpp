@@ -215,10 +215,27 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         result->has_window = true;
     }
 
-    // Bind ORDER BY.
+    // Bind ORDER BY — resolve select-list aliases first.
     for (auto &item : stmt.order_by) {
         BoundOrderBy bound_item;
-        bound_item.expression = BindExpression(*item.expression, context);
+        bool resolved = false;
+        // Check if this ORDER BY expression is a select-list alias.
+        if (item.expression->GetExpressionType() == ExpressionType::COLUMN_REF) {
+            auto &col_ref = static_cast<ColumnRefExpression &>(*item.expression);
+            if (col_ref.table_name.empty()) {
+                for (idx_t i = 0; i < result->result_names.size(); i++) {
+                    if (result->result_names[i] == col_ref.column_name) {
+                        // Re-bind the original select-list expression.
+                        bound_item.expression = BindExpression(*stmt.select_list[i], context);
+                        resolved = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!resolved) {
+            bound_item.expression = BindExpression(*item.expression, context);
+        }
         bound_item.ascending = item.ascending;
         result->order_by.push_back(std::move(bound_item));
     }
