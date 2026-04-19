@@ -35,7 +35,7 @@ jobs:
         cp README.md LICENSE pkg/usr/share/doc/slothdb/
         cat > pkg/DEBIAN/control << 'EOF'
         Package: slothdb
-        Version: 0.1.0
+        Version: 0.1.2
         Section: database
         Priority: optional
         Architecture: amd64
@@ -46,7 +46,7 @@ jobs:
         Homepage: https://github.com/SouravRoy-ETL/slothdb
         EOF
         sed -i 's/^        //' pkg/DEBIAN/control
-        dpkg-deb --build pkg slothdb_0.1.0_amd64.deb
+        dpkg-deb --build pkg slothdb_0.1.2_amd64.deb
     - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
@@ -56,7 +56,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: slothdb-deb
-        path: slothdb_0.1.0_amd64.deb
+        path: slothdb_0.1.2_amd64.deb
 
   build-macos:
     runs-on: macos-latest
@@ -86,5 +86,5 @@ jobs:
           slothdb-windows-x64/slothdb.exe
           slothdb-linux-x64/slothdb
           slothdb-macos/slothdb
-          slothdb-deb/slothdb_0.1.0_amd64.deb
+          slothdb-deb/slothdb_0.1.2_amd64.deb
         generate_release_notes: true

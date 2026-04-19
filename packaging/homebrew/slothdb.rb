@@ -1,7 +1,7 @@
 class Slothdb < Formula
   desc "An embedded analytical database engine. Zero dependencies. GPU accelerated."
   homepage "https://github.com/SouravRoy-ETL/slothdb"
-  url "https://github.com/SouravRoy-ETL/slothdb/archive/refs/tags/v0.1.0.tar.gz"
+  url "https://github.com/SouravRoy-ETL/slothdb/archive/refs/tags/v0.1.2.tar.gz"
   sha256 "" # Fill after release
   license "MIT"
 

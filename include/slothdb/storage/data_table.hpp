@@ -25,6 +25,12 @@ public:
     // Append a DataChunk of data. May span multiple row groups.
     void Append(DataChunk &chunk);
 
+    // Splice pre-built row groups into the table in bulk — used by bulk
+    // loaders that assemble row groups in worker threads to avoid the
+    // DataTable mutex on the hot path. Each RG's start_row_ is rewritten
+    // to reflect its position in the table.
+    void AppendRowGroups(std::vector<std::unique_ptr<RowGroup>> groups);
+
     // Initialize a scan.
     TableScanState InitScan() const;
 

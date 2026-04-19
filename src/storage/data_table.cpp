@@ -25,6 +25,16 @@ void DataTable::Append(DataChunk &chunk) {
     }
 }
 
+void DataTable::AppendRowGroups(std::vector<std::unique_ptr<RowGroup>> groups) {
+    std::lock_guard<std::mutex> guard(lock_);
+    for (auto &g : groups) {
+        if (!g || g->Count() == 0) continue;
+        g->SetStartRow(total_rows_);
+        total_rows_ += g->Count();
+        row_groups_.push_back(std::move(g));
+    }
+}
+
 TableScanState DataTable::InitScan() const {
     return TableScanState{0, 0};
 }

@@ -4,7 +4,7 @@
 
 set -e
 
-VERSION="0.1.0"
+VERSION="0.1.2"
 PKG_NAME="slothdb"
 PKG_DIR="${PKG_NAME}_${VERSION}_amd64"
 

@@ -3,8 +3,21 @@
 #include <cstring>
 #include <cstdint>
 #include <algorithm>
+#include <cstdlib>
 #include <vector>
 #include <string>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace slothdb {
 
@@ -834,45 +847,93 @@ void ParquetWriter::Finish() {
 // ============================================================================
 
 ParquetReader::ParquetReader(const std::string &path) : path_(path) {
+    // Map (or fread-small) the file. Gives us a stable read-only byte buffer
+    // all decode paths share — no per-column file opens.
+#ifdef _WIN32
+    HANDLE hFile = CreateFileA(path_.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+        throw IOException(ErrorCode::FILE_NOT_FOUND, "Cannot open Parquet: " + path_);
+
+    LARGE_INTEGER fsz;
+    GetFileSizeEx(hFile, &fsz);
+    file_size_ = static_cast<size_t>(fsz.QuadPart);
+    if (file_size_ < 12) {
+        CloseHandle(hFile);
+        throw IOException(ErrorCode::CORRUPT_DATA, "File too small for Parquet");
+    }
+    if (file_size_ < 4 * 1024 * 1024) {
+        auto *buf = static_cast<uint8_t *>(std::malloc(file_size_));
+        if (!buf) { CloseHandle(hFile); throw InternalException("Out of memory"); }
+        DWORD got = 0;
+        ReadFile(hFile, buf, static_cast<DWORD>(file_size_), &got, NULL);
+        CloseHandle(hFile);
+        file_data_ = buf;
+        owns_buffer_ = true;
+    } else {
+        HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+        CloseHandle(hFile);
+        if (!hMap) throw IOException(ErrorCode::FILE_READ_ERROR, "Cannot mmap Parquet: " + path_);
+        auto *p = static_cast<const uint8_t *>(MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0));
+        if (!p) { CloseHandle(hMap); throw IOException(ErrorCode::FILE_READ_ERROR, "MapViewOfFile failed: " + path_); }
+        file_data_ = p;
+        mmap_handle_ = hMap;
+        owns_mmap_ = true;
+    }
+#else
+    int fd = ::open(path_.c_str(), O_RDONLY);
+    if (fd < 0) throw IOException(ErrorCode::FILE_NOT_FOUND, "Cannot open Parquet: " + path_);
+    struct stat st; ::fstat(fd, &st);
+    file_size_ = static_cast<size_t>(st.st_size);
+    if (file_size_ < 12) { ::close(fd); throw IOException(ErrorCode::CORRUPT_DATA, "File too small for Parquet"); }
+    auto *p = static_cast<const uint8_t *>(::mmap(nullptr, file_size_, PROT_READ, MAP_PRIVATE, fd, 0));
+    ::close(fd);
+    if (p == MAP_FAILED) throw IOException(ErrorCode::FILE_READ_ERROR, "mmap failed: " + path_);
+    file_data_ = p;
+    owns_mmap_ = true;
+#endif
+
     ReadMetadata();
 }
 
+ParquetReader::~ParquetReader() {
+    if (owns_buffer_) {
+        std::free(const_cast<uint8_t *>(file_data_));
+    } else if (owns_mmap_) {
+#ifdef _WIN32
+        if (file_data_) UnmapViewOfFile(const_cast<uint8_t *>(file_data_));
+        if (mmap_handle_) CloseHandle(static_cast<HANDLE>(mmap_handle_));
+#else
+        if (file_data_) ::munmap(const_cast<uint8_t *>(file_data_), file_size_);
+#endif
+    }
+}
+
 void ParquetReader::ReadMetadata() {
-    std::ifstream file(path_, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-        throw IOException(ErrorCode::FILE_NOT_FOUND, "Cannot open Parquet file: " + path_);
+    if (file_size_ < 12)
+        throw IOException(ErrorCode::CORRUPT_DATA, "File too small for Parquet");
 
-    auto file_size = file.tellg();
-    if (file_size < 12) throw IOException(ErrorCode::CORRUPT_DATA, "File too small for Parquet");
-
-    // Read magic at start.
-    file.seekg(0);
-    char magic_start[4];
-    file.read(magic_start, 4);
-    if (std::memcmp(magic_start, PARQUET_MAGIC, 4) != 0)
+    // Magic at start.
+    if (std::memcmp(file_data_, PARQUET_MAGIC, 4) != 0)
         throw IOException(ErrorCode::CORRUPT_DATA, "Not a Parquet file (bad magic)");
 
-    // Read footer size and magic at end.
-    file.seekg(static_cast<std::streamoff>(file_size) - 8);
+    // Footer size and end magic.
     uint32_t footer_size;
-    file.read(reinterpret_cast<char *>(&footer_size), 4);
-    char magic_end[4];
-    file.read(magic_end, 4);
-    if (std::memcmp(magic_end, PARQUET_MAGIC, 4) != 0)
+    std::memcpy(&footer_size, file_data_ + file_size_ - 8, 4);
+    if (std::memcmp(file_data_ + file_size_ - 4, PARQUET_MAGIC, 4) != 0)
         throw IOException(ErrorCode::CORRUPT_DATA, "Not a Parquet file (bad end magic)");
 
-    // Read footer.
-    // Validate footer_size against file bounds.
-    auto file_sz = static_cast<size_t>(file_size);
-    if (footer_size > file_sz - 8)
+    if (footer_size > file_size_ - 8)
         throw IOException(ErrorCode::CORRUPT_DATA, "Parquet footer size exceeds file");
     if (footer_size < 16)
         throw IOException(ErrorCode::CORRUPT_DATA, "Parquet footer too small");
 
-    auto footer_offset = static_cast<std::streamoff>(file_sz - 8 - footer_size);
-    std::vector<uint8_t> footer(footer_size);
-    file.seekg(footer_offset);
-    file.read(reinterpret_cast<char *>(footer.data()), footer_size);
+    size_t footer_offset = file_size_ - 8 - footer_size;
+    // Footer is contiguous in the mapped region — reference it directly.
+    const uint8_t *footer_ptr = file_data_ + footer_offset;
+    // Some downstream code expects a std::vector<uint8_t>; give it one backed
+    // by the mapped bytes (copy is tiny — typical footers are a few KB).
+    std::vector<uint8_t> footer(footer_ptr, footer_ptr + footer_size);
 
     // Try standard Parquet (Thrift FileMetaData). Legacy custom format
     // stores the column count as the very first 4 raw bytes; Thrift starts
@@ -1021,18 +1082,17 @@ void ParquetReader::ReadMetadata() {
     meta_read_ = true;
 }
 
-// Legacy (custom-format) column chunk reader.
-static std::vector<Value> ReadColumnChunkLegacy(const std::string &path, const ParquetColumnMeta &meta) {
-    std::ifstream file(path, std::ios::binary);
-    file.seekg(meta.data_offset);
-
-    std::vector<uint8_t> data(meta.data_size);
-    file.read(reinterpret_cast<char *>(data.data()), meta.data_size);
+// Legacy (custom-format) column chunk reader — reads from the mapped buffer.
+static std::vector<Value> ReadColumnChunkLegacy(const uint8_t *file_base, size_t file_size,
+                                                const ParquetColumnMeta &meta) {
+    if ((size_t)meta.data_offset + (size_t)meta.data_size > file_size) return {};
+    const uint8_t *data = file_base + meta.data_offset;
+    size_t data_size = (size_t)meta.data_size;
 
     std::vector<Value> values;
     size_t pos = 0;
 
-    for (int64_t i = 0; i < meta.num_values && pos < data.size(); i++) {
+    for (int64_t i = 0; i < meta.num_values && pos < data_size; i++) {
         uint32_t null_marker;
         std::memcpy(&null_marker, &data[pos], 4); pos += 4;
 
@@ -1120,27 +1180,18 @@ static void DecodePlain(const uint8_t *data, size_t size, ParquetType ptype,
 }
 
 // Read one page from the given file offset. Returns bytes consumed.
-static size_t ReadOnePage(std::ifstream &file, int64_t offset, size_t file_remaining,
-                         ParqPageHeader &hdr, std::vector<uint8_t> &raw_body) {
-    // Read a chunk for the page header (headers are small, usually < 256 bytes
-    // but allow up to a few KB to handle stats-embedded headers).
-    file.seekg(offset);
-    constexpr size_t HDR_READ = 4096;
-    size_t to_read = std::min<size_t>(HDR_READ, file_remaining);
-    std::vector<uint8_t> hdr_buf(to_read);
-    file.read(reinterpret_cast<char*>(hdr_buf.data()), to_read);
-    size_t consumed = ParsePageHeader(hdr_buf.data(), hdr_buf.size(), hdr);
-    // Read compressed body.
-    raw_body.resize(hdr.compressed_page_size);
-    // Some of the body may already be in hdr_buf.
-    size_t body_in_hdr = (to_read > consumed) ? std::min<size_t>(to_read - consumed, (size_t)hdr.compressed_page_size) : 0;
-    if (body_in_hdr) std::memcpy(raw_body.data(), hdr_buf.data() + consumed, body_in_hdr);
-    if ((size_t)hdr.compressed_page_size > body_in_hdr) {
-        file.seekg(offset + static_cast<int64_t>(consumed + body_in_hdr));
-        file.read(reinterpret_cast<char*>(raw_body.data() + body_in_hdr),
-                  hdr.compressed_page_size - body_in_hdr);
-    }
-    return consumed + hdr.compressed_page_size;
+// `body_ptr` is set to point at the (compressed) page body inside `file_base`
+// — no copy. Caller must not mutate the bytes.
+static size_t ReadOnePageMapped(const uint8_t *file_base, size_t file_size,
+                                int64_t offset, ParqPageHeader &hdr,
+                                const uint8_t *&body_ptr, size_t &body_size) {
+    if (offset < 0 || (size_t)offset >= file_size) { body_ptr = nullptr; body_size = 0; return 0; }
+    const uint8_t *p = file_base + offset;
+    size_t remaining = file_size - (size_t)offset;
+    size_t consumed = ParsePageHeader(p, remaining, hdr);
+    body_ptr = p + consumed;
+    body_size = (size_t)hdr.compressed_page_size;
+    return consumed + (size_t)hdr.compressed_page_size;
 }
 
 // Decode a DataPage (V1 or V2) into `out` values. Handles PLAIN and PLAIN_DICTIONARY.
@@ -1246,29 +1297,24 @@ static void DecodeDataPage(const ParqPageHeader &hdr, const uint8_t *data, size_
     }
 }
 
-// Standard-Parquet column chunk reader.
-static std::vector<Value> ReadColumnChunkStd(const std::string &path, const ParquetColumnMeta &meta) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-        throw IOException(ErrorCode::FILE_NOT_FOUND, "Cannot open Parquet: " + path);
-    auto file_size = static_cast<size_t>(file.tellg());
-
+// Standard-Parquet column chunk reader — reads from the mapped buffer.
+static std::vector<Value> ReadColumnChunkStd(const uint8_t *file_base, size_t file_size,
+                                             const ParquetColumnMeta &meta) {
     std::vector<Value> values;
     values.reserve(meta.num_values);
 
     // 1. Dictionary page (optional).
     std::vector<Value> dict;
+    int64_t cur_offset;
     if (meta.dict_page_offset >= 0) {
         ParqPageHeader hdr;
-        std::vector<uint8_t> raw;
-        size_t remaining = file_size - static_cast<size_t>(meta.dict_page_offset);
-        ReadOnePage(file, meta.dict_page_offset, remaining, hdr, raw);
+        const uint8_t *body; size_t body_size;
+        size_t consumed = ReadOnePageMapped(file_base, file_size, meta.dict_page_offset,
+                                            hdr, body, body_size);
         if (hdr.type == 2) {
             std::vector<uint8_t> decompressed;
-            const uint8_t *body = raw.data();
-            size_t body_size = raw.size();
             if (meta.codec != 0) {
-                if (!DecompressPage(meta.codec, raw.data(), raw.size(),
+                if (!DecompressPage(meta.codec, body, body_size,
                                      static_cast<size_t>(hdr.uncompressed_page_size), decompressed)) {
                     throw IOException(ErrorCode::CORRUPT_DATA,
                                       "Unsupported Parquet compression codec: " + std::to_string(meta.codec));
@@ -1278,49 +1324,27 @@ static std::vector<Value> ReadColumnChunkStd(const std::string &path, const Parq
             }
             DecodePlain(body, body_size, meta.parquet_type, hdr.dict_num_values, dict);
         }
-    }
-
-    // 2. Data pages (one or more, until num_values read).
-    int64_t cur_offset = (meta.dict_page_offset >= 0)
-        ? (meta.dict_page_offset + 0) // we'll find next offset via reading.
-        : meta.data_offset;
-    // Actually the data pages follow either after the dict page (end of
-    // compressed body) or start at data_offset if no dict. The file layout
-    // has the dict page body immediately after its header, then the data
-    // page header at dict_end.
-    if (meta.dict_page_offset >= 0) {
-        // Recompute end of dict page via re-reading its header.
-        ParqPageHeader hdr;
-        std::vector<uint8_t> raw;
-        size_t remaining = file_size - static_cast<size_t>(meta.dict_page_offset);
-        size_t consumed = ReadOnePage(file, meta.dict_page_offset, remaining, hdr, raw);
-        cur_offset = meta.dict_page_offset + static_cast<int64_t>(consumed);
+        cur_offset = meta.dict_page_offset + (int64_t)consumed;
+        if (cur_offset < meta.data_offset) cur_offset = meta.data_offset;
     } else {
         cur_offset = meta.data_offset;
     }
 
     int64_t remaining_rows = meta.num_values;
     int64_t total_chunk_end = meta.data_offset + meta.total_compressed_size;
-    // When the dict offset is before data_offset (common), data_offset points at first data page.
-    if (meta.dict_page_offset >= 0 && cur_offset < meta.data_offset) {
-        cur_offset = meta.data_offset;
-    }
 
-    while (remaining_rows > 0 && cur_offset < static_cast<int64_t>(file_size)) {
+    while (remaining_rows > 0 && cur_offset < (int64_t)file_size) {
         ParqPageHeader hdr;
-        std::vector<uint8_t> raw;
-        size_t remaining_bytes = file_size - static_cast<size_t>(cur_offset);
-        size_t consumed = ReadOnePage(file, cur_offset, remaining_bytes, hdr, raw);
-        cur_offset += static_cast<int64_t>(consumed);
+        const uint8_t *body; size_t body_size;
+        size_t consumed = ReadOnePageMapped(file_base, file_size, cur_offset, hdr, body, body_size);
+        cur_offset += (int64_t)consumed;
 
         if (hdr.type == 2) continue; // another dict page, skip
 
-        const uint8_t *body = raw.data();
-        size_t body_size = raw.size();
         std::vector<uint8_t> decompressed;
         bool compressed = (hdr.type == 3) ? hdr.is_compressed : (meta.codec != 0);
         if (compressed && meta.codec != 0) {
-            if (!DecompressPage(meta.codec, raw.data(), raw.size(),
+            if (!DecompressPage(meta.codec, body, body_size,
                                  static_cast<size_t>(hdr.uncompressed_page_size), decompressed)) {
                 throw IOException(ErrorCode::CORRUPT_DATA,
                                   "Parquet decompression failed (codec=" + std::to_string(meta.codec) + ")");
@@ -1339,8 +1363,499 @@ static std::vector<Value> ReadColumnChunkStd(const std::string &path, const Parq
 }
 
 std::vector<Value> ParquetReader::ReadColumnChunk(const ParquetColumnMeta &meta) {
-    if (is_standard_parquet_) return ReadColumnChunkStd(path_, meta);
-    return ReadColumnChunkLegacy(path_, meta);
+    if (is_standard_parquet_) return ReadColumnChunkStd(file_data_, file_size_, meta);
+    return ReadColumnChunkLegacy(file_data_, file_size_, meta);
+}
+
+// ============================================================================
+// Native typed decode — writes directly into ParquetColumnData buffers
+// without boxing every value in `Value`.
+// ============================================================================
+namespace {
+
+struct ParquetDict {
+    bool present = false;
+    int32_t num_values = 0;
+    // String dictionary (pointers into ParquetColumnData::str_heap once it's built).
+    std::vector<const char *> str_ptr;
+    std::vector<uint32_t>     str_len;
+    // Numeric / bool dictionary (one of these is used).
+    std::vector<int32_t> i32;
+    std::vector<int64_t> i64;
+    std::vector<float>   f32;
+    std::vector<double>  f64;
+    std::vector<uint8_t> b8;
+};
+
+// Decode PLAIN-encoded numeric data directly into a typed buffer slice.
+// `non_null` values are consumed from `data`. Writes into `dst` at positions
+// where `def[i]` == 1 (or all positions if def is empty). Returns true on success.
+template <class T>
+bool DecodePlainNumericInto(const uint8_t *data, size_t size, int32_t n_values,
+                            const std::vector<uint8_t> &def, T *dst) {
+    size_t pos = 0;
+    if (def.empty()) {
+        if ((size_t)n_values * sizeof(T) > size) return false;
+        std::memcpy(dst, data, (size_t)n_values * sizeof(T));
+        return true;
+    }
+    size_t j = 0;
+    for (int32_t i = 0; i < n_values; i++) {
+        if (def[i]) {
+            if (pos + sizeof(T) > size) return false;
+            T v; std::memcpy(&v, data + pos, sizeof(T));
+            pos += sizeof(T);
+            dst[i] = v;
+            j++;
+        }
+    }
+    (void)j;
+    return true;
+}
+
+// PLAIN BOOLEAN is bit-packed (1 bit per value).
+bool DecodePlainBoolInto(const uint8_t *data, size_t size, int32_t n_values,
+                         const std::vector<uint8_t> &def, uint8_t *dst) {
+    // Count non-null to bound the bit-packed region.
+    int32_t non_null = 0;
+    if (def.empty()) non_null = n_values;
+    else for (int32_t i = 0; i < n_values; i++) if (def[i]) non_null++;
+    size_t need_bytes = (size_t)((non_null + 7) / 8);
+    if (need_bytes > size) return false;
+    int32_t j = 0;
+    for (int32_t i = 0; i < n_values; i++) {
+        if (!def.empty() && !def[i]) continue;
+        uint8_t b = data[j / 8];
+        dst[i] = ((b >> (j % 8)) & 1) ? 1 : 0;
+        j++;
+    }
+    return true;
+}
+
+// Append PLAIN-encoded VARCHAR data into `heap`, writing string_t entries to
+// dst[i] for non-null rows. heap is a pre-reserved buffer (no reallocation).
+bool DecodePlainStringInto(const uint8_t *data, size_t size, int32_t n_values,
+                           const std::vector<uint8_t> &def, string_t *dst,
+                           std::vector<char> &heap) {
+    size_t pos = 0;
+    for (int32_t i = 0; i < n_values; i++) {
+        if (!def.empty() && !def[i]) continue;
+        if (pos + 4 > size) return false;
+        uint32_t len = ReadLEU32(data + pos); pos += 4;
+        if (pos + len > size) return false;
+        if (len <= string_t::INLINE_LENGTH) {
+            dst[i] = string_t(reinterpret_cast<const char *>(data + pos), len);
+        } else {
+            // Append into heap. Heap must have enough reserved capacity so the
+            // pointer to the just-appended bytes stays valid.
+            size_t old_size = heap.size();
+            if (old_size + len > heap.capacity()) return false; // heap overflow
+            heap.insert(heap.end(), reinterpret_cast<const char *>(data + pos),
+                        reinterpret_cast<const char *>(data + pos) + len);
+            dst[i] = string_t(heap.data() + old_size, len);
+        }
+        pos += len;
+    }
+    return true;
+}
+
+// Helper: read def_levels (bit-width 1) and populate def_mask (size n_values,
+// byte-per-row, 1 = valid, 0 = null). For DATA_PAGE V1 the levels are prefixed
+// by a 4-byte LE length; for V2 they are passed without a length prefix.
+// Returns number of bytes consumed from `data`. Sets out_non_null count.
+size_t ReadDefLevels(const uint8_t *data, size_t size, int32_t n_values,
+                     std::vector<uint8_t> &def_mask, int32_t &out_non_null,
+                     bool has_length_prefix, size_t explicit_len) {
+    out_non_null = n_values;
+    def_mask.clear();
+    if (has_length_prefix) {
+        if (size < 4) return 0;
+        uint32_t def_len = ReadLEU32(data);
+        if (def_len + 4 > size) return 0;
+        RleDecoder rd(data + 4, def_len, 1);
+        def_mask.resize(n_values, 1);
+        int32_t nn = 0;
+        bool saw_null = false;
+        for (int32_t i = 0; i < n_values; i++) {
+            uint32_t v = 1;
+            rd.Next(v);
+            def_mask[i] = (uint8_t)(v ? 1 : 0);
+            if (v) nn++; else saw_null = true;
+        }
+        out_non_null = nn;
+        if (!saw_null) def_mask.clear(); // all valid — caller can skip mask work
+        return 4 + def_len;
+    } else {
+        if (explicit_len > size) return 0;
+        if (explicit_len == 0) return 0;
+        RleDecoder rd(data, explicit_len, 1);
+        def_mask.resize(n_values, 1);
+        int32_t nn = 0;
+        bool saw_null = false;
+        for (int32_t i = 0; i < n_values; i++) {
+            uint32_t v = 1;
+            rd.Next(v);
+            def_mask[i] = (uint8_t)(v ? 1 : 0);
+            if (v) nn++; else saw_null = true;
+        }
+        out_non_null = nn;
+        if (!saw_null) def_mask.clear();
+        return explicit_len;
+    }
+}
+
+// Decode one data page (V1 or V2) into the typed output buffer starting at
+// row_offset. Supports PLAIN and PLAIN_DICTIONARY / RLE_DICTIONARY.
+// `skip_str_data`: for VARCHAR dict path, skip `dst[i] = ...` per-row writes
+// when the caller will resolve strings via str_dict_values + str_dict_indices.
+bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t size,
+                         ParquetType ptype, const ParquetDict &dict,
+                         ParquetColumnData &out, idx_t row_offset,
+                         bool skip_str_data) {
+    const uint8_t *p = data;
+    size_t remaining = size;
+    int32_t n_values = hdr.num_values;
+    std::vector<uint8_t> def_mask;
+    int32_t non_null = n_values;
+
+    if (hdr.type == 0) {
+        // DATA_PAGE V1: rep levels then def levels (both RLE with length prefix).
+        // For flat schemas, rep_levels are absent (max_rep_level == 0). We assume
+        // flat here (same assumption as the Value path above).
+        size_t consumed = ReadDefLevels(p, remaining, n_values, def_mask, non_null, true, 0);
+        if (consumed == 0 && remaining >= 4) {
+            // ReadDefLevels returns 0 on failure; treat as all-valid and continue.
+            def_mask.clear();
+            non_null = n_values;
+        } else {
+            p += consumed; remaining -= consumed;
+        }
+    } else if (hdr.type == 3) {
+        // DATA_PAGE V2: explicit rep/def byte lengths.
+        if (hdr.rep_levels_byte_length > 0) {
+            if ((size_t)hdr.rep_levels_byte_length > remaining) return false;
+            p += hdr.rep_levels_byte_length;
+            remaining -= hdr.rep_levels_byte_length;
+        }
+        if (hdr.def_levels_byte_length > 0) {
+            size_t consumed = ReadDefLevels(p, remaining, n_values, def_mask, non_null,
+                                             false, (size_t)hdr.def_levels_byte_length);
+            if (consumed == 0) return false;
+            p += consumed; remaining -= consumed;
+        }
+    }
+
+    // Track nulls on the output.
+    if (!def_mask.empty()) {
+        if (out.all_valid) {
+            out.validity.assign(out.count, 1);
+            out.all_valid = false;
+        }
+        for (int32_t i = 0; i < n_values; i++) {
+            if (!def_mask[i]) out.validity[row_offset + i] = 0;
+        }
+    }
+
+    bool dict_enc = (hdr.encoding == 2 || hdr.encoding == 8);
+    LogicalTypeId tid = out.type.id();
+
+    if (!dict_enc) {
+        // PLAIN decode into typed buffer at [row_offset .. row_offset+n_values).
+        switch (tid) {
+        case LogicalTypeId::BOOLEAN:
+            return DecodePlainBoolInto(p, remaining, n_values, def_mask,
+                                       out.bool_data.data() + row_offset);
+        case LogicalTypeId::INTEGER:
+            return DecodePlainNumericInto<int32_t>(p, remaining, n_values, def_mask,
+                                                   out.i32_data.data() + row_offset);
+        case LogicalTypeId::BIGINT:
+            return DecodePlainNumericInto<int64_t>(p, remaining, n_values, def_mask,
+                                                   out.i64_data.data() + row_offset);
+        case LogicalTypeId::FLOAT:
+            return DecodePlainNumericInto<float>(p, remaining, n_values, def_mask,
+                                                 out.f32_data.data() + row_offset);
+        case LogicalTypeId::DOUBLE:
+            return DecodePlainNumericInto<double>(p, remaining, n_values, def_mask,
+                                                  out.f64_data.data() + row_offset);
+        case LogicalTypeId::VARCHAR:
+            if (ptype != ParquetType::BYTE_ARRAY) return false;
+            return DecodePlainStringInto(p, remaining, n_values, def_mask,
+                                         out.str_data.data() + row_offset, *out.str_heap);
+        default:
+            return false;
+        }
+    }
+
+    // Dictionary-encoded indices: first byte = bit_width, then RLE/bit-packed indices.
+    if (remaining < 1) return false;
+    int bit_width = p[0];
+    p++; remaining--;
+    RleDecoder rd(p, remaining, bit_width);
+    auto idx_for = [&](int32_t i) -> uint32_t {
+        (void)i; uint32_t v = 0; rd.Next(v); return v;
+    };
+
+    switch (tid) {
+    case LogicalTypeId::BOOLEAN: {
+        auto *dst = out.bool_data.data() + row_offset;
+        for (int32_t i = 0; i < n_values; i++) {
+            if (!def_mask.empty() && !def_mask[i]) continue;
+            uint32_t idx = idx_for(i);
+            dst[i] = idx < dict.b8.size() ? dict.b8[idx] : 0;
+        }
+        return true;
+    }
+    case LogicalTypeId::INTEGER: {
+        auto *dst = out.i32_data.data() + row_offset;
+        for (int32_t i = 0; i < n_values; i++) {
+            if (!def_mask.empty() && !def_mask[i]) continue;
+            uint32_t idx = idx_for(i);
+            dst[i] = idx < dict.i32.size() ? dict.i32[idx] : 0;
+        }
+        return true;
+    }
+    case LogicalTypeId::BIGINT: {
+        auto *dst = out.i64_data.data() + row_offset;
+        for (int32_t i = 0; i < n_values; i++) {
+            if (!def_mask.empty() && !def_mask[i]) continue;
+            uint32_t idx = idx_for(i);
+            dst[i] = idx < dict.i64.size() ? dict.i64[idx] : 0;
+        }
+        return true;
+    }
+    case LogicalTypeId::FLOAT: {
+        auto *dst = out.f32_data.data() + row_offset;
+        for (int32_t i = 0; i < n_values; i++) {
+            if (!def_mask.empty() && !def_mask[i]) continue;
+            uint32_t idx = idx_for(i);
+            dst[i] = idx < dict.f32.size() ? dict.f32[idx] : 0.f;
+        }
+        return true;
+    }
+    case LogicalTypeId::DOUBLE: {
+        auto *dst = out.f64_data.data() + row_offset;
+        for (int32_t i = 0; i < n_values; i++) {
+            if (!def_mask.empty() && !def_mask[i]) continue;
+            uint32_t idx = idx_for(i);
+            dst[i] = idx < dict.f64.size() ? dict.f64[idx] : 0.0;
+        }
+        return true;
+    }
+    case LogicalTypeId::VARCHAR: {
+        string_t *dst = skip_str_data ? nullptr : (out.str_data.data() + row_offset);
+        const bool want_indices = !out.str_dict_indices.empty();
+        uint32_t *idx_dst = want_indices ? (out.str_dict_indices.data() + row_offset)
+                                          : nullptr;
+        for (int32_t i = 0; i < n_values; i++) {
+            if (!def_mask.empty() && !def_mask[i]) continue;
+            uint32_t idx = idx_for(i);
+            if (want_indices) idx_dst[i] = idx;
+            if (!dst) continue;
+            if (idx >= dict.str_ptr.size()) { dst[i] = string_t(); continue; }
+            uint32_t len = dict.str_len[idx];
+            dst[i] = string_t(dict.str_ptr[idx], len);
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+// Read + decompress a dictionary page into `dict`. For VARCHAR, the dict bytes
+// are copied into `heap` (so dict pointers remain stable across the RG).
+// Sets `consumed` to the number of bytes the dict page occupies in the file.
+bool ReadDictionaryPage(const uint8_t *file_base, size_t file_size, int64_t offset,
+                        int32_t codec, ParquetType ptype, ParquetDict &dict,
+                        std::vector<char> *heap, size_t &consumed) {
+    ParqPageHeader hdr;
+    const uint8_t *body; size_t body_size;
+    consumed = ReadOnePageMapped(file_base, file_size, offset, hdr, body, body_size);
+    if (hdr.type != 2) return false;
+
+    std::vector<uint8_t> decomp;
+    if (codec != 0) {
+        if (!DecompressPage(codec, body, body_size,
+                            (size_t)hdr.uncompressed_page_size, decomp)) return false;
+        body = decomp.data(); body_size = decomp.size();
+    }
+
+    int32_t ndv = hdr.dict_num_values;
+    dict.num_values = ndv;
+    dict.present = true;
+    size_t pos = 0;
+
+    switch (ptype) {
+    case ParquetType::INT32:
+        dict.i32.resize(ndv);
+        if ((size_t)ndv * 4 > body_size) return false;
+        std::memcpy(dict.i32.data(), body, (size_t)ndv * 4);
+        return true;
+    case ParquetType::INT64:
+        dict.i64.resize(ndv);
+        if ((size_t)ndv * 8 > body_size) return false;
+        std::memcpy(dict.i64.data(), body, (size_t)ndv * 8);
+        return true;
+    case ParquetType::FLOAT:
+        dict.f32.resize(ndv);
+        if ((size_t)ndv * 4 > body_size) return false;
+        std::memcpy(dict.f32.data(), body, (size_t)ndv * 4);
+        return true;
+    case ParquetType::DOUBLE:
+        dict.f64.resize(ndv);
+        if ((size_t)ndv * 8 > body_size) return false;
+        std::memcpy(dict.f64.data(), body, (size_t)ndv * 8);
+        return true;
+    case ParquetType::BOOLEAN: {
+        dict.b8.resize(ndv);
+        // PLAIN BOOL bit-packed in dict.
+        for (int32_t i = 0; i < ndv; i++) {
+            if ((size_t)(i / 8) >= body_size) return false;
+            dict.b8[i] = ((body[i / 8] >> (i % 8)) & 1) ? 1 : 0;
+        }
+        return true;
+    }
+    case ParquetType::BYTE_ARRAY: {
+        if (!heap) return false;
+        dict.str_ptr.resize(ndv);
+        dict.str_len.resize(ndv);
+        for (int32_t i = 0; i < ndv; i++) {
+            if (pos + 4 > body_size) return false;
+            uint32_t len = ReadLEU32(body + pos); pos += 4;
+            if (pos + len > body_size) return false;
+            if (heap->size() + len > heap->capacity()) return false; // over-reserve bug
+            size_t start = heap->size();
+            heap->insert(heap->end(), reinterpret_cast<const char *>(body + pos),
+                         reinterpret_cast<const char *>(body + pos) + len);
+            dict.str_ptr[i] = heap->data() + start;
+            dict.str_len[i] = len;
+            pos += len;
+        }
+        return true;
+    }
+    }
+    return false;
+}
+
+} // namespace
+
+bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnData &out,
+                                    bool skip_str_data) {
+    // Don't Clear() — reuse any existing capacity from a prior RG. We reset
+    // only the control fields; the numeric data vectors are resized below,
+    // which is a no-op when sizes match and only zero-fills the delta
+    // otherwise. Across 80 RGs this saves ~hundreds of MB of malloc/memset.
+    out.count = 0;
+    out.validity.clear();
+    out.all_valid = true;
+    out.decoded = false;
+    out.str_dict_encoded = false;
+    out.str_dict_indices.clear();
+    out.str_dict_values.clear();
+    out.str_heap.reset();
+    if (!is_standard_parquet_) return false;
+    if (rg_idx >= meta_.row_groups.size()) return false;
+    auto &rg = meta_.row_groups[rg_idx];
+    if (col_idx >= rg.columns.size()) return false;
+    auto &cmeta = rg.columns[col_idx];
+
+    // Only UNCOMPRESSED (0) or SNAPPY (1) pages.
+    if (cmeta.codec != 0 && cmeta.codec != 1) return false;
+
+    const idx_t total_rows = static_cast<idx_t>(cmeta.num_values);
+    out.type = cmeta.slothdb_type;
+    out.count = total_rows;
+    out.all_valid = true;
+
+    LogicalTypeId tid = cmeta.slothdb_type.id();
+    switch (tid) {
+    // resize() keeps existing contents up to total_rows and only value-
+    // initializes the delta when the vector grows. For persistent per-worker
+    // RGWork, successive RGs of the same size pay zero here.
+    case LogicalTypeId::BOOLEAN: out.bool_data.resize(total_rows); break;
+    case LogicalTypeId::INTEGER: out.i32_data.resize(total_rows); break;
+    case LogicalTypeId::BIGINT:  out.i64_data.resize(total_rows); break;
+    case LogicalTypeId::FLOAT:   out.f32_data.resize(total_rows); break;
+    case LogicalTypeId::DOUBLE:  out.f64_data.resize(total_rows); break;
+    case LogicalTypeId::VARCHAR:
+        if (!skip_str_data) out.str_data.resize(total_rows);
+        out.str_data_skipped = skip_str_data;
+        out.str_heap = std::make_shared<std::vector<char>>();
+        out.str_heap->reserve((size_t)cmeta.total_uncompressed_size + 64);
+        if (cmeta.dict_page_offset >= 0) {
+            out.str_dict_indices.resize(total_rows);
+            out.str_dict_encoded = true;
+        }
+        break;
+    default:
+        return false;
+    }
+
+    if (!file_data_) return false;
+
+    // 1) Dictionary page (optional).
+    ParquetDict dict;
+    int64_t cur_offset;
+    if (cmeta.dict_page_offset >= 0) {
+        size_t consumed = 0;
+        std::vector<char> *heap = (tid == LogicalTypeId::VARCHAR)
+                                      ? out.str_heap.get() : nullptr;
+        if (!ReadDictionaryPage(file_data_, file_size_, cmeta.dict_page_offset,
+                                 cmeta.codec, cmeta.parquet_type, dict, heap, consumed)) {
+            return false;
+        }
+        cur_offset = cmeta.dict_page_offset + (int64_t)consumed;
+        if (cur_offset < cmeta.data_offset) cur_offset = cmeta.data_offset;
+    } else {
+        cur_offset = cmeta.data_offset;
+    }
+
+    // 2) Data pages.
+    int64_t total_end = cmeta.data_offset + cmeta.total_compressed_size;
+    idx_t rows_read = 0;
+    while (rows_read < total_rows && cur_offset < (int64_t)file_size_) {
+        ParqPageHeader hdr;
+        const uint8_t *body; size_t body_size;
+        size_t consumed = ReadOnePageMapped(file_data_, file_size_, cur_offset,
+                                            hdr, body, body_size);
+        cur_offset += (int64_t)consumed;
+        if (hdr.type == 2) continue; // stray dict page
+
+        // Decompress page body if needed.
+        std::vector<uint8_t> decomp;
+        bool is_compressed = (hdr.type == 3) ? hdr.is_compressed : (cmeta.codec != 0);
+        if (is_compressed && cmeta.codec != 0) {
+            if (!DecompressPage(cmeta.codec, body, body_size,
+                                (size_t)hdr.uncompressed_page_size, decomp)) return false;
+            body = decomp.data(); body_size = decomp.size();
+        }
+
+        if (!DecodeDataPageTyped(hdr, body, body_size, cmeta.parquet_type, dict, out,
+                                  rows_read, skip_str_data)) {
+            return false;
+        }
+        // A PLAIN (non-dict) data page invalidates the dict-index fast path
+        // — rows in that page don't have meaningful dict indices.
+        if (tid == LogicalTypeId::VARCHAR && out.str_dict_encoded &&
+            hdr.encoding != 2 && hdr.encoding != 8) {
+            out.str_dict_encoded = false;
+            out.str_dict_indices.clear();
+        }
+        rows_read += (idx_t)hdr.num_values;
+        if (cur_offset >= total_end) break;
+    }
+
+    // If every page was dict-encoded, publish the dict values so consumers
+    // can resolve indices → strings without re-parsing the Parquet file.
+    if (tid == LogicalTypeId::VARCHAR && out.str_dict_encoded && dict.present) {
+        out.str_dict_values.resize(dict.str_ptr.size());
+        for (size_t i = 0; i < dict.str_ptr.size(); i++) {
+            out.str_dict_values[i] = string_t(dict.str_ptr[i], dict.str_len[i]);
+        }
+    }
+
+    out.decoded = true;
+    return true;
 }
 
 std::vector<Value> ParquetReader::ReadColumn(idx_t rg_idx, idx_t col_idx) {

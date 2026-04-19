@@ -655,4 +655,71 @@ void FastCSVReader::ReadIntoTable(DataTable &table, const std::vector<LogicalTyp
     }
 }
 
+void FastCSVReader::ReadIntoChunks(std::vector<DataChunk> &out,
+                                    const std::vector<LogicalType> &types,
+                                    const std::vector<bool> *projection) {
+    if (has_header_ && !header_read_) ReadHeader();
+
+    size_t start = pos_;
+    size_t end = size_;
+    size_t range = end - start;
+
+    // Small inputs (< ~2 MB) — single-threaded; parallel overhead dominates.
+    unsigned int nt = (range < 2 * 1024 * 1024) ? 1u : std::thread::hardware_concurrency();
+    if (nt == 0) nt = 1;
+    if (nt > 8) nt = 8;
+    if (range < 256 * 1024 * nt) nt = 1;
+
+    auto parse_range = [&](size_t s, size_t e, std::vector<DataChunk> &local) {
+        FastCSVReader worker(buffer_, s, e, delimiter_);
+        while (!worker.IsEOF()) {
+            DataChunk chunk;
+            chunk.Initialize(types);
+            idx_t count = projection
+                ? worker.ReadChunkProjected(chunk, types, *projection)
+                : worker.ReadChunk(chunk, types);
+            if (count == 0) break;
+            local.push_back(std::move(chunk));
+        }
+    };
+
+    if (nt <= 1) {
+        parse_range(start, end, out);
+        pos_ = end;
+        return;
+    }
+
+    std::vector<std::pair<size_t, size_t>> ranges;
+    ranges.reserve(nt);
+    size_t chunk_bytes = range / nt;
+    size_t cur = start;
+    for (unsigned int t = 0; t < nt; t++) {
+        size_t next;
+        if (t == nt - 1) {
+            next = end;
+        } else {
+            size_t tentative = start + (t + 1) * chunk_bytes;
+            // Snap to next line start so we don't split rows.
+            next = FindLineStart(buffer_, end, tentative);
+        }
+        if (cur < next) ranges.emplace_back(cur, next);
+        cur = next;
+    }
+
+    std::vector<std::vector<DataChunk>> per_thread(ranges.size());
+    std::vector<std::thread> threads;
+    threads.reserve(ranges.size());
+    for (size_t i = 0; i < ranges.size(); i++) {
+        threads.emplace_back([&, i] {
+            parse_range(ranges[i].first, ranges[i].second, per_thread[i]);
+        });
+    }
+    for (auto &th : threads) th.join();
+
+    for (auto &v : per_thread) {
+        for (auto &c : v) out.push_back(std::move(c));
+    }
+    pos_ = end;
+}
+
 } // namespace slothdb

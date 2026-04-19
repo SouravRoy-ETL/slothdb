@@ -41,6 +41,15 @@ public:
     // Stream all data directly into a DataTable.
     void ReadIntoTable(DataTable &table, const std::vector<LogicalType> &types);
 
+    // Parallel-parse the remainder of the buffer into a vector of DataChunks.
+    // Splits the buffer into N line-aligned ranges (N = min(hardware_concurrency, 8)),
+    // each worker parses its range via a borrowed-buffer FastCSVReader, chunks
+    // are appended in file order after join. `projection` optionally restricts
+    // which columns get materialized (same semantics as ReadChunkProjected).
+    void ReadIntoChunks(std::vector<DataChunk> &out,
+                        const std::vector<LogicalType> &types,
+                        const std::vector<bool> *projection = nullptr);
+
     // Read one chunk (up to VECTOR_SIZE rows) directly into DataChunk.
     idx_t ReadChunk(DataChunk &chunk, const std::vector<LogicalType> &types);
 

@@ -20,6 +20,8 @@
 #include "slothdb/common/file_glob.hpp"
 #include <sstream>
 #include <unordered_set>
+#include <chrono>
+#include <cstdio>
 
 namespace slothdb {
 
@@ -674,8 +676,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto file_path = static_cast<ConstantExpression &>(*args[0]).value;
 
                     JSONReader reader(file_path);
-                    reader.DetectSchema();
-                    auto rows = reader.ReadAll();
+                    reader.DetectSchemaLight();
                     auto col_names = reader.GetColumnNames();
                     auto col_types = reader.GetColumnTypes();
 
@@ -688,11 +689,15 @@ QueryResult Connection::Query(const std::string &sql) {
                     for (size_t i = 0; i < col_names.size(); i++)
                         cols.emplace_back(col_names[i], col_types[i]);
 
+                    if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
+                    // Placeholder storage (unused by PhysicalJSONScan) — keeps
+                    // catalog invariants for other code that calls GetStorage().
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-
-                    BulkLoadRows(*storage, col_types, rows);
+                    // Mark as JSON file-backed so PhysicalPlanner::PlanGet
+                    // dispatches to PhysicalJSONScan instead of bulk-loading.
+                    entry.SetJsonPath(file_path);
                     temp_tables.push_back(tbl_name);
                 }
             }
@@ -705,10 +710,14 @@ QueryResult Connection::Query(const std::string &sql) {
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
                     auto file_path = static_cast<ConstantExpression &>(*args[0]).value;
 
-                    // Open just to read the footer metadata (cheap).
-                    ParquetReader reader(file_path);
-                    auto col_names = reader.GetColumnNames();
-                    auto col_types = reader.GetColumnTypes();
+                    // Open just to read the footer metadata (cheap). We stash
+                    // the reader on the catalog entry so PhysicalParquetScan
+                    // can reuse it instead of re-parsing the Thrift footer at
+                    // execution time — this path is hit once per query and
+                    // saves ~10-20ms per query.
+                    auto reader_sp = std::make_shared<ParquetReader>(file_path);
+                    auto col_names = reader_sp->GetColumnNames();
+                    auto col_types = reader_sp->GetColumnTypes();
 
                     std::string tbl_name = sel.from_table->alias.empty()
                         ? "__read_parquet__" : sel.from_table->alias;
@@ -723,9 +732,8 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-                    // Mark as parquet file-backed: PhysicalPlanner::PlanGet will
-                    // dispatch to PhysicalParquetScan instead of PhysicalTableScan.
                     entry.SetParquetPath(file_path);
+                    entry.SetCachedParquetReader(std::move(reader_sp));
                     temp_tables.push_back(tbl_name);
                 }
             }
@@ -764,9 +772,9 @@ QueryResult Connection::Query(const std::string &sql) {
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
                     auto fp = static_cast<ConstantExpression &>(*args[0]).value;
                     AvroReader reader(fp);
+                    reader.DetectSchemaLight();
                     auto col_names = reader.GetColumnNames();
                     auto col_types = reader.GetColumnTypes();
-                    auto rows = reader.ReadAll();
 
                     std::string tbl_name = sel.from_table->alias.empty()
                         ? "__read_avro__" : sel.from_table->alias;
@@ -776,10 +784,12 @@ QueryResult Connection::Query(const std::string &sql) {
                     std::vector<ColumnDefinition> cols;
                     for (size_t i = 0; i < col_names.size(); i++)
                         cols.emplace_back(col_names[i], col_types[i]);
+                    if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-                    BulkLoadRows(*storage, col_types, rows);
+                    // PhysicalAvroScan parses at execution time.
+                    entry.SetAvroPath(fp);
                     temp_tables.push_back(tbl_name);
                 }
             }
@@ -791,9 +801,11 @@ QueryResult Connection::Query(const std::string &sql) {
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
                     auto fp = static_cast<ConstantExpression &>(*args[0]).value;
                     ExcelReader reader(fp);
+                    // ReadAll must run first — it is what actually parses the
+                    // xlsx and populates column_names_/column_types_.
+                    auto rows = reader.ReadAll();
                     auto col_names = reader.GetColumnNames();
                     auto col_types = reader.GetColumnTypes();
-                    auto rows = reader.ReadAll();
 
                     std::string tbl_name = sel.from_table->alias.empty()
                         ? "__read_xlsx__" : sel.from_table->alias;

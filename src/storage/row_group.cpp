@@ -16,32 +16,12 @@ idx_t RowGroup::Append(DataChunk &chunk, idx_t offset) {
     idx_t rows_to_append = std::min(chunk.size() - offset, Remaining());
     if (rows_to_append == 0) return 0;
 
+    // Zero-copy path — the new AppendSlice takes the source vector+offset
+    // directly. For VARCHAR it memcpys the 16-byte string_t entries and
+    // shares the source's string buffer via shared_ptr, avoiding the two
+    // std::string allocations per cell that the old per-value path did.
     for (idx_t col = 0; col < ColumnCount(); col++) {
-        // Create a temporary vector with the slice we want to append.
-        auto &src_vec = chunk.GetVector(col);
-        auto physical = src_vec.GetType().GetInternalType();
-        idx_t type_size = GetTypeIdSize(physical);
-
-        // Build a temporary vector pointing to the offset data.
-        Vector temp(src_vec.GetType(), VECTOR_SIZE);
-        if (physical == PhysicalType::VARCHAR) {
-            // For VARCHAR, copy value by value.
-            for (idx_t i = 0; i < rows_to_append; i++) {
-                temp.SetValue(i, src_vec.GetValue(offset + i));
-            }
-        } else if (type_size > 0) {
-            // For fixed-size types, memcpy the slice.
-            std::memcpy(temp.GetData(), src_vec.GetData() + offset * type_size,
-                        rows_to_append * type_size);
-            // Copy validity.
-            for (idx_t i = 0; i < rows_to_append; i++) {
-                if (!src_vec.GetValidity().RowIsValid(offset + i)) {
-                    temp.GetValidity().SetInvalid(i);
-                }
-            }
-        }
-
-        columns_[col]->Append(temp, rows_to_append);
+        columns_[col]->AppendSlice(chunk.GetVector(col), offset, rows_to_append);
     }
 
     count_ += rows_to_append;

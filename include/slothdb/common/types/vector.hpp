@@ -40,9 +40,19 @@ public:
     const char *AddString(const char *data, idx_t len);
     const char *AddString(const std::string &str);
 
+    // Attach an externally-owned contiguous byte buffer. The buffer is kept
+    // alive for the Vector's lifetime. Used when another decoder (e.g. Parquet)
+    // already holds all string bytes contiguously and wants string_t entries
+    // in the Vector to point directly into it — avoiding a per-string copy.
+    void AttachHeap(std::shared_ptr<std::vector<char>> heap) {
+        heaps_.push_back(std::move(heap));
+    }
+
 private:
     // Store strings so they stay alive.
     std::vector<std::string> strings_;
+    // Externally-owned byte buffers kept alive for string_t pointer validity.
+    std::vector<std::shared_ptr<std::vector<char>>> heaps_;
 };
 
 // The core columnar data vector. Holds VECTOR_SIZE values of a single type.
@@ -95,6 +105,19 @@ public:
 
     // Get the string buffer (for VARCHAR vectors).
     VectorStringBuffer &GetStringBuffer();
+
+    // Expose the underlying auxiliary buffer (VectorStringBuffer for VARCHAR)
+    // as a shared_ptr — lets downstream owners (e.g. ColumnData) keep the
+    // buffer alive so string_t pointers remain valid after a zero-copy move.
+    std::shared_ptr<VectorBuffer> GetAuxiliaryPtr() const { return auxiliary_; }
+
+    // Adopt another vector's auxiliary buffer so string_t pointers copied
+    // from the other vector remain valid. Used by vectorized operators that
+    // copy string_t slices by value (PhysicalFilter) to avoid per-cell
+    // string allocation. Does not replace the data buffer — only auxiliary.
+    void SetAuxiliaryPtr(std::shared_ptr<VectorBuffer> aux) {
+        auxiliary_ = std::move(aux);
+    }
 
 private:
     void Initialize(idx_t capacity);

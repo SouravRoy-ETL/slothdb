@@ -1,8 +1,10 @@
 #include "slothdb/storage/excel_reader.hpp"
 #include "slothdb/common/exception.hpp"
+#include "miniz.h"
 #include <fstream>
 #include <cstring>
 #include <algorithm>
+#include <cstdlib>
 
 namespace slothdb {
 
@@ -40,8 +42,30 @@ std::string ExcelReader::ExtractZipEntry(const std::vector<uint8_t> &zip_data,
                 return std::string(reinterpret_cast<const char *>(&zip_data[data_start]),
                                     uncompressed_size);
             }
-            // Deflate compressed — we cannot decompress without a deflate implementation.
-            // Return empty and fall through to error handling.
+            if (compression == 8) {
+                // DEFLATE — decompress with miniz (raw deflate, no zlib wrapper).
+                size_t out_len = uncompressed_size ? uncompressed_size
+                                                    : compressed_size * 8 + 1024;
+                std::string out;
+                out.resize(out_len);
+                size_t rc = tinfl_decompress_mem_to_mem(
+                    out.data(), out.size(),
+                    &zip_data[data_start], compressed_size,
+                    0 /* raw deflate, no zlib header */);
+                for (int tries = 0; tries < 8 &&
+                     rc == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED; tries++) {
+                    out.resize(out.size() * 2 + 1024);
+                    rc = tinfl_decompress_mem_to_mem(
+                        out.data(), out.size(),
+                        &zip_data[data_start], compressed_size, 0);
+                }
+                if (rc != TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+                    out.resize(rc);
+                    return out;
+                }
+                return "";
+            }
+            // Unsupported compression method.
             return "";
         }
 
@@ -107,23 +131,36 @@ void ExcelReader::ParseSheetXML(const std::string &xml,
                 cell_type = row_xml.substr(t_attr + 3, t_end - t_attr - 3);
             }
 
-            // Get value from <v>...</v>.
-            auto v_start = row_xml.find("<v>", c_start);
+            // Get value from <v>...</v> or inline-string <is><t>...</t></is>.
             auto c_end = row_xml.find("</c>", c_start);
             if (c_end == std::string::npos) break;
 
             std::string value;
-            if (v_start != std::string::npos && v_start < c_end) {
-                auto v_end = row_xml.find("</v>", v_start);
-                value = row_xml.substr(v_start + 3, v_end - v_start - 3);
+            if (cell_type == "inlineStr") {
+                auto t_start = row_xml.find("<t", c_start);
+                if (t_start != std::string::npos && t_start < c_end) {
+                    auto content_start = row_xml.find('>', t_start) + 1;
+                    auto content_end = row_xml.find("</t>", content_start);
+                    if (content_end != std::string::npos && content_end <= c_end) {
+                        value = row_xml.substr(content_start, content_end - content_start);
+                    }
+                }
+            } else {
+                auto v_start = row_xml.find("<v>", c_start);
+                if (v_start != std::string::npos && v_start < c_end) {
+                    auto v_end = row_xml.find("</v>", v_start);
+                    value = row_xml.substr(v_start + 3, v_end - v_start - 3);
+                }
             }
 
             // Resolve shared strings.
             if (cell_type == "s" && !value.empty()) {
-                auto idx = std::stoul(value);
-                if (idx < shared_strings.size()) {
-                    value = shared_strings[idx];
-                }
+                try {
+                    auto idx = std::stoul(value);
+                    if (idx < shared_strings.size()) {
+                        value = shared_strings[idx];
+                    }
+                } catch (...) { /* leave as-is */ }
             }
 
             cell_values.push_back(value);
@@ -137,18 +174,34 @@ void ExcelReader::ParseSheetXML(const std::string &xml,
             first_row = false;
         } else if (!cell_values.empty()) {
             std::vector<Value> row;
+            row.reserve(column_types_.size());
             for (size_t i = 0; i < column_types_.size(); i++) {
                 if (i < cell_values.size() && !cell_values[i].empty()) {
-                    // Try numeric.
-                    try {
-                        auto d = std::stod(cell_values[i]);
-                        if (cell_values[i].find('.') != std::string::npos)
-                            row.push_back(Value::DOUBLE(d));
-                        else
-                            row.push_back(Value::INTEGER(static_cast<int32_t>(d)));
-                    } catch (...) {
-                        row.push_back(Value::VARCHAR(cell_values[i]));
+                    auto &cv = cell_values[i];
+                    // Try numeric first — widen column type on first numeric
+                    // cell (column_types_ started VARCHAR from the header row).
+                    bool is_num = !cv.empty() && (cv[0] == '-' || cv[0] == '.' ||
+                                                  (cv[0] >= '0' && cv[0] <= '9'));
+                    if (is_num) {
+                        try {
+                            auto d = std::stod(cv);
+                            bool is_float = cv.find('.') != std::string::npos ||
+                                             cv.find('e') != std::string::npos ||
+                                             cv.find('E') != std::string::npos;
+                            if (is_float) {
+                                row.push_back(Value::DOUBLE(d));
+                                if (column_types_[i].id() != LogicalTypeId::DOUBLE)
+                                    column_types_[i] = LogicalType::DOUBLE();
+                            } else {
+                                row.push_back(Value::BIGINT((int64_t)d));
+                                // Widen VARCHAR→BIGINT; keep DOUBLE if already widened.
+                                if (column_types_[i].id() == LogicalTypeId::VARCHAR)
+                                    column_types_[i] = LogicalType::BIGINT();
+                            }
+                            continue;
+                        } catch (...) { /* fall through to string */ }
                     }
+                    row.push_back(Value::VARCHAR(cv));
                 } else {
                     row.push_back(Value());
                 }

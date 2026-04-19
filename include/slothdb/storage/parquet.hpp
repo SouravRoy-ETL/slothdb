@@ -2,10 +2,12 @@
 
 #include "slothdb/common/types/data_chunk.hpp"
 #include "slothdb/common/types/logical_type.hpp"
+#include "slothdb/common/types/string_type.hpp"
 #include "slothdb/common/types/value.hpp"
 #include "slothdb/common/constants.hpp"
 #include <cstdint>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -89,12 +91,64 @@ private:
 };
 
 // ============================================================================
+// Typed column data for a full row group — avoids boxing every value in Value.
+// Only one of (int32/int64/float/double/bool data) is populated depending on
+// the LogicalType.  VARCHAR uses str_data + str_heap (shared so the Vector
+// can keep the backing bytes alive for its own lifetime).
+// ============================================================================
+struct ParquetColumnData {
+    LogicalType type = LogicalType::VARCHAR();
+    idx_t count = 0;
+    // Typed raw data (one of these is used; selected by type).
+    std::vector<int32_t> i32_data;
+    std::vector<int64_t> i64_data;
+    std::vector<float> f32_data;
+    std::vector<double> f64_data;
+    std::vector<uint8_t> bool_data;
+    // VARCHAR: fixed-size string_t entries pointing into str_heap (or inline).
+    std::vector<string_t> str_data;
+    std::shared_ptr<std::vector<char>> str_heap;
+    // VARCHAR dict-encoded fast path: per-row dict index + the dict itself.
+    // Populated only when the column chunk was entirely dict-encoded; lets
+    // consumers (e.g. GROUP BY) do O(1) array-index lookup per row and avoid
+    // per-row string comparisons.
+    std::vector<uint32_t> str_dict_indices;
+    std::vector<string_t> str_dict_values;
+    bool str_dict_encoded = false;
+    // When true, the decoder skipped writing str_data[r] — consumers must
+    // resolve strings via str_dict_values[str_dict_indices[r]] instead.
+    bool str_data_skipped = false;
+    // One byte per row: 0 = null, 1 = valid. Empty means all_valid = true.
+    std::vector<uint8_t> validity;
+    bool all_valid = true;
+    // Set true if native decode succeeded; false falls back to Value path.
+    bool decoded = false;
+
+    void Clear() {
+        count = 0;
+        i32_data.clear(); i64_data.clear();
+        f32_data.clear(); f64_data.clear();
+        bool_data.clear(); str_data.clear();
+        str_heap.reset();
+        str_dict_indices.clear();
+        str_dict_values.clear();
+        str_dict_encoded = false;
+        validity.clear();
+        all_valid = true;
+        decoded = false;
+    }
+};
+
+// ============================================================================
 // Parquet Reader
 // ============================================================================
 
 class ParquetReader {
 public:
     explicit ParquetReader(const std::string &path);
+    ~ParquetReader();
+    ParquetReader(const ParquetReader &) = delete;
+    ParquetReader &operator=(const ParquetReader &) = delete;
 
     const ParquetFileMeta &GetMeta() const { return meta_; }
     const std::vector<std::string> &GetColumnNames() const { return meta_.column_names; }
@@ -109,6 +163,20 @@ public:
 
     // Read a single column of a row group. Used by projection-aware scans.
     std::vector<Value> ReadColumn(idx_t rg_idx, idx_t col_idx);
+
+    // Native typed decode: fills `out` with the column's values decoded
+    // directly into typed buffers (no Value boxing). Returns true on success
+    // — on false, caller should use ReadColumn as a fallback. Currently
+    // handles BOOLEAN/INT32/INT64/FLOAT/DOUBLE/VARCHAR for standard Parquet
+    // files with PLAIN / PLAIN_DICTIONARY / RLE_DICTIONARY encodings.
+    //
+    // `skip_str_data`: for VARCHAR dict-encoded columns, skip writing the
+    // per-row `str_data[r] = string_t(...)` (populate only `str_dict_indices`
+    // + `str_dict_values`). Saves ~160 MB of string_t writes on a 10M-row
+    // dict-encoded VARCHAR column. The caller is responsible for reading
+    // `str_dict_values[str_dict_indices[r]]` to get the string value.
+    bool ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnData &out,
+                        bool skip_str_data = false);
 
     // Streaming: read one row group directly into a DataChunk.
     // If projection is non-empty, only loads columns where projection[col]==true.
@@ -135,6 +203,15 @@ private:
     // True when the file is a standards-compliant Parquet (Thrift metadata),
     // false when it is our legacy custom format.
     bool is_standard_parquet_ = false;
+
+    // Memory-mapped file: single read-only mapping shared across all decode
+    // calls (including concurrent calls from worker threads). Eliminates per-
+    // column `std::ifstream` open overhead for large files.
+    const uint8_t *file_data_ = nullptr;
+    size_t file_size_ = 0;
+    bool owns_mmap_ = false;   // true if we created the mapping (must unmap in ~)
+    bool owns_buffer_ = false; // true if we malloc'd a buffer (fread fallback)
+    void *mmap_handle_ = nullptr; // Windows: HANDLE; POSIX: unused
 };
 
 } // namespace slothdb

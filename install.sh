@@ -5,7 +5,7 @@
 set -e
 
 REPO="SouravRoy-ETL/slothdb"
-VERSION="v0.1.1"
+VERSION="v0.1.2"
 INSTALL_DIR="/usr/local/bin"
 
 # Detect OS and architecture

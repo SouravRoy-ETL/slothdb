@@ -2,6 +2,7 @@
 
 #include "slothdb/common/types/logical_type.hpp"
 #include "slothdb/common/types/value.hpp"
+#include "slothdb/common/types/data_chunk.hpp"
 #include <string>
 #include <vector>
 
@@ -22,6 +23,19 @@ public:
     int64_t NumRows() const { return static_cast<int64_t>(rows_.size()); }
 
     std::vector<std::vector<Value>> ReadAll();
+
+    // Populate `column_names_` / `column_types_` by parsing only the file
+    // header (magic + metadata map + sync marker). No data-block parse.
+    // Used by PhysicalAvroScan so the planner can set up the catalog
+    // entry without loading a single row of data.
+    void DetectSchemaLight();
+
+    // Stream parse directly into `chunks` — skips the per-cell Value boxing
+    // that goes through `rows_`. Each field writes directly into its
+    // column Vector (typed memcpy for numerics, string_t for VARCHAR).
+    // Used by PhysicalAvroScan::Init().
+    void ReadIntoChunks(std::vector<DataChunk> &chunks,
+                        const std::vector<LogicalType> &types);
 
 private:
     void Parse();

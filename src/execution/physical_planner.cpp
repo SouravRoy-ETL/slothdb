@@ -2,14 +2,22 @@
 #include "slothdb/execution/expression_executor.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/string_util.hpp"
+#include "slothdb/storage/avro_reader.hpp"
 #include "slothdb/storage/data_table.hpp"
 #include "slothdb/storage/fast_csv_reader.hpp"
+#include "slothdb/storage/json_reader.hpp"
 #include "slothdb/storage/parquet.hpp"
+#include "third_party/unordered_dense.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <iostream>
+#include <limits>
+#include <mutex>
 #include <thread>
+#include <type_traits>
 #include <atomic>
 #include <unordered_map>
 #include <unordered_set>
@@ -21,6 +29,148 @@ class PhysicalHashJoin;
 
 // Defined after PhysicalHashJoin's full declaration. Returns nullptr if op is not one.
 static PhysicalHashJoin *AsHashJoin(PhysicalOperator *op);
+
+// ============================================================================
+// Simple-predicate compiler & evaluator.
+//
+// Converts a conjunction of (ColumnRef OP Constant) comparisons into a flat
+// struct-of-arrays form that can be evaluated per row against typed
+// ParquetColumnData with no virtual dispatch. Used by the fused Parquet
+// FILTER+AGG paths to skip PhysicalFilter's DataChunk copy.
+// ============================================================================
+enum class SimpleCmpOp { LT, LE, GT, GE, EQ, NE };
+
+struct SimplePredicate {
+    idx_t col_idx;
+    SimpleCmpOp op;
+    double dval;   // comparison value cast to double (numeric columns)
+};
+
+static bool ParseCmpOp(const std::string &s, SimpleCmpOp &out) {
+    if (s == "<")  { out = SimpleCmpOp::LT; return true; }
+    if (s == "<=") { out = SimpleCmpOp::LE; return true; }
+    if (s == ">")  { out = SimpleCmpOp::GT; return true; }
+    if (s == ">=") { out = SimpleCmpOp::GE; return true; }
+    if (s == "=" || s == "==") { out = SimpleCmpOp::EQ; return true; }
+    if (s == "!=" || s == "<>") { out = SimpleCmpOp::NE; return true; }
+    return false;
+}
+
+// Returns true iff `e` is an AND-tree of (ColumnRef OP Constant) comparisons
+// on numeric columns; fills `out`. On `false`, `out` may be partially filled —
+// caller should discard it.
+static bool TryCompileSimplePredicate(const BoundExpression &e,
+                                      std::vector<SimplePredicate> &out) {
+    if (e.GetExpressionType() == BoundExpressionType::CONJUNCTION) {
+        auto &c = static_cast<const BoundConjunction &>(e);
+        if (c.op != "AND") return false;
+        return TryCompileSimplePredicate(*c.left, out) &&
+               TryCompileSimplePredicate(*c.right, out);
+    }
+    if (e.GetExpressionType() != BoundExpressionType::COMPARISON) return false;
+    auto &cmp = static_cast<const BoundComparison &>(e);
+    bool swapped = false;
+    const BoundExpression *lhs = cmp.left.get();
+    const BoundExpression *rhs = cmp.right.get();
+    // Allow Constant OP Column (swap sides).
+    if (lhs->GetExpressionType() == BoundExpressionType::CONSTANT &&
+        rhs->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+        std::swap(lhs, rhs); swapped = true;
+    }
+    if (lhs->GetExpressionType() != BoundExpressionType::COLUMN_REF) return false;
+    if (rhs->GetExpressionType() != BoundExpressionType::CONSTANT) return false;
+    auto &col = static_cast<const BoundColumnRef &>(*lhs);
+    auto &con = static_cast<const BoundConstant &>(*rhs);
+    auto tid = col.GetReturnType().id();
+    if (tid != LogicalTypeId::BIGINT && tid != LogicalTypeId::INTEGER &&
+        tid != LogicalTypeId::DOUBLE && tid != LogicalTypeId::FLOAT) return false;
+    SimpleCmpOp op;
+    if (!ParseCmpOp(cmp.op, op)) return false;
+    if (swapped) {
+        // `const OP col` ≡ `col OP' const` where OP' is the mirror op.
+        switch (op) {
+        case SimpleCmpOp::LT: op = SimpleCmpOp::GT; break;
+        case SimpleCmpOp::LE: op = SimpleCmpOp::GE; break;
+        case SimpleCmpOp::GT: op = SimpleCmpOp::LT; break;
+        case SimpleCmpOp::GE: op = SimpleCmpOp::LE; break;
+        case SimpleCmpOp::EQ: case SimpleCmpOp::NE: break;
+        }
+    }
+    double d;
+    try {
+        auto vtid = con.value.type().id();
+        switch (vtid) {
+        case LogicalTypeId::BOOLEAN:  d = con.value.GetValue<bool>() ? 1.0 : 0.0; break;
+        case LogicalTypeId::TINYINT:  d = (double)con.value.GetValue<int8_t>(); break;
+        case LogicalTypeId::SMALLINT: d = (double)con.value.GetValue<int16_t>(); break;
+        case LogicalTypeId::INTEGER:  d = (double)con.value.GetValue<int32_t>(); break;
+        case LogicalTypeId::BIGINT:   d = (double)con.value.GetValue<int64_t>(); break;
+        case LogicalTypeId::FLOAT:    d = (double)con.value.GetValue<float>(); break;
+        case LogicalTypeId::DOUBLE:   d = con.value.GetValue<double>(); break;
+        default: return false;
+        }
+    } catch (...) { return false; }
+    out.push_back({col.column_index, op, d});
+    return true;
+}
+
+// Evaluate predicates against a DataChunk row (for CSV / JSON sources).
+// Returns false if any predicate fails or the row is null in a predicate col.
+static inline bool EvalSimplePredicatesChunk(
+    const std::vector<SimplePredicate> &preds,
+    const DataChunk &chunk, idx_t r) {
+    for (const auto &p : preds) {
+        auto &v = chunk.GetVector(p.col_idx);
+        if (!v.GetValidity().RowIsValid(r)) return false;
+        double val;
+        switch (v.GetType().id()) {
+        case LogicalTypeId::BIGINT:  val = static_cast<double>(v.GetData<int64_t>()[r]); break;
+        case LogicalTypeId::INTEGER: val = static_cast<double>(v.GetData<int32_t>()[r]); break;
+        case LogicalTypeId::DOUBLE:  val = v.GetData<double>()[r]; break;
+        case LogicalTypeId::FLOAT:   val = static_cast<double>(v.GetData<float>()[r]); break;
+        default: return false;
+        }
+        switch (p.op) {
+        case SimpleCmpOp::LT: if (!(val <  p.dval)) return false; break;
+        case SimpleCmpOp::LE: if (!(val <= p.dval)) return false; break;
+        case SimpleCmpOp::GT: if (!(val >  p.dval)) return false; break;
+        case SimpleCmpOp::GE: if (!(val >= p.dval)) return false; break;
+        case SimpleCmpOp::EQ: if (val != p.dval) return false; break;
+        case SimpleCmpOp::NE: if (val == p.dval) return false; break;
+        }
+    }
+    return true;
+}
+
+// Evaluate all predicates against typed Parquet row-group columns at row r.
+// Returns false (fail) if any predicate misses or the row is null in a
+// predicate column.
+static inline bool EvalSimplePredicates(const std::vector<SimplePredicate> &preds,
+                                        const std::vector<ParquetColumnData> &cols,
+                                        idx_t r) {
+    for (const auto &p : preds) {
+        const auto &c = cols[p.col_idx];
+        if (!c.decoded) return false; // can't eval if column wasn't typed-decoded
+        if (!c.all_valid && !c.validity[r]) return false;
+        double v;
+        switch (c.type.id()) {
+        case LogicalTypeId::BIGINT:  v = static_cast<double>(c.i64_data[r]); break;
+        case LogicalTypeId::INTEGER: v = static_cast<double>(c.i32_data[r]); break;
+        case LogicalTypeId::DOUBLE:  v = c.f64_data[r]; break;
+        case LogicalTypeId::FLOAT:   v = static_cast<double>(c.f32_data[r]); break;
+        default: return false;
+        }
+        switch (p.op) {
+        case SimpleCmpOp::LT: if (!(v <  p.dval)) return false; break;
+        case SimpleCmpOp::LE: if (!(v <= p.dval)) return false; break;
+        case SimpleCmpOp::GT: if (!(v >  p.dval)) return false; break;
+        case SimpleCmpOp::GE: if (!(v >= p.dval)) return false; break;
+        case SimpleCmpOp::EQ: if (v != p.dval) return false; break;
+        case SimpleCmpOp::NE: if (v == p.dval) return false; break;
+        }
+    }
+    return true;
+}
 
 // ============================================================================
 // Physical Operators
@@ -94,75 +244,413 @@ private:
     std::vector<bool> projection_;
 };
 
-// Streaming Parquet scan — reads row groups during execution.
+// Streaming Parquet scan with thread-parallel row-group decode.
+//
+// Pipeline:
+//   - Worker threads pull row groups via an atomic counter.
+//   - Each worker decodes its RG independently (ReadColumnInto opens its own
+//     std::ifstream, so concurrent reads are safe).
+//   - Workers deposit the result into slot[rg_idx]; the main thread consumes
+//     slots in order (slot 0 first, then 1, ...) to preserve file row order.
+//   - Decode-ahead is throttled so at most `max_ahead` slots live at once
+//     (bounds memory to ~max_ahead × per-RG column buffers).
 class PhysicalParquetScan : public PhysicalOperator {
 public:
-    PhysicalParquetScan(const std::string &file_path, std::vector<LogicalType> types)
+    PhysicalParquetScan(const std::string &file_path, std::vector<LogicalType> types,
+                        std::shared_ptr<ParquetReader> cached = nullptr)
         : PhysicalOperator(PhysicalOperatorType::TABLE_SCAN, std::move(types)),
-          file_path_(file_path) {}
+          file_path_(file_path), cached_reader_(std::move(cached)) {}
+
+    ~PhysicalParquetScan() override { StopWorkers(); }
 
     void Init() override {
-        reader_ = std::make_unique<ParquetReader>(file_path_);
-        rg_pos_ = 0;
-        chunks_in_rg_ = 0;
-        rg_size_ = 0;
-        current_cols_.clear();
+        StopWorkers();
+        // Reuse the catalog-cached reader when available — avoids a second
+        // Thrift footer parse per query (~10-20ms on our 80-RG benchmark).
+        if (cached_reader_) reader_sp_ = cached_reader_;
+        else reader_sp_ = std::make_shared<ParquetReader>(file_path_);
+        num_rgs_ = reader_sp_->NumRowGroups();
+        next_decode_.store(0);
+        next_emit_ = 0;
+        chunks_in_current_ = 0;
+        current_rg_size_ = 0;
+        current_work_.reset();
+        slots_.clear();
+        slots_.resize(num_rgs_);
+        // Workers are spawned lazily on the first GetData call — this avoids
+        // paying thread-startup cost for callers that only read metadata
+        // (e.g. the COUNT(*) footer fast path never calls GetData).
+        workers_spawned_ = false;
     }
 
     bool GetData(DataChunk &result) override {
+        if (!workers_spawned_) SpawnWorkers();
+
         if (result.ColumnCount() != GetTypes().size()) result.Initialize(GetTypes());
         else result.Reset();
 
         idx_t num_cols = static_cast<idx_t>(GetTypes().size());
 
-        // Load next row group's columns when current is exhausted.
-        if (current_cols_.empty() || chunks_in_rg_ >= rg_size_) {
-            if (rg_pos_ >= reader_->NumRowGroups()) return false;
-            auto &rg_meta = reader_->GetMeta().row_groups[rg_pos_];
-            rg_size_ = static_cast<idx_t>(rg_meta.num_rows);
-            current_cols_.assign(num_cols, {});
-            for (idx_t c = 0; c < num_cols; c++) {
-                if (!projection_.empty() && c < projection_.size() && !projection_[c]) continue;
-                current_cols_[c] = reader_->ReadColumn(rg_pos_, c);
+        // Advance to next RG if the current one is fully drained (or none yet).
+        if (!current_work_ || chunks_in_current_ >= current_rg_size_) {
+            if (next_emit_ >= num_rgs_) return false;
+
+            if (workers_.empty()) {
+                // Single-threaded path: decode on demand inline.
+                current_work_ = DecodeRowGroup(next_emit_);
+            } else {
+                std::unique_lock<std::mutex> lk(mu_);
+                slot_ready_cv_.wait(lk, [&] {
+                    return stop_.load() || slots_[next_emit_] != nullptr;
+                });
+                if (stop_.load()) return false;
+                current_work_ = std::move(slots_[next_emit_]);
+                // Wake any worker throttled by max_ahead — one slot just freed.
+                slot_free_cv_.notify_all();
             }
-            rg_pos_++;
-            chunks_in_rg_ = 0;
+            current_rg_size_ = static_cast<idx_t>(
+                reader_sp_->GetMeta().row_groups[next_emit_].num_rows);
+            chunks_in_current_ = 0;
+            next_emit_++;
         }
 
-        idx_t remaining = rg_size_ - chunks_in_rg_;
+        idx_t remaining = current_rg_size_ - chunks_in_current_;
         idx_t count = std::min<idx_t>(remaining, VECTOR_SIZE);
-        for (idx_t r = 0; r < count; r++) {
-            for (idx_t c = 0; c < num_cols; c++) {
-                if (!projection_.empty() && c < projection_.size() && !projection_[c]) {
-                    result.GetVector(c).GetValidity().SetInvalid(r);
-                    continue;
-                }
-                if (c < current_cols_.size() && chunks_in_rg_ + r < current_cols_[c].size()) {
-                    result.SetValue(c, r, current_cols_[c][chunks_in_rg_ + r]);
-                } else {
-                    result.GetVector(c).GetValidity().SetInvalid(r);
+
+        for (idx_t c = 0; c < num_cols; c++) {
+            auto &vec = result.GetVector(c);
+            if (!projection_.empty() && c < projection_.size() && !projection_[c]) {
+                for (idx_t r = 0; r < count; r++) vec.GetValidity().SetInvalid(r);
+                continue;
+            }
+            auto &col = current_work_->cols[c];
+            if (col.decoded) {
+                EmitTypedSlice(vec, col, chunks_in_current_, count);
+            } else {
+                auto &vals = current_work_->cols_fallback[c];
+                for (idx_t r = 0; r < count; r++) {
+                    if (chunks_in_current_ + r < vals.size()) {
+                        result.SetValue(c, r, vals[chunks_in_current_ + r]);
+                    } else {
+                        vec.GetValidity().SetInvalid(r);
+                    }
                 }
             }
         }
+
         result.SetCardinality(count);
-        chunks_in_rg_ += count;
+        chunks_in_current_ += count;
         return count > 0;
     }
 
     void SetProjection(std::vector<bool> mask) { projection_ = std::move(mask); }
     void SetNeededOutputs(const std::vector<bool> &mask) override { projection_ = mask; }
+    // Per-column hint: if set, VARCHAR dict-encoded cols skip per-row string_t
+    // materialization (populate only str_dict_indices + str_dict_values).
+    // Consumers (fused GROUP BY) must resolve strings via str_dict_values.
+    void SetSkipStrData(std::vector<bool> mask) { skip_str_data_ = std::move(mask); }
     const std::string &GetFilePath() const { return file_path_; }
-    ParquetReader *GetReader() { return reader_.get(); }
+    ParquetReader *GetReader() { return reader_sp_.get(); }
+
+    // One fully decoded row group — what the worker threads produce.
+    struct RGWork {
+        std::vector<ParquetColumnData> cols;
+        std::vector<std::vector<Value>> cols_fallback;
+    };
+
+    // Pull the next decoded row group in file order; returns nullptr at EOF.
+    // Called by fused scan+aggregate paths (skip DataChunk materialization).
+    // Safe to mix with GetData() — both drive the same slot queue.
+    std::unique_ptr<RGWork> PullNextRG(idx_t &rg_idx_out) {
+        if (!workers_spawned_) SpawnWorkers();
+        if (next_emit_ >= num_rgs_) return nullptr;
+        std::unique_ptr<RGWork> work;
+        if (workers_.empty()) {
+            work = DecodeRowGroup(next_emit_);
+        } else {
+            std::unique_lock<std::mutex> lk(mu_);
+            slot_ready_cv_.wait(lk, [&] {
+                return stop_.load() || slots_[next_emit_] != nullptr;
+            });
+            if (stop_.load()) return nullptr;
+            work = std::move(slots_[next_emit_]);
+            slot_free_cv_.notify_all();
+        }
+        rg_idx_out = next_emit_;
+        next_emit_++;
+        return work;
+    }
+
+    idx_t RowGroupSize(idx_t rg) const {
+        return static_cast<idx_t>(reader_sp_->GetMeta().row_groups[rg].num_rows);
+    }
+
+    // Parallel consumer API. The caller sets a callback that is invoked by
+    // worker threads directly after decoding each RG (instead of depositing
+    // the RG into `slots_`). `RunParallelRGs(nt)` spawns `nt` workers that
+    // pull RGs via the atomic counter, decode, invoke the callback, discard
+    // the RGWork, and exit when all RGs are processed. Blocks until done.
+    // Used by the fused GROUP BY paths to aggregate inside worker threads
+    // — decode and aggregate fuse into a single per-RG pass with thread-
+    // local state merged once at the end.
+    using RGConsumerFn =
+        std::function<void(const RGWork &, idx_t rg_idx, int thread_id)>;
+    void SetRGConsumer(RGConsumerFn cb) { rg_consumer_ = std::move(cb); }
+
+    int RunParallelRGs(int num_threads_hint = 0) {
+        // Lazy-start: ignore any slot-mode workers; consumer-mode runs its own.
+        StopWorkers();
+        unsigned int nt = (unsigned int)num_threads_hint;
+        if (nt == 0) nt = std::thread::hardware_concurrency();
+        if (nt == 0) nt = 4;
+        if (nt > 8) nt = 8;
+        if (num_rgs_ == 0) nt = 0;
+        else if ((idx_t)nt > num_rgs_) nt = static_cast<unsigned int>(num_rgs_);
+
+        next_decode_.store(0);
+        stop_.store(false);
+        consumer_mode_ = true;
+        for (unsigned int t = 0; t < nt; t++) {
+            workers_.emplace_back([this, t] { WorkerLoop((int)t); });
+        }
+        for (auto &t : workers_) if (t.joinable()) t.join();
+        workers_.clear();
+        consumer_mode_ = false;
+        return (int)nt;
+    }
+
+private:
+
+    // Decode a single row group into an RGWork. Safe to call from any thread
+    // (reads from the read-only mmap'd file_data_).
+    std::unique_ptr<RGWork> DecodeRowGroup(idx_t rg) {
+        auto work = std::make_unique<RGWork>();
+        idx_t num_cols = static_cast<idx_t>(GetTypes().size());
+        work->cols.resize(num_cols);
+        work->cols_fallback.resize(num_cols);
+        for (idx_t c = 0; c < num_cols; c++) {
+            if (!projection_.empty() && c < projection_.size() && !projection_[c]) continue;
+            if (!reader_sp_->ReadColumnInto(rg, c, work->cols[c])) {
+                work->cols_fallback[c] = reader_sp_->ReadColumn(rg, c);
+            }
+        }
+        return work;
+    }
+
+    // Decode into a caller-owned RGWork. Used by consumer-mode workers that
+    // keep a persistent per-thread RGWork to avoid per-RG buffer alloc churn —
+    // the typed column vectors retain their capacity across row groups.
+    void DecodeRowGroupInto(idx_t rg, RGWork &work) {
+        idx_t num_cols = static_cast<idx_t>(GetTypes().size());
+        if (work.cols.size() != num_cols) work.cols.resize(num_cols);
+        if (work.cols_fallback.size() != num_cols) work.cols_fallback.resize(num_cols);
+        for (idx_t c = 0; c < num_cols; c++) {
+            if (!projection_.empty() && c < projection_.size() && !projection_[c]) {
+                work.cols[c].Clear();
+                work.cols_fallback[c].clear();
+                continue;
+            }
+            bool skip_str = (c < skip_str_data_.size()) && skip_str_data_[c];
+            if (!reader_sp_->ReadColumnInto(rg, c, work.cols[c], skip_str)) {
+                work.cols_fallback[c] = reader_sp_->ReadColumn(rg, c);
+            } else {
+                work.cols_fallback[c].clear();
+            }
+        }
+    }
+
+    void WorkerLoop(int thread_id = 0) {
+        // Bound decode-ahead in slot mode so memory doesn't balloon. Consumer
+        // mode has no queue — work is freed right after the callback — so no
+        // throttle is needed.
+        const idx_t max_ahead = workers_.size() * 2 + 2;
+        // Thread-local persistent RGWork — reuse buffers across row groups so
+        // each RG doesn't malloc a fresh ~1 MB column buffer per column.
+        RGWork consumer_work;
+        while (true) {
+            if (stop_.load()) return;
+            idx_t rg = next_decode_.fetch_add(1);
+            if (rg >= num_rgs_) return;
+
+            if (consumer_mode_) {
+                DecodeRowGroupInto(rg, consumer_work);
+                if (rg_consumer_) rg_consumer_(consumer_work, rg, thread_id);
+                // consumer_work retains its buffer capacity; the NEXT RG's
+                // decode reuses the same memory instead of mallocing afresh.
+                continue;
+            }
+
+            // Slot-deposit mode: throttle until this rg is within max_ahead.
+            {
+                std::unique_lock<std::mutex> lk(mu_);
+                slot_free_cv_.wait(lk, [&] {
+                    return stop_.load() || rg < next_emit_ + max_ahead;
+                });
+                if (stop_.load()) return;
+            }
+
+            auto work = DecodeRowGroup(rg);
+
+            {
+                std::unique_lock<std::mutex> lk(mu_);
+                slots_[rg] = std::move(work);
+            }
+            slot_ready_cv_.notify_all();
+        }
+    }
+
+    void SpawnWorkers() {
+        workers_spawned_ = true;
+        unsigned int nt = std::thread::hardware_concurrency();
+        if (nt == 0) nt = 4;
+        if (nt > 8) nt = 8;
+        if (num_rgs_ <= 1) nt = 0;
+        else if ((idx_t)nt > num_rgs_) nt = static_cast<unsigned int>(num_rgs_);
+        stop_.store(false);
+        for (unsigned int t = 0; t < nt; t++) {
+            workers_.emplace_back([this] { WorkerLoop(); });
+        }
+    }
+
+    void StopWorkers() {
+        if (workers_.empty()) return;
+        stop_.store(true);
+        slot_ready_cv_.notify_all();
+        slot_free_cv_.notify_all();
+        for (auto &t : workers_) if (t.joinable()) t.join();
+        workers_.clear();
+        slots_.clear();
+        stop_.store(false);
+    }
+
+    // Memcpy a VECTOR_SIZE slice [row_off, row_off+count) from `col` into `vec`.
+    static void EmitTypedSlice(Vector &vec, const ParquetColumnData &col,
+                               idx_t row_off, idx_t count) {
+        auto tid = col.type.id();
+        if (!col.all_valid && !col.validity.empty()) {
+            auto &v = vec.GetValidity();
+            for (idx_t r = 0; r < count; r++) {
+                if (!col.validity[row_off + r]) v.SetInvalid(r);
+            }
+        }
+        switch (tid) {
+        case LogicalTypeId::BOOLEAN: {
+            auto *dst = vec.GetData<bool>();
+            for (idx_t r = 0; r < count; r++) dst[r] = col.bool_data[row_off + r] != 0;
+            break;
+        }
+        case LogicalTypeId::INTEGER:
+            std::memcpy(vec.GetData<int32_t>(), col.i32_data.data() + row_off, count * 4);
+            break;
+        case LogicalTypeId::BIGINT:
+            std::memcpy(vec.GetData<int64_t>(), col.i64_data.data() + row_off, count * 8);
+            break;
+        case LogicalTypeId::FLOAT:
+            std::memcpy(vec.GetData<float>(), col.f32_data.data() + row_off, count * 4);
+            break;
+        case LogicalTypeId::DOUBLE:
+            std::memcpy(vec.GetData<double>(), col.f64_data.data() + row_off, count * 8);
+            break;
+        case LogicalTypeId::VARCHAR:
+            std::memcpy(vec.GetData<string_t>(),
+                        col.str_data.data() + row_off, count * sizeof(string_t));
+            if (col.str_heap) vec.GetStringBuffer().AttachHeap(col.str_heap);
+            break;
+        default:
+            break;
+        }
+    }
+
+    std::string file_path_;
+    std::shared_ptr<ParquetReader> reader_sp_;
+    std::shared_ptr<ParquetReader> cached_reader_;
+    std::vector<bool> skip_str_data_; // per-column hint
+    std::vector<bool> projection_;
+
+    // Parallel decode state.
+    idx_t num_rgs_ = 0;
+    bool workers_spawned_ = false;
+    std::atomic<idx_t> next_decode_{0};
+    idx_t next_emit_ = 0;            // main-thread only
+    std::vector<std::unique_ptr<RGWork>> slots_; // indexed by rg_idx
+    std::vector<std::thread> workers_;
+    std::atomic<bool> stop_{false};
+    std::mutex mu_;
+    std::condition_variable slot_ready_cv_; // main waits on this
+    std::condition_variable slot_free_cv_;  // workers wait on this (throttle)
+    // Consumer-mode: workers invoke rg_consumer_ directly after decoding.
+    bool consumer_mode_ = false;
+    RGConsumerFn rg_consumer_;
+
+    // Current-chunk emission state.
+    std::unique_ptr<RGWork> current_work_;
+    idx_t current_rg_size_ = 0;
+    idx_t chunks_in_current_ = 0;
+};
+
+// Streaming Avro scan — mirrors PhysicalJSONScan. Init() parses the Avro
+// container into typed DataChunks via AvroReader::ReadIntoChunks, skipping
+// the rows_/BulkLoadRows roundtrip; GetData() emits them sequentially.
+class PhysicalAvroScan : public PhysicalOperator {
+public:
+    PhysicalAvroScan(const std::string &file_path, std::vector<LogicalType> types)
+        : PhysicalOperator(PhysicalOperatorType::TABLE_SCAN, std::move(types)),
+          file_path_(file_path) {}
+
+    void Init() override {
+        AvroReader reader(file_path_);
+        reader.DetectSchemaLight();
+        chunks_.clear();
+        reader.ReadIntoChunks(chunks_, GetTypes());
+        emit_pos_ = 0;
+    }
+
+    bool GetData(DataChunk &result) override {
+        if (emit_pos_ >= chunks_.size()) return false;
+        result = std::move(chunks_[emit_pos_++]);
+        return true;
+    }
+
+    const std::string &GetFilePath() const { return file_path_; }
 
 private:
     std::string file_path_;
-    std::unique_ptr<ParquetReader> reader_;
-    idx_t rg_pos_ = 0;
-    idx_t chunks_in_rg_ = 0;
-    idx_t rg_size_ = 0;
-    // One column's worth of Values per entry; empty if not projected.
-    std::vector<std::vector<Value>> current_cols_;
-    std::vector<bool> projection_;
+    std::vector<DataChunk> chunks_;
+    idx_t emit_pos_ = 0;
+};
+
+// Streaming JSON scan — parses the file in Init() (mmap + parallel worker
+// threads under the hood via JSONReader::ReadIntoChunks) into a vector of
+// DataChunks, then emits them one at a time via GetData(). Avoids the
+// DataTable bulk-load and rescan that used to happen for read_json(...)
+// queries, mirroring PhysicalParquetScan's "skip the intermediate storage"
+// approach.
+class PhysicalJSONScan : public PhysicalOperator {
+public:
+    PhysicalJSONScan(const std::string &file_path, std::vector<LogicalType> types)
+        : PhysicalOperator(PhysicalOperatorType::TABLE_SCAN, std::move(types)),
+          file_path_(file_path) {}
+
+    void Init() override {
+        JSONReader reader(file_path_);
+        reader.DetectSchemaLight();
+        chunks_.clear();
+        reader.ReadIntoChunks(chunks_, GetTypes());
+        emit_pos_ = 0;
+    }
+
+    bool GetData(DataChunk &result) override {
+        if (emit_pos_ >= chunks_.size()) return false;
+        result = std::move(chunks_[emit_pos_++]);
+        return true;
+    }
+
+    const std::string &GetFilePath() const { return file_path_; }
+
+private:
+    std::string file_path_;
+    std::vector<DataChunk> chunks_;
+    idx_t emit_pos_ = 0;
 };
 
 // Ultra-fast scan that only counts rows — no field parsing at all.
@@ -207,6 +695,9 @@ public:
         : PhysicalOperator(PhysicalOperatorType::FILTER, std::move(types)),
           condition_(std::move(condition)) {}
 
+    // Exposed so fused FILTER+AGG+SCAN paths can inline the predicate.
+    const BoundExpression *GetCondition() const { return condition_.get(); }
+
     void Init() override {
         for (auto &child : children) child->Init();
     }
@@ -222,25 +713,101 @@ public:
             Vector filter_result(LogicalType::BOOLEAN(), input.size());
             ExpressionExecutor::Execute(*condition_, input, filter_result, input.size());
 
-            // Collect matching rows.
             auto *filter_data = filter_result.GetData<bool>();
-            result.Initialize(GetTypes());
-            idx_t result_count = 0;
+            auto &filter_validity = filter_result.GetValidity();
 
+            // Build selection vector of matching rows.
+            uint32_t sel[VECTOR_SIZE];
+            idx_t sel_count = 0;
             for (idx_t i = 0; i < input.size(); i++) {
-                if (filter_result.GetValidity().RowIsValid(i) && filter_data[i]) {
-                    for (idx_t col = 0; col < input.ColumnCount(); col++) {
-                        result.SetValue(col, result_count, input.GetValue(col, i));
-                    }
-                    result_count++;
+                if (filter_validity.RowIsValid(i) && filter_data[i]) {
+                    sel[sel_count++] = static_cast<uint32_t>(i);
                 }
             }
 
-            if (result_count > 0) {
-                result.SetCardinality(result_count);
-                return true;
+            if (sel_count == 0) continue; // all filtered — pull next chunk
+
+            if (result.ColumnCount() != GetTypes().size()) {
+                result.Initialize(GetTypes());
+            } else {
+                result.Reset();
             }
-            // All rows filtered out, try next chunk.
+
+            idx_t num_cols = input.ColumnCount();
+            for (idx_t c = 0; c < num_cols; c++) {
+                auto &src = input.GetVector(c);
+                auto &dst = result.GetVector(c);
+                auto &src_val = src.GetValidity();
+                auto &dst_val = dst.GetValidity();
+                switch (src.GetType().id()) {
+                case LogicalTypeId::BIGINT: {
+                    auto *s = src.GetData<int64_t>();
+                    auto *d = dst.GetData<int64_t>();
+                    for (idx_t i = 0; i < sel_count; i++) {
+                        d[i] = s[sel[i]];
+                        if (!src_val.RowIsValid(sel[i])) dst_val.SetInvalid(i);
+                    }
+                    break;
+                }
+                case LogicalTypeId::INTEGER: {
+                    auto *s = src.GetData<int32_t>();
+                    auto *d = dst.GetData<int32_t>();
+                    for (idx_t i = 0; i < sel_count; i++) {
+                        d[i] = s[sel[i]];
+                        if (!src_val.RowIsValid(sel[i])) dst_val.SetInvalid(i);
+                    }
+                    break;
+                }
+                case LogicalTypeId::DOUBLE: {
+                    auto *s = src.GetData<double>();
+                    auto *d = dst.GetData<double>();
+                    for (idx_t i = 0; i < sel_count; i++) {
+                        d[i] = s[sel[i]];
+                        if (!src_val.RowIsValid(sel[i])) dst_val.SetInvalid(i);
+                    }
+                    break;
+                }
+                case LogicalTypeId::FLOAT: {
+                    auto *s = src.GetData<float>();
+                    auto *d = dst.GetData<float>();
+                    for (idx_t i = 0; i < sel_count; i++) {
+                        d[i] = s[sel[i]];
+                        if (!src_val.RowIsValid(sel[i])) dst_val.SetInvalid(i);
+                    }
+                    break;
+                }
+                case LogicalTypeId::BOOLEAN: {
+                    auto *s = src.GetData<bool>();
+                    auto *d = dst.GetData<bool>();
+                    for (idx_t i = 0; i < sel_count; i++) {
+                        d[i] = s[sel[i]];
+                        if (!src_val.RowIsValid(sel[i])) dst_val.SetInvalid(i);
+                    }
+                    break;
+                }
+                case LogicalTypeId::VARCHAR: {
+                    // Zero-copy: copy string_t slices and share the source's
+                    // string buffer so string_t pointers remain valid.
+                    auto *s = src.GetData<string_t>();
+                    auto *d = dst.GetData<string_t>();
+                    for (idx_t i = 0; i < sel_count; i++) {
+                        d[i] = s[sel[i]];
+                        if (!src_val.RowIsValid(sel[i])) dst_val.SetInvalid(i);
+                    }
+                    dst.SetAuxiliaryPtr(src.GetAuxiliaryPtr());
+                    break;
+                }
+                default: {
+                    // Fallback for types without a fast path.
+                    for (idx_t i = 0; i < sel_count; i++) {
+                        dst.SetValue(i, src.GetValue(sel[i]));
+                    }
+                    break;
+                }
+                }
+            }
+            result.SetCardinality(sel_count);
+            return true;
         }
     }
 
@@ -2203,28 +2770,44 @@ private:
         // Parallel single-column GROUP BY: split file into N slices,
         // each thread runs full parse+aggregate, then merge.
         PhysicalFileScan *file_scan_for_group = nullptr;
-        if (single_group_fast) {
+        // Fused WHERE: if children[0] is PhysicalFilter wrapping PhysicalFileScan
+        // and the predicate compiles, apply it per-row inside the worker loop.
+        std::vector<SimplePredicate> fused_preds;
+        bool fused_has_filter = false;
+        if (single_group_fast || multi_group_fast) {
             file_scan_for_group = dynamic_cast<PhysicalFileScan *>(children[0].get());
+            if (!file_scan_for_group) {
+                if (auto *flt = dynamic_cast<PhysicalFilter *>(children[0].get())) {
+                    if (!flt->children.empty()) {
+                        if (auto *fs = dynamic_cast<PhysicalFileScan *>(flt->children[0].get())) {
+                            std::vector<SimplePredicate> tmp;
+                            if (flt->GetCondition() &&
+                                TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                                file_scan_for_group = fs;
+                                fused_preds = std::move(tmp);
+                                fused_has_filter = true;
+                            }
+                        }
+                    }
+                }
+            }
         }
         // Parallel GROUP BY (single or multi col): activate for large files.
         PhysicalFileScan *parallel_scan = nullptr;
-        // file_scan_for_group is only set when single_group_fast. Extend for multi-col too.
-        if (!file_scan_for_group && multi_group_fast) {
-            file_scan_for_group = dynamic_cast<PhysicalFileScan *>(children[0].get());
-        }
         if ((single_group_fast || multi_group_fast) && file_scan_for_group &&
             file_scan_for_group->GetReader() &&
             file_scan_for_group->GetReader()->GetSize() > 16 * 1024 * 1024) {
             parallel_scan = file_scan_for_group;
             // Push projection down so threads skip unneeded columns.
             {
-                idx_t nc = children[0]->GetTypes().size();
+                idx_t nc = file_scan_for_group->GetTypes().size();
                 std::vector<bool> need(nc, false);
                 for (idx_t gc : group_col_indices) if (gc < nc) need[gc] = true;
                 for (auto &info : agg_infos) if (info.col_idx != INVALID_INDEX && info.col_idx < nc) need[info.col_idx] = true;
+                for (auto &p : fused_preds) if (p.col_idx < nc) need[p.col_idx] = true;
                 file_scan_for_group->SetProjection(need);
             }
-            children[0]->Init(); // open reader + header if not already
+            file_scan_for_group->Init(); // open reader + header if not already
         }
         if (parallel_scan) {
             auto *reader = parallel_scan->GetReader();
@@ -2282,6 +2865,8 @@ private:
                         bool is_int = (gtid == LogicalTypeId::INTEGER || gtid == LogicalTypeId::BIGINT) && !multi_group;
 
                         for (idx_t i = 0; i < cnt; i++) {
+                            if (fused_has_filter &&
+                                !EvalSimplePredicatesChunk(fused_preds, chunk, i)) continue;
                             std::vector<AggState> *states_ptr = nullptr;
                             if (multi_group) {
                                 // Concatenated string key for multi-col GROUP BY.
@@ -2747,12 +3332,274 @@ private:
             str_cache_states.reserve(256);
 
             // Two hash maps based on group column type — avoid string conversion.
-            std::unordered_map<int64_t, std::vector<AggState>> int_groups;
+            // unordered_dense is ~2× faster than std::unordered_map for the hot
+            // INT-keyed GROUP BY path (flat open-addressing vs chained buckets).
+            ankerl::unordered_dense::map<int64_t, std::vector<AggState>> int_groups;
             std::unordered_map<std::string, std::vector<AggState>> str_groups;
             std::vector<int64_t> int_order;
             std::vector<std::string> str_order;
-            std::unordered_map<int64_t, Value> int_keys;
+            ankerl::unordered_dense::map<int64_t, Value> int_keys;
             std::unordered_map<std::string, Value> str_keys;
+
+            // === FUSED PARQUET SINGLE-COLUMN GROUP BY ===
+            // Iterate row groups directly from ParquetColumnData — skip
+            // DataChunk materialization and the per-row vector dispatch.
+            // Also handle AGG → FILTER → SCAN: compile the filter into a
+            // flat predicate list and apply per row, skipping the filter's
+            // copy-into-new-chunk pass entirely.
+            PhysicalParquetScan *pq = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+            std::vector<SimplePredicate> single_preds;
+            bool single_has_filter_fused = false;
+            if (!pq) {
+                if (auto *flt = dynamic_cast<PhysicalFilter *>(children[0].get())) {
+                    if (!flt->children.empty()) {
+                        if (auto *spq = dynamic_cast<PhysicalParquetScan *>(flt->children[0].get())) {
+                            std::vector<SimplePredicate> tmp;
+                            if (flt->GetCondition() &&
+                                TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                                pq = spq;
+                                single_preds = std::move(tmp);
+                                single_has_filter_fused = true;
+                                // Expand projection to include predicate cols.
+                                std::vector<bool> need(pq->GetTypes().size(), false);
+                                need[group_col] = true;
+                                for (auto &info : agg_infos) {
+                                    if (info.col_idx != INVALID_INDEX && info.col_idx < need.size())
+                                        need[info.col_idx] = true;
+                                }
+                                for (auto &p : single_preds) {
+                                    if (p.col_idx < need.size()) need[p.col_idx] = true;
+                                }
+                                pq->SetNeededOutputs(need);
+                            }
+                        }
+                    }
+                }
+            }
+            if (pq) {
+                // If the group column is VARCHAR and will be dict-encoded,
+                // tell the scan to skip per-row string_t materialization.
+                // The fused path uses str_dict_indices + str_dict_values only.
+                {
+                    idx_t ncols = pq->GetTypes().size();
+                    std::vector<bool> skip(ncols, false);
+                    if (group_col < ncols &&
+                        pq->GetTypes()[group_col].id() == LogicalTypeId::VARCHAR) {
+                        skip[group_col] = true;
+                    }
+                    pq->SetSkipStrData(std::move(skip));
+                }
+                // Hoist agg kinds out of the per-row hot loop (shared r/o state).
+                enum class AK { CountStar, Count, Sum, Min, Max, Other };
+                std::vector<AK> kinds(num_aggs);
+                for (idx_t a = 0; a < num_aggs; a++) {
+                    auto &info = agg_infos[a];
+                    if (info.name == "COUNT" && info.is_count_star)      kinds[a] = AK::CountStar;
+                    else if (info.name == "COUNT")                        kinds[a] = AK::Count;
+                    else if (info.name == "SUM" || info.name == "AVG")    kinds[a] = AK::Sum;
+                    else if (info.name == "MIN")                          kinds[a] = AK::Min;
+                    else if (info.name == "MAX")                          kinds[a] = AK::Max;
+                    else                                                   kinds[a] = AK::Other;
+                }
+
+                // Thread-local aggregate state. Each worker thread writes to
+                // its own TLSingle — no synchronization on the hot path.
+                struct TLSingle {
+                    ankerl::unordered_dense::map<int64_t, std::vector<AggState>> int_groups;
+                    ankerl::unordered_dense::map<int64_t, Value> int_keys;
+                    std::vector<int64_t> int_order;
+                    std::vector<std::string> str_cache_keys;
+                    std::vector<std::vector<AggState>> str_cache_states;
+                };
+                constexpr int MAX_THREADS = 8;
+                std::vector<TLSingle> tls(MAX_THREADS);
+                // Reserve cache capacity so emplace_back doesn't reallocate and
+                // invalidate the per-RG `dict_slot_ptrs` we hand out. 256 is
+                // far larger than typical GROUP BY cardinality in this path.
+                for (auto &tl : tls) {
+                    tl.str_cache_keys.reserve(256);
+                    tl.str_cache_states.reserve(256);
+                }
+
+                auto process_rg = [&](const PhysicalParquetScan::RGWork &work,
+                                       idx_t rg_idx, TLSingle &tl) {
+                    idx_t nrows = pq->RowGroupSize(rg_idx);
+                    const auto &gcol = work.cols[group_col];
+                    if (!gcol.decoded) return;
+
+                    auto gtid = gcol.type.id();
+                    bool is_bigint = (gtid == LogicalTypeId::BIGINT);
+                    bool is_integer = (gtid == LogicalTypeId::INTEGER);
+                    bool is_varchar = (gtid == LogicalTypeId::VARCHAR);
+                    const int64_t *gi64 = is_bigint ? gcol.i64_data.data() : nullptr;
+                    const int32_t *gi32 = is_integer ? gcol.i32_data.data() : nullptr;
+                    const string_t *gstr = is_varchar ? gcol.str_data.data() : nullptr;
+
+                    bool dict_fast = is_varchar && gcol.str_dict_encoded &&
+                                     !gcol.str_dict_indices.empty();
+                    std::vector<std::vector<AggState> *> dict_slot_ptrs;
+                    if (dict_fast) dict_slot_ptrs.assign(gcol.str_dict_values.size(), nullptr);
+
+                    // Per-agg column snapshot for this RG.
+                    struct AggCol { const ParquetColumnData *col; LogicalTypeId tid; bool decoded; bool all_valid; };
+                    std::vector<AggCol> ac(num_aggs);
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        auto &info = agg_infos[a];
+                        if (info.col_idx != INVALID_INDEX) {
+                            ac[a].col = &work.cols[info.col_idx];
+                            ac[a].tid = ac[a].col->type.id();
+                            ac[a].decoded = ac[a].col->decoded;
+                            ac[a].all_valid = ac[a].col->all_valid;
+                        } else { ac[a].col = nullptr; }
+                    }
+
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (single_has_filter_fused &&
+                            !EvalSimplePredicates(single_preds, work.cols, r)) continue;
+                        std::vector<AggState> *states_ptr = nullptr;
+                        if (is_bigint || is_integer) {
+                            int64_t k = is_bigint ? gi64[r] : (int64_t)gi32[r];
+                            auto it = tl.int_groups.find(k);
+                            if (it == tl.int_groups.end()) {
+                                tl.int_order.push_back(k);
+                                tl.int_keys[k] = is_bigint ? Value::BIGINT(k)
+                                                            : Value::INTEGER((int32_t)k);
+                                auto [nit, _] = tl.int_groups.try_emplace(k);
+                                nit->second.resize(num_aggs);
+                                it = nit;
+                            }
+                            states_ptr = &it->second;
+                        } else if (dict_fast) {
+                            uint32_t di = gcol.str_dict_indices[r];
+                            if (di >= dict_slot_ptrs.size()) continue;
+                            if (!dict_slot_ptrs[di]) {
+                                const auto &dv = gcol.str_dict_values[di];
+                                const char *s_data = dv.GetData();
+                                uint32_t s_len = dv.GetSize();
+                                std::vector<AggState> *sp = nullptr;
+                                for (idx_t oi = 0; oi < tl.str_cache_keys.size(); oi++) {
+                                    const auto &ck = tl.str_cache_keys[oi];
+                                    if (ck.size() == s_len &&
+                                        std::memcmp(ck.data(), s_data, s_len) == 0) {
+                                        sp = &tl.str_cache_states[oi];
+                                        break;
+                                    }
+                                }
+                                if (!sp) {
+                                    tl.str_cache_keys.emplace_back(s_data, s_len);
+                                    tl.str_cache_states.emplace_back(num_aggs);
+                                    sp = &tl.str_cache_states.back();
+                                }
+                                dict_slot_ptrs[di] = sp;
+                            }
+                            states_ptr = dict_slot_ptrs[di];
+                        } else if (is_varchar) {
+                            const char *s_data = gstr[r].GetData();
+                            uint32_t s_len = gstr[r].GetSize();
+                            for (idx_t oi = 0; oi < tl.str_cache_keys.size(); oi++) {
+                                const auto &ck = tl.str_cache_keys[oi];
+                                if (ck.size() == s_len &&
+                                    std::memcmp(ck.data(), s_data, s_len) == 0) {
+                                    states_ptr = &tl.str_cache_states[oi];
+                                    break;
+                                }
+                            }
+                            if (!states_ptr) {
+                                tl.str_cache_keys.emplace_back(s_data, s_len);
+                                tl.str_cache_states.emplace_back(num_aggs);
+                                states_ptr = &tl.str_cache_states.back();
+                            }
+                        }
+                        if (!states_ptr) continue;
+
+                        auto &states_r = *states_ptr;
+                        for (idx_t a = 0; a < num_aggs; a++) {
+                            auto &state = states_r[a];
+                            auto &acol = ac[a];
+                            if (kinds[a] == AK::CountStar) { state.count++; continue; }
+                            if (!acol.col || !acol.decoded) continue;
+                            if (!acol.all_valid && !acol.col->validity[r]) continue;
+                            double val = 0.0;
+                            switch (acol.tid) {
+                            case LogicalTypeId::DOUBLE:  val = acol.col->f64_data[r]; break;
+                            case LogicalTypeId::BIGINT:  val = (double)acol.col->i64_data[r]; break;
+                            case LogicalTypeId::INTEGER: val = (double)acol.col->i32_data[r]; break;
+                            case LogicalTypeId::FLOAT:   val = (double)acol.col->f32_data[r]; break;
+                            default: continue;
+                            }
+                            switch (kinds[a]) {
+                            case AK::Count: state.count++; break;
+                            case AK::Sum:   state.sum += val; state.count++; break;
+                            case AK::Min:
+                                if (!state.has_min || val < state.sum_min) {
+                                    state.sum_min = val; state.has_min = true;
+                                }
+                                break;
+                            case AK::Max:
+                                if (!state.has_max || val > state.sum_max) {
+                                    state.sum_max = val; state.has_max = true;
+                                }
+                                break;
+                            default: break;
+                            }
+                        }
+                    }
+                };
+
+                pq->SetRGConsumer([&](const PhysicalParquetScan::RGWork &w,
+                                       idx_t rg_idx, int tid) {
+                    process_rg(w, rg_idx, tls[tid]);
+                });
+                int nt = pq->RunParallelRGs();
+
+                // Merge AggState vectors element-wise (sum/min/max per agg).
+                auto merge_states = [&](std::vector<AggState> &dst,
+                                         const std::vector<AggState> &src) {
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        auto &d = dst[a]; auto &s = src[a];
+                        d.count += s.count;
+                        d.sum   += s.sum;
+                        if (s.has_min && (!d.has_min || s.sum_min < d.sum_min)) {
+                            d.sum_min = s.sum_min; d.has_min = true;
+                        }
+                        if (s.has_max && (!d.has_max || s.sum_max > d.sum_max)) {
+                            d.sum_max = s.sum_max; d.has_max = true;
+                        }
+                    }
+                };
+
+                // Merge per-thread state into the enclosing int_groups / str_cache.
+                for (int t = 0; t < nt; t++) {
+                    auto &tl = tls[t];
+                    for (int64_t k : tl.int_order) {
+                        auto git = int_groups.find(k);
+                        if (git == int_groups.end()) {
+                            int_order.push_back(k);
+                            int_keys[k] = tl.int_keys[k];
+                            auto [nit, _] = int_groups.try_emplace(k);
+                            nit->second.resize(num_aggs);
+                            git = nit;
+                        }
+                        merge_states(git->second, tl.int_groups[k]);
+                    }
+                    for (idx_t oi = 0; oi < tl.str_cache_keys.size(); oi++) {
+                        const auto &k = tl.str_cache_keys[oi];
+                        // Find in global str_cache by content.
+                        std::vector<AggState> *gsp = nullptr;
+                        for (idx_t go = 0; go < str_cache_keys.size(); go++) {
+                            if (str_cache_keys[go] == k) { gsp = &str_cache_states[go]; break; }
+                        }
+                        if (!gsp) {
+                            str_cache_keys.push_back(k);
+                            str_cache_states.emplace_back(num_aggs);
+                            str_order.push_back(k);
+                            str_keys[k] = Value::VARCHAR(k);
+                            gsp = &str_cache_states.back();
+                        }
+                        merge_states(*gsp, tl.str_cache_states[oi]);
+                    }
+                }
+            } else
 
             while (children[0]->GetData(chunk)) {
                 idx_t chunk_size = chunk.size();
@@ -2896,20 +3743,255 @@ private:
         } else if (all_simple_aggs && is_simple_no_group) {
             // Fast: no GROUP BY, simple aggregates — process vectors directly, no key building.
             // Column pruning: only parse columns we aggregate over.
-            if (auto *fs = dynamic_cast<PhysicalFileScan *>(children[0].get())) {
+            {
                 std::vector<bool> needed(children[0]->GetTypes().size(), false);
+                bool any = false;
                 for (auto &info : agg_infos) {
                     if (info.col_idx != INVALID_INDEX && info.col_idx < needed.size()) {
-                        needed[info.col_idx] = true;
+                        needed[info.col_idx] = true; any = true;
                     }
                 }
-                fs->SetProjection(std::move(needed));
+                if (any) {
+                    children[0]->SetNeededOutputs(needed);
+                    if (auto *fs = dynamic_cast<PhysicalFileScan *>(children[0].get())) {
+                        fs->SetProjection(std::move(needed));
+                    }
+                }
             }
 
             group_order.push_back("");
             group_states[""].resize(num_aggs);
             group_keys[""] = {};
             auto &states = group_states[""];
+
+            // === FUSED PARQUET FAST PATH ===
+            // Sequential aggregate (parallel decode via slot mode). Q2's agg
+            // work is already tiny — 80 RGs × SUM is <10ms — so paying per-
+            // query thread-pool teardown+spawn to parallelize it nets negative.
+            if (auto *pq = dynamic_cast<PhysicalParquetScan *>(children[0].get())) {
+                idx_t rg_idx;
+                while (auto work = pq->PullNextRG(rg_idx)) {
+                    idx_t nrows = pq->RowGroupSize(rg_idx);
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        auto &state = states[a];
+                        auto &info = agg_infos[a];
+                        if (info.name == "COUNT" && info.is_count_star) {
+                            state.count += static_cast<int64_t>(nrows);
+                            continue;
+                        }
+                        if (info.col_idx == INVALID_INDEX) continue;
+                        const auto &col = work->cols[info.col_idx];
+                        if (!col.decoded) {
+                            const auto &vals = work->cols_fallback[info.col_idx];
+                            for (auto &v : vals) {
+                                if (v.IsNull()) continue;
+                                if (info.name == "COUNT") state.count++;
+                                else if (info.name == "SUM" || info.name == "AVG") {
+                                    state.sum += v.GetValue<double>(); state.count++;
+                                } else if (info.name == "MIN") {
+                                    double d = v.GetValue<double>();
+                                    if (!state.has_min || d < state.sum_min) {
+                                        state.sum_min = d; state.has_min = true; state.min_val = v;
+                                    }
+                                } else if (info.name == "MAX") {
+                                    double d = v.GetValue<double>();
+                                    if (!state.has_max || d > state.sum_max) {
+                                        state.sum_max = d; state.has_max = true; state.max_val = v;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        auto tid = col.type.id();
+                        bool all_valid = col.all_valid;
+                        if (info.name == "COUNT") {
+                            if (all_valid) state.count += static_cast<int64_t>(nrows);
+                            else {
+                                for (idx_t i = 0; i < nrows; i++)
+                                    if (col.validity[i]) state.count++;
+                            }
+                            continue;
+                        }
+                        auto run_numeric = [&](auto *arr) {
+                            using T = typename std::remove_cv<
+                                        typename std::remove_pointer<decltype(arr)>::type>::type;
+                            if (info.name == "SUM" || info.name == "AVG") {
+                                if (all_valid) {
+                                    double s = 0;
+                                    for (idx_t i = 0; i < nrows; i++) s += static_cast<double>(arr[i]);
+                                    state.sum += s;
+                                    state.count += static_cast<int64_t>(nrows);
+                                } else {
+                                    for (idx_t i = 0; i < nrows; i++) {
+                                        if (col.validity[i]) {
+                                            state.sum += static_cast<double>(arr[i]);
+                                            state.count++;
+                                        }
+                                    }
+                                }
+                            } else if (info.name == "MIN" || info.name == "MAX") {
+                                bool is_min = (info.name == "MIN");
+                                T cur = is_min ? std::numeric_limits<T>::max()
+                                               : std::numeric_limits<T>::lowest();
+                                bool seen = false;
+                                for (idx_t i = 0; i < nrows; i++) {
+                                    if (!all_valid && !col.validity[i]) continue;
+                                    T v = arr[i];
+                                    if (!seen || (is_min ? v < cur : v > cur)) { cur = v; seen = true; }
+                                }
+                                if (seen) {
+                                    double d = static_cast<double>(cur);
+                                    if (is_min) {
+                                        if (!state.has_min || d < state.sum_min) {
+                                            state.sum_min = d; state.has_min = true;
+                                        }
+                                    } else {
+                                        if (!state.has_max || d > state.sum_max) {
+                                            state.sum_max = d; state.has_max = true;
+                                        }
+                                    }
+                                }
+                            }
+                        };
+                        if (tid == LogicalTypeId::DOUBLE)  run_numeric(col.f64_data.data());
+                        else if (tid == LogicalTypeId::BIGINT)  run_numeric(col.i64_data.data());
+                        else if (tid == LogicalTypeId::INTEGER) run_numeric(col.i32_data.data());
+                        else if (tid == LogicalTypeId::FLOAT)   run_numeric(col.f32_data.data());
+                    }
+                    total_rows_processed += nrows;
+                }
+            } else if ([&]() -> bool {
+                // === PARALLEL CSV SUM/COUNT/AVG/MIN/MAX (no GROUP BY) ===
+                // Also handles fused WHERE (AGG → FILTER → FILE_SCAN).
+                PhysicalFileScan *fs = dynamic_cast<PhysicalFileScan *>(children[0].get());
+                std::vector<SimplePredicate> preds;
+                bool has_filter = false;
+                if (!fs) {
+                    if (auto *flt = dynamic_cast<PhysicalFilter *>(children[0].get())) {
+                        if (!flt->children.empty()) {
+                            if (auto *ufs = dynamic_cast<PhysicalFileScan *>(flt->children[0].get())) {
+                                std::vector<SimplePredicate> tmp;
+                                if (flt->GetCondition() &&
+                                    TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                                    fs = ufs;
+                                    preds = std::move(tmp);
+                                    has_filter = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!fs || !fs->GetReader() ||
+                    fs->GetReader()->GetSize() <= 16 * 1024 * 1024) return false;
+
+                // Expand projection for predicate columns.
+                {
+                    idx_t nc = fs->GetTypes().size();
+                    std::vector<bool> need(nc, false);
+                    bool any = false;
+                    for (auto &info : agg_infos) {
+                        if (info.col_idx != INVALID_INDEX && info.col_idx < nc) { need[info.col_idx] = true; any = true; }
+                    }
+                    for (auto &p : preds) if (p.col_idx < nc) { need[p.col_idx] = true; any = true; }
+                    if (any) fs->SetProjection(need);
+                }
+                fs->Init();
+
+                auto *reader = fs->GetReader();
+                const char *buf = reader->GetBuffer();
+                size_t total_size = reader->GetSize();
+                size_t data_start = reader->GetPos();
+                char delim = fs->GetDelimiter();
+                size_t data_size = total_size - data_start;
+
+                unsigned int nt = std::thread::hardware_concurrency();
+                if (nt == 0 || nt > 8) nt = 4;
+                if (data_size < 16 * 1024 * 1024) nt = 1;
+
+                std::vector<size_t> ranges(nt + 1);
+                ranges[0] = data_start;
+                ranges[nt] = total_size;
+                for (unsigned int t = 1; t < nt; t++) {
+                    size_t target = data_start + (data_size * t) / nt;
+                    ranges[t] = FastCSVReader::FindLineStart(buf, total_size, target);
+                }
+
+                auto types = fs->GetTypes();
+                auto projection = fs->GetProjection();
+                std::vector<std::vector<AggState>> tstates(nt);
+                std::vector<idx_t> trows(nt, 0);
+
+                std::vector<std::thread> threads;
+                for (unsigned int t = 0; t < nt; t++) {
+                    threads.emplace_back([&, t]() {
+                        auto &local = tstates[t];
+                        local.resize(num_aggs);
+                        FastCSVReader thread_reader(buf, ranges[t], ranges[t + 1], delim);
+                        DataChunk chunk;
+                        chunk.Initialize(types);
+                        while (true) {
+                            chunk.Reset();
+                            idx_t cnt = projection.empty()
+                                ? thread_reader.ReadChunk(chunk, types)
+                                : thread_reader.ReadChunkProjected(chunk, types, projection);
+                            if (cnt == 0) break;
+                            for (idx_t i = 0; i < cnt; i++) {
+                                if (has_filter &&
+                                    !EvalSimplePredicatesChunk(preds, chunk, i)) continue;
+                                trows[t]++;
+                                for (idx_t a = 0; a < num_aggs; a++) {
+                                    auto &st = local[a];
+                                    auto &info = agg_infos[a];
+                                    if (info.name == "COUNT" && info.is_count_star) {
+                                        st.count++;
+                                        continue;
+                                    }
+                                    if (info.col_idx == INVALID_INDEX) continue;
+                                    auto &v = chunk.GetVector(info.col_idx);
+                                    if (!v.GetValidity().RowIsValid(i)) continue;
+                                    double d;
+                                    switch (v.GetType().id()) {
+                                    case LogicalTypeId::BIGINT:  d = static_cast<double>(v.GetData<int64_t>()[i]); break;
+                                    case LogicalTypeId::INTEGER: d = static_cast<double>(v.GetData<int32_t>()[i]); break;
+                                    case LogicalTypeId::DOUBLE:  d = v.GetData<double>()[i]; break;
+                                    case LogicalTypeId::FLOAT:   d = static_cast<double>(v.GetData<float>()[i]); break;
+                                    default: continue;
+                                    }
+                                    if (info.name == "COUNT") st.count++;
+                                    else if (info.name == "SUM" || info.name == "AVG") {
+                                        st.sum += d; st.count++;
+                                    } else if (info.name == "MIN") {
+                                        if (!st.has_min || d < st.sum_min) { st.sum_min = d; st.has_min = true; }
+                                    } else if (info.name == "MAX") {
+                                        if (!st.has_max || d > st.sum_max) { st.sum_max = d; st.has_max = true; }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+                for (auto &th : threads) th.join();
+
+                // Merge thread-local states.
+                for (auto &local : tstates) {
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        auto &dst = states[a];
+                        auto &src = local[a];
+                        dst.count += src.count;
+                        dst.sum += src.sum;
+                        if (src.has_min && (!dst.has_min || src.sum_min < dst.sum_min)) {
+                            dst.sum_min = src.sum_min; dst.has_min = true;
+                        }
+                        if (src.has_max && (!dst.has_max || src.sum_max > dst.sum_max)) {
+                            dst.sum_max = src.sum_max; dst.has_max = true;
+                        }
+                    }
+                }
+                for (idx_t n : trows) total_rows_processed += n;
+                return true;
+            }()) {
+                // Parallel path ran; skip the serial loop.
+            } else
 
             while (children[0]->GetData(chunk)) {
                 idx_t chunk_size = chunk.size();
@@ -2968,6 +4050,392 @@ private:
                     }
                 }
                 total_rows_processed += chunk_size;
+            }
+        } else if (
+            (void)0,
+            [&]{
+                PhysicalParquetScan *p = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+                if (p) return true;
+                if (auto *f = dynamic_cast<PhysicalFilter *>(children[0].get())) {
+                    if (!f->children.empty() &&
+                        dynamic_cast<PhysicalParquetScan *>(f->children[0].get()))
+                        return true;
+                }
+                return false;
+            }()) {
+            // === FUSED PARQUET GENERIC GROUP BY (multi-col or unusual types) ===
+            // Supports AGG → FILTER → SCAN via simple-predicate compilation.
+            PhysicalParquetScan *pq =
+                dynamic_cast<PhysicalParquetScan *>(children[0].get());
+            std::vector<SimplePredicate> multi_preds;
+            bool multi_has_filter = false;
+            if (!pq) {
+                auto *flt = dynamic_cast<PhysicalFilter *>(children[0].get());
+                pq = dynamic_cast<PhysicalParquetScan *>(flt->children[0].get());
+                std::vector<SimplePredicate> tmp;
+                if (flt->GetCondition() &&
+                    TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                    multi_preds = std::move(tmp);
+                    multi_has_filter = true;
+                }
+            }
+            // Push projection down so we only decode columns we need.
+            {
+                std::vector<bool> needed(pq->GetTypes().size(), false);
+                for (auto gc : group_col_indices) if (gc < needed.size()) needed[gc] = true;
+                for (auto &info : agg_infos) {
+                    if (info.col_idx != INVALID_INDEX && info.col_idx < needed.size())
+                        needed[info.col_idx] = true;
+                }
+                for (auto &p : multi_preds) {
+                    if (p.col_idx < needed.size()) needed[p.col_idx] = true;
+                }
+                pq->SetNeededOutputs(needed);
+                // Skip per-row string_t materialization for VARCHAR group cols
+                // — the packed-key path uses only str_dict_indices + str_dict_values.
+                std::vector<bool> skip(pq->GetTypes().size(), false);
+                for (auto gc : group_col_indices) {
+                    if (gc < skip.size() &&
+                        pq->GetTypes()[gc].id() == LogicalTypeId::VARCHAR) {
+                        skip[gc] = true;
+                    }
+                }
+                pq->SetSkipStrData(std::move(skip));
+            }
+
+            enum class AK { CountStar, Count, Sum, Min, Max, Other };
+            std::vector<AK> kinds(num_aggs);
+            for (idx_t a = 0; a < num_aggs; a++) {
+                auto &info = agg_infos[a];
+                if (info.name == "COUNT" && info.is_count_star)   kinds[a] = AK::CountStar;
+                else if (info.name == "COUNT")                     kinds[a] = AK::Count;
+                else if (info.name == "SUM" || info.name == "AVG") kinds[a] = AK::Sum;
+                else if (info.name == "MIN")                       kinds[a] = AK::Min;
+                else if (info.name == "MAX")                       kinds[a] = AK::Max;
+                else                                                kinds[a] = AK::Other;
+            }
+
+            // Packability check: a multi-col key fits in a single uint64 if every
+            // column contributes <= 32 bits. Dict-encoded VARCHAR contributes a
+            // 32-bit scan-wide global index; INTEGER is naturally 32 bits; BIGINT
+            // is assumed to fit 32 bits for columns that realistically appear in
+            // GROUP BY (year, quarter, status, etc.). When packable we use a
+            // uint64-keyed `ankerl::unordered_dense::map` — far faster than
+            // `std::unordered_map<std::string, ...>` with a variable-length key.
+            struct PackSpec { int kind = 0; int shift = 0; };
+            std::vector<PackSpec> pack(group_col_indices.size());
+            bool all_packable = true;
+            {
+                int total_bits = 0;
+                for (size_t gi = 0; gi < group_col_indices.size(); gi++) {
+                    auto tid = pq->GetTypes()[group_col_indices[gi]].id();
+                    if (tid == LogicalTypeId::VARCHAR)       pack[gi].kind = 1; // dict global idx
+                    else if (tid == LogicalTypeId::INTEGER)  pack[gi].kind = 2;
+                    else if (tid == LogicalTypeId::BIGINT)   pack[gi].kind = 3; // low-32 assumption
+                    else { all_packable = false; break; }
+                    pack[gi].shift = total_bits;
+                    total_bits += 32;
+                    if (total_bits > 64) { all_packable = false; break; }
+                }
+            }
+
+            // Per-thread state — workers aggregate into their own slots so the
+            // packed-key hot loop runs without synchronization. Each thread
+            // maintains its own global dict; we reconcile across threads at
+            // merge time using the (always-content-accurate) `key_vals`.
+            struct TLMulti {
+                std::vector<ankerl::unordered_dense::map<std::string, uint32_t>> global_dicts;
+                std::vector<std::vector<Value>> global_dict_values;
+                ankerl::unordered_dense::map<uint64_t, std::vector<AggState>> packed_groups;
+                std::vector<uint64_t> packed_order;
+                ankerl::unordered_dense::map<uint64_t, std::vector<Value>> packed_keys;
+                std::unordered_map<std::string, std::vector<AggState>> str_groups;
+                std::unordered_map<std::string, std::vector<Value>> str_keys_map;
+                std::vector<std::string> str_order;
+            };
+            constexpr int MAX_THREADS = 8;
+            std::vector<TLMulti> tls(MAX_THREADS);
+            for (auto &tl : tls) {
+                tl.global_dicts.resize(group_col_indices.size());
+                tl.global_dict_values.resize(group_col_indices.size());
+            }
+
+            auto process_rg_multi = [&](const PhysicalParquetScan::RGWork &work,
+                                         idx_t rg_idx, TLMulti &tl) {
+                idx_t nrows = pq->RowGroupSize(rg_idx);
+
+                // Per-group-col raw pointers + dict data (for VARCHAR dict path).
+                struct GCol {
+                    const ParquetColumnData *col;
+                    LogicalTypeId tid;
+                    const int64_t *i64;
+                    const int32_t *i32;
+                    const string_t *str;
+                    const uint32_t *dict_idx;     // nullptr if not dict-encoded
+                    const string_t *dict_val;     // dict entries
+                    idx_t dict_size;
+                };
+                std::vector<GCol> gcs(group_col_indices.size());
+                for (size_t gi = 0; gi < group_col_indices.size(); gi++) {
+                    auto &g = gcs[gi];
+                    g.col = &work.cols[group_col_indices[gi]];
+                    g.tid = g.col->type.id();
+                    g.i64 = (g.tid == LogicalTypeId::BIGINT)  ? g.col->i64_data.data() : nullptr;
+                    g.i32 = (g.tid == LogicalTypeId::INTEGER) ? g.col->i32_data.data() : nullptr;
+                    g.str = (g.tid == LogicalTypeId::VARCHAR) ? g.col->str_data.data() : nullptr;
+                    g.dict_idx = (g.tid == LogicalTypeId::VARCHAR && g.col->str_dict_encoded)
+                                      ? g.col->str_dict_indices.data() : nullptr;
+                    g.dict_val = (g.dict_idx != nullptr) ? g.col->str_dict_values.data() : nullptr;
+                    g.dict_size = g.dict_val ? g.col->str_dict_values.size() : 0;
+                }
+
+                // Per-RG local→global dict translation for packed path.
+                std::vector<std::vector<uint32_t>> local_to_global;
+                bool rg_packable = all_packable;
+                if (rg_packable) {
+                    local_to_global.resize(group_col_indices.size());
+                    for (size_t gi = 0; gi < group_col_indices.size(); gi++) {
+                        if (pack[gi].kind != 1) continue; // only VARCHAR needs translation
+                        auto &g = gcs[gi];
+                        if (!g.dict_idx) { rg_packable = false; break; }
+                        local_to_global[gi].resize(g.dict_size);
+                        auto &gd = tl.global_dicts[gi];
+                        auto &gdv = tl.global_dict_values[gi];
+                        for (idx_t li = 0; li < g.dict_size; li++) {
+                            const auto &dv = g.dict_val[li];
+                            std::string content(dv.GetData(), dv.GetSize());
+                            auto it = gd.find(content);
+                            uint32_t gid;
+                            if (it == gd.end()) {
+                                gid = (uint32_t)gdv.size();
+                                gdv.push_back(Value::VARCHAR(content));
+                                gd.emplace(std::move(content), gid);
+                            } else {
+                                gid = it->second;
+                            }
+                            local_to_global[gi][li] = gid;
+                        }
+                    }
+                }
+
+                // Per-agg typed column pointers.
+                struct ACol { const ParquetColumnData *col; LogicalTypeId tid; bool decoded; bool all_valid; };
+                std::vector<ACol> acs(num_aggs);
+                for (idx_t a = 0; a < num_aggs; a++) {
+                    auto &info = agg_infos[a];
+                    if (info.col_idx != INVALID_INDEX) {
+                        acs[a].col = &work.cols[info.col_idx];
+                        acs[a].tid = acs[a].col->type.id();
+                        acs[a].decoded = acs[a].col->decoded;
+                        acs[a].all_valid = acs[a].col->all_valid;
+                    } else {
+                        acs[a].col = nullptr;
+                    }
+                }
+
+                // Inner agg-update lambda shared by packed and string paths.
+                auto apply_aggs = [&](std::vector<AggState> &states_r, idx_t r) {
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        auto &state = states_r[a];
+                        auto &acol = acs[a];
+                        if (kinds[a] == AK::CountStar) { state.count++; continue; }
+                        if (!acol.col || !acol.decoded) continue;
+                        if (!acol.all_valid && !acol.col->validity[r]) continue;
+                        double val = 0.0;
+                        switch (acol.tid) {
+                        case LogicalTypeId::DOUBLE:  val = acol.col->f64_data[r]; break;
+                        case LogicalTypeId::BIGINT:  val = (double)acol.col->i64_data[r]; break;
+                        case LogicalTypeId::INTEGER: val = (double)acol.col->i32_data[r]; break;
+                        case LogicalTypeId::FLOAT:   val = (double)acol.col->f32_data[r]; break;
+                        default: continue;
+                        }
+                        switch (kinds[a]) {
+                        case AK::Count: state.count++; break;
+                        case AK::Sum:   state.sum += val; state.count++; break;
+                        case AK::Min:
+                            if (!state.has_min || val < state.sum_min) {
+                                state.sum_min = val; state.has_min = true;
+                            }
+                            break;
+                        case AK::Max:
+                            if (!state.has_max || val > state.sum_max) {
+                                state.sum_max = val; state.has_max = true;
+                            }
+                            break;
+                        default: break;
+                        }
+                    }
+                };
+
+                if (rg_packable) {
+                    // === PACKED uint64 key path ===
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (multi_has_filter &&
+                            !EvalSimplePredicates(multi_preds, work.cols, r)) continue;
+                        uint64_t pkey = 0;
+                        for (size_t gi = 0; gi < group_col_indices.size(); gi++) {
+                            auto &g = gcs[gi];
+                            uint32_t component = 0;
+                            switch (pack[gi].kind) {
+                            case 1: component = local_to_global[gi][g.dict_idx[r]]; break;
+                            case 2: component = (uint32_t)g.i32[r]; break;
+                            case 3: component = (uint32_t)(uint64_t)g.i64[r]; break;
+                            }
+                            pkey |= (uint64_t)component << pack[gi].shift;
+                        }
+                        auto [it, inserted] = tl.packed_groups.try_emplace(pkey);
+                        if (inserted) {
+                            it->second.resize(num_aggs);
+                            tl.packed_order.push_back(pkey);
+                            std::vector<Value> key_vals;
+                            key_vals.reserve(group_col_indices.size());
+                            for (size_t gi = 0; gi < group_col_indices.size(); gi++) {
+                                auto &g = gcs[gi];
+                                switch (pack[gi].kind) {
+                                case 1: key_vals.push_back(
+                                        tl.global_dict_values[gi][local_to_global[gi][g.dict_idx[r]]]);
+                                        break;
+                                case 2: key_vals.push_back(Value::INTEGER(g.i32[r])); break;
+                                case 3: key_vals.push_back(Value::BIGINT(g.i64[r])); break;
+                                }
+                            }
+                            tl.packed_keys.emplace(pkey, std::move(key_vals));
+                        }
+                        apply_aggs(it->second, r);
+                    }
+                } else {
+                    // === FALLBACK string-key path (non-packable types) ===
+                    std::string local_key;
+                    local_key.reserve(128);
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (multi_has_filter &&
+                            !EvalSimplePredicates(multi_preds, work.cols, r)) continue;
+                        local_key.clear();
+                        for (auto &g : gcs) {
+                            if (g.i64) {
+                                local_key.append(reinterpret_cast<const char *>(&g.i64[r]), 8);
+                            } else if (g.i32) {
+                                local_key.append(reinterpret_cast<const char *>(&g.i32[r]), 4);
+                            } else if (g.dict_idx) {
+                                uint32_t di = g.dict_idx[r];
+                                const auto &dv = g.dict_val[di];
+                                uint32_t n = dv.GetSize();
+                                local_key.append(reinterpret_cast<const char *>(&n), 4);
+                                local_key.append(dv.GetData(), n);
+                            } else if (g.str) {
+                                const char *p = g.str[r].GetData();
+                                uint32_t n = g.str[r].GetSize();
+                                local_key.append(reinterpret_cast<const char *>(&n), 4);
+                                local_key.append(p, n);
+                            } else {
+                                auto v = g.col->decoded ? Value()
+                                                         : (r < work.cols_fallback[
+                                                              group_col_indices[&g - &gcs[0]]].size()
+                                                              ? work.cols_fallback[
+                                                                 group_col_indices[&g - &gcs[0]]][r]
+                                                              : Value());
+                                auto s = v.ToString();
+                                local_key.append(s);
+                            }
+                            local_key.push_back('|');
+                        }
+                        auto it = tl.str_groups.find(local_key);
+                        if (it == tl.str_groups.end()) {
+                            std::vector<Value> key_vals;
+                            key_vals.reserve(gcs.size());
+                            for (auto &g : gcs) {
+                                if (g.i64) key_vals.push_back(Value::BIGINT(g.i64[r]));
+                                else if (g.i32) key_vals.push_back(Value::INTEGER(g.i32[r]));
+                                else if (g.dict_idx) {
+                                    uint32_t di = g.dict_idx[r];
+                                    const auto &dv = g.dict_val[di];
+                                    key_vals.push_back(Value::VARCHAR(
+                                        std::string(dv.GetData(), dv.GetSize())));
+                                } else if (g.str) {
+                                    key_vals.push_back(Value::VARCHAR(
+                                        std::string(g.str[r].GetData(), g.str[r].GetSize())));
+                                } else {
+                                    key_vals.push_back(Value());
+                                }
+                            }
+                            tl.str_keys_map[local_key] = std::move(key_vals);
+                            tl.str_order.push_back(local_key);
+                            it = tl.str_groups.emplace(local_key,
+                                                       std::vector<AggState>(num_aggs)).first;
+                        }
+                        apply_aggs(it->second, r);
+                    }
+                }
+            };
+
+            pq->SetRGConsumer([&](const PhysicalParquetScan::RGWork &w,
+                                   idx_t rg_idx, int tid) {
+                process_rg_multi(w, rg_idx, tls[tid]);
+            });
+            int nt = pq->RunParallelRGs();
+
+            // Merge across threads by content-based canonical key (since per-
+            // thread dicts produce different uint64 packed keys for the same
+            // logical group).
+            auto merge_states_m = [&](std::vector<AggState> &dst,
+                                       const std::vector<AggState> &src) {
+                for (idx_t a = 0; a < num_aggs; a++) {
+                    auto &d = dst[a]; auto &s = src[a];
+                    d.count += s.count; d.sum += s.sum;
+                    if (s.has_min && (!d.has_min || s.sum_min < d.sum_min)) {
+                        d.sum_min = s.sum_min; d.has_min = true;
+                    }
+                    if (s.has_max && (!d.has_max || s.sum_max > d.sum_max)) {
+                        d.sum_max = s.sum_max; d.has_max = true;
+                    }
+                }
+            };
+            auto build_content_key = [&](const std::vector<Value> &kv) {
+                std::string sk;
+                for (auto &v : kv) {
+                    auto tid = v.type().id();
+                    if (tid == LogicalTypeId::VARCHAR) {
+                        auto s = v.GetValue<std::string>();
+                        uint32_t n = (uint32_t)s.size();
+                        sk.append(reinterpret_cast<const char*>(&n), 4);
+                        sk.append(s);
+                    } else if (tid == LogicalTypeId::BIGINT) {
+                        int64_t iv = v.GetValue<int64_t>();
+                        sk.append(reinterpret_cast<const char*>(&iv), 8);
+                    } else if (tid == LogicalTypeId::INTEGER) {
+                        int32_t iv = v.GetValue<int32_t>();
+                        sk.append(reinterpret_cast<const char*>(&iv), 4);
+                    } else {
+                        sk.append(v.ToString());
+                    }
+                    sk.push_back('|');
+                }
+                return sk;
+            };
+            for (int t = 0; t < nt; t++) {
+                auto &tl = tls[t];
+                for (uint64_t pkey : tl.packed_order) {
+                    auto &kv = tl.packed_keys[pkey];
+                    std::string sk = build_content_key(kv);
+                    auto it = group_states.find(sk);
+                    if (it == group_states.end()) {
+                        group_keys[sk] = kv;
+                        group_order.push_back(sk);
+                        it = group_states.emplace(sk, std::vector<AggState>(num_aggs)).first;
+                    }
+                    merge_states_m(it->second, tl.packed_groups[pkey]);
+                }
+                for (const auto &sk_raw : tl.str_order) {
+                    auto &kv = tl.str_keys_map[sk_raw];
+                    std::string sk = build_content_key(kv);
+                    auto it = group_states.find(sk);
+                    if (it == group_states.end()) {
+                        group_keys[sk] = kv;
+                        group_order.push_back(sk);
+                        it = group_states.emplace(sk, std::vector<AggState>(num_aggs)).first;
+                    }
+                    merge_states_m(it->second, tl.str_groups[sk_raw]);
+                }
             }
         } else
 
@@ -3109,9 +4577,35 @@ private:
                         result_row.push_back(Value());
                     }
                 } else if (name == "MIN") {
-                    result_row.push_back(state.has_min ? state.min_val : Value());
+                    if (!state.has_min) {
+                        result_row.push_back(Value());
+                    } else if (!state.min_val.IsNull()) {
+                        result_row.push_back(state.min_val);
+                    } else {
+                        // Fused path writes only sum_min (double) for speed;
+                        // synthesize a typed Value here using the agg's return type.
+                        auto rt = agg_expr.GetReturnType().id();
+                        switch (rt) {
+                        case LogicalTypeId::INTEGER: result_row.push_back(Value::INTEGER((int32_t)state.sum_min)); break;
+                        case LogicalTypeId::BIGINT:  result_row.push_back(Value::BIGINT((int64_t)state.sum_min)); break;
+                        case LogicalTypeId::FLOAT:   result_row.push_back(Value::FLOAT((float)state.sum_min)); break;
+                        default:                     result_row.push_back(Value::DOUBLE(state.sum_min)); break;
+                        }
+                    }
                 } else if (name == "MAX") {
-                    result_row.push_back(state.has_max ? state.max_val : Value());
+                    if (!state.has_max) {
+                        result_row.push_back(Value());
+                    } else if (!state.max_val.IsNull()) {
+                        result_row.push_back(state.max_val);
+                    } else {
+                        auto rt = agg_expr.GetReturnType().id();
+                        switch (rt) {
+                        case LogicalTypeId::INTEGER: result_row.push_back(Value::INTEGER((int32_t)state.sum_max)); break;
+                        case LogicalTypeId::BIGINT:  result_row.push_back(Value::BIGINT((int64_t)state.sum_max)); break;
+                        case LogicalTypeId::FLOAT:   result_row.push_back(Value::FLOAT((float)state.sum_max)); break;
+                        default:                     result_row.push_back(Value::DOUBLE(state.sum_max)); break;
+                        }
+                    }
                 } else if (name == "STRING_AGG" || name == "LISTAGG" || name == "GROUP_CONCAT") {
                     result_row.push_back(state.str_started ? Value::VARCHAR(state.str_agg) : Value());
                 } else if (name == "STDDEV" || name == "STDDEV_SAMP") {
@@ -4241,6 +5735,15 @@ PhysicalOpPtr PhysicalPlanner::PlanGet(const LogicalGet &op) {
     if (op.table && op.table->IsFileScan()) {
         if (op.table->GetFileFormat() == "parquet") {
             return std::make_unique<PhysicalParquetScan>(
+                op.table->GetFilePath(), op.table->GetTypes(),
+                op.table->GetCachedParquetReader());
+        }
+        if (op.table->GetFileFormat() == "json") {
+            return std::make_unique<PhysicalJSONScan>(
+                op.table->GetFilePath(), op.table->GetTypes());
+        }
+        if (op.table->GetFileFormat() == "avro") {
+            return std::make_unique<PhysicalAvroScan>(
                 op.table->GetFilePath(), op.table->GetTypes());
         }
         return std::make_unique<PhysicalFileScan>(
