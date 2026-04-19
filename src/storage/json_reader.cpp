@@ -27,6 +27,19 @@
 
 namespace slothdb {
 
+// Parse a double from [start, end). Apple's libc++ doesn't implement
+// `std::from_chars` for floating point, so we can't use it portably — fall
+// back to strtod via a stack buffer. Range is clamped to fit.
+static inline double parse_double_range(const char *start, const char *end) {
+    size_t len = static_cast<size_t>(end - start);
+    if (len == 0) return 0.0;
+    char buf[64];
+    if (len > 63) len = 63;
+    std::memcpy(buf, start, len);
+    buf[len] = '\0';
+    return std::strtod(buf, nullptr);
+}
+
 // ============================================================================
 // JSON Parser (minimal, zero-dependency)
 // ============================================================================
@@ -213,11 +226,11 @@ void assign_value(Value &slot, LogicalTypeId tid, const char *v_start,
         slot = Value::BIGINT(i); break;
     }
     case LogicalTypeId::DOUBLE: {
-        double d = 0; std::from_chars(v_start, v_end, d);
+        double d = parse_double_range(v_start, v_end);
         slot = Value::DOUBLE(d); break;
     }
     case LogicalTypeId::FLOAT: {
-        double d = 0; std::from_chars(v_start, v_end, d);
+        double d = parse_double_range(v_start, v_end);
         slot = Value::FLOAT((float)d); break;
     }
     default: {
@@ -276,7 +289,7 @@ void JSONReader::ParseNDJSON() {
         } else {
             const char *ns, *ne; bool isf;
             p = fast_parse_number_raw(p, end, ns, ne, isf);
-            if (isf) { double d = 0; std::from_chars(ns, ne, d); v = Value::DOUBLE(d); t = LogicalType::DOUBLE(); }
+            if (isf) { double d = parse_double_range(ns, ne); v = Value::DOUBLE(d); t = LogicalType::DOUBLE(); }
             else {
                 int64_t i = 0; std::from_chars(ns, ne, i);
                 if (i >= INT32_MIN && i <= INT32_MAX) { v = Value::INTEGER((int32_t)i); t = LogicalType::INTEGER(); }
@@ -739,24 +752,24 @@ void JSONReader::ParallelParseToPerThread(
                 if (col != static_cast<idx_t>(-1)) {
                     switch (cp[col].tid) {
                     case LogicalTypeId::DOUBLE: {
-                        double d = 0; std::from_chars(ns, ne, d);
+                        double d = parse_double_range(ns, ne);
                         reinterpret_cast<double *>(cp[col].data)[count] = d;
                         break;
                     }
                     case LogicalTypeId::FLOAT: {
-                        double d = 0; std::from_chars(ns, ne, d);
+                        double d = parse_double_range(ns, ne);
                         reinterpret_cast<float *>(cp[col].data)[count] = (float)d;
                         break;
                     }
                     case LogicalTypeId::BIGINT: {
-                        if (is_float) { double d = 0; std::from_chars(ns, ne, d);
+                        if (is_float) { double d = parse_double_range(ns, ne);
                             reinterpret_cast<int64_t *>(cp[col].data)[count] = (int64_t)d; }
                         else { int64_t i = 0; std::from_chars(ns, ne, i);
                             reinterpret_cast<int64_t *>(cp[col].data)[count] = i; }
                         break;
                     }
                     case LogicalTypeId::INTEGER: {
-                        if (is_float) { double d = 0; std::from_chars(ns, ne, d);
+                        if (is_float) { double d = parse_double_range(ns, ne);
                             reinterpret_cast<int32_t *>(cp[col].data)[count] = (int32_t)d; }
                         else { int64_t i = 0; std::from_chars(ns, ne, i);
                             reinterpret_cast<int32_t *>(cp[col].data)[count] = (int32_t)i; }
