@@ -4476,6 +4476,28 @@ private:
                             } else {
                                 state.count++;
                             }
+                        } else if (info.col_idx == INVALID_INDEX) {
+                            // Complex argument — e.g. COUNT(CASE WHEN ... THEN 1 END).
+                            // Evaluate the expression per row; count non-null results.
+                            auto &agg_expr = static_cast<BoundFunction &>(*aggregates_[a]);
+                            if (!agg_expr.arguments.empty()) {
+                                DataChunk row_chunk;
+                                row_chunk.Initialize(children[0]->GetTypes());
+                                for (idx_t c = 0; c < chunk.ColumnCount(); c++)
+                                    row_chunk.SetValue(c, 0, chunk.GetValue(c, i));
+                                row_chunk.SetCardinality(1);
+                                Vector res(agg_expr.arguments[0]->GetReturnType());
+                                ExpressionExecutor::Execute(*agg_expr.arguments[0], row_chunk, res, 1);
+                                Value arg_val = res.GetValue(0);
+                                if (!arg_val.IsNull()) {
+                                    if (info.is_distinct) {
+                                        if (state.distinct_set.insert(arg_val.ToString()).second)
+                                            state.count++;
+                                    } else {
+                                        state.count++;
+                                    }
+                                }
+                            }
                         }
                     } else if (info.col_idx != INVALID_INDEX) {
                         auto &vec = chunk.GetVector(info.col_idx);
