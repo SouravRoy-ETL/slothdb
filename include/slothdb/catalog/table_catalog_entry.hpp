@@ -53,6 +53,7 @@ public:
     void SetParquetPath(const std::string &path) { file_path_ = path; file_format_ = "parquet"; }
     void SetJsonPath(const std::string &path) { file_path_ = path; file_format_ = "json"; }
     void SetAvroPath(const std::string &path) { file_path_ = path; file_format_ = "avro"; }
+    void SetArrowPath(const std::string &path) { file_path_ = path; file_format_ = "arrow"; }
     const std::string &GetFilePath() const { return file_path_; }
     char GetFileDelimiter() const { return file_delimiter_; }
     const std::string &GetFileFormat() const { return file_format_; }

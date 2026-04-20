@@ -2,6 +2,7 @@
 #include "slothdb/execution/expression_executor.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/string_util.hpp"
+#include "slothdb/storage/arrow_ipc.hpp"
 #include "slothdb/storage/avro_reader.hpp"
 #include "slothdb/storage/data_table.hpp"
 #include "slothdb/storage/fast_csv_reader.hpp"
@@ -599,6 +600,38 @@ public:
 
     void Init() override {
         AvroReader reader(file_path_);
+        reader.DetectSchemaLight();
+        chunks_.clear();
+        reader.ReadIntoChunks(chunks_, GetTypes());
+        emit_pos_ = 0;
+    }
+
+    bool GetData(DataChunk &result) override {
+        if (emit_pos_ >= chunks_.size()) return false;
+        result = std::move(chunks_[emit_pos_++]);
+        return true;
+    }
+
+    const std::string &GetFilePath() const { return file_path_; }
+
+private:
+    std::string file_path_;
+    std::vector<DataChunk> chunks_;
+    idx_t emit_pos_ = 0;
+};
+
+// Streaming Arrow IPC scan — mirrors PhysicalAvroScan. Init() parses the
+// Arrow file into typed DataChunks via ArrowIPCReader::ReadIntoChunks,
+// skipping the Value-boxed rows_/BulkLoadRows roundtrip; GetData() emits
+// them sequentially.
+class PhysicalArrowScan : public PhysicalOperator {
+public:
+    PhysicalArrowScan(const std::string &file_path, std::vector<LogicalType> types)
+        : PhysicalOperator(PhysicalOperatorType::TABLE_SCAN, std::move(types)),
+          file_path_(file_path) {}
+
+    void Init() override {
+        ArrowIPCReader reader(file_path_);
         reader.DetectSchemaLight();
         chunks_.clear();
         reader.ReadIntoChunks(chunks_, GetTypes());
@@ -5766,6 +5799,10 @@ PhysicalOpPtr PhysicalPlanner::PlanGet(const LogicalGet &op) {
         }
         if (op.table->GetFileFormat() == "avro") {
             return std::make_unique<PhysicalAvroScan>(
+                op.table->GetFilePath(), op.table->GetTypes());
+        }
+        if (op.table->GetFileFormat() == "arrow") {
+            return std::make_unique<PhysicalArrowScan>(
                 op.table->GetFilePath(), op.table->GetTypes());
         }
         return std::make_unique<PhysicalFileScan>(

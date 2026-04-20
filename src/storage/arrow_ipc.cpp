@@ -191,4 +191,179 @@ std::vector<std::vector<Value>> ArrowIPCReader::ReadAll() {
     return rows_;
 }
 
+// Parse only the schema header — magic bytes + column list — so callers
+// can register the catalog entry without reading every row.
+void ArrowIPCReader::DetectSchemaLight() {
+    if (schema_parsed_) return;
+    schema_parsed_ = true;
+
+    std::ifstream file(path_, std::ios::binary);
+    if (!file.is_open())
+        throw IOException(ErrorCode::FILE_NOT_FOUND, "Cannot open Arrow file: " + path_);
+
+    char magic[6];
+    file.read(magic, 6);
+    if (std::memcmp(magic, ARROW_MAGIC, 6) != 0)
+        throw IOException(ErrorCode::CORRUPT_DATA, "Not an Arrow IPC file");
+
+    uint32_t num_cols;
+    file.read(reinterpret_cast<char *>(&num_cols), 4);
+    if (!file.good() || num_cols > 10000)
+        throw IOException(ErrorCode::CORRUPT_DATA, "Invalid Arrow column count");
+
+    for (uint32_t c = 0; c < num_cols; c++) {
+        uint32_t name_len;
+        file.read(reinterpret_cast<char *>(&name_len), 4);
+        if (!file.good() || name_len > 1000000)
+            throw IOException(ErrorCode::CORRUPT_DATA, "Invalid Arrow column name length");
+        std::string name(name_len, '\0');
+        file.read(name.data(), name_len);
+        if (!file.good())
+            throw IOException(ErrorCode::CORRUPT_DATA, "Truncated Arrow file");
+        column_names_.push_back(name);
+
+        uint8_t type_id;
+        file.read(reinterpret_cast<char *>(&type_id), 1);
+        column_types_.push_back(ArrowIdToLogicalType(type_id));
+    }
+}
+
+// Stream-parse the Arrow data directly into typed DataChunk Vectors.
+// Each chunk holds up to VECTOR_SIZE rows. No Value-boxed rows_ stored.
+void ArrowIPCReader::ReadIntoChunks(std::vector<DataChunk> &chunks,
+                                     const std::vector<LogicalType> &types) {
+    if (!schema_parsed_) DetectSchemaLight();
+
+    std::ifstream file(path_, std::ios::binary);
+    if (!file.is_open())
+        throw IOException(ErrorCode::FILE_NOT_FOUND, "Cannot open Arrow file: " + path_);
+
+    // Skip magic (6) + num_cols (4).
+    file.seekg(10, std::ios::beg);
+    uint32_t num_cols = static_cast<uint32_t>(column_names_.size());
+    // Skip each column's {name_len, name, type_id} from the schema.
+    for (uint32_t c = 0; c < num_cols; c++) {
+        uint32_t name_len;
+        file.read(reinterpret_cast<char *>(&name_len), 4);
+        file.seekg(name_len + 1, std::ios::cur);
+    }
+
+    // Now we're positioned at the row count.
+    int64_t total_rows;
+    file.read(reinterpret_cast<char *>(&total_rows), 8);
+    if (!file.good() || total_rows < 0 || total_rows > 1000000000LL)
+        throw IOException(ErrorCode::CORRUPT_DATA, "Invalid Arrow row count");
+
+    if (total_rows == 0) return;
+
+    DataChunk current;
+    current.Initialize(types);
+    idx_t cur_count = 0;
+    auto num_cols_out = static_cast<idx_t>(types.size());
+
+    struct ColPtr {
+        LogicalTypeId tid;
+        data_ptr_t data;
+        ValidityMask *validity;
+        VectorStringBuffer *str_buf;
+    };
+    std::vector<ColPtr> cp(num_cols_out);
+    auto refresh_cp = [&]() {
+        for (idx_t c = 0; c < num_cols_out; c++) {
+            auto &v = current.GetVector(c);
+            cp[c].tid = types[c].id();
+            cp[c].data = v.GetData();
+            cp[c].validity = &v.GetValidity();
+            cp[c].str_buf = (cp[c].tid == LogicalTypeId::VARCHAR)
+                                ? &v.GetStringBuffer() : nullptr;
+        }
+    };
+    refresh_cp();
+
+    auto flush = [&]() {
+        if (cur_count == 0) return;
+        current.SetCardinality(cur_count);
+        chunks.push_back(std::move(current));
+        current.Initialize(types);
+        cur_count = 0;
+        refresh_cp();
+    };
+
+    for (int64_t r = 0; r < total_rows; r++) {
+        for (uint32_t c = 0; c < num_cols; c++) {
+            uint8_t is_null;
+            file.read(reinterpret_cast<char *>(&is_null), 1);
+
+            if (c >= num_cols_out) {
+                // Skip any columns beyond the output schema.
+                if (!is_null) {
+                    uint32_t len; file.read(reinterpret_cast<char *>(&len), 4);
+                    file.seekg(len, std::ios::cur);
+                }
+                continue;
+            }
+
+            auto &col = cp[c];
+            if (is_null) {
+                col.validity->SetInvalid(cur_count);
+                continue;
+            }
+
+            uint32_t len;
+            file.read(reinterpret_cast<char *>(&len), 4);
+            std::string s(len, '\0');
+            file.read(s.data(), len);
+
+            try {
+                switch (col.tid) {
+                case LogicalTypeId::BOOLEAN: {
+                    auto *arr = reinterpret_cast<bool *>(col.data);
+                    arr[cur_count] = (s == "true" || s == "1");
+                    break;
+                }
+                case LogicalTypeId::INTEGER: {
+                    auto *arr = reinterpret_cast<int32_t *>(col.data);
+                    arr[cur_count] = std::stoi(s);
+                    break;
+                }
+                case LogicalTypeId::BIGINT: {
+                    auto *arr = reinterpret_cast<int64_t *>(col.data);
+                    arr[cur_count] = std::stoll(s);
+                    break;
+                }
+                case LogicalTypeId::FLOAT: {
+                    auto *arr = reinterpret_cast<float *>(col.data);
+                    arr[cur_count] = std::stof(s);
+                    break;
+                }
+                case LogicalTypeId::DOUBLE: {
+                    auto *arr = reinterpret_cast<double *>(col.data);
+                    arr[cur_count] = std::stod(s);
+                    break;
+                }
+                case LogicalTypeId::VARCHAR: {
+                    auto *arr = reinterpret_cast<string_t *>(col.data);
+                    if (len <= string_t::INLINE_LENGTH) {
+                        arr[cur_count] = string_t(s.data(), static_cast<uint32_t>(len));
+                    } else {
+                        const char *heap = col.str_buf->AddString(s.data(), len);
+                        arr[cur_count] = string_t(heap, static_cast<uint32_t>(len));
+                    }
+                    break;
+                }
+                default:
+                    col.validity->SetInvalid(cur_count);
+                    break;
+                }
+            } catch (...) {
+                col.validity->SetInvalid(cur_count);
+            }
+        }
+
+        cur_count++;
+        if (cur_count >= VECTOR_SIZE) flush();
+    }
+    flush();
+}
+
 } // namespace slothdb

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "slothdb/common/types/data_chunk.hpp"
 #include "slothdb/common/types/logical_type.hpp"
 #include "slothdb/common/types/value.hpp"
 #include <string>
@@ -37,12 +38,25 @@ public:
 
     std::vector<std::vector<Value>> ReadAll();
 
+    // Parse only the magic + schema, skipping the row data. Populates
+    // column_names_/column_types_ so callers can build a catalog entry
+    // without reading the whole file.
+    void DetectSchemaLight();
+
+    // Stream-parse the file body directly into typed DataChunk vectors,
+    // mirroring JSONReader / AvroReader. Skips the Value-boxed rows_
+    // intermediate, so we don't pay for per-cell std::string allocation
+    // when the DataChunk vectors already have typed storage.
+    void ReadIntoChunks(std::vector<DataChunk> &chunks,
+                        const std::vector<LogicalType> &types);
+
 private:
     std::string path_;
     std::vector<std::string> column_names_;
     std::vector<LogicalType> column_types_;
     std::vector<std::vector<Value>> rows_;
     bool parsed_ = false;
+    bool schema_parsed_ = false;
     void Parse();
 };
 

@@ -744,10 +744,12 @@ QueryResult Connection::Query(const std::string &sql) {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
                     auto fp = static_cast<ConstantExpression &>(*args[0]).value;
+                    // Schema-only parse — body gets streamed by
+                    // PhysicalArrowScan at execution time.
                     ArrowIPCReader reader(fp);
+                    reader.DetectSchemaLight();
                     auto col_names = reader.GetColumnNames();
                     auto col_types = reader.GetColumnTypes();
-                    auto rows = reader.ReadAll();
 
                     std::string tbl_name = sel.from_table->alias.empty()
                         ? "__read_arrow__" : sel.from_table->alias;
@@ -757,10 +759,11 @@ QueryResult Connection::Query(const std::string &sql) {
                     std::vector<ColumnDefinition> cols;
                     for (size_t i = 0; i < col_names.size(); i++)
                         cols.emplace_back(col_names[i], col_types[i]);
+                    if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-                    BulkLoadRows(*storage, col_types, rows);
+                    entry.SetArrowPath(fp);
                     temp_tables.push_back(tbl_name);
                 }
             }
