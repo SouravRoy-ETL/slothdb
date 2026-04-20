@@ -95,6 +95,50 @@ a:hover { border-bottom-color: var(--cyan); }
 .install-bar .sep { color: var(--purple-dk); margin: 0 0.25rem; }
 
 @keyframes blink { 0%,55% { opacity: 1; } 56%,100% { opacity: 0.2; } }
+@keyframes pulse-shadow {
+  0%, 100% { box-shadow: 0 0 40px rgba(139,92,246,0.35); }
+  50%      { box-shadow: 0 0 70px rgba(139,92,246,0.65); }
+}
+
+/* Start-game overlay (non-fullscreen dim — banner stays visible behind it) */
+.splash {
+  position: fixed; inset: 0;
+  background: radial-gradient(circle at center, rgba(15,8,32,0.35) 0%, rgba(15,8,32,0.8) 80%);
+  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 70; cursor: pointer; padding: 2rem;
+  transition: opacity 0.5s ease;
+}
+.splash.hidden { opacity: 0; pointer-events: none; }
+.splash-box {
+  background: rgba(26,15,53,0.96);
+  border: 2px solid var(--purple);
+  padding: 2rem 3rem; text-align: center;
+  border-radius: 4px;
+  animation: pulse-shadow 2.4s ease-in-out infinite;
+  max-width: 440px;
+}
+.splash-tag {
+  color: var(--cyan); font-size: 10px; letter-spacing: 3px;
+  text-transform: uppercase; margin-bottom: 0.5rem;
+}
+.splash-prompt {
+  color: var(--yellow); font-weight: 700; letter-spacing: 3px;
+  font-size: 16px; animation: blink 1.2s infinite;
+  margin-bottom: 1rem;
+}
+.splash-mission {
+  color: var(--text-dim); font-size: 11px; letter-spacing: 1px; line-height: 1.7;
+  padding-top: 0.75rem; border-top: 1px dashed var(--purple-dk);
+}
+.splash-mission strong { color: var(--purple-lt); }
+.splash-controls {
+  margin-top: 1rem; color: var(--text-muted); font-size: 10px; letter-spacing: 1px;
+}
+.splash-controls kbd {
+  background: var(--bg-deep); border: 1px solid var(--purple-dk); color: var(--purple-lt);
+  padding: 1px 5px; margin: 0 1px; font-size: 10px; border-radius: 2px; font-family: var(--font);
+}
 
 /* ═════════ HUD ═════════ */
 .hud {
@@ -378,6 +422,19 @@ footer a { color: var(--text-dim); }
 </head>
 <body>
 
+<!-- ═════════ Game-start overlay ═════════ -->
+<div class="splash" id="splash" role="button" tabindex="0" aria-label="Click or press any key to begin">
+  <div class="splash-box">
+    <div class="splash-tag">★ SLOTHDB v0.1.2 · MIT</div>
+    <div class="splash-prompt">▸ CLICK TO START ◂</div>
+    <div class="splash-mission">
+      <strong>MISSION</strong> · 3 levels · 60 seconds<br>
+      Explore · See benchmarks · Install
+    </div>
+    <div class="splash-controls">Press any key or click anywhere</div>
+  </div>
+</div>
+
 <!-- ═════════ Sticky install bar ═════════ -->
 <div class="install-bar" id="install-bar">
   <span class="tag">INSTALL</span>
@@ -657,12 +714,27 @@ footer a { color: var(--text-dim); }
 
 <script>
 (function () {
-  // No splash gate — the pixel hero banner is the first thing visible.
-  // Kick off reveal + bar animations as soon as DOM is ready.
+  // Game-start gate. The banner is visible through the semi-transparent
+  // overlay — click or press any key to dismiss and activate quest tracking.
+  var splash = document.getElementById('splash');
+  var started = false;
   function start() {
+    if (started) return;
+    started = true;
+    if (splash) {
+      splash.classList.add('hidden');
+      setTimeout(function(){ splash.style.display = 'none'; }, 500);
+    }
     revealVisible();
     animateBars();
   }
+  if (splash) {
+    splash.addEventListener('click', start);
+    splash.addEventListener('keydown', start);
+  }
+  window.addEventListener('keydown', function(e){
+    if (!started) { start(); }
+  });
 
   // ── HUD + Quests ──
   var hud = { level: document.getElementById('hud-level'), coins: document.getElementById('hud-coins'), stars: document.getElementById('hud-stars') };
@@ -849,7 +921,8 @@ footer a { color: var(--text-dim); }
     if (e.target.id === 'victory') document.getElementById('victory').classList.remove('show');
   });
 
-  start();
+  // If the URL has a hash (direct deep-link), skip the gate.
+  if (location.hash) start();
 
   // ── Live GitHub star count ──
   (function fetchStars() {
