@@ -102,6 +102,27 @@ a:hover { border-bottom-color: var(--cyan); }
 .install-bar .gh-link .gh-stars::before { content: "★ "; }
 .install-bar .sep { color: var(--purple-dk); margin: 0 0.25rem; }
 
+/* Windows .exe direct download pill in the sticky bar */
+.install-bar .exe-dl {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  background: linear-gradient(135deg, var(--orange), var(--yellow));
+  color: var(--bg-deep); border: 1px solid var(--yellow);
+  padding: 0.35rem 0.75rem;
+  font-family: var(--font); font-size: 11px; font-weight: 700;
+  letter-spacing: 1px; text-transform: uppercase; border-radius: 3px;
+  transition: all 0.15s;
+  border-bottom: 1px solid var(--yellow);
+  box-shadow: 0 0 12px rgba(253,181,21,0.25);
+}
+.install-bar .exe-dl:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 20px rgba(253,181,21,0.55);
+  color: var(--bg-deep);
+  border-bottom-color: var(--yellow);
+}
+.install-bar .exe-dl .exe-ico { font-size: 13px; }
+.install-bar .exe-dl .exe-win { font-size: 9px; opacity: 0.75; margin-left: 0.1rem; }
+
 @keyframes blink { 0%,55% { opacity: 1; } 56%,100% { opacity: 0.2; } }
 @keyframes pulse-shadow {
   0%, 100% { box-shadow: 0 0 40px rgba(139,92,246,0.35); }
@@ -518,8 +539,8 @@ footer a { color: var(--text-dim); }
   .install-bar code { font-size: 11px; padding: 0.2rem 0.45rem; }
   .install-bar .copy-x { padding: 0.3rem 0.5rem; font-size: 9px; }
   .install-bar .tag, .install-bar .sep { display: none; }
-  .install-bar .gh-link { padding: 0.25rem 0.45rem; font-size: 9px; }
-  .install-bar .gh-link .gh-ico { display: none; }
+  .install-bar .gh-link, .install-bar .exe-dl { padding: 0.25rem 0.5rem; font-size: 9px; }
+  .install-bar .gh-link .gh-ico, .install-bar .exe-dl .exe-win { display: none; }
   .install-hero { padding: 1rem; }
   .install-hero-cmd { font-size: 12px; padding: 0.5rem 0.75rem; gap: 0.4rem; }
   .quest-log { display: none; }
@@ -546,6 +567,11 @@ footer a { color: var(--text-dim); }
   <span class="tag">INSTALL</span>
   <code id="bar-cmd">pip install slothdb</code>
   <button class="copy-x" id="bar-copy" type="button">Copy</button>
+  <span class="sep">·</span>
+  <a class="exe-dl" href="https://github.com/SouravRoy-ETL/slothdb/releases/latest/download/slothdb.exe" download>
+    <span class="exe-ico">⬇</span>
+    slothdb.exe<span class="exe-win">WIN</span>
+  </a>
   <span class="sep">·</span>
   <a class="gh-link" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">
     <span class="gh-ico">⌘</span>
