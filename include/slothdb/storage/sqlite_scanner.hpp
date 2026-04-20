@@ -1,5 +1,6 @@
 #pragma once
 
+#include "slothdb/common/types/data_chunk.hpp"
 #include "slothdb/common/types/logical_type.hpp"
 #include "slothdb/common/types/value.hpp"
 #include <cstdint>
@@ -37,6 +38,14 @@ public:
 
     // Scan all rows from a table.
     std::vector<std::vector<Value>> ScanTable(const std::string &table_name);
+
+    // Stream rows from `table_name` directly into typed DataChunk vectors.
+    // Same output data as ScanTable → BulkLoadRows, but skips the
+    // DataTable roundtrip used by the legacy path. Mirrors
+    // ArrowIPCReader::ReadIntoChunks / AvroReader::ReadIntoChunks.
+    void ScanTableIntoChunks(std::vector<DataChunk> &chunks,
+                              const std::vector<LogicalType> &types,
+                              const std::string &table_name);
 
 private:
     void ReadHeader();

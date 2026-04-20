@@ -4,6 +4,7 @@
 #include "slothdb/common/string_util.hpp"
 #include "slothdb/storage/arrow_ipc.hpp"
 #include "slothdb/storage/avro_reader.hpp"
+#include "slothdb/storage/sqlite_scanner.hpp"
 #include "slothdb/storage/data_table.hpp"
 #include "slothdb/storage/fast_csv_reader.hpp"
 #include "slothdb/storage/json_reader.hpp"
@@ -616,6 +617,41 @@ public:
 
 private:
     std::string file_path_;
+    std::vector<DataChunk> chunks_;
+    idx_t emit_pos_ = 0;
+};
+
+// Streaming SQLite scan — mirrors PhysicalAvroScan / PhysicalArrowScan.
+// Init() scans the given table from the SQLite file directly into typed
+// DataChunk vectors via SQLiteScanner::ScanTableIntoChunks, skipping the
+// DataTable bulk-load roundtrip; GetData() emits them sequentially.
+class PhysicalSQLiteScan : public PhysicalOperator {
+public:
+    PhysicalSQLiteScan(const std::string &file_path,
+                        const std::string &table_name,
+                        std::vector<LogicalType> types)
+        : PhysicalOperator(PhysicalOperatorType::TABLE_SCAN, std::move(types)),
+          file_path_(file_path), table_name_(table_name) {}
+
+    void Init() override {
+        SQLiteScanner scanner(file_path_);
+        chunks_.clear();
+        scanner.ScanTableIntoChunks(chunks_, GetTypes(), table_name_);
+        emit_pos_ = 0;
+    }
+
+    bool GetData(DataChunk &result) override {
+        if (emit_pos_ >= chunks_.size()) return false;
+        result = std::move(chunks_[emit_pos_++]);
+        return true;
+    }
+
+    const std::string &GetFilePath() const { return file_path_; }
+    const std::string &GetTableName() const { return table_name_; }
+
+private:
+    std::string file_path_;
+    std::string table_name_;
     std::vector<DataChunk> chunks_;
     idx_t emit_pos_ = 0;
 };
@@ -5804,6 +5840,11 @@ PhysicalOpPtr PhysicalPlanner::PlanGet(const LogicalGet &op) {
         if (op.table->GetFileFormat() == "arrow") {
             return std::make_unique<PhysicalArrowScan>(
                 op.table->GetFilePath(), op.table->GetTypes());
+        }
+        if (op.table->GetFileFormat() == "sqlite") {
+            return std::make_unique<PhysicalSQLiteScan>(
+                op.table->GetFilePath(), op.table->GetFileSubname(),
+                op.table->GetTypes());
         }
         return std::make_unique<PhysicalFileScan>(
             op.table->GetFilePath(), op.table->GetFileDelimiter(),

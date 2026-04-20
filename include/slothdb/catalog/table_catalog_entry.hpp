@@ -54,9 +54,13 @@ public:
     void SetJsonPath(const std::string &path) { file_path_ = path; file_format_ = "json"; }
     void SetAvroPath(const std::string &path) { file_path_ = path; file_format_ = "avro"; }
     void SetArrowPath(const std::string &path) { file_path_ = path; file_format_ = "arrow"; }
+    void SetSQLitePath(const std::string &path, const std::string &table_name) {
+        file_path_ = path; file_format_ = "sqlite"; file_subname_ = table_name;
+    }
     const std::string &GetFilePath() const { return file_path_; }
     char GetFileDelimiter() const { return file_delimiter_; }
     const std::string &GetFileFormat() const { return file_format_; }
+    const std::string &GetFileSubname() const { return file_subname_; }
 
     // Optional cached ParquetReader shared across queries — the schema-
     // detection path in Connection::Query opens one to populate the catalog,
@@ -78,6 +82,7 @@ private:
     std::string file_path_;
     char file_delimiter_ = ',';
     std::string file_format_ = "csv";
+    std::string file_subname_; // e.g. SQLite table name inside a .db file
     std::shared_ptr<ParquetReader> cached_parquet_reader_;
 };
 

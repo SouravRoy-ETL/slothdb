@@ -283,4 +283,112 @@ SQLiteScanner::ScanTable(const std::string &table_name) {
     throw CatalogException("Table '" + table_name + "' not found in SQLite database");
 }
 
+// Stream the rows of `table_name` into typed DataChunk vectors. Reuses the
+// existing B-tree scan (which returns Value rows) and copies the results
+// into typed slots chunk-by-chunk, batching at VECTOR_SIZE. Same correctness
+// as ScanTable + BulkLoadRows, minus the DataTable roundtrip.
+void SQLiteScanner::ScanTableIntoChunks(std::vector<DataChunk> &chunks,
+                                         const std::vector<LogicalType> &types,
+                                         const std::string &table_name) {
+    auto rows = ScanTable(table_name);
+    if (rows.empty()) return;
+
+    DataChunk cur;
+    cur.Initialize(types);
+    idx_t cur_count = 0;
+    auto num_cols = static_cast<idx_t>(types.size());
+
+    struct ColPtr {
+        LogicalTypeId tid;
+        data_ptr_t data;
+        ValidityMask *validity;
+        VectorStringBuffer *str_buf;
+    };
+    std::vector<ColPtr> cp(num_cols);
+    auto refresh_cp = [&]() {
+        for (idx_t c = 0; c < num_cols; c++) {
+            auto &v = cur.GetVector(c);
+            cp[c].tid = types[c].id();
+            cp[c].data = v.GetData();
+            cp[c].validity = &v.GetValidity();
+            cp[c].str_buf = (cp[c].tid == LogicalTypeId::VARCHAR)
+                                ? &v.GetStringBuffer() : nullptr;
+        }
+    };
+    refresh_cp();
+
+    auto flush = [&]() {
+        if (cur_count == 0) return;
+        cur.SetCardinality(cur_count);
+        chunks.push_back(std::move(cur));
+        cur.Initialize(types);
+        cur_count = 0;
+        refresh_cp();
+    };
+
+    for (auto &row : rows) {
+        for (idx_t c = 0; c < num_cols && c < row.size(); c++) {
+            auto &col = cp[c];
+            const auto &v = row[c];
+            if (v.IsNull()) {
+                col.validity->SetInvalid(cur_count);
+                continue;
+            }
+            try {
+                switch (col.tid) {
+                case LogicalTypeId::BOOLEAN: {
+                    auto *arr = reinterpret_cast<bool *>(col.data);
+                    arr[cur_count] = v.GetValue<bool>();
+                    break;
+                }
+                case LogicalTypeId::INTEGER: {
+                    auto *arr = reinterpret_cast<int32_t *>(col.data);
+                    arr[cur_count] = v.GetValue<int32_t>();
+                    break;
+                }
+                case LogicalTypeId::BIGINT: {
+                    auto *arr = reinterpret_cast<int64_t *>(col.data);
+                    arr[cur_count] = v.GetValue<int64_t>();
+                    break;
+                }
+                case LogicalTypeId::FLOAT: {
+                    auto *arr = reinterpret_cast<float *>(col.data);
+                    arr[cur_count] = static_cast<float>(v.GetValue<double>());
+                    break;
+                }
+                case LogicalTypeId::DOUBLE: {
+                    auto *arr = reinterpret_cast<double *>(col.data);
+                    arr[cur_count] = v.GetValue<double>();
+                    break;
+                }
+                case LogicalTypeId::VARCHAR: {
+                    auto s = v.GetValue<std::string>();
+                    auto *arr = reinterpret_cast<string_t *>(col.data);
+                    auto len = static_cast<uint32_t>(s.size());
+                    if (s.size() <= string_t::INLINE_LENGTH) {
+                        arr[cur_count] = string_t(s.data(), len);
+                    } else {
+                        const char *heap = col.str_buf->AddString(s.data(), s.size());
+                        arr[cur_count] = string_t(heap, len);
+                    }
+                    break;
+                }
+                default:
+                    col.validity->SetInvalid(cur_count);
+                    break;
+                }
+            } catch (...) {
+                col.validity->SetInvalid(cur_count);
+            }
+        }
+        // Fill any remaining columns with NULL.
+        for (idx_t c = row.size(); c < num_cols; c++) {
+            cp[c].validity->SetInvalid(cur_count);
+        }
+        cur_count++;
+        if (cur_count >= VECTOR_SIZE) flush();
+    }
+    flush();
+}
+
 } // namespace slothdb

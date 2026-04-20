@@ -836,9 +836,10 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto db_path = static_cast<ConstantExpression &>(*args[0]).value;
                     auto table_name = static_cast<ConstantExpression &>(*args[1]).value;
 
+                    // Schema-only probe — body gets streamed at execution
+                    // time by PhysicalSQLiteScan.
                     SQLiteScanner scanner(db_path);
                     auto col_info = scanner.GetColumns(table_name);
-                    auto rows = scanner.ScanTable(table_name);
 
                     std::string tbl_name = sel.from_table->alias.empty()
                         ? "__sqlite_scan__" : sel.from_table->alias;
@@ -852,10 +853,11 @@ QueryResult Connection::Query(const std::string &sql) {
                         col_types.push_back(ci.type);
                     }
 
+                    if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
-                    BulkLoadRows(*storage, col_types, rows);
+                    entry.SetSQLitePath(db_path, table_name);
                     temp_tables.push_back(tbl_name);
                 }
             }
