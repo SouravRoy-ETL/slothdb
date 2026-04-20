@@ -1,36 +1,34 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="crispEdges">
   <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
     </linearGradient>
   </defs>
 
-  <!-- Background circle -->
-  <circle cx="120" cy="120" r="110" fill="#f8f7ff"/>
+  <!-- Rounded-square background in the SlothDB purple gradient -->
+  <rect width="32" height="32" rx="6" fill="url(#bg)"/>
 
-  <!-- Database cylinder body (centered and scaled up) -->
-  <g transform="translate(120, 120) scale(2.2) translate(-45, -52)">
-    <!-- Cylinder -->
-    <ellipse cx="45" cy="25" rx="35" ry="12" fill="url(#grad)" opacity="0.9"/>
-    <rect x="10" y="25" width="70" height="55" fill="url(#grad)" opacity="0.9"/>
-    <ellipse cx="45" cy="80" rx="35" ry="12" fill="url(#grad)" opacity="0.8"/>
-    <ellipse cx="45" cy="25" rx="35" ry="12" fill="url(#grad)" opacity="0.95"/>
-    <ellipse cx="45" cy="45" rx="35" ry="10" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.3"/>
-    <ellipse cx="45" cy="62" rx="35" ry="10" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.3"/>
+  <!-- Drop-shadow layer offset +1,+1 in deep purple, gives depth at 32+ px -->
+  <g fill="#4C1D95" opacity="0.55">
+    <rect x="11" y="3"  width="16" height="4"/>
+    <rect x="7"  y="7"  width="4"  height="4"/>
+    <rect x="7"  y="11" width="4"  height="4"/>
+    <rect x="11" y="15" width="12" height="4"/>
+    <rect x="23" y="19" width="4"  height="4"/>
+    <rect x="23" y="23" width="4"  height="4"/>
+    <rect x="7"  y="27" width="16" height="4"/>
+  </g>
 
-    <!-- Sloth eyes -->
-    <circle cx="33" cy="48" r="8" fill="#1e1b4b" opacity="0.8"/>
-    <circle cx="57" cy="48" r="8" fill="#1e1b4b" opacity="0.8"/>
-    <circle cx="35" cy="47" r="3.5" fill="#fff"/>
-    <circle cx="59" cy="47" r="3.5" fill="#fff"/>
-    <circle cx="36" cy="46.5" r="1.8" fill="#1e1b4b"/>
-    <circle cx="60" cy="46.5" r="1.8" fill="#1e1b4b"/>
-
-    <!-- Sloth smile -->
-    <path d="M 36 58 Q 45 65 54 58" fill="none" stroke="#1e1b4b" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
-
-    <!-- Sloth nose -->
-    <ellipse cx="45" cy="54" rx="4" ry="2.5" fill="#1e1b4b" opacity="0.6"/>
+  <!-- Pixel "S" in site-yellow #FDB515, same 5x7 pixel font as the hero wordmark
+       Each source pixel = 4×4 canvas units, letter occupies x=6..26, y=2..30 -->
+  <g fill="#FDB515">
+    <rect x="10" y="2"  width="16" height="4"/>  <!-- row 0: .XXXX. -->
+    <rect x="6"  y="6"  width="4"  height="4"/>  <!-- row 1: X.... -->
+    <rect x="6"  y="10" width="4"  height="4"/>  <!-- row 2: X.... -->
+    <rect x="10" y="14" width="12" height="4"/>  <!-- row 3: .XXX. -->
+    <rect x="22" y="18" width="4"  height="4"/>  <!-- row 4: ....X -->
+    <rect x="22" y="22" width="4"  height="4"/>  <!-- row 5: ....X -->
+    <rect x="6"  y="26" width="16" height="4"/>  <!-- row 6: XXXX. -->
   </g>
 </svg>
