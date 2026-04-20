@@ -921,7 +921,7 @@ footer a { color: var(--text-dim); }
    ╚████╔╝ ██║╚██████╗   ██║   ╚██████╔╝██║  ██║   ██║
     ╚═══╝  ╚═╝ ╚═════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝ </div>
   <div class="victory-title">ALL 3 MISSIONS COMPLETE</div>
-  <div class="victory-sub">Command copied. Paste it in your terminal and run it — then point SlothDB at any CSV / Parquet / JSON file you have lying around. First query in under 30 seconds.</div>
+  <div class="victory-sub" id="victory-sub">Install is underway. Point SlothDB at any CSV / Parquet / JSON file you have lying around — first query in under 30 seconds.</div>
   <div class="next-step">
     <span class="tag">NEXT STEP</span>
     <code>slothdb -c "SELECT * FROM 'your_file.csv' LIMIT 10;"</code>
@@ -1061,6 +1061,28 @@ footer a { color: var(--text-dim); }
     });
   });
 
+  // ── Shared: install quest complete + victory screen ──
+  function unlockInstall(method) {
+    updateQuest('q3', true);
+    setCoins(coins + 20);
+    showToast(method, '+20');
+    if (!window.__won) {
+      window.__won = true;
+      // Update the Victory "next step" snippet to match how they installed.
+      var ns = document.querySelector('#victory .next-step code');
+      if (ns) {
+        if (method.indexOf('EXE') !== -1 || method.indexOf('DOWNLOAD') !== -1) {
+          ns.textContent = 'slothdb.exe -c "SELECT * FROM \'your.csv\' LIMIT 10;"';
+          var ts = document.querySelector('#victory .next-step .tag');
+          if (ts) ts.textContent = 'RUN IT';
+        } else {
+          ns.textContent = 'slothdb -c "SELECT * FROM \'your.csv\' LIMIT 10;"';
+        }
+      }
+      setTimeout(function(){ document.getElementById('victory').classList.add('show'); }, 600);
+    }
+  }
+
   // ── Copy buttons (all copy current hero cmd) ──
   function wireCopy(btnId, srcGetter) {
     var btn = document.getElementById(btnId);
@@ -1072,21 +1094,25 @@ footer a { color: var(--text-dim); }
         setTimeout(function(){
           btn.textContent = 'Copy'; btn.classList.remove('done');
         }, 1600);
-        // install quest complete
-        updateQuest('q3', true);
-        setCoins(coins + 20);
-        showToast('INSTALL COMMAND COPIED', '+20');
-        // Show victory (once)
-        if (!window.__won) {
-          window.__won = true;
-          setTimeout(function(){ document.getElementById('victory').classList.add('show'); }, 700);
-        }
+        unlockInstall('INSTALL COMMAND COPIED');
       });
     });
   }
   wireCopy('bar-copy',  function(){ return heroCmd.textContent; });
   wireCopy('hero-copy', function(){ return heroCmd.textContent; });
   wireCopy('boss-copy', function(){ return heroCmd.textContent; });
+
+  // ── .exe download links ──
+  // Fire the same victory flow, but DON'T preventDefault — the actual
+  // download must still happen.
+  Array.prototype.forEach.call(
+    document.querySelectorAll('a[href$=".exe"], a[href*="/slothdb.exe"], .exe-dl, #install-hero-dl'),
+    function (el) {
+      el.addEventListener('click', function () {
+        unlockInstall('.EXE DOWNLOAD STARTED');
+      });
+    }
+  );
 
   // ── Live demo ──
   var output = document.getElementById('demo-output');
