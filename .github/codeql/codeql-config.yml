@@ -1,0 +1,24 @@
+name: "SlothDB CodeQL config"
+
+# Skip vendored third-party code and tests. Alerts from these paths
+# are either false positives (CodeQL doesn't understand doctest's
+# internal ownership or miniz's local-state gates) or accepted risk
+# (e.g. test-only frameworks never shipped in the production binary).
+#
+# Keeping them out of scanning keeps the security tab focused on
+# alerts that are actually actionable in SlothDB's own code.
+paths-ignore:
+  - third_party/**
+  - include/third_party/**
+  - src/storage/miniz.c
+  - src/storage/miniz.h
+  - test/**
+  - build/**
+  - python/dist/**
+  - python/build/**
+
+# Keep the default CodeQL query packs. Swap `security-and-quality` for
+# `security-extended` if you want even broader coverage at the cost of
+# more false positives on SlothDB's own C++.
+queries:
+  - uses: security-and-quality
