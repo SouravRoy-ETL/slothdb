@@ -4,11 +4,12 @@
 
 <br>
 
-### Query your files with SQL. No server. No import step. No extensions.
+<a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">
+  <img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=20&pause=1000&color=8B5CF6&center=true&vCenter=true&width=820&lines=Query+your+files+with+SQL.+No+server.+No+import.;CSV+%E2%80%A2+Parquet+%E2%80%A2+JSON+%E2%80%A2+Avro+%E2%80%A2+Excel+%E2%80%A2+Arrow+%E2%80%A2+SQLite;1.1%C3%97+%E2%80%93+6.6%C3%97+faster+than+DuckDB+on+every+benchmark;326+tests+%E2%80%A2+131%2C321+assertions+%E2%80%A2+Zero+dependencies" alt="SlothDB rotating tagline">
+</a>
 
-<p>
-SlothDB is an embedded analytical database in C++20. Drop one binary into your app, point it at a CSV, Parquet, JSON, Avro, or Excel file — and run SQL directly against it. <b>1.1× – 6.6× faster than DuckDB</b> on every benchmark we've run.
-</p>
+<br>
+<br>
 
 <p>
   <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -33,12 +34,7 @@ SlothDB is an embedded analytical database in C++20. Drop one binary into your a
 
 ## Why SlothDB?
 
-If you've ever reached for DuckDB just to query a local CSV or Parquet file, SlothDB is built for the same job — and it handles a few things DuckDB can't, or can't as quickly:
-
-- **7 file formats built in.** CSV, Parquet, JSON/NDJSON, Avro, Excel (.xlsx), Arrow IPC, SQLite — all in the binary. No extension downloads, no "extension incompatible with this version" errors.
-- **Faster on every benchmark.** On a 1M-row dataset, SlothDB beats DuckDB 1.04× to 6.6× across 15 queries on 5 formats. [See the numbers](#performance--11--66-faster-than-duckdb-every-format-every-query).
-- **One file, no runtime.** 8 MB binary. No Java, no Docker, no daemon, no network listener.
-- **Stable C ABI for extensions.** Extensions built against v0.1 keep working on v2.0. No symbol churn between releases.
+SlothDB is an **embedded analytical database in C++20**. You link it into your application (or run the shell) and point SQL at files on disk. No server process, no import step, no "load the extension first." That's the same model as DuckDB and SQLite, but the defaults are different.
 
 ```sql
 -- No CREATE TABLE. No COPY FROM. Just point at the file.
@@ -48,6 +44,45 @@ WHERE hire_year >= 2020
 GROUP BY department
 ORDER BY AVG(salary) DESC;
 ```
+
+### If you're using DuckDB today
+
+Same embedded model. SlothDB is a near-drop-in swap for local file analytics. The differences:
+
+| | SlothDB | DuckDB |
+|---|---|---|
+| 1 M-row benchmark (15 queries) | **1.04× – 6.6× faster on every single one** | baseline |
+| Built-in file formats | **7** — CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite | 3 built in (Excel, Avro, SQLite need extensions) |
+| Extension stability | **Stable C ABI** — extensions keep working across releases | Internal C++ API, often breaks on upgrade |
+| Error handling | **Numeric error codes** (`ErrorCode::TABLE_NOT_FOUND = 2000`) | Free-form error strings |
+| GPU offload | **CUDA + Metal**, auto-enabled at 100 K rows | CPU only |
+| Binary size | **~8 MB** self-contained | ~50 MB |
+
+The Avro reader alone is 5.4× faster than DuckDB's because SlothDB parses Avro natively instead of through an extension. If Excel or Avro matters in your pipeline, this is a real quality-of-life difference.
+
+### If you're using ClickHouse today
+
+ClickHouse wins at petabyte-scale distributed analytics — SlothDB isn't trying to replace it there. But if your workload fits on one machine (Python notebooks, desktop analytics, embedded BI, single-node dashboards), you're paying ClickHouse-server operational cost for work that doesn't need a cluster:
+
+| | SlothDB | clickhouse-local | ClickHouse server |
+|---|---|---|---|
+| Deployment | 8 MB binary, embedded | ~500 MB binary | server + Keeper + config |
+| Cold start | < 10 ms | seconds | tens of seconds |
+| Ops overhead | none | none | daemon, ports, upgrades |
+| Embed in a desktop app | yes, one binary | awkward | no |
+| Cluster / distributed query | no | no | yes |
+
+If you picked ClickHouse to query local Parquet files with SQL — you picked the wrong tool. SlothDB gives you that ergonomics without the operational tax.
+
+### If you're using SQLite today for analytics
+
+SQLite is row-oriented and tuned for transactional workloads. Aggregate queries over large tables (e.g. `SELECT region, SUM(revenue) FROM sales`) hit the row-orientation wall — SQLite reads every column of every row even when you only need two. SlothDB is columnar + vectorized; expect **10–100× speedup on analytical aggregates**. You can keep your existing SQLite file and read from it directly with `sqlite_scan('app.db', 'users')`.
+
+### What SlothDB does not do (honest list)
+
+- **No distributed query execution.** One-node embedded engine. Use ClickHouse if you outgrow one machine.
+- **No MVCC / multi-writer transactions.** Single-writer, crash-safe checkpoint. OLTP workloads are a poor fit.
+- **Younger codebase.** 326 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
 
 ## Performance — 1.1× – 6.6× faster than DuckDB, every format, every query
 
@@ -86,6 +121,10 @@ ORDER BY AVG(salary) DESC;
 > **Biggest wins:** Avro `SUM` **5.43×** · CSV `COUNT(*)` **5.08×** · Avro `GROUP BY` **4.71×** · Parquet `COUNT(*)` **2.83×** · CSV `GROUP BY` **1.91×**
 
 The architectural decisions behind the numbers (typed columnar decode, per-worker buffer reuse, fused scan+aggregate, zero-copy VARCHAR append, vectorized filter, parallel CSV aggregate, `PhysicalXXXScan` operators that skip the bulk-load roundtrip) are in [CHANGELOG.md](CHANGELOG.md) with a commit per optimization.
+
+<p align="center">
+  <img src="assets/vs_duck.svg" alt="Sloth beats duck — 6.6x faster animation" width="100%">
+</p>
 
 ## Install
 
@@ -215,42 +254,6 @@ slothdb_close(db);
 ```
 
 > **[Full C/C++ API reference](docs/DOCUMENTATION.md#7-cc-api)** — lifecycle, queries, results, error handling, CMake integration, RAII wrapper
-
-## Why SlothDB over DuckDB?
-
-### 1.1× – 6.6× Faster on Every Format
-
-SlothDB beats DuckDB on **every format and every query** in the benchmark above — Avro 5.4× faster, CSV COUNT(*) 5.1× faster, Parquet COUNT(*) 2.8× faster, CSV GROUP BY 1.9× faster, Excel 1.41× faster, JSON 1.30× faster. The wins come from a single architectural pattern applied per format: a dedicated `PhysicalXXXScan` operator that parses files directly into typed columnar `DataChunk`s at execution time, skipping the bulk-load-to-intermediate-table roundtrip. Combined with vectorized filter, parallel CSV aggregate, and fused WHERE + aggregate. Details in [CHANGELOG.md](CHANGELOG.md).
-
-### GPU Acceleration
-
-DuckDB is CPU-only. SlothDB offloads aggregation, sorting, and filtering to **CUDA** (NVIDIA) or **Metal** (Apple Silicon) — automatically, when data exceeds 100K rows.
-
-### Extensions That Never Break
-
-DuckDB extensions depend on internal C++ APIs and break on every release. SlothDB uses a **stable C ABI** — an extension built for v1.0 works on v2.0 and beyond.
-
-### Structured Error Codes
-
-DuckDB throws free-form strings. SlothDB gives every error a **stable numeric code** — catch `ErrorCode::TABLE_NOT_FOUND` (2000) instead of parsing `"Table 'foo' not found"`.
-
-### Every Format Built In
-
-DuckDB needs extensions for Excel, Avro, SQLite. SlothDB ships **7 formats out of the box** — CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite. Nothing to install.
-
-### Full Comparison
-
-| | SlothDB | DuckDB |
-|-|---------|--------|
-| 1 M-row benchmark | **1.1×–6.6× faster on every format / query** (see table above) | Baseline |
-| GPU acceleration | CUDA + Metal | CPU only |
-| Extension stability | Stable C ABI | Breaks every release |
-| Error handling | Numeric codes | Free-form strings |
-| Built-in formats | 7 (CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite) | 3 (others need extensions) |
-| QUALIFY clause | Yes | Yes |
-| Crash-safe persistence | Atomic checkpoint | Yes |
-| Zero dependencies | Yes | Yes |
-| SQL features | 130+ | 130+ |
 
 ## Features
 
