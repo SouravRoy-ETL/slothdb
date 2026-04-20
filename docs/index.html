@@ -63,9 +63,7 @@ a:hover { border-bottom-color: var(--cyan); }
   padding: 0.65rem 1rem; z-index: 90;
   display: flex; align-items: center; justify-content: center; gap: 0.75rem;
   font-size: 13px;
-  transform: translateY(-110%); transition: transform 0.4s cubic-bezier(0.25,1,0.5,1);
 }
-.install-bar.show { transform: translateY(0); }
 .install-bar .tag { color: var(--yellow); font-weight: 700; letter-spacing: 2px; font-size: 11px; }
 .install-bar .tag::before { content: "▸ "; }
 .install-bar code {
@@ -81,29 +79,7 @@ a:hover { border-bottom-color: var(--cyan); }
 .install-bar .copy-x:hover { background: var(--purple-lt); color: var(--bg-deep); }
 .install-bar .copy-x.done { background: var(--green); }
 
-/* ═════════ Splash ═════════ */
-.splash {
-  position: fixed; inset: 0; background: var(--bg-deep);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  z-index: 1000; cursor: pointer; transition: opacity 0.5s ease; padding: 2rem;
-}
-.splash.hidden { opacity: 0; pointer-events: none; }
-.splash-art {
-  color: var(--purple); font-size: 10px; line-height: 1.1;
-  white-space: pre; text-align: center; margin-bottom: 1.5rem;
-  text-shadow: 0 0 12px rgba(139,92,246,0.6);
-  max-width: 100%; overflow-x: auto;
-}
-.splash-tag { color: var(--cyan); margin-bottom: 0.5rem; letter-spacing: 3px; font-size: 12px; text-transform: uppercase; }
-.splash-meta { color: var(--text-dim); font-size: 12px; margin-bottom: 2.5rem; }
-.splash-prompt { color: var(--purple-lt); animation: blink 1.2s infinite; letter-spacing: 2px; font-weight: 700; font-size: 15px; }
-.splash-quest {
-  margin-top: 3rem; color: var(--yellow); font-size: 11px; letter-spacing: 3px;
-  border: 1px solid var(--yellow); padding: 0.5rem 1rem;
-}
-.splash-quest::before { content: "★ MISSION: "; color: var(--yellow); font-weight: 700; }
 @keyframes blink { 0%,55% { opacity: 1; } 56%,100% { opacity: 0.2; } }
-.splash-footer { position: absolute; bottom: 2rem; color: var(--text-muted); font-size: 10px; letter-spacing: 2px; }
 
 /* ═════════ HUD ═════════ */
 .hud {
@@ -385,21 +361,6 @@ footer a { color: var(--text-dim); }
 </head>
 <body>
 
-<!-- ═════════ SPLASH ═════════ -->
-<div class="splash" id="splash" role="button" tabindex="0">
-  <div class="splash-art"> ██████╗██╗      ██████╗ ████████╗██╗  ██╗██████╗ ██████╗
-██╔════╝██║     ██╔═══██╗╚══██╔══╝██║  ██║██╔══██╗██╔══██╗
-╚█████╗ ██║     ██║   ██║   ██║   ███████║██║  ██║██████╔╝
- ╚═══██╗██║     ██║   ██║   ██║   ██╔══██║██║  ██║██╔══██╗
-██████╔╝███████╗╚██████╔╝   ██║   ██║  ██║██████╔╝██████╔╝
-╚═════╝ ╚══════╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═════╝ ╚═════╝ </div>
-  <div class="splash-tag">embedded · olap · c++20 · mit</div>
-  <div class="splash-meta">1.1×–6.6× faster than DuckDB · v0.1.2</div>
-  <div class="splash-prompt">▸ PRESS ANY KEY OR CLICK TO BEGIN</div>
-  <div class="splash-quest">run slothdb in 60 seconds · 3 tasks</div>
-  <div class="splash-footer">© SOURAV ROY</div>
-</div>
-
 <!-- ═════════ Sticky install bar ═════════ -->
 <div class="install-bar" id="install-bar">
   <span class="tag">INSTALL</span>
@@ -673,22 +634,12 @@ footer a { color: var(--text-dim); }
 
 <script>
 (function () {
-  // ── splash gate ──
-  var splash = document.getElementById('splash');
-  var bar = document.getElementById('install-bar');
-  var started = false;
+  // No splash gate — the pixel hero banner is the first thing visible.
+  // Kick off reveal + bar animations as soon as DOM is ready.
   function start() {
-    if (started) return;
-    started = true;
-    splash.classList.add('hidden');
-    setTimeout(function(){ splash.style.display = 'none'; bar.classList.add('show'); }, 500);
     revealVisible();
     animateBars();
   }
-  splash.addEventListener('click', start);
-  window.addEventListener('keydown', function(e){
-    if (!started) { start(); return; }
-  });
 
   // ── HUD + Quests ──
   var hud = { level: document.getElementById('hud-level'), coins: document.getElementById('hud-coins'), stars: document.getElementById('hud-stars') };
@@ -875,7 +826,7 @@ footer a { color: var(--text-dim); }
     if (e.target.id === 'victory') document.getElementById('victory').classList.remove('show');
   });
 
-  if (location.hash) start();
+  start();
 })();
 </script>
 
