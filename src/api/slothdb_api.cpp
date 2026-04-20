@@ -149,7 +149,7 @@ void slothdb_free_result(slothdb_result *result) {
 }
 
 const char *slothdb_version(void) {
-    return "SlothDB 0.1.0";
+    return "0.1.2";
 }
 
 } /* extern "C" */

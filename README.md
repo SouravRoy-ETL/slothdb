@@ -84,6 +84,60 @@ SQLite is row-oriented and tuned for transactional workloads. Aggregate queries 
 - **No MVCC / multi-writer transactions.** Single-writer, crash-safe checkpoint. OLTP workloads are a poor fit.
 - **Younger codebase.** 326 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
 
+---
+
+## Quickstart
+
+**1. Install** — pick one:
+
+```bash
+pip install slothdb                                                              # Python
+curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash   # Linux / macOS CLI
+# Windows: download slothdb.exe from https://github.com/SouravRoy-ETL/slothdb/releases/latest
+```
+
+**2. Query a file, one-shot:**
+
+```bash
+slothdb -c "SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region ORDER BY 2 DESC;"
+```
+
+**3. Or open an interactive shell:**
+
+```bash
+slothdb                 # in-memory
+slothdb analytics.slothdb   # persistent, created on first open
+```
+
+```sql
+slothdb> SELECT * FROM 'data.parquet' WHERE year >= 2023 LIMIT 5;
+slothdb> .tables       -- list tables
+slothdb> .schema sales -- describe a table
+slothdb> .help         -- full command list
+slothdb> .quit
+```
+
+**4. From Python:**
+
+```python
+import slothdb
+db = slothdb.connect()
+df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
+```
+
+<details>
+<summary><b>More install methods (Debian, Fedora, Arch, Homebrew, build from source)</b></summary>
+
+| Platform | Command |
+|----------|---------|
+| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.2_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
+| Fedora / RHEL | `sudo rpm -i slothdb-0.1.2.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
+| Arch Linux | `makepkg -si` ([PKGBUILD](packaging/arch/PKGBUILD)) |
+| macOS (Homebrew) | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
+| Build from source | See [below](#build-from-source) |
+
+</details>
+
 ## Performance — 1.1× – 6.6× faster than DuckDB, every format, every query
 
 > 1 M-row dataset · warm cache · 5-run median · same machine · same queries.
@@ -121,36 +175,6 @@ SQLite is row-oriented and tuned for transactional workloads. Aggregate queries 
 > **Biggest wins:** Avro `SUM` **5.43×** · CSV `COUNT(*)` **5.08×** · Avro `GROUP BY` **4.71×** · Parquet `COUNT(*)` **2.83×** · CSV `GROUP BY` **1.91×**
 
 The architectural decisions behind the numbers (typed columnar decode, per-worker buffer reuse, fused scan+aggregate, zero-copy VARCHAR append, vectorized filter, parallel CSV aggregate, `PhysicalXXXScan` operators that skip the bulk-load roundtrip) are in [CHANGELOG.md](CHANGELOG.md) with a commit per optimization.
-
-<p align="center">
-  <img src="assets/vs_duck.svg" alt="Sloth beats duck — 6.6x faster animation" width="100%">
-</p>
-
-## Install
-
-```bash
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash
-
-# Windows — download slothdb.exe
-# https://github.com/SouravRoy-ETL/slothdb/releases/latest
-
-# Python
-pip install slothdb
-```
-
-<details>
-<summary><b>More platforms</b></summary>
-
-| Platform | Command |
-|----------|---------|
-| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.0_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
-| Fedora / RHEL | `sudo rpm -i slothdb-0.1.0.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
-| Arch Linux | `makepkg -si` ([PKGBUILD](packaging/arch/PKGBUILD)) |
-| macOS (Homebrew) | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
-| Build from source | See [below](#build-from-source) |
-
-</details>
 
 ## Query Any File with SQL
 

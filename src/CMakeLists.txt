@@ -36,7 +36,18 @@ target_include_directories(slothdb_lib PUBLIC
 
 # CLI
 if(SLOTHDB_BUILD_SHELL)
-    add_executable(slothdb ${CMAKE_SOURCE_DIR}/tools/shell/shell.cpp)
+    set(SHELL_SOURCES ${CMAKE_SOURCE_DIR}/tools/shell/shell.cpp)
+    # Vendor linenoise for arrow-key line editing, history, UTF-8 handling
+    # on POSIX. Windows uses std::getline + cmd.exe's native line editing.
+    if(NOT WIN32)
+        list(APPEND SHELL_SOURCES ${CMAKE_SOURCE_DIR}/third_party/linenoise/linenoise.c)
+    endif()
+    add_executable(slothdb ${SHELL_SOURCES})
     target_link_libraries(slothdb PRIVATE slothdb_lib)
-    target_include_directories(slothdb PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_include_directories(slothdb PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party/linenoise)
+    if(NOT WIN32)
+        target_compile_definitions(slothdb PRIVATE SLOTHDB_HAS_LINENOISE=1)
+    endif()
 endif()
