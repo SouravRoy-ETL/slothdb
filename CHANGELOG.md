@@ -2,7 +2,20 @@
 
 All notable changes to SlothDB are documented here.
 
-## Unreleased
+## 0.1.3 — Arrow + SQLite on the fast path
+
+Arrow IPC and SQLite were the last two readers still using the bulk-load-to-DataTable roundtrip. Both now stream typed `DataChunk`s at execution time — the same pattern Parquet / JSON / Avro / CSV use.
+
+- **`PhysicalArrowScan`** — `ArrowIPCReader::DetectSchemaLight()` + `ReadIntoChunks()` stream rows directly into `int32_t[]` / `int64_t[]` / `double[]` / `string_t[]` arrays. No Value-boxed intermediate.
+- **`PhysicalSQLiteScan`** — `SQLiteScanner::ScanTableIntoChunks()` wraps the existing B-tree scanner but pushes results directly into typed Vectors instead of through `BulkLoadRows`.
+- **`TableCatalogEntry::SetSQLitePath(path, table_name)`** + `GetFileSubname()` — needed because SQLite requires both pieces (DB path + target table).
+- **Tests:** `test/unit/storage/test_arrow.cpp` (4 cases), `test/unit/storage/test_sqlite.cpp` (3 cases, backed by a committed fixture at `test/fixtures/simple.sqlite`). 333/333 passing.
+
+Shell version string returns `"0.1.3"`, Python wheel bumped to 0.1.3, CMake project version bumped.
+
+Known follow-up: `ORDER BY` on VARCHAR output of `PhysicalSQLiteScan` currently segfaults inside the sort operator. Data reads correctly (SELECT / WHERE / GROUP BY all work); only the specific sort path is affected. Tracked separately.
+
+## 0.1.2
 
 ### Performance — SlothDB now beats DuckDB 1.1×–6.6× on every benchmarked format
 

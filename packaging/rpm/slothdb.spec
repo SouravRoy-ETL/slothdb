@@ -1,5 +1,5 @@
 Name:           slothdb
-Version:        0.1.2
+Version:        0.1.3
 Release:        1%{?dist}
 Summary:        An embedded analytical database engine
 
@@ -32,6 +32,9 @@ install -m 755 build/src/slothdb %{buildroot}%{_bindir}/slothdb
 %{_bindir}/slothdb
 
 %changelog
+* Mon Apr 20 2026 Sourav Roy <souravroy7864@gmail.com> - 0.1.3-1
+- Arrow IPC + SQLite now stream typed DataChunks (PhysicalArrowScan / PhysicalSQLiteScan)
+- All 7 file formats on the fast path — no more bulk-load-to-DataTable roundtrip
 * Sun Apr 19 2026 Sourav Roy <souravroy7864@gmail.com> - 0.1.2-1
 - Performance: beats DuckDB 1.1x-6.6x on every format (CSV, Parquet, JSON, Avro, Excel)
 * Wed Apr 16 2026 Sourav Roy <souravroy7864@gmail.com> - 0.1.0-1

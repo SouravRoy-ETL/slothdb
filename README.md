@@ -13,7 +13,7 @@
 
 <p>
   <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/release-v0.1.2-6366F1" alt="Release v0.1.2">
+  <img src="https://img.shields.io/badge/release-v0.1.3-6366F1" alt="Release v0.1.3">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License MIT">
   <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white" alt="C++20">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey" alt="Platform">
@@ -130,8 +130,8 @@ df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
 
 | Platform | Command |
 |----------|---------|
-| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.2_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
-| Fedora / RHEL | `sudo rpm -i slothdb-0.1.2.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
+| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.3_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
+| Fedora / RHEL | `sudo rpm -i slothdb-0.1.3.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
 | Arch Linux | `makepkg -si` ([PKGBUILD](packaging/arch/PKGBUILD)) |
 | macOS (Homebrew) | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
 | Build from source | See [below](#build-from-source) |
