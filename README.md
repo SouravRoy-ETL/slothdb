@@ -2,42 +2,46 @@
 
 <img src="assets/hero.svg" alt="SlothDB" width="100%">
 
-<h3>The embedded analytical database that queries your files directly with SQL</h3>
+<br>
 
-<p><b>1.1× – 6.6× faster than DuckDB on every benchmarked format.</b><br>
-No server. No import step. No external dependencies.</p>
-
-<a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">
-  <img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=18&pause=1000&color=6366F1&center=true&vCenter=true&width=720&lines=No+server.+No+import.+Just+SQL.;CSV+%E2%80%A2+Parquet+%E2%80%A2+JSON+%E2%80%A2+Avro+%E2%80%A2+Excel+%E2%80%A2+Arrow+%E2%80%A2+SQLite;1.1%C3%97+%E2%80%93+6.6%C3%97+faster+than+DuckDB+on+every+format;326+tests+%E2%80%A2+131%2C000%2B+assertions+%E2%80%A2+Zero+dependencies" alt="SlothDB">
-</a>
+### Query your files with SQL. No server. No import step. No extensions.
 
 <p>
-  <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest"><img src="https://img.shields.io/github/v/release/SouravRoy-ETL/slothdb?label=release&color=6366F1" alt="Release"></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white" alt="C++20">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey" alt="Platform">
-  <a href="https://github.com/SouravRoy-ETL/slothdb/stargazers"><img src="https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social" alt="Stars"></a>
+SlothDB is an embedded analytical database in C++20. Drop one binary into your app, point it at a CSV, Parquet, JSON, Avro, or Excel file — and run SQL directly against it. <b>1.1× – 6.6× faster than DuckDB</b> on every benchmark we've run.
 </p>
 
 <p>
-  <a href="https://souravroy-etl.github.io/slothdb/"><b>Website</b></a> &middot;
-  <a href="docs/DOCUMENTATION.md"><b>Documentation</b></a> &middot;
-  <a href="CHANGELOG.md"><b>Benchmarks</b></a> &middot;
-  <a href="docs/DOCUMENTATION.md#2-query-your-files">File Formats</a> &middot;
-  <a href="docs/DOCUMENTATION.md#6-python-api">Python API</a> &middot;
-  <a href="docs/DOCUMENTATION.md#7-cc-api">C/C++ API</a> &middot;
-  <a href="docs/DOCUMENTATION.md#4-sql-guide">SQL Guide</a> &middot;
-  <a href="docs/DOCUMENTATION.md#5-all-functions">130+ Functions</a>
+  <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/release-v0.1.2-6366F1" alt="Release v0.1.2">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License MIT">
+  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white" alt="C++20">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey" alt="Platform">
+</p>
+
+<p>
+  <a href="https://souravroy-etl.github.io/slothdb/"><b>Website</b></a> &nbsp;·&nbsp;
+  <a href="docs/DOCUMENTATION.md"><b>Documentation</b></a> &nbsp;·&nbsp;
+  <a href="CHANGELOG.md"><b>Benchmarks</b></a> &nbsp;·&nbsp;
+  <a href="docs/DOCUMENTATION.md#6-python-api"><b>Python</b></a> &nbsp;·&nbsp;
+  <a href="docs/DOCUMENTATION.md#7-cc-api"><b>C/C++</b></a> &nbsp;·&nbsp;
+  <a href="docs/DOCUMENTATION.md#4-sql-guide"><b>SQL Guide</b></a>
 </p>
 
 </div>
 
 ---
 
-SlothDB is an embedded analytical database engine. It runs inside your application — no server, no setup, no external dependencies. Just point SQL at your files:
+## Why SlothDB?
+
+If you've ever reached for DuckDB just to query a local CSV or Parquet file, SlothDB is built for the same job — and it handles a few things DuckDB can't, or can't as quickly:
+
+- **7 file formats built in.** CSV, Parquet, JSON/NDJSON, Avro, Excel (.xlsx), Arrow IPC, SQLite — all in the binary. No extension downloads, no "extension incompatible with this version" errors.
+- **Faster on every benchmark.** On a 1M-row dataset, SlothDB beats DuckDB 1.04× to 6.6× across 15 queries on 5 formats. [See the numbers](#performance--11--66-faster-than-duckdb-every-format-every-query).
+- **One file, no runtime.** 8 MB binary. No Java, no Docker, no daemon, no network listener.
+- **Stable C ABI for extensions.** Extensions built against v0.1 keep working on v2.0. No symbol churn between releases.
 
 ```sql
+-- No CREATE TABLE. No COPY FROM. Just point at the file.
 SELECT department, COUNT(*), AVG(salary)
 FROM 'employees.parquet'
 WHERE hire_year >= 2020
