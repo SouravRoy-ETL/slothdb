@@ -159,10 +159,18 @@ Token Tokenizer::MakeToken(TokenType type, const std::string &value) {
     return Token(type, value, line_, column_);
 }
 
+// An identifier "continue" byte: ASCII alnum / underscore, OR any high-bit byte
+// (>= 0x80). Accepting high-bit bytes lets UTF-8 characters (Chinese, Japanese,
+// Korean, etc.) appear in unquoted identifiers, so `SELECT 区域 FROM sales` works.
+static inline bool IsIdentContinue(char c) {
+    auto u = static_cast<unsigned char>(c);
+    return std::isalnum(u) || u == '_' || u >= 0x80;
+}
+
 Token Tokenizer::ReadIdentifierOrKeyword() {
     uint32_t start_col = column_;
     size_t start = pos_;
-    while (!IsAtEnd() && (std::isalnum(Peek()) || Peek() == '_')) {
+    while (!IsAtEnd() && IsIdentContinue(Peek())) {
         Advance();
     }
     std::string word = sql_.substr(start, pos_ - start);
@@ -240,8 +248,11 @@ std::vector<Token> Tokenizer::Tokenize() {
 
         char c = Peek();
 
-        // Identifiers and keywords.
-        if (std::isalpha(c) || c == '_') {
+        // Identifiers and keywords. High-bit bytes (>= 0x80) start a UTF-8
+        // multi-byte sequence — treat them as identifier starts so Chinese /
+        // Japanese / Korean column names work unquoted.
+        auto uc = static_cast<unsigned char>(c);
+        if (std::isalpha(uc) || c == '_' || uc >= 0x80) {
             tokens.push_back(ReadIdentifierOrKeyword());
             continue;
         }
