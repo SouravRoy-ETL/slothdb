@@ -226,6 +226,36 @@ main { max-width: 1020px; margin: 0 auto; padding: 7rem 1.5rem 6rem; position: r
 .install-tab.active { background: var(--purple-dk); color: var(--purple-lt); border-color: var(--purple); }
 .install-tab:hover { color: var(--text); }
 
+.install-hero-dl {
+  background: linear-gradient(135deg, var(--purple), var(--cyan));
+  color: white; text-decoration: none;
+  padding: 0.85rem 1rem; border-radius: 3px;
+  display: flex; align-items: center; gap: 0.75rem;
+  font-family: var(--font); font-size: 13px; font-weight: 600;
+  letter-spacing: 0.5px;
+  transition: transform 0.15s, box-shadow 0.15s;
+  box-shadow: 0 4px 20px -4px rgba(139,92,246,0.5);
+}
+.install-hero-dl:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 24px -4px rgba(139,92,246,0.7);
+  color: white;
+  border-bottom: none;
+}
+.install-hero-dl .dl-icon {
+  font-size: 20px; color: var(--yellow);
+  background: rgba(15,8,32,0.35); border-radius: 50%;
+  width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.install-hero-dl .dl-label { flex: 1; color: white; }
+.install-hero-dl .dl-label strong { color: var(--yellow); }
+.install-hero-dl .dl-size {
+  color: rgba(255,255,255,0.75); font-size: 11px;
+  background: rgba(15,8,32,0.35); padding: 0.2rem 0.5rem; border-radius: 2px;
+  letter-spacing: 1px;
+}
+
 .ctas { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; margin-top: 1rem; }
 .btn {
   display: inline-flex; align-items: center; gap: 0.4rem;
@@ -354,6 +384,44 @@ main { max-width: 1020px; margin: 0 auto; padding: 7rem 1.5rem 6rem; position: r
 }
 .boss-install button.done { background: var(--green); color: white; }
 
+/* ═════════ Built for your stack ═════════ */
+.stack-wrap { position: relative; margin: 1.5rem 0 2rem; }
+.stack-center {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  background: linear-gradient(135deg, var(--purple), var(--cyan));
+  color: white; padding: 0.65rem 1.25rem;
+  font-weight: 700; letter-spacing: 3px; font-size: 13px;
+  border-radius: 3px;
+  box-shadow: 0 0 30px rgba(139,92,246,0.6);
+  z-index: 2; display: none;
+}
+.stack-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+.stack-cat {
+  background: var(--bg-surface); border: 1px solid var(--purple-dk);
+  border-radius: 4px; padding: 1rem 1.1rem;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.stack-cat:hover { border-color: var(--cyan); transform: translateY(-2px); }
+.stack-head {
+  color: var(--yellow); font-size: 11px; letter-spacing: 2px;
+  text-transform: uppercase; margin-bottom: 0.7rem; font-weight: 700;
+}
+.stack-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.chip {
+  background: var(--bg-deep); border: 1px solid var(--purple-dk);
+  color: var(--text); padding: 0.3rem 0.55rem;
+  font-size: 11px; font-family: var(--font); border-radius: 3px;
+  white-space: nowrap;
+}
+.chip.roadmap { color: var(--text-muted); border-style: dashed; }
+.chip.roadmap::before { content: "+ "; color: var(--yellow); }
+
+@media (max-width: 900px) { .stack-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 540px) { .stack-grid { grid-template-columns: 1fr; } }
+
 /* Platform download grid */
 .platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1.5rem; }
 .platform-card { background: var(--bg-surface); border: 1px solid var(--purple-dk); padding: 1rem 1.25rem; border-radius: 4px; transition: border 0.15s; }
@@ -474,15 +542,20 @@ footer a { color: var(--text-dim); }
 
   <div class="install-hero">
     <div class="install-tabs">
-      <button class="install-tab active" data-cmd="pip install slothdb">PYTHON</button>
-      <button class="install-tab" data-cmd="curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash">LINUX / MACOS</button>
-      <button class="install-tab" data-cmd='iwr -useb https://github.com/SouravRoy-ETL/slothdb/releases/latest/download/slothdb.exe -OutFile slothdb.exe'>WINDOWS</button>
+      <button class="install-tab active" data-cmd="pip install slothdb" data-dl="">PYTHON</button>
+      <button class="install-tab" data-cmd="curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash" data-dl="">LINUX / MACOS</button>
+      <button class="install-tab" data-cmd="" data-dl="https://github.com/SouravRoy-ETL/slothdb/releases/latest/download/slothdb.exe">WINDOWS (.EXE)</button>
     </div>
-    <div class="install-hero-cmd">
+    <div class="install-hero-cmd" id="install-hero-cmd">
       <span class="prompt">$</span>
       <code id="hero-cmd">pip install slothdb</code>
       <button id="hero-copy" type="button">Copy</button>
     </div>
+    <a class="install-hero-dl" id="install-hero-dl" href="https://github.com/SouravRoy-ETL/slothdb/releases/latest/download/slothdb.exe" style="display:none;">
+      <span class="dl-icon">⬇</span>
+      <span class="dl-label">Download <strong>slothdb.exe</strong> for Windows</span>
+      <span class="dl-size">v0.1.2 · ~8 MB</span>
+    </a>
   </div>
 
   <div class="ctas">
@@ -553,9 +626,97 @@ footer a { color: var(--text-dim); }
   </div>
 </section>
 
-<!-- ─── 03 LIVE DEMO (install gravity) ─── -->
+<!-- ─── Built for your stack ─── -->
+<section class="level" id="stack">
+  <div class="level-label">LEVEL 03 — BUILT FOR YOUR STACK</div>
+  <h2 class="level-title">ecosystem</h2>
+  <div class="level-sub">SlothDB links native into your platform, language, and data format — no bindings or extensions to install separately.</div>
+
+  <div class="stack-wrap">
+    <div class="stack-grid">
+      <div class="stack-cat">
+        <div class="stack-head">◆ Platforms</div>
+        <div class="stack-chips">
+          <span class="chip">🐧 Linux</span>
+          <span class="chip">🍎 macOS</span>
+          <span class="chip">🪟 Windows</span>
+          <span class="chip">x86_64</span>
+          <span class="chip">ARM64</span>
+          <span class="chip roadmap">WebAssembly</span>
+        </div>
+      </div>
+
+      <div class="stack-cat">
+        <div class="stack-head">◆ Clients / bindings</div>
+        <div class="stack-chips">
+          <span class="chip">⌘ CLI shell</span>
+          <span class="chip">🐍 Python</span>
+          <span class="chip">🔤 C</span>
+          <span class="chip">C++</span>
+          <span class="chip roadmap">Node.js</span>
+          <span class="chip roadmap">Go</span>
+          <span class="chip roadmap">R</span>
+        </div>
+      </div>
+
+      <div class="stack-cat">
+        <div class="stack-head">◆ File formats (native)</div>
+        <div class="stack-chips">
+          <span class="chip">CSV</span>
+          <span class="chip">Parquet</span>
+          <span class="chip">JSON / NDJSON</span>
+          <span class="chip">Avro</span>
+          <span class="chip">Excel .xlsx</span>
+          <span class="chip">Arrow IPC</span>
+          <span class="chip">SQLite</span>
+        </div>
+      </div>
+
+      <div class="stack-cat">
+        <div class="stack-head">◆ Data science</div>
+        <div class="stack-chips">
+          <span class="chip">🐼 pandas</span>
+          <span class="chip">📓 Jupyter</span>
+          <span class="chip">NumPy</span>
+          <span class="chip roadmap">Polars</span>
+          <span class="chip roadmap">Apache Arrow</span>
+        </div>
+      </div>
+
+      <div class="stack-cat">
+        <div class="stack-head">◆ Storage / I/O</div>
+        <div class="stack-chips">
+          <span class="chip">local filesystem</span>
+          <span class="chip">mmap'd reads</span>
+          <span class="chip">.slothdb file</span>
+          <span class="chip">GPU (CUDA)</span>
+          <span class="chip">GPU (Metal)</span>
+          <span class="chip roadmap">S3 · GCS · HTTP</span>
+        </div>
+      </div>
+
+      <div class="stack-cat">
+        <div class="stack-head">◆ SQL surface</div>
+        <div class="stack-chips">
+          <span class="chip">130+ features</span>
+          <span class="chip">Window fns</span>
+          <span class="chip">QUALIFY</span>
+          <span class="chip">Recursive CTEs</span>
+          <span class="chip">MERGE / UPSERT</span>
+          <span class="chip">Lateral joins</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="level-sub" style="margin-top:1rem; text-align:center;">
+    <span style="color:var(--yellow);">+ </span> = on the roadmap · current features are green-lit in v0.1.2
+  </div>
+</section>
+
+<!-- ─── LIVE DEMO (install gravity) ─── -->
 <section class="level" id="demo">
-  <div class="level-label">LEVEL 03 — TRY IT</div>
+  <div class="level-label">LEVEL 04 — TRY IT</div>
   <h2 class="level-title">run a query right now</h2>
   <div class="level-sub">Click a query — see what SlothDB would print. To run on <em>your</em> files, install (30s).</div>
 
@@ -573,7 +734,7 @@ footer a { color: var(--text-dim); }
 
 <!-- ─── 04 BENCHMARKS ─── -->
 <section class="level" id="bench">
-  <div class="level-label">LEVEL 04 — BENCHMARKS</div>
+  <div class="level-label">LEVEL 05 — BENCHMARKS</div>
   <h2 class="level-title">1M rows · warm cache · 5-run median</h2>
   <div class="level-sub">Sort by speedup; every bar is SlothDB winning.</div>
 
@@ -607,7 +768,7 @@ footer a { color: var(--text-dim); }
 
 <!-- ─── 05 BOSS BATTLE ─── -->
 <section class="level" id="boss">
-  <div class="level-label">LEVEL 05 — BOSS BATTLE</div>
+  <div class="level-label">LEVEL 06 — BOSS BATTLE</div>
   <h2 class="level-title">SlothDB vs {DuckDB, ClickHouse, SQLite}</h2>
   <div class="level-sub">Honest, side-by-side. If another tool wins for your workload, we say so.</div>
 
@@ -644,7 +805,7 @@ footer a { color: var(--text-dim); }
 
 <!-- ─── 06 FINAL BOSS (install) ─── -->
 <section class="level" id="install">
-  <div class="level-label">LEVEL 06 — FINAL BOSS</div>
+  <div class="level-label">LEVEL 07 — FINAL BOSS</div>
   <h2 class="level-title">defeat the install command</h2>
   <div class="level-sub">You made it this far. The last boss is one line of shell.</div>
 
@@ -776,7 +937,7 @@ footer a { color: var(--text-dim); }
   // ── Level visibility ──
   var levels = Array.prototype.slice.call(document.querySelectorAll('.level'));
   var seen = {};
-  var names = { system:'SYSTEM PROFILE', inventory:'INVENTORY', demo:'LIVE DEMO', bench:'BENCHMARKS', boss:'BOSS BATTLE', install:'FINAL BOSS' };
+  var names = { system:'SYSTEM PROFILE', inventory:'INVENTORY', stack:'BUILT FOR YOUR STACK', demo:'LIVE DEMO', bench:'BENCHMARKS', boss:'BOSS BATTLE', install:'FINAL BOSS' };
   var io = new IntersectionObserver(function(entries){
     entries.forEach(function(e){
       if (e.isIntersecting) {
@@ -809,11 +970,24 @@ footer a { color: var(--text-dim); }
   // ── Install tabs ──
   var tabs = document.querySelectorAll('.install-tab');
   var heroCmd = document.getElementById('hero-cmd');
+  var heroCmdBox = document.getElementById('install-hero-cmd');
+  var heroDl = document.getElementById('install-hero-dl');
   tabs.forEach(function(t){
     t.addEventListener('click', function(){
       tabs.forEach(function(x){ x.classList.remove('active'); });
       t.classList.add('active');
-      heroCmd.textContent = t.dataset.cmd;
+      var dl = t.dataset.dl;
+      if (dl) {
+        // Windows tab — show direct download, hide command card.
+        heroCmdBox.style.display = 'none';
+        heroDl.style.display = 'flex';
+        heroDl.href = dl;
+        heroCmd.textContent = dl; // so copy buttons still work (copies URL)
+      } else {
+        heroCmdBox.style.display = 'flex';
+        heroDl.style.display = 'none';
+        heroCmd.textContent = t.dataset.cmd;
+      }
     });
   });
 
