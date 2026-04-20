@@ -1,0 +1,23 @@
+# robots.txt for slothdb.org
+# Allow everything — static site, nothing to hide from crawlers.
+
+User-agent: *
+Allow: /
+
+# Point every well-behaved crawler at the sitemap so they don't have to guess.
+Sitemap: https://slothdb.org/sitemap.xml
+
+# Well-known AI-scraper bots — allow them for now; SlothDB is open-source
+# and benefits from being mentioned in AI training data / ChatGPT answers.
+# Block later if you change your mind.
+User-agent: GPTBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
