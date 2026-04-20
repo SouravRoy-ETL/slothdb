@@ -39,7 +39,15 @@ body {
   background: var(--bg-deep); color: var(--text);
   font-family: var(--font); font-size: 14px; line-height: 1.65;
   min-height: 100vh; overflow-x: hidden;
+  /* Custom pixel cursor (purple arrow with black border, hot-spot at tip) */
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><path d='M4 2 L4 20 L9 15 L12 22 L14 21 L11 14 L17 14 Z' fill='%238B5CF6' stroke='%230F0820' stroke-width='1.5' stroke-linejoin='round'/></svg>") 4 2, auto;
 }
+/* Yellow cursor when hovering any clickable element */
+a, button, [role="button"], .install-tab, .demo-query, .platform-card, .inv-cell, .stack-cat, .feature, label, select, .chip {
+  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><path d='M4 2 L4 20 L9 15 L12 22 L14 21 L11 14 L17 14 Z' fill='%23FDB515' stroke='%230F0820' stroke-width='1.5' stroke-linejoin='round'/></svg>") 4 2, pointer;
+}
+/* I-beam for text inputs if we ever add them */
+input, textarea { cursor: text; }
 body::before, body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; }
 body::before {
   background:
@@ -461,6 +469,36 @@ main { max-width: 1020px; margin: 0 auto; padding: 7rem 1.5rem 6rem; position: r
 .toast.show { transform: translateX(0); }
 .toast .plus { color: var(--yellow); font-weight: 700; margin-right: 0.5rem; }
 
+/* Easter-egg toast — Ctrl+U / F12 / right-click */
+.sloth-toast {
+  position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%) translateY(130%);
+  background: linear-gradient(135deg, var(--orange), var(--yellow));
+  color: var(--bg-deep); padding: 0.9rem 1.4rem;
+  border: 2px solid var(--yellow); border-radius: 4px;
+  font-size: 12px; letter-spacing: 1px; text-transform: uppercase; font-weight: 700;
+  transition: transform 0.45s cubic-bezier(0.25,1,0.5,1);
+  z-index: 900;
+  box-shadow: 0 0 40px rgba(253,181,21,0.55);
+  max-width: calc(100vw - 2rem);
+  text-align: center;
+  text-decoration: none;
+}
+.sloth-toast.show { transform: translateX(-50%) translateY(0); }
+.sloth-toast .face {
+  font-size: 22px; vertical-align: middle; margin-right: 0.5rem;
+  animation: sloth-bounce 0.55s ease-in-out infinite alternate; display: inline-block;
+}
+.sloth-toast .caught-key {
+  color: var(--purple-dk); background: rgba(15,8,32,0.15); padding: 0.18rem 0.5rem;
+  border-radius: 2px; margin: 0 0.35rem; font-family: var(--font);
+}
+.sloth-toast .go-hint {
+  display: block; font-size: 10px; margin-top: 0.4rem;
+  color: rgba(15,8,32,0.8); font-weight: 500; letter-spacing: 2px;
+}
+.sloth-toast .go-hint strong { color: var(--bg-deep); }
+@keyframes sloth-bounce { from { transform: translateY(0); } to { transform: translateY(-4px); } }
+
 /* Footer */
 footer {
   margin-top: 4rem; padding: 2rem 1rem; border-top: 1px solid var(--purple-dk);
@@ -868,6 +906,12 @@ footer a { color: var(--text-dim); }
 <!-- ═════════ Toast ═════════ -->
 <div class="toast" id="toast"><span class="plus">+10</span><span id="toast-msg">SECTION</span></div>
 
+<!-- ═════════ Easter-egg toast: caught trying to view source ═════════ -->
+<a class="sloth-toast" id="sloth-toast" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">
+  <span class="face">🦥</span><span id="sloth-caught">caught you</span>
+  <span class="go-hint">SOURCE IS MIT · <strong>github.com/SouravRoy-ETL/slothdb</strong> · click to open</span>
+</a>
+
 <footer>
   <div>SLOTHDB v0.1.2 · MIT · <a href="https://github.com/SouravRoy-ETL/slothdb">github</a> · © SOURAV ROY</div>
   <div style="margin-top:0.5rem;color:var(--text-muted);">HONEST NUMBERS · HONEST CAVEATS</div>
@@ -1097,6 +1141,39 @@ footer a { color: var(--text-dim); }
 
   // If the URL has a hash (direct deep-link), skip the gate.
   if (location.hash) start();
+
+  // ── Easter egg: Ctrl+U / F12 / Right-click / Ctrl+Shift+I ──
+  // Cannot genuinely block source viewing (browser ships the source to
+  // every visitor). We just intercept the common shortcuts, show a
+  // friendly toast pointing at the open-source repo. Users can still
+  // hit "view-source:" in the URL bar if they really want — which is
+  // correct behavior, since the whole project is MIT-licensed.
+  var slothToast = document.getElementById('sloth-toast');
+  var slothCaught = document.getElementById('sloth-caught');
+  var slothTimer;
+  function slothSpot(caughtLabel) {
+    if (!slothToast) return;
+    slothCaught.innerHTML = 'caught you hitting <span class="caught-key">' + caughtLabel + '</span>';
+    slothToast.classList.add('show');
+    clearTimeout(slothTimer);
+    slothTimer = setTimeout(function(){ slothToast.classList.remove('show'); }, 4500);
+  }
+  document.addEventListener('contextmenu', function(e){
+    e.preventDefault();
+    slothSpot('right-click');
+  });
+  window.addEventListener('keydown', function(e){
+    var k = e.key;
+    var ctrl = e.ctrlKey || e.metaKey;
+    if (k === 'F12') { e.preventDefault(); slothSpot('F12'); return; }
+    if (ctrl && !e.shiftKey && (k === 'u' || k === 'U')) { e.preventDefault(); slothSpot('Ctrl+U'); return; }
+    if (ctrl && !e.shiftKey && (k === 's' || k === 'S') && !e.target.closest('input, textarea')) {
+      e.preventDefault(); slothSpot('Ctrl+S'); return;
+    }
+    if (ctrl && e.shiftKey && (k === 'I' || k === 'i')) { e.preventDefault(); slothSpot('Ctrl+Shift+I'); return; }
+    if (ctrl && e.shiftKey && (k === 'J' || k === 'j')) { e.preventDefault(); slothSpot('Ctrl+Shift+J'); return; }
+    if (ctrl && e.shiftKey && (k === 'C' || k === 'c')) { e.preventDefault(); slothSpot('Ctrl+Shift+C'); return; }
+  });
 
   // ── Live GitHub star count ──
   (function fetchStars() {
