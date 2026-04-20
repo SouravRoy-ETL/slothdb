@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.svg" width="220" alt="SlothDB Logo">
-
-<h1>SlothDB</h1>
+<img src="assets/hero.svg" alt="SlothDB" width="100%">
 
 <h3>The embedded analytical database that queries your files directly with SQL</h3>
 
@@ -52,13 +50,13 @@ ORDER BY AVG(salary) DESC;
 > 1 M-row dataset · warm cache · 5-run median · same machine · same queries.
 
 <p align="center">
-  <img src="https://quickchart.io/chart?w=820&h=480&bkg=white&c={type:'bar',data:{labels:['Avro%20SUM','CSV%20COUNT(*)','Avro%20GROUP%20BY','Parquet%20COUNT(*)','CSV%20GROUP%20BY','CSV%20WHERE%2BGBY','CSV%20GBY%20(2-col)','CSV%20SUM','Excel%20GROUP%20BY','JSON%20SUM','Parquet%20WHERE%2BGBY','Parquet%20GBY%20(2-col)','Parquet%20GROUP%20BY','JSON%20GROUP%20BY','Parquet%20SUM'],datasets:[{label:'SlothDB%20speedup',data:[5.43,5.08,4.71,2.83,1.91,1.81,1.70,1.67,1.41,1.30,1.26,1.18,1.16,1.14,1.04],backgroundColor:'%236366F1'}]},options:{title:{display:true,text:'SlothDB%20speedup%20vs%20DuckDB%20—%201M%20rows,%205-run%20median'},legend:{display:false},scales:{yAxes:[{ticks:{beginAtZero:true},scaleLabel:{display:true,labelString:'Times%20faster%20than%20DuckDB'}}]}}}" alt="SlothDB speedup vs DuckDB bar chart">
+  <img src="assets/benchmarks/speedup.png" alt="SlothDB speedup vs DuckDB bar chart" width="100%">
 </p>
 
 ### Head-to-head (query time, lower is better)
 
 <p align="center">
-  <img src="https://quickchart.io/chart?w=900&h=420&bkg=white&c={type:'bar',data:{labels:['CSV%20COUNT','CSV%20SUM','CSV%20GBY','Parquet%20COUNT','Parquet%20SUM','Parquet%20GBY','JSON%20SUM','Avro%20SUM','Avro%20GBY'],datasets:[{label:'SlothDB%20(ms)',data:[33,106,100,12,46,76,242,140,170],backgroundColor:'%236366F1'},{label:'DuckDB%20(ms)',data:[170,177,191,34,48,88,314,760,800],backgroundColor:'%23F97316'}]},options:{title:{display:true,text:'Query%20time%20(ms)%20—%20lower%20is%20better'}}}" alt="SlothDB vs DuckDB side-by-side ms comparison">
+  <img src="assets/benchmarks/head-to-head.png" alt="SlothDB vs DuckDB side-by-side ms comparison" width="100%">
 </p>
 
 ### Full numbers
