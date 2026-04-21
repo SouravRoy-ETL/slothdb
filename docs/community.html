@@ -10,6 +10,12 @@
 <link rel="canonical" href="https://slothdb.org/community.html">
 <link rel="icon" type="image/svg+xml" href="assets/icon.svg">
 <link rel="stylesheet" href="style.css">
+<script>
+  (function(){
+    var t = localStorage.getItem('slothdb-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
 </head>
 <body>
 
@@ -28,6 +34,12 @@
     </li>
     <li>
       <a class="support-btn" href="community.html">Support</a>
+    </li>
+    <li>
+      <button class="theme-toggle" aria-label="Toggle theme" onclick="toggleTheme()">
+        <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        <svg class="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
     </li>
   </ul>
 </nav>
@@ -51,13 +63,13 @@
       <a class="card-link" href="https://github.com/SouravRoy-ETL/slothdb/discussions">Browse discussions →</a>
     </div>
     <div class="card">
-      <h3>Email the author</h3>
-      <p>For private reports (security, licensing, commercial use), reach the author directly. For anything else, please use issues so others benefit.</p>
-      <a class="card-link" href="mailto:souravroy7864@gmail.com">souravroy7864@gmail.com</a>
+      <h3>Contact the author</h3>
+      <p>For anything that does not fit in a public issue (licensing, commercial use, partnership), reach out on GitHub. Open a direct thread via the profile, or start a private discussion.</p>
+      <a class="card-link" href="https://github.com/SouravRoy-ETL">github.com/SouravRoy-ETL</a>
     </div>
     <div class="card">
       <h3>Security</h3>
-      <p>Please disclose security issues privately first. Bounds-checked parsing and DoS limits are in place, but the project is young. Report by email above and we'll work out a fix before public disclosure.</p>
+      <p>Please disclose security issues privately first. Bounds-checked parsing and DoS limits are in place, but the project is young. Report via <a href="https://github.com/SouravRoy-ETL/slothdb/security/advisories/new">a private GitHub security advisory</a> and we will coordinate a fix before public disclosure.</p>
     </div>
   </div>
 </section>
@@ -157,6 +169,12 @@ ctest --test-dir build -C Release</pre>
 </footer>
 
 <script>
+function toggleTheme() {
+  var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+  var next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('slothdb-theme', next);
+}
 fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
   .then(r => r.json())
   .then(d => {

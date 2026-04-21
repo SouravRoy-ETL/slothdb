@@ -1,4 +1,4 @@
-:root {
+:root, [data-theme="dark"] {
   --bg: #000000;
   --bg-elev: #0E0E10;
   --bg-card: #111114;
@@ -21,6 +21,31 @@
   --font: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
+
+[data-theme="light"] {
+  --bg: #FFFFFF;
+  --bg-elev: #F7F7F9;
+  --bg-card: #FFFFFF;
+  --bg-code: #F4F4F6;
+  --bg-icon: #F0F0F3;
+  --bg-nav: rgba(255, 255, 255, 0.92);
+  --border: #E4E4E8;
+  --border-soft: #EEEEF1;
+  --border-card: #DCDCE2;
+  --text: #0A0A0B;
+  --text-dim: #4A4A55;
+  --text-muted: #7B7B85;
+  --accent: #7C3AED;
+  --accent-bright: #6D28D9;
+  --accent-dim: #5B21B6;
+  --accent-soft: rgba(124, 58, 237, 0.10);
+  --win: #059669;
+  --warn: #D97706;
+  --danger: #DC2626;
+}
+
+html { transition: background-color 0.2s ease; }
+body, nav.top, .card, .eco-box, .btn { transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 body {
@@ -76,20 +101,34 @@ nav.top .support-btn {
   font-weight: 600; font-size: 14px;
 }
 nav.top .support-btn:hover { background: var(--accent-bright); text-decoration: none; }
+[data-theme="light"] nav.top .support-btn { color: #FFFFFF !important; }
+[data-theme="light"] nav.top .support-btn:hover { color: #FFFFFF !important; }
+
+nav.top .theme-toggle {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: transparent; border: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-dim); cursor: pointer;
+}
+nav.top .theme-toggle:hover { color: var(--text); background: var(--bg-elev); }
+nav.top .theme-toggle .sun-icon { display: none; }
+nav.top .theme-toggle .moon-icon { display: block; }
+[data-theme="light"] nav.top .theme-toggle .sun-icon { display: block; }
+[data-theme="light"] nav.top .theme-toggle .moon-icon { display: none; }
 
 /* Shared containers */
-section.page { max-width: 1280px; margin: 0 auto; padding: 100px 40px; text-align: center; }
+section.page { max-width: 1280px; margin: 0 auto; padding: 80px 40px; text-align: center; }
 section.page.narrow { max-width: 880px; text-align: left; }
 section.page.left { text-align: left; max-width: 1120px; }
 section.page h2 {
-  font-size: clamp(32px, 4.5vw, 56px); font-weight: 800; margin-bottom: 18px;
-  letter-spacing: -0.025em; line-height: 1.1;
+  font-size: clamp(26px, 3.2vw, 42px); font-weight: 800; margin-bottom: 14px;
+  letter-spacing: -0.02em; line-height: 1.15;
 }
 section.page h2 .accent { color: var(--accent); }
-section.page h3 { font-size: 19px; font-weight: 600; margin: 22px 0 12px; }
+section.page h3 { font-size: 18px; font-weight: 600; margin: 22px 0 12px; }
 section.page p.section-lede {
-  color: var(--text-dim); font-size: clamp(16px, 1.3vw, 19px);
-  margin: 0 auto 50px; max-width: 720px;
+  color: var(--text-dim); font-size: clamp(15px, 1.1vw, 17px);
+  margin: 0 auto 40px; max-width: 680px;
 }
 section.page.narrow p.section-lede, section.page.left p.section-lede { margin-left: 0; margin-right: 0; }
 section.page p { margin-bottom: 14px; color: var(--text); }
@@ -129,11 +168,11 @@ pre.code .fn { color: #60A5FA; }
 }
 .card .icon-box svg { width: 28px; height: 28px; }
 .card h3 {
-  font-size: 22px; font-weight: 700; margin: 0 0 12px;
+  font-size: 19px; font-weight: 700; margin: 0 0 10px;
   letter-spacing: -0.01em; color: var(--text);
   display: block;
 }
-.card p { color: var(--text-dim); font-size: 15px; line-height: 1.65; margin: 0 0 14px; }
+.card p { color: var(--text-dim); font-size: 14px; line-height: 1.65; margin: 0 0 12px; }
 .card code { font-size: 13px; }
 .card a.card-link {
   display: inline-flex; align-items: center; gap: 6px;

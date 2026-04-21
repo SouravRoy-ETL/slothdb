@@ -1,34 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="crispEdges">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#6366F1"/>
-      <stop offset="100%" stop-color="#8B5CF6"/>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#C4A8F7"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
     </linearGradient>
   </defs>
-
-  <!-- Rounded-square background in the SlothDB purple gradient -->
-  <rect width="32" height="32" rx="6" fill="url(#bg)"/>
-
-  <!-- Drop-shadow layer offset +1,+1 in deep purple, gives depth at 32+ px -->
-  <g fill="#4C1D95" opacity="0.55">
-    <rect x="11" y="3"  width="16" height="4"/>
-    <rect x="7"  y="7"  width="4"  height="4"/>
-    <rect x="7"  y="11" width="4"  height="4"/>
-    <rect x="11" y="15" width="12" height="4"/>
-    <rect x="23" y="19" width="4"  height="4"/>
-    <rect x="23" y="23" width="4"  height="4"/>
-    <rect x="7"  y="27" width="16" height="4"/>
-  </g>
-
-  <!-- Pixel "S" in site-yellow #FDB515, same 5x7 pixel font as the hero wordmark
-       Each source pixel = 4×4 canvas units, letter occupies x=6..26, y=2..30 -->
-  <g fill="#FDB515">
-    <rect x="10" y="2"  width="16" height="4"/>  <!-- row 0: .XXXX. -->
-    <rect x="6"  y="6"  width="4"  height="4"/>  <!-- row 1: X.... -->
-    <rect x="6"  y="10" width="4"  height="4"/>  <!-- row 2: X.... -->
-    <rect x="10" y="14" width="12" height="4"/>  <!-- row 3: .XXX. -->
-    <rect x="22" y="18" width="4"  height="4"/>  <!-- row 4: ....X -->
-    <rect x="22" y="22" width="4"  height="4"/>  <!-- row 5: ....X -->
-    <rect x="6"  y="26" width="16" height="4"/>  <!-- row 6: XXXX. -->
-  </g>
+  <rect x="0" y="0" width="64" height="64" rx="14" fill="url(#g)"/>
+  <path d="M 42 22
+           C 42 17, 37 14, 32 14
+           C 26 14, 22 17, 22 22
+           C 22 26, 25 28, 32 29
+           C 39 30, 42 32, 42 36
+           C 42 41, 38 44, 32 44
+           C 26 44, 22 41, 22 36"
+        stroke="#0B0420" stroke-width="5.5" stroke-linecap="round" fill="none"/>
 </svg>
