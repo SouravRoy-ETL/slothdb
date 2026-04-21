@@ -33,7 +33,7 @@
     </g>
 
     <g class="line">
-      <text class="muted" x="0" y="26">Successfully installed slothdb-0.1.4</text>
+      <text class="muted" x="0" y="26">Successfully installed slothdb-0.1.5</text>
       <animate attributeName="opacity" from="0" to="1" begin="0.9s" dur="0.2s" fill="freeze"/>
     </g>
 
