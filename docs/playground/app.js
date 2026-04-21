@@ -1,11 +1,15 @@
 // SlothDB playground — VS Code-style IDE for SQL against local files.
 // Boots slothdb.wasm, fetches demo CSV/Parquet, wires activity bar / editor / panel / status bar.
+//
+// BUILD_VERSION — bump on every rebuild/push so browsers refetch the
+// wasm / js / css / cm bundle instead of serving the cached prior version.
+const BUILD_VERSION = '20260421-2';
 
-import createSlothDB from './slothdb.js';
+import createSlothDB from './slothdb.js?v=20260421-2';
 import {
     EditorView, basicSetup, keymap, EditorState,
     indentWithTab, sql, oneDark,
-} from './vendor/cm.js';
+} from './vendor/cm.js?v=20260421-2';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
@@ -481,7 +485,11 @@ async function boot() {
     setStatus('booting wasm…', 'boot');
     log('Booting SlothDB…');
 
-    mod = await createSlothDB();
+    // Cache-bust slothdb.wasm via locateFile — without this the JS gets
+    // the new hash via `?v=` but the wasm stays stuck on the old copy.
+    mod = await createSlothDB({
+        locateFile: (path) => path + '?v=' + BUILD_VERSION,
+    });
     mod.openDatabase();
 
     await loadDemoData();
