@@ -6,7 +6,7 @@
 
 <p>A drop-in alternative to DuckDB with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite — <b>1.1×–8.6× faster</b> on every benchmark query.</p>
 
-[![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white)](https://pypi.org/project/slothdb/)
+[![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
 [![Downloads](https://static.pepy.tech/badge/slothdb)](https://pepy.tech/project/slothdb)
 [![Downloads/month](https://static.pepy.tech/badge/slothdb/month)](https://pepy.tech/project/slothdb)
 [![CI](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg)](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml)
