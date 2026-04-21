@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SlothDB — a fast in-process SQL database for local data files</title>
+<title>SlothDB — run SQL queries where your files live</title>
 <meta name="description" content="SlothDB is a fast in-process SQL database for your local data files. A drop-in DuckDB alternative with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite — 1.1×–8.6× faster on every benchmark. MIT licensed.">
 <meta name="keywords" content="DuckDB alternative, in-process SQL database, embedded analytical database, Parquet query, CSV SQL, DuckDB replacement, SQLite OLAP, analytical database C++, fast Parquet reader, query Parquet with SQL">
 <meta name="author" content="Sourav Roy">
 <meta name="robots" content="index, follow">
-<meta name="theme-color" content="#0D1117">
+<meta name="theme-color" content="#000000">
 
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://slothdb.org/">
@@ -58,238 +58,302 @@
 <nav class="top">
   <a class="brand" href="/">
     <img src="assets/icon.svg" alt="SlothDB logo">
-    SlothDB <span class="ver">v0.1.3</span>
+    SlothDB
   </a>
   <ul>
-    <li class="hide-sm"><a href="docs.html">Docs</a></li>
-    <li class="hide-sm"><a href="#install">Install</a></li>
-    <li class="hide-sm"><a href="#benchmarks">Benchmarks</a></li>
-    <li class="hide-sm"><a href="community.html">Community</a></li>
     <li>
+      <button class="search-btn" aria-label="Search docs" onclick="window.location='docs.html'">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      </button>
+    </li>
+    <li class="hide-sm"><a href="docs.html">Documentation</a></li>
+    <li class="hide-sm"><a href="community.html">Community</a></li>
+    <li class="hide-sm">
       <a class="gh-btn" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
-        <span>GitHub</span>
-        <span class="star-count" id="gh-stars">★ …</span>
+        GitHub <span class="star-count" id="gh-stars">★ …</span>
       </a>
+    </li>
+    <li>
+      <a class="support-btn" href="community.html">Support</a>
     </li>
   </ul>
 </nav>
 
 <section class="hero">
-  <img class="banner" src="assets/hero.svg" alt="SlothDB beats DuckDB">
-  <h1>A fast in-process SQL database<br>for your <span class="accent">local data files</span>.</h1>
-  <p class="lede">SlothDB is a drop-in DuckDB alternative. Point SQL at Parquet, CSV, JSON, Avro, Arrow or SQLite — no server, no import step, no extensions. 1.1×–8.6× faster than DuckDB on every query in the benchmark suite.</p>
-  <div class="install-line">
-    <span class="prompt">$</span>
-    <span id="install-cmd">pip install slothdb</span>
-    <button onclick="copyInstall()">Copy</button>
+  <div class="sql-bg" aria-hidden="true">
+    <span class="sql-1">SELECT region, SUM(revenue)</span>
+    <span class="sql-2">FROM 'sales.parquet'</span>
+    <span class="sql-3">GROUP BY region</span>
+    <span class="sql-4">read_parquet('*.pq')</span>
+    <span class="sql-5">QUALIFY ROW_NUMBER()</span>
+    <span class="sql-6">COPY TO 'out.parquet'</span>
   </div>
-  <div class="ctas">
-    <a class="btn primary" href="#quickstart">Get started</a>
-    <a class="btn ghost" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">View on GitHub</a>
-    <a class="btn ghost" href="docs.html">Read the docs</a>
+  <div class="inner">
+    <img class="banner" src="assets/hero.svg" alt="SlothDB beats DuckDB">
+    <h1>Run SQL queries<br>where your <span class="accent">files live</span></h1>
+    <p class="lede">SlothDB is a fast in-process SQL database for your local data files. A drop-in DuckDB alternative — point SQL at Parquet, CSV, JSON, Avro, Arrow or SQLite with no server, no import, no extensions.</p>
+    <div class="ctas">
+      <a class="btn primary" href="#install">Get SlothDB →</a>
+      <a class="btn ghost" href="docs.html">Read the docs →</a>
+    </div>
+    <div class="used-by">MIT licensed · 326 tests · 1.1×–8.6× faster than DuckDB on 15 benchmarks</div>
+
+    <div class="hero-chips">
+      <div class="chip-group">
+        <div class="chip-group-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          Friendly SQL
+        </div>
+        <div class="chips">
+          <span class="chip">QUALIFY</span>
+          <span class="chip">MERGE</span>
+          <span class="chip">WINDOW FUNCS</span>
+          <span class="chip">RECURSIVE CTE</span>
+        </div>
+      </div>
+      <div class="chip-group">
+        <div class="chip-group-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>
+          Seven formats
+        </div>
+        <div class="chips">
+          <span class="chip">Parquet</span>
+          <span class="chip">CSV</span>
+          <span class="chip">JSON</span>
+          <span class="chip">Avro</span>
+          <span class="chip">Arrow</span>
+          <span class="chip">SQLite</span>
+        </div>
+      </div>
+      <div class="chip-group">
+        <div class="chip-group-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+          Native clients
+        </div>
+        <div class="chips">
+          <span class="chip">CLI</span>
+          <span class="chip">Python</span>
+          <span class="chip">C</span>
+          <span class="chip">C++</span>
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 
-<section class="page" id="quickstart">
-  <h2>Try it <span class="accent">in 60 seconds</span></h2>
-  <p class="section-lede">No files to find. The demo generates a 100 000-row CSV, runs three queries through SlothDB, and prints a side-by-side timing against DuckDB on your own machine.</p>
+<section class="page">
+  <h2>How we built SlothDB</h2>
+  <p class="section-lede">Same embedded model as DuckDB and SQLite — link it in, point SQL at files on disk. The defaults are different.</p>
+  <div class="grid cols-3">
+
+    <div class="card">
+      <div class="icon-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      </div>
+      <h3>Simple</h3>
+      <p>Install with <code>pip install slothdb</code> and you're running. Point SQL at a file — no <code>CREATE TABLE</code>, no <code>COPY FROM</code>, no extension to load first.</p>
+      <a class="card-link" href="docs.html#first-query">Read more</a>
+    </div>
+
+    <div class="card">
+      <div class="icon-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </div>
+      <h3>Feature-rich</h3>
+      <p>130+ SQL features — joins, CTEs, recursive queries, window functions, QUALIFY, MERGE, aggregates, set operations. Seven file formats built in, no extensions needed.</p>
+      <a class="card-link" href="docs.html#sql">Read more</a>
+    </div>
+
+    <div class="card">
+      <div class="icon-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      </div>
+      <h3>Fast</h3>
+      <p>Vectorized columnar engine, morsel-driven parallelism, typed streaming scans that decode directly into DataChunks. 1.1×–8.6× faster than DuckDB on every query.</p>
+      <a class="card-link" href="#benchmarks">Read more</a>
+    </div>
+
+    <div class="card">
+      <div class="icon-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+      </div>
+      <h3>Free</h3>
+      <p>Released under the MIT license. Use in commercial products, embed in desktop apps, redistribute freely. Source on GitHub, developed in the open.</p>
+      <a class="card-link" href="https://github.com/SouravRoy-ETL/slothdb/blob/main/LICENSE">Read more</a>
+    </div>
+
+    <div class="card">
+      <div class="icon-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      </div>
+      <h3>Portable</h3>
+      <p>A single ~8 MB binary. Runs on Windows, Linux, macOS, across x86_64 and arm64. Links into Python, C, C++. No runtime dependencies, no JVM, no Python required for the CLI.</p>
+      <a class="card-link" href="#install">Read more</a>
+    </div>
+
+    <div class="card">
+      <div class="icon-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+      </div>
+      <h3>Extensible</h3>
+      <p>Stable C ABI for third-party extensions. Numeric error codes that never change. Extensions built for v0.1 keep working on v1.0, v2.0, and beyond — unlike DuckDB's internal C++ API.</p>
+      <a class="card-link" href="docs.html#extensions">Read more</a>
+    </div>
+
+  </div>
+</section>
+
+<section class="page">
+  <h2>Built for your stack</h2>
+  <p class="section-lede">SlothDB ships with native file format readers, native clients, and runs on every major platform.</p>
+
+  <div class="ecosystem">
+
+    <div class="eco-col">
+      <div class="eco-box">
+        <div class="eco-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          Formats
+        </div>
+        <div class="eco-grid">
+          <div class="eco-tile" title="Parquet">PQ</div>
+          <div class="eco-tile" title="CSV">CSV</div>
+          <div class="eco-tile" title="JSON">{ }</div>
+          <div class="eco-tile" title="Avro">AVR</div>
+          <div class="eco-tile" title="Arrow IPC">ARR</div>
+          <div class="eco-tile" title="SQLite">SQL</div>
+          <div class="eco-tile" title="Excel">XLS</div>
+          <div class="eco-tile" title="NDJSON">NDJ</div>
+        </div>
+      </div>
+      <div class="eco-box">
+        <div class="eco-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          Storage
+        </div>
+        <div class="eco-grid narrow">
+          <div class="eco-tile" title="Local filesystem">FS</div>
+          <div class="eco-tile" title=".slothdb persistent format">.DB</div>
+          <div class="eco-tile" title="Glob patterns">*.*</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="eco-col">
+      <div class="eco-box">
+        <div class="eco-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="1"/><line x1="2" y1="20" x2="22" y2="20"/></svg>
+          Platforms
+        </div>
+        <div class="eco-grid narrow">
+          <div class="eco-tile" title="Linux">LNX</div>
+          <div class="eco-tile" title="macOS">OSX</div>
+          <div class="eco-tile" title="Windows">WIN</div>
+        </div>
+      </div>
+      <div class="eco-box">
+        <div class="eco-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          Clients
+        </div>
+        <div class="eco-grid">
+          <div class="eco-tile" title="CLI shell">CLI</div>
+          <div class="eco-tile" title="Python (pip)">PY</div>
+          <div class="eco-tile" title="C API">C</div>
+          <div class="eco-tile" title="C++ (stable ABI)">C++</div>
+        </div>
+      </div>
+      <div class="eco-center-anchor">
+        <img src="assets/icon.svg" alt="">
+        SlothDB
+      </div>
+    </div>
+
+    <div class="eco-col">
+      <div class="eco-box">
+        <div class="eco-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          Data science
+        </div>
+        <div class="eco-grid narrow">
+          <div class="eco-tile" title="pandas">PD</div>
+          <div class="eco-tile" title="Arrow IPC">ARR</div>
+          <div class="eco-tile" title="Jupyter">JPY</div>
+        </div>
+      </div>
+      <div class="eco-box">
+        <div class="eco-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+          Extensions
+        </div>
+        <div class="eco-grid narrow">
+          <div class="eco-tile" title="Stable C ABI">ABI</div>
+          <div class="eco-tile" title="Custom functions">FN</div>
+          <div class="eco-tile" title="Custom scans">SCN</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section class="page left" id="quickstart">
+  <h2>Try it in 60 seconds</h2>
+  <p class="section-lede">No files to find. Demo generates a 100 000-row CSV, runs three queries, prints side-by-side timing against DuckDB on your own machine.</p>
   <div class="demo-wrap">
     <img src="assets/demo.svg" alt="SlothDB demo — side-by-side timing vs DuckDB">
   </div>
 </section>
 
-<section class="page">
-  <h2>Use it from <span class="accent">any language</span></h2>
-  <p class="section-lede">SlothDB links into your process. No server to start, no network. The same binary powers the Python package, the CLI, and C/C++ embedding.</p>
-
-  <div class="tabs" role="tablist">
-    <button class="active" onclick="showTab(event, 'py')">Python</button>
-    <button onclick="showTab(event, 'cli')">CLI</button>
-    <button onclick="showTab(event, 'cpp')">C/C++</button>
-    <button onclick="showTab(event, 'sql')">SQL</button>
-  </div>
-
-  <div id="py" class="tab-panel active">
-<pre class="code"><span class="kw">import</span> slothdb
-
-db = slothdb.<span class="fn">connect</span>()                                  <span class="cm"># in-memory</span>
-db = slothdb.<span class="fn">connect</span>(<span class="str">"analytics.slothdb"</span>)              <span class="cm"># persistent</span>
-
-<span class="cm"># Query files directly — no CREATE TABLE, no COPY FROM</span>
-df = db.<span class="fn">sql</span>(<span class="str">"""
-    SELECT region, SUM(revenue)
-    FROM 'sales.parquet'
-    WHERE year &gt;= 2023
-    GROUP BY region
-"""</span>).<span class="fn">fetchdf</span>()    <span class="cm"># → pandas DataFrame</span></pre>
-  </div>
-
-  <div id="cli" class="tab-panel">
-<pre class="code"><span class="cm"># Interactive shell</span>
-$ slothdb
-<span class="kw">slothdb&gt;</span> <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="str">'data.parquet'</span> <span class="kw">LIMIT</span> 5;
-
-<span class="cm"># Or one-shot from the command line</span>
-$ slothdb -c <span class="str">"SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region;"</span>
-
-<span class="cm"># Persistent database</span>
-$ slothdb analytics.slothdb</pre>
-  </div>
-
-  <div id="cpp" class="tab-panel">
-<pre class="code"><span class="cm">#include &lt;slothdb/api/slothdb.h&gt;</span>
-
-slothdb_database *db;
-slothdb_connection *conn;
-slothdb_result *result;
-
-<span class="fn">slothdb_open</span>(<span class="str">"analytics.slothdb"</span>, &amp;db);
-<span class="fn">slothdb_connect</span>(db, &amp;conn);
-<span class="fn">slothdb_query</span>(conn,
-  <span class="str">"SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region"</span>,
-  &amp;result);
-
-<span class="kw">for</span> (uint64_t r = 0; r &lt; <span class="fn">slothdb_row_count</span>(result); r++)
-  printf(<span class="str">"%s: %s\n"</span>,
-    <span class="fn">slothdb_value_varchar</span>(result, r, 0),
-    <span class="fn">slothdb_value_varchar</span>(result, r, 1));
-
-<span class="fn">slothdb_free_result</span>(result);</pre>
-  </div>
-
-  <div id="sql" class="tab-panel">
-<pre class="code"><span class="cm">-- Parquet / CSV / JSON / Arrow — same syntax</span>
-<span class="kw">SELECT</span> region, <span class="kw">SUM</span>(revenue)
-<span class="kw">FROM</span> <span class="str">'sales.parquet'</span>
-<span class="kw">WHERE</span> year &gt;= 2023
-<span class="kw">GROUP BY</span> region;
-
-<span class="cm">-- Avro, Arrow, SQLite — no extension load needed</span>
-<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">read_avro</span>(<span class="str">'events.avro'</span>);
-<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">sqlite_scan</span>(<span class="str">'app.db'</span>, <span class="str">'users'</span>);
-
-<span class="cm">-- Export to any format</span>
-<span class="kw">COPY</span> (<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="str">'big.csv'</span> <span class="kw">WHERE</span> year &gt;= 2024)
-<span class="kw">TO</span> <span class="str">'filtered.parquet'</span> <span class="kw">WITH</span> (<span class="kw">FORMAT</span> PARQUET);
-
-<span class="cm">-- QUALIFY for top-N-per-group without subqueries</span>
-<span class="kw">SELECT</span> name, department, salary
-<span class="kw">FROM</span> <span class="str">'employees.parquet'</span>
-<span class="kw">QUALIFY</span> <span class="fn">ROW_NUMBER</span>() <span class="kw">OVER</span> (<span class="kw">PARTITION BY</span> department <span class="kw">ORDER BY</span> salary <span class="kw">DESC</span>) = 1;</pre>
-  </div>
-</section>
-
-<section class="page">
-  <h2>Why <span class="accent">SlothDB</span>?</h2>
-  <p class="section-lede">Same embedded model as DuckDB and SQLite. The defaults are different.</p>
-  <div class="grid cols-3">
-    <div class="card">
-      <h3><span class="dot"></span>Simple</h3>
-      <p>Point SQL at a file. No <code>CREATE TABLE</code>, no import, no extension to load. <code>pip install slothdb</code> and you're running.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>Seven formats built in</h3>
-      <p>Parquet, CSV, JSON, Avro, Arrow, SQLite and Excel — all in core. DuckDB needs extensions for Avro, SQLite and Excel.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>Fast</h3>
-      <p>1.1×–8.6× faster than DuckDB across 15 benchmark queries. Vectorized columnar execution, morsel-driven parallelism, typed streaming scans.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>Portable</h3>
-      <p>Single ~8 MB binary. Runs on Windows, Linux, macOS. Links into Python, C, C++. No runtime dependencies.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>Stable C ABI</h3>
-      <p>Numeric error codes (<code>ErrorCode::TABLE_NOT_FOUND = 2000</code>) that never change. Extensions built for v0.1 keep working on v1.0.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>Free and open</h3>
-      <p>MIT licensed. Source on GitHub. 326 tests, 131 000+ assertions. Use it anywhere, including in commercial products.</p>
-    </div>
-  </div>
-</section>
-
-<section class="page">
-  <h2>Ecosystem</h2>
-  <p class="section-lede">One engine, many on-ramps.</p>
-  <div class="grid cols-3">
-    <div class="card">
-      <h3>File formats</h3>
-      <p>Parquet (zstd/snappy), CSV (RFC 4180), JSON/NDJSON, Avro, Arrow IPC, SQLite, Excel (xlsx). All native readers — no plugins, no conversion step.</p>
-    </div>
-    <div class="card">
-      <h3>Python</h3>
-      <p>Installable via pip. Connection API, <code>fetchdf()</code> returns a pandas DataFrame. Works in Jupyter, scripts, FastAPI, Dagster.</p>
-      <a class="card-link" href="https://pypi.org/project/slothdb/">pypi.org/project/slothdb →</a>
-    </div>
-    <div class="card">
-      <h3>C / C++</h3>
-      <p>Stable C ABI headers, CMake integration, RAII-friendly pointer lifecycle. Embed in desktop apps or server-side tools.</p>
-      <a class="card-link" href="docs.html#cpp-api">C/C++ API reference →</a>
-    </div>
-    <div class="card">
-      <h3>CLI shell</h3>
-      <p>Interactive shell with line editing, <code>.tables</code> / <code>.schema</code> / <code>.help</code> meta-commands, persistent history, UTF-8 support.</p>
-    </div>
-    <div class="card">
-      <h3>Extensions</h3>
-      <p>Build custom functions and table scans against a stable C header. Load at runtime via <code>LOAD 'my_ext'</code>. Won't break on version bumps.</p>
-      <a class="card-link" href="docs.html#extensions">Extension guide →</a>
-    </div>
-    <div class="card">
-      <h3>Dataframe interchange</h3>
-      <p>Convert query results directly to pandas DataFrames. Arrow IPC read/write for zero-copy handoff to other tools.</p>
-    </div>
-  </div>
-</section>
-
 <section class="page" id="benchmarks">
-  <h2>Performance</h2>
+  <h2>Faster on every query</h2>
   <p class="section-lede">1M-row dataset · warm cache · 5-run median · same machine · same queries.</p>
-  <table class="data">
-    <thead>
-      <tr><th>Format</th><th>Query</th><th style="text-align:right">SlothDB</th><th style="text-align:right">DuckDB</th><th style="text-align:right">Speedup</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>CSV</td><td>COUNT(*)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
-      <tr><td>CSV</td><td>GROUP BY region</td><td class="num">100 ms</td><td class="num">191 ms</td><td class="win">1.91×</td></tr>
-      <tr><td>CSV</td><td>WHERE + GROUP BY</td><td class="num">107 ms</td><td class="num">194 ms</td><td class="win">1.81×</td></tr>
-      <tr><td>Parquet</td><td>COUNT(*)</td><td class="num">12 ms</td><td class="num">34 ms</td><td class="win">2.83×</td></tr>
-      <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td class="win">1.04×</td></tr>
-      <tr><td>Parquet</td><td>GROUP BY region</td><td class="num">76 ms</td><td class="num">88 ms</td><td class="win">1.16×</td></tr>
-      <tr><td>JSON</td><td>SUM(revenue)</td><td class="num">242 ms</td><td class="num">314 ms</td><td class="win">1.30×</td></tr>
-      <tr><td>Avro</td><td>SUM(revenue)</td><td class="num">140 ms</td><td class="num">760 ms</td><td class="win">5.43×</td></tr>
-      <tr><td>Avro</td><td>GROUP BY region</td><td class="num">170 ms</td><td class="num">800 ms</td><td class="win">4.71×</td></tr>
-      <tr><td>Excel</td><td>GROUP BY region</td><td class="num">2.5 s</td><td class="num">3.56 s</td><td class="win">1.41×</td></tr>
-    </tbody>
-  </table>
-  <p style="color: var(--text-muted); font-size: 13px; margin-top: 14px;">Full 15-query table and methodology in the <a href="https://github.com/SouravRoy-ETL/slothdb#performance--11---86-faster-than-duckdb-every-format-every-query">README</a>.</p>
+  <div style="max-width: 980px; margin: 0 auto;">
+    <table class="data">
+      <thead>
+        <tr><th>Format</th><th>Query</th><th style="text-align:right">SlothDB</th><th style="text-align:right">DuckDB</th><th style="text-align:right">Speedup</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>CSV</td><td>COUNT(*)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
+        <tr><td>CSV</td><td>GROUP BY region</td><td class="num">100 ms</td><td class="num">191 ms</td><td class="win">1.91×</td></tr>
+        <tr><td>CSV</td><td>WHERE + GROUP BY</td><td class="num">107 ms</td><td class="num">194 ms</td><td class="win">1.81×</td></tr>
+        <tr><td>Parquet</td><td>COUNT(*)</td><td class="num">12 ms</td><td class="num">34 ms</td><td class="win">2.83×</td></tr>
+        <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td class="win">1.04×</td></tr>
+        <tr><td>Parquet</td><td>GROUP BY region</td><td class="num">76 ms</td><td class="num">88 ms</td><td class="win">1.16×</td></tr>
+        <tr><td>JSON</td><td>SUM(revenue)</td><td class="num">242 ms</td><td class="num">314 ms</td><td class="win">1.30×</td></tr>
+        <tr><td>Avro</td><td>SUM(revenue)</td><td class="num">140 ms</td><td class="num">760 ms</td><td class="win">5.43×</td></tr>
+        <tr><td>Avro</td><td>GROUP BY region</td><td class="num">170 ms</td><td class="num">800 ms</td><td class="win">4.71×</td></tr>
+        <tr><td>Excel</td><td>GROUP BY region</td><td class="num">2.5 s</td><td class="num">3.56 s</td><td class="win">1.41×</td></tr>
+      </tbody>
+    </table>
+  </div>
 </section>
 
 <section class="page" id="install">
-  <h2>Install</h2>
-  <p class="section-lede">Single binary. No runtime dependencies.</p>
-  <div class="grid cols-2">
-    <div class="card">
+  <h2>Install SlothDB</h2>
+  <p class="section-lede">Single binary. No runtime dependencies. Pick a client.</p>
+  <div class="grid cols-2" style="max-width: 920px; margin: 40px auto 0;">
+    <div class="card bordered">
       <h3>Python</h3>
-<pre class="code">pip install slothdb
+      <p>Full SlothDB engine as a pip-installable package. Connection API, pandas integration, context manager support.</p>
+<pre class="code" style="margin-top: 14px;">pip install slothdb
 python -c <span class="str">"import slothdb; slothdb.demo()"</span></pre>
     </div>
-    <div class="card">
-      <h3>Linux / macOS</h3>
-<pre class="code">curl -fsSL \
-  https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh \
-  | bash</pre>
+    <div class="card bordered">
+      <h3>Linux &amp; macOS</h3>
+      <p>Downloads the prebuilt CLI binary into <code>~/.local/bin</code>. Works on x86_64 and arm64.</p>
+<pre class="code" style="margin-top: 14px;">curl -fsSL \
+  https://raw.githubusercontent.com/SouravRoy-ETL/\
+  slothdb/main/install.sh | bash</pre>
     </div>
-    <div class="card">
+    <div class="card bordered">
       <h3>Windows</h3>
-      <p style="margin-bottom: 12px;">Download <code>slothdb.exe</code> from the <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest">latest release</a>.</p>
+      <p>Download <code>slothdb.exe</code> from the <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest">latest release</a>. No installer — just unzip and run.</p>
     </div>
-    <div class="card">
+    <div class="card bordered">
       <h3>Build from source</h3>
-<pre class="code">git clone https://github.com/SouravRoy-ETL/slothdb
+      <p>Clone, CMake, and build. Produces a shared library, static library, and CLI binary.</p>
+<pre class="code" style="margin-top: 14px;">git clone https://github.com/SouravRoy-ETL/slothdb
 cd slothdb
 cmake -B build -DSLOTHDB_BUILD_SHELL=ON
 cmake --build build --config Release</pre>
@@ -339,21 +403,6 @@ cmake --build build --config Release</pre>
 </footer>
 
 <script>
-function copyInstall() {
-  const txt = document.getElementById('install-cmd').textContent;
-  navigator.clipboard.writeText(txt).then(() => {
-    const btn = event.target;
-    const orig = btn.textContent;
-    btn.textContent = 'Copied';
-    setTimeout(() => { btn.textContent = orig; }, 1600);
-  });
-}
-function showTab(ev, id) {
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  ev.currentTarget.classList.add('active');
-  document.getElementById(id).classList.add('active');
-}
 fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
   .then(r => r.json())
   .then(d => {
