@@ -34,6 +34,36 @@ target_include_directories(slothdb_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# WASM playground build (try.slothdb.org). Produces slothdb.wasm + slothdb.js
+# via Emscripten + embind. Single-threaded. No HTTP.
+if(EMSCRIPTEN)
+    # Exceptions must be enabled on every translation unit that could throw.
+    target_compile_options(slothdb_lib PRIVATE "-fexceptions" "-O3")
+    target_link_options(slothdb_lib INTERFACE "-fexceptions")
+
+    add_executable(slothdb_wasm ${CMAKE_SOURCE_DIR}/tools/playground/wasm_bindings.cpp)
+    target_link_libraries(slothdb_wasm PRIVATE slothdb_lib)
+    set_target_properties(slothdb_wasm PROPERTIES
+        OUTPUT_NAME "slothdb"
+        SUFFIX ".js")
+    target_compile_options(slothdb_wasm PRIVATE "-fexceptions" "-O3")
+    target_link_options(slothdb_wasm PRIVATE
+        "-fexceptions"
+        "-lembind"
+        "-sMODULARIZE=1"
+        "-sEXPORT_NAME=createSlothDB"
+        "-sEXPORT_ES6=1"
+        "-sENVIRONMENT=web,node"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sINITIAL_MEMORY=67108864"        # 64 MB
+        "-sMAXIMUM_MEMORY=2147483648"      # 2 GB
+        "-sFORCE_FILESYSTEM=1"
+        "-sEXPORTED_RUNTIME_METHODS=['FS','ccall','cwrap']"
+        "-sSTACK_SIZE=5242880"             # 5 MB — parser recursion headroom
+        "-O3"
+    )
+endif()
+
 # CLI
 if(SLOTHDB_BUILD_SHELL)
     set(SHELL_SOURCES ${CMAKE_SOURCE_DIR}/tools/shell/shell.cpp)

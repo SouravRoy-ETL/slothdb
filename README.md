@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social)](https://github.com/SouravRoy-ETL/slothdb)
 
-[Website](https://slothdb.org) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance--11---86-faster-than-duckdb-every-format-every-query) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
+[Website](https://slothdb.org) · [**Playground**](https://slothdb.org/playground/) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance--11---86-faster-than-duckdb-every-format-every-query) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
 
 <br>
 
@@ -24,6 +24,10 @@
 ---
 
 ## Try it in 60 seconds
+
+**In your browser** — no install, no account: **[slothdb.org/playground](https://slothdb.org/playground/)**. Full SlothDB compiled to WebAssembly, with a pre-loaded 1,000-row demo CSV + matching Parquet to compare format performance. Files you add stay on your machine.
+
+**Or locally:**
 
 ```bash
 pip install slothdb

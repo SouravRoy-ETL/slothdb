@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SlothDB Playground — SQL on CSV / Parquet / JSON in your browser</title>
+<meta name="description" content="Run SQL against CSV, Parquet, JSON, Arrow, SQLite, and Excel files in your browser. Files stay on your machine." />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='80'>🦥</text></svg>" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="ide">
+
+  <!-- ─── Title bar ─────────────────────────────────────────── -->
+  <header class="titlebar">
+    <div class="tb-left">
+      <span class="tb-logo">🦥</span>
+      <span class="tb-brand">SlothDB</span>
+      <span class="tb-sep">·</span>
+      <span class="tb-title" id="tb-title">query.sql — playground</span>
+    </div>
+    <div class="tb-right">
+      <a class="tb-link" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener" title="GitHub">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.58v-2c-3.33.72-4-1.6-4-1.6a3.15 3.15 0 0 0-1.32-1.75c-1.08-.74.08-.73.08-.73a2.5 2.5 0 0 1 1.82 1.22 2.54 2.54 0 0 0 3.47 1 2.55 2.55 0 0 1 .76-1.6c-2.66-.3-5.47-1.34-5.47-5.94a4.65 4.65 0 0 1 1.24-3.23 4.32 4.32 0 0 1 .12-3.18s1-.32 3.3 1.23a11.38 11.38 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23a4.32 4.32 0 0 1 .12 3.18 4.64 4.64 0 0 1 1.24 3.23c0 4.61-2.81 5.63-5.48 5.93a2.86 2.86 0 0 1 .81 2.22v3.29c0 .32.22.7.83.58A12 12 0 0 0 12 .3"/></svg>
+      </a>
+    </div>
+  </header>
+
+  <!-- ─── Main grid: activity bar · sidebar · workspace ─────── -->
+  <div class="main">
+
+    <!-- Activity bar -->
+    <nav class="activity">
+      <button class="act active" data-view="explorer" title="Explorer (⌘⇧E)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      </button>
+      <button class="act" data-view="snippets" title="Snippets">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      </button>
+      <button class="act" data-view="history" title="Query history">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      </button>
+      <div class="act-spacer"></div>
+      <button class="act" data-view="info" title="About">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><circle cx="12" cy="8" r=".5" fill="currentColor"/></svg>
+      </button>
+    </nav>
+
+    <!-- Primary sidebar -->
+    <aside class="sidebar">
+
+      <!-- Explorer view -->
+      <div class="view" data-view="explorer">
+        <div class="view-head">Explorer</div>
+
+        <div class="tree-group" data-group="data">
+          <div class="tree-head">
+            <svg class="caret" width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 L7 5 L3 8 Z" fill="currentColor"/></svg>
+            <span>Data</span>
+            <label class="tree-action" title="Add files">
+              <input type="file" id="file-input" multiple
+                     accept=".csv,.parquet,.json,.arrow,.sqlite,.db,.xlsx" />
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </label>
+          </div>
+          <ul class="tree" id="file-list"></ul>
+        </div>
+
+        <div class="tree-group" data-group="snippets-mini">
+          <div class="tree-head">
+            <svg class="caret" width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 L7 5 L3 8 Z" fill="currentColor"/></svg>
+            <span>Snippets</span>
+          </div>
+          <ul class="tree">
+            <li class="snippet" data-sql="SELECT COUNT(*) AS rows FROM '/data/sales.csv';">
+              <span class="si">▸</span>Count CSV rows</li>
+            <li class="snippet" data-sql="SELECT COUNT(*) AS rows FROM '/data/sales.parquet';">
+              <span class="si">▸</span>Count Parquet rows</li>
+            <li class="snippet" data-sql="SELECT region, SUM(revenue) AS total
+FROM '/data/sales.csv'
+GROUP BY region
+ORDER BY region;">
+              <span class="si">▸</span>GROUP BY region (CSV)</li>
+            <li class="snippet" data-sql="SELECT region, SUM(revenue) AS total
+FROM '/data/sales.parquet'
+GROUP BY region
+ORDER BY region;">
+              <span class="si">▸</span>GROUP BY region (Parquet)</li>
+            <li class="snippet" data-sql="-- CSV vs Parquet on identical data
+SELECT 'csv' AS fmt, SUM(revenue) AS rev FROM '/data/sales.csv'
+UNION ALL
+SELECT 'parquet', SUM(revenue) FROM '/data/sales.parquet';">
+              <span class="si">▸</span>CSV vs Parquet (same data)</li>
+            <li class="snippet" data-sql="SELECT product, year,
+       SUM(revenue) AS rev,
+       SUM(qty)     AS qty,
+       COUNT(*)     AS n
+FROM '/data/sales.parquet'
+GROUP BY product, year
+ORDER BY year, product;">
+              <span class="si">▸</span>Two-column GROUP BY</li>
+            <li class="snippet" data-sql="SELECT region, COUNT(*) AS n, SUM(revenue) AS rev
+FROM '/data/sales.csv'
+WHERE year >= 2023 AND qty > 100
+GROUP BY region
+ORDER BY region;">
+              <span class="si">▸</span>WHERE + GROUP BY</li>
+            <li class="snippet" data-sql="SELECT DATE_TRUNC('quarter', CURRENT_DATE) AS q,
+       MONTHNAME(CURRENT_DATE) AS month,
+       DAYNAME(CURRENT_DATE)   AS day,
+       LAST_DAY(CURRENT_DATE)  AS eom;">
+              <span class="si">▸</span>Date functions (0.1.4)</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Snippets view (larger snippet panel) -->
+      <div class="view" data-view="snippets" hidden>
+        <div class="view-head">Snippets</div>
+        <p class="view-note">Click a snippet to load and execute it.</p>
+        <ul class="snip-list" id="snip-full"></ul>
+      </div>
+
+      <!-- History view -->
+      <div class="view" data-view="history" hidden>
+        <div class="view-head">
+          History
+          <button class="icon-btn-sm" id="clear-history" title="Clear history">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          </button>
+        </div>
+        <ul class="history-list" id="history-list"></ul>
+      </div>
+
+      <!-- Info view -->
+      <div class="view" data-view="info" hidden>
+        <div class="view-head">About</div>
+        <div class="info">
+          <p><strong>SlothDB</strong> is an embedded analytical database that reads CSV, Parquet, JSON, Arrow, SQLite, and Excel directly from SQL. This playground is the full engine compiled to WebAssembly.</p>
+          <p>Files you add stay on your machine — nothing is uploaded.</p>
+          <p class="kbd-row"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> Run query</p>
+          <p class="kbd-row"><kbd>Ctrl</kbd>+<kbd>/</kbd> Toggle comment</p>
+          <p class="kbd-row"><kbd>Ctrl</kbd>+<kbd>F</kbd> Find in editor</p>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- Workspace (tab bar + editor + panel) -->
+    <main class="workspace">
+
+      <!-- Editor tab strip -->
+      <div class="tabstrip">
+        <div class="etab active">
+          <svg class="tab-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span>query.sql</span>
+        </div>
+        <div class="tabstrip-spacer"></div>
+        <div class="editor-toolbar">
+          <button id="run" class="btn-primary" disabled>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Run <kbd>Ctrl+↵</kbd>
+          </button>
+        </div>
+      </div>
+
+      <!-- Split: editor + panel -->
+      <div class="split" id="split">
+        <section class="pane editor-pane">
+          <div id="editor"></div>
+        </section>
+
+        <div class="gutter" id="gutter"></div>
+
+        <section class="pane panel-pane">
+          <div class="panel-head">
+            <div class="panel-tabs">
+              <button class="ptab active" data-tab="results">Results</button>
+              <button class="ptab" data-tab="messages">Messages</button>
+            </div>
+            <div class="panel-meta" id="panel-meta"></div>
+            <div class="panel-actions">
+              <button id="download-csv" class="btn-ghost" disabled title="Download as CSV">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export
+              </button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div id="results-panel" class="tab-panel active">
+              <div id="result-table"></div>
+              <div id="result-empty" class="empty">Run a query to see results.</div>
+            </div>
+            <div id="messages-panel" class="tab-panel">
+              <div id="messages"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ─── Status bar ────────────────────────────────────────── -->
+  <footer class="statusbar">
+    <div class="sb-left">
+      <span class="sb-item sb-conn">
+        <span class="sb-dot" id="sb-dot"></span>
+        <span id="sb-status">connecting…</span>
+      </span>
+      <span class="sb-item" id="sb-version">—</span>
+      <span class="sb-item" id="sb-files">0 files</span>
+    </div>
+    <div class="sb-right">
+      <span class="sb-item" id="sb-rows">—</span>
+      <span class="sb-item" id="sb-time">—</span>
+      <span class="sb-item">WebAssembly · single-thread</span>
+      <span class="sb-item">UTF-8</span>
+      <span class="sb-item">SQL</span>
+    </div>
+  </footer>
+
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

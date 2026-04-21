@@ -10,6 +10,8 @@
 #undef GetObject
 #include <winhttp.h>
 #pragma comment(lib, "winhttp.lib")
+#elif defined(__EMSCRIPTEN__)
+// WASM: HTTP not supported. Playground loads files from MEMFS instead.
 #else
 // POSIX: use raw sockets for HTTP.
 #include <sys/socket.h>
@@ -159,6 +161,9 @@ HTTPResponse HTTPClient::DoHTTPGet(const std::string &host, int port,
 #ifdef _MSC_VER
     // On Windows, use WinHTTP instead of raw sockets.
     response = DoWinHTTPGet("http://" + host + ":" + std::to_string(port) + path);
+#elif defined(__EMSCRIPTEN__)
+    (void)host; (void)port; (void)path;
+    response.error = "HTTP not supported in WASM build; load files from the browser instead";
 #else
     // POSIX socket-based HTTP.
     struct hostent *server = gethostbyname(host.c_str());
@@ -237,6 +242,11 @@ HTTPResponse HTTPClient::DoHTTPGet(const std::string &host, int port,
 HTTPResponse HTTPClient::Get(const std::string &url) {
 #ifdef _MSC_VER
     return DoWinHTTPGet(url);
+#elif defined(__EMSCRIPTEN__)
+    (void)url;
+    HTTPResponse r;
+    r.error = "HTTP not supported in WASM build; load files from the browser instead";
+    return r;
 #else
     auto parts = ParseURL(url);
     if (parts.scheme == "https") {

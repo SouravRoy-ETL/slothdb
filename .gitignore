@@ -1,5 +1,6 @@
 # Build directories
 build/
+build-wasm/
 cmake-build-*/
 out/
 
@@ -37,6 +38,7 @@ desktop.ini
 
 # Build artifacts
 *.parquet
+!docs/playground/data/*.parquet
 python/dist/
 python/*.egg-info/
 python/build/
