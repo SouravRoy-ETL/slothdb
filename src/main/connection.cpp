@@ -588,8 +588,46 @@ QueryResult Connection::Query(const std::string &sql) {
         // Handle virtual views: if FROM references a view, re-execute the stored query
         // and replace the view's storage with fresh data from the file.
         std::vector<std::string> temp_tables;
+        std::vector<std::string> cte_tables;
+        std::vector<std::string> _cte_temp_tables;
+
+        // RAII cleanup — drops any temp / CTE tables created during
+        // preprocessing even if binding / planning / execution throws.
+        // Without this, a failing query leaves a zombie __auto_file__
+        // in the catalog that collides on the next query.
+        struct TableCleanupGuard {
+            Catalog *catalog;
+            std::vector<std::string> *tt;
+            std::vector<std::string> *ct;
+            std::vector<std::string> *ctt;
+            ~TableCleanupGuard() {
+                auto drop = [&](std::vector<std::string> &v) {
+                    for (auto &t : v) {
+                        if (catalog->GetTable(t)) catalog->DropTable(t);
+                    }
+                };
+                drop(*ctt);
+                drop(*tt);
+                drop(*ct);
+            }
+        } _cleanup{&db_.GetCatalog(), &temp_tables, &cte_tables, &_cte_temp_tables};
+
         if (stmt->GetType() == StatementType::SELECT) {
-            auto &sel = static_cast<SelectStatement &>(*stmt);
+            auto &outer_sel = static_cast<SelectStatement &>(*stmt);
+            // File-table-function preprocessing (view expansion, read_csv,
+            // read_parquet, read_json, read_arrow, read_avro, read_xlsx,
+            // sqlite_scan, __FILE__ auto-detect) has to run for every SELECT
+            // in a UNION / INTERSECT / EXCEPT chain. Without this, a file
+            // literal on the right-hand side reaches the binder as __FILE__
+            // and fails with "Table '__FILE__' not found".
+            // Counter for auto-generated temp-table names — ensures left and
+            // right sides of a UNION (or repeated FROM '…' usages) don't
+            // collide on the same __auto_file__ / __read_parquet__ entry.
+            static thread_local int preproc_uid = 0;
+            for (SelectStatement *cur_sel = &outer_sel; cur_sel;
+                 cur_sel = cur_sel->set_right.get()) {
+            auto &sel = *cur_sel;
+            ++preproc_uid;
 
             // Expand virtual views in the FROM clause.
             auto expand_view = [&](TableRef &ref) {
@@ -624,10 +662,11 @@ QueryResult Connection::Query(const std::string &sql) {
                 }
 
                 std::string tbl_name = sel.from_table->alias.empty()
-                    ? "__generate_series__" : sel.from_table->alias;
+                    ? ("__generate_series_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                 sel.from_table->table_name = tbl_name;
                 sel.from_table->is_table_function = false;
 
+                if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                 auto &entry = db_.GetCatalog().CreateTable(tbl_name,
                     {ColumnDefinition("generate_series", LogicalType::BIGINT())});
                 auto storage = std::make_shared<DataTable>(
@@ -677,6 +716,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 for (size_t i = 0; i < header.size() && i < types.size(); i++)
                     cols.emplace_back(header[i], types[i]);
 
+                if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                 auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                 auto storage = std::make_shared<DataTable>(types);
                 entry.SetStorage(storage);
@@ -715,7 +755,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto col_types = reader.GetColumnTypes();
 
                     std::string tbl_name = sel.from_table->alias.empty()
-                        ? "__read_json__" : sel.from_table->alias;
+                        ? ("__read_json_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                     sel.from_table->table_name = tbl_name;
                     sel.from_table->is_table_function = false;
 
@@ -754,7 +794,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto col_types = reader_sp->GetColumnTypes();
 
                     std::string tbl_name = sel.from_table->alias.empty()
-                        ? "__read_parquet__" : sel.from_table->alias;
+                        ? ("__read_parquet_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                     sel.from_table->table_name = tbl_name;
                     sel.from_table->is_table_function = false;
 
@@ -786,7 +826,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto col_types = reader.GetColumnTypes();
 
                     std::string tbl_name = sel.from_table->alias.empty()
-                        ? "__read_arrow__" : sel.from_table->alias;
+                        ? ("__read_arrow_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                     sel.from_table->table_name = tbl_name;
                     sel.from_table->is_table_function = false;
 
@@ -814,7 +854,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto col_types = reader.GetColumnTypes();
 
                     std::string tbl_name = sel.from_table->alias.empty()
-                        ? "__read_avro__" : sel.from_table->alias;
+                        ? ("__read_avro_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                     sel.from_table->table_name = tbl_name;
                     sel.from_table->is_table_function = false;
 
@@ -845,13 +885,14 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto col_types = reader.GetColumnTypes();
 
                     std::string tbl_name = sel.from_table->alias.empty()
-                        ? "__read_xlsx__" : sel.from_table->alias;
+                        ? ("__read_xlsx_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                     sel.from_table->table_name = tbl_name;
                     sel.from_table->is_table_function = false;
 
                     std::vector<ColumnDefinition> cols;
                     for (size_t i = 0; i < col_names.size(); i++)
                         cols.emplace_back(col_names[i], col_types[i]);
+                    if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
@@ -876,7 +917,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto col_info = scanner.GetColumns(table_name);
 
                     std::string tbl_name = sel.from_table->alias.empty()
-                        ? "__sqlite_scan__" : sel.from_table->alias;
+                        ? ("__sqlite_scan_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                     sel.from_table->table_name = tbl_name;
                     sel.from_table->is_table_function = false;
 
@@ -934,13 +975,14 @@ QueryResult Connection::Query(const std::string &sql) {
                         auto types = reader.DetectTypes();
 
                         std::string tbl_name = sel.from_table->alias.empty()
-                            ? "__auto_file__" : sel.from_table->alias;
+                            ? ("__auto_file_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                         sel.from_table->table_name = tbl_name;
                         sel.from_table->is_table_function = false;
 
                         std::vector<ColumnDefinition> cols;
                         for (size_t i = 0; i < header.size() && i < types.size(); i++)
                             cols.emplace_back(header[i], types[i]);
+                        if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                         auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                         auto storage = std::make_shared<DataTable>(types);
                         entry.SetStorage(storage);
@@ -954,13 +996,14 @@ QueryResult Connection::Query(const std::string &sql) {
                         auto col_types = reader.GetColumnTypes();
 
                         std::string tbl_name = sel.from_table->alias.empty()
-                            ? "__auto_file__" : sel.from_table->alias;
+                            ? ("__auto_file_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                         sel.from_table->table_name = tbl_name;
                         sel.from_table->is_table_function = false;
 
                         std::vector<ColumnDefinition> cols;
                         for (size_t i = 0; i < col_names.size(); i++)
                             cols.emplace_back(col_names[i], col_types[i]);
+                        if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                         auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                         auto storage = std::make_shared<DataTable>(col_types);
                         entry.SetStorage(storage);
@@ -973,13 +1016,14 @@ QueryResult Connection::Query(const std::string &sql) {
                         auto rows = reader.ReadAll();
 
                         std::string tbl_name = sel.from_table->alias.empty()
-                            ? "__auto_file__" : sel.from_table->alias;
+                            ? ("__auto_file_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                         sel.from_table->table_name = tbl_name;
                         sel.from_table->is_table_function = false;
 
                         std::vector<ColumnDefinition> cols;
                         for (size_t i = 0; i < col_names.size(); i++)
                             cols.emplace_back(col_names[i], col_types[i]);
+                        if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                         auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                         auto storage = std::make_shared<DataTable>(col_types);
                         entry.SetStorage(storage);
@@ -988,11 +1032,12 @@ QueryResult Connection::Query(const std::string &sql) {
                     }
                 }
             }
+            } // end for-loop over set_right chain
         }
 
         // Handle CTEs: materialize each CTE as a temporary table.
-        std::vector<std::string> cte_tables;
-        std::vector<std::string> _cte_temp_tables; // collected by helper below
+        // (cte_tables / _cte_temp_tables are declared at the top of this
+        //  iteration body and cleaned up by TableCleanupGuard.)
 
         // Helper to expand read_csv() in any TableRef.
         auto cte_process_read_csv = [&](TableRef &tref) -> bool {
@@ -1240,16 +1285,9 @@ QueryResult Connection::Query(const std::string &sql) {
             }
         }
 
-        // Clean up CTE and temp tables.
-        for (auto &cte_name : cte_tables) {
-            db_.GetCatalog().DropTable(cte_name);
-        }
-        for (auto &tmp : temp_tables) {
-            db_.GetCatalog().DropTable(tmp);
-        }
-        for (auto &tmp : _cte_temp_tables) {
-            db_.GetCatalog().DropTable(tmp);
-        }
+        // temp_tables / cte_tables / _cte_temp_tables are dropped by the
+        // TableCleanupGuard declared at the top of this loop iteration —
+        // runs on both success and exception paths.
     }
 
     return final_result;

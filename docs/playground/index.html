@@ -86,10 +86,11 @@ FROM '/data/sales.parquet'
 GROUP BY region
 ORDER BY region;">
               <span class="si">▸</span>GROUP BY region (Parquet)</li>
-            <li class="snippet" data-sql="-- CSV vs Parquet on identical data
-SELECT 'csv' AS fmt, SUM(revenue) AS rev FROM '/data/sales.csv'
+            <li class="snippet" data-sql="-- Same deterministic 1,000-row dataset, two formats.
+-- Row 1 = CSV, Row 2 = Parquet. Identical values prove format parity.
+SELECT COUNT(*) AS n_rows, SUM(revenue) AS sum_revenue FROM '/data/sales.csv'
 UNION ALL
-SELECT 'parquet', SUM(revenue) FROM '/data/sales.parquet';">
+SELECT COUNT(*),            SUM(revenue)              FROM '/data/sales.parquet';">
               <span class="si">▸</span>CSV vs Parquet (same data)</li>
             <li class="snippet" data-sql="SELECT product, year,
        SUM(revenue) AS rev,

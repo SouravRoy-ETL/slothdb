@@ -156,7 +156,7 @@ const SNIPPETS = [
     { name: 'GROUP BY region (Parquet)',
       sql: "SELECT region, SUM(revenue) AS total\nFROM '/data/sales.parquet'\nGROUP BY region\nORDER BY region;" },
     { name: 'CSV vs Parquet (same data)',
-      sql: "-- Same deterministic 1,000-row dataset, two formats.\nSELECT 'csv' AS fmt, COUNT(*) AS n, SUM(revenue) AS rev FROM '/data/sales.csv'\nUNION ALL\nSELECT 'parquet', COUNT(*), SUM(revenue) FROM '/data/sales.parquet';" },
+      sql: "-- Same deterministic 1,000-row dataset, two formats.\n-- Row 1 = CSV, Row 2 = Parquet. Identical values prove format parity.\nSELECT COUNT(*) AS n_rows, SUM(revenue) AS sum_revenue FROM '/data/sales.csv'\nUNION ALL\nSELECT COUNT(*),            SUM(revenue)              FROM '/data/sales.parquet';" },
     { name: 'Two-column GROUP BY',
       sql: "SELECT product, year,\n       SUM(revenue) AS rev,\n       SUM(qty)     AS qty,\n       COUNT(*)     AS n\nFROM '/data/sales.parquet'\nGROUP BY product, year\nORDER BY year, product;" },
     { name: 'WHERE + GROUP BY',
