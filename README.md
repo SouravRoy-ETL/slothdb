@@ -1,34 +1,32 @@
 <div align="center">
 
-<img src="assets/hero.svg" alt="SlothDB" width="100%">
+<img src="assets/hero.svg" alt="SlothDB" height="140">
 
-<br>
+### An embedded OLAP database. Query Parquet, CSV, JSON, Arrow and SQLite with SQL — no server, no import, no extensions.
 
-<a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">
-  <img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=20&pause=1000&color=8B5CF6&center=true&vCenter=true&width=820&lines=Query+your+files+with+SQL.+No+server.+No+import.;CSV+%E2%80%A2+Parquet+%E2%80%A2+JSON+%E2%80%A2+Avro+%E2%80%A2+Excel+%E2%80%A2+Arrow+%E2%80%A2+SQLite;1.1%C3%97+%E2%80%93+6.6%C3%97+faster+than+DuckDB+on+every+benchmark;326+tests+%E2%80%A2+131%2C321+assertions+%E2%80%A2+Zero+dependencies" alt="SlothDB rotating tagline">
-</a>
+[![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white)](https://pypi.org/project/slothdb/)
+[![Downloads](https://img.shields.io/pypi/dm/slothdb?color=3775A9&label=downloads)](https://pypi.org/project/slothdb/)
+[![CI](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg)](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social)](https://github.com/SouravRoy-ETL/slothdb)
 
-<br>
-<br>
-
-<p>
-  <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/release-v0.1.3-6366F1" alt="Release v0.1.3">
-  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License MIT">
-  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white" alt="C++20">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey" alt="Platform">
-</p>
-
-<p>
-  <a href="https://souravroy-etl.github.io/slothdb/"><b>Website</b></a> &nbsp;·&nbsp;
-  <a href="docs/DOCUMENTATION.md"><b>Documentation</b></a> &nbsp;·&nbsp;
-  <a href="CHANGELOG.md"><b>Benchmarks</b></a> &nbsp;·&nbsp;
-  <a href="docs/DOCUMENTATION.md#6-python-api"><b>Python</b></a> &nbsp;·&nbsp;
-  <a href="docs/DOCUMENTATION.md#7-cc-api"><b>C/C++</b></a> &nbsp;·&nbsp;
-  <a href="docs/DOCUMENTATION.md#4-sql-guide"><b>SQL Guide</b></a>
-</p>
+[Website](https://slothdb.org) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance--11---66-faster-than-duckdb-every-format-every-query) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
 
 </div>
+
+---
+
+```bash
+pip install slothdb
+```
+
+```python
+import slothdb
+db = slothdb.connect()
+db.sql("SELECT region, SUM(revenue) FROM 'sales.parquet' GROUP BY region").show()
+```
+
+**1.1× – 8.6× faster than DuckDB** on a 1M-row benchmark across 15 queries spanning 7 file formats. [See numbers →](#performance--11---66-faster-than-duckdb-every-format-every-query)
 
 ---
 
@@ -55,7 +53,6 @@ Same embedded model. SlothDB is a near-drop-in swap for local file analytics. Th
 | Built-in file formats | **7** — CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite | 3 built in (Excel, Avro, SQLite need extensions) |
 | Extension stability | **Stable C ABI** — extensions keep working across releases | Internal C++ API, often breaks on upgrade |
 | Error handling | **Numeric error codes** (`ErrorCode::TABLE_NOT_FOUND = 2000`) | Free-form error strings |
-| GPU offload | **CUDA + Metal**, auto-enabled at 100 K rows | CPU only |
 | Binary size | **~8 MB** self-contained | ~50 MB |
 
 The Avro reader alone is 5.4× faster than DuckDB's because SlothDB parses Avro natively instead of through an extension. If Excel or Avro matters in your pipeline, this is a real quality-of-life difference.
@@ -88,7 +85,22 @@ SQLite is row-oriented and tuned for transactional workloads. Aggregate queries 
 
 ## Quickstart
 
-**1. Install** — pick one:
+**60-second tour** (no files to find — it generates and queries synthetic data, and prints a side-by-side with DuckDB if you have it installed):
+
+```bash
+pip install slothdb
+python -c "import slothdb; slothdb.demo()"
+```
+
+```
+Query                            SlothDB     DuckDB    Speedup
+--------------------------------------------------------------
+COUNT(*)                          3.1 ms    17.0 ms     5.48x
+SUM(revenue) WHERE year>=2023    10.6 ms    17.7 ms     1.67x
+GROUP BY region                  10.0 ms    19.1 ms     1.91x
+```
+
+**Query your own files** — one-shot or interactive shell:
 
 ```bash
 pip install slothdb                                                              # Python
@@ -96,28 +108,11 @@ curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.
 # Windows: download slothdb.exe from https://github.com/SouravRoy-ETL/slothdb/releases/latest
 ```
 
-**2. Query a file, one-shot:**
-
 ```bash
 slothdb -c "SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region ORDER BY 2 DESC;"
+slothdb                              # interactive, in-memory
+slothdb analytics.slothdb            # interactive, persistent
 ```
-
-**3. Or open an interactive shell:**
-
-```bash
-slothdb                 # in-memory
-slothdb analytics.slothdb   # persistent, created on first open
-```
-
-```sql
-slothdb> SELECT * FROM 'data.parquet' WHERE year >= 2023 LIMIT 5;
-slothdb> .tables       -- list tables
-slothdb> .schema sales -- describe a table
-slothdb> .help         -- full command list
-slothdb> .quit
-```
-
-**4. From Python:**
 
 ```python
 import slothdb
@@ -286,7 +281,7 @@ slothdb_close(db);
 | **SQL** | 130+ features — JOINs, CTEs (recursive), window functions, QUALIFY, MERGE, subqueries, set operations |
 | **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in with auto-detection, glob patterns, virtual views |
 | **Functions** | 70+ functions — string, math, date/time, aggregate, regex, trigonometric |
-| **Performance** | Vectorized columnar engine (2,048 values/batch), morsel-driven parallelism, GPU offload |
+| **Performance** | Vectorized columnar engine (2,048 values/batch), morsel-driven parallelism, fused scan+aggregate, zero-copy VARCHAR |
 | **Storage** | Single-file `.slothdb` persistence, RLE/dictionary/bitpacking compression, zone maps |
 | **Optimizer** | Constant folding, filter pushdown, TopN optimization |
 | **APIs** | CLI shell, Python (with pandas), C/C++ (stable ABI) |
@@ -296,7 +291,7 @@ slothdb_close(db);
 
 | | |
 |-|-|
-| **[Full Documentation](docs/DOCUMENTATION.md)** | Complete guide — install, file queries, SQL, Python, C/C++, GPU, extensions |
+| **[Full Documentation](docs/DOCUMENTATION.md)** | Complete guide — install, file queries, SQL, Python, C/C++, extensions |
 | [Query Your Files](docs/DOCUMENTATION.md#2-query-your-files) | CSV, Parquet, JSON, Excel, Arrow, Avro, SQLite |
 | [Large Datasets](docs/DOCUMENTATION.md#3-working-with-large-datasets) | Import strategies, Parquet conversion, persistence |
 | [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide) | Joins, window functions, CTEs, QUALIFY, MERGE |
@@ -329,8 +324,6 @@ ctest --test-dir build -C Release    # 326 tests
 |-------------|-------------|
 | `-DSLOTHDB_BUILD_SHELL=ON` | Build CLI shell |
 | `-DSLOTHDB_BUILD_TESTS=ON` | Build test suite |
-| `-DSLOTHDB_CUDA=ON` | Enable NVIDIA GPU acceleration |
-| `-DSLOTHDB_METAL=ON` | Enable Apple GPU acceleration |
 | `-DSLOTHDB_SANITIZERS=ON` | Enable ASan/UBSan |
 
 ## Contributing

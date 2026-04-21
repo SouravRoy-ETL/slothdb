@@ -5,23 +5,44 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "slothdb"
 version = "0.1.3"
-description = "An embedded analytical database engine. Zero dependencies. GPU accelerated."
+description = "Fast in-process OLAP engine for Python — query Parquet, CSV, JSON, Arrow and SQLite with SQL. 1.1–8.6× faster than DuckDB."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
 authors = [
     {name = "Sourav Roy", email = "souravroy7864@gmail.com"}
 ]
-keywords = ["database", "olap", "analytics", "sql", "embedded", "parquet", "gpu"]
+keywords = [
+    "database", "olap", "analytics", "sql", "embedded",
+    "parquet", "csv", "json", "arrow", "sqlite",
+    "duckdb", "dataframe", "columnar", "vectorized",
+    "in-process", "query-engine"
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Information Technology",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: C++",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Information Analysis",
 ]
 
 [project.urls]
-Homepage = "https://github.com/SouravRoy-ETL/slothdb"
-Repository = "https://github.com/SouravRoy-ETL/slothdb"
+Homepage = "https://slothdb.org"
+Documentation = "https://github.com/SouravRoy-ETL/slothdb#readme"
+"Release Notes" = "https://github.com/SouravRoy-ETL/slothdb/releases"
+Changelog = "https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md"
+Source = "https://github.com/SouravRoy-ETL/slothdb"
 Issues = "https://github.com/SouravRoy-ETL/slothdb/issues"

@@ -128,6 +128,9 @@ class QueryResult:
             lines.append(f"... ({len(self.rows)} rows total)")
         return "\n".join(lines)
 
+    def show(self):
+        print(self.__repr__())
+
     def __len__(self):
         return len(self.rows)
 
@@ -262,3 +265,14 @@ def connect(path=""):
         result = db.sql("SELECT 42")
     """
     return Connection(path)
+
+
+def sql(query):
+    """Shortcut: open an in-memory connection and run one query."""
+    return connect().sql(query)
+
+
+def demo():
+    """Run a self-contained 3-query demo with timing (vs DuckDB if installed)."""
+    from . import _demo
+    _demo.run()
