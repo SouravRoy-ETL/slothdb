@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Community · SlothDB</title>
+<meta name="description" content="Get help with SlothDB, file issues, join discussions, and contribute. SlothDB is an open-source fast in-process SQL database alternative to DuckDB.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0D1117">
+<link rel="canonical" href="https://slothdb.org/community.html">
+<link rel="icon" type="image/svg+xml" href="assets/icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top">
+  <a class="brand" href="/">
+    <img src="assets/icon.svg" alt="SlothDB logo">
+    SlothDB <span class="ver">v0.1.3</span>
+  </a>
+  <ul>
+    <li class="hide-sm"><a href="docs.html">Docs</a></li>
+    <li class="hide-sm"><a href="index.html#install">Install</a></li>
+    <li class="hide-sm"><a href="index.html#benchmarks">Benchmarks</a></li>
+    <li class="hide-sm"><a href="community.html" class="active">Community</a></li>
+    <li>
+      <a class="gh-btn" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        <span>GitHub</span>
+        <span class="star-count" id="gh-stars">★ …</span>
+      </a>
+    </li>
+  </ul>
+</nav>
+
+<section class="page narrow">
+  <h2>Community</h2>
+  <p class="section-lede">SlothDB is an independent open-source project. It's MIT licensed, built in the open, and shaped by the people who use it. Here's how to reach out.</p>
+</section>
+
+<section class="page narrow">
+  <h2>Get help</h2>
+  <div class="grid cols-2">
+    <div class="card">
+      <h3>Issues</h3>
+      <p>Bug reports, crashes, wrong results, and feature requests. The fastest way to get a fix: include a minimal reproduction, the SQL you ran, and the input file (or a synthetic version of it).</p>
+      <a class="card-link" href="https://github.com/SouravRoy-ETL/slothdb/issues">Open an issue on GitHub →</a>
+    </div>
+    <div class="card">
+      <h3>Discussions</h3>
+      <p>Questions, design discussion, benchmark debates, and "how do I do X" without it being a bug. Also where new features get scoped before they become issues.</p>
+      <a class="card-link" href="https://github.com/SouravRoy-ETL/slothdb/discussions">Browse discussions →</a>
+    </div>
+    <div class="card">
+      <h3>Email the author</h3>
+      <p>For private reports (security, licensing, commercial use), reach the author directly. For anything else, please use issues so others benefit.</p>
+      <a class="card-link" href="mailto:souravroy7864@gmail.com">souravroy7864@gmail.com</a>
+    </div>
+    <div class="card">
+      <h3>Security</h3>
+      <p>Please disclose security issues privately first. Bounds-checked parsing and DoS limits are in place, but the project is young. Report by email above and we'll work out a fix before public disclosure.</p>
+    </div>
+  </div>
+</section>
+
+<section class="page narrow">
+  <h2>Contribute</h2>
+  <p class="section-lede">Pull requests are welcome for bug fixes, missing SQL features, new file format readers, docs, and benchmark improvements.</p>
+  <div class="grid cols-2">
+    <div class="card">
+      <h3>First-time contributors</h3>
+      <p>Good entry points: failing cases in the test suite, missing SQL functions from the standard dialect, docs improvements, new examples. Look for issues tagged <code>good-first-issue</code>.</p>
+      <a class="card-link" href="https://github.com/SouravRoy-ETL/slothdb/issues?q=is%3Aopen+label%3A%22good+first+issue%22">Good first issues →</a>
+    </div>
+    <div class="card">
+      <h3>Build + test</h3>
+<pre class="code">git clone https://github.com/SouravRoy-ETL/slothdb
+cd slothdb
+cmake -B build -DSLOTHDB_BUILD_SHELL=ON \
+  -DSLOTHDB_BUILD_TESTS=ON
+cmake --build build --config Release
+ctest --test-dir build -C Release</pre>
+    </div>
+    <div class="card">
+      <h3>Coding standards</h3>
+      <p>C++20, <code>.clang-format</code> enforced. Avoid adding dependencies. Every perf optimization should ship with a benchmark delta in the commit message.</p>
+    </div>
+    <div class="card">
+      <h3>Testing</h3>
+      <p>326 tests, 131 000+ assertions via doctest. Every new feature needs a test. Benchmarks live in <code>real-life-testing/</code> — run before and after perf changes.</p>
+    </div>
+  </div>
+</section>
+
+<section class="page narrow">
+  <h2>Project status</h2>
+  <p>SlothDB is v0.1.3. About six months old, one primary author, CI-green on Windows, Linux and macOS. Use it in real workflows, expect to file bugs. It's not production-critical yet.</p>
+  <p>The project is developed in the open. Every optimization, every benchmark change, every extension is one commit in the <a href="https://github.com/SouravRoy-ETL/slothdb/commits/main">git log</a>.</p>
+</section>
+
+<section class="page narrow">
+  <h2>Release history</h2>
+  <ul>
+    <li><b>v0.1.3</b> — Arrow IPC + SQLite on the fast path, <code>PhysicalArrowScan</code> and <code>PhysicalSQLiteScan</code></li>
+    <li><b>v0.1.2</b> — CSV beats DuckDB on every query (vectorized filter, fused WHERE, parallel no-GROUP-BY aggregate)</li>
+    <li><b>v0.1.1</b> — JSON parser rewrite, Excel streaming scan</li>
+    <li><b>v0.1.0</b> — First public release: CSV, Parquet, JSON, CLI shell, Python, C/C++ API</li>
+  </ul>
+  <p>See the full <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">CHANGELOG</a> for per-commit details.</p>
+</section>
+
+<section class="page narrow">
+  <h2>Credits &amp; acknowledgements</h2>
+  <p>SlothDB is inspired by <a href="https://duckdb.org">DuckDB</a>, <a href="https://sqlite.org">SQLite</a>, <a href="https://clickhouse.com">ClickHouse</a>, and the body of academic work on vectorized query execution (Boncz, Kersten, Neumann).</p>
+  <p>Built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>. Contributors listed on the <a href="https://github.com/SouravRoy-ETL/slothdb/graphs/contributors">GitHub contributors graph</a>.</p>
+  <p>If you're using SlothDB in a product or research project, an email or a mention on GitHub Discussions helps keep the project going.</p>
+</section>
+
+<footer>
+  <div class="cols">
+    <div>
+      <h4>Project</h4>
+      <ul>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb">GitHub repo</a></li>
+        <li><a href="https://pypi.org/project/slothdb/">PyPI package</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/releases">Releases</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">Changelog</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Documentation</h4>
+      <ul>
+        <li><a href="docs.html">Overview</a></li>
+        <li><a href="docs.html#python-api">Python API</a></li>
+        <li><a href="docs.html#sql">SQL reference</a></li>
+        <li><a href="docs.html#benchmarks">Benchmarks</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Community</h4>
+      <ul>
+        <li><a href="community.html">Overview</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/issues">Issues</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/discussions">Discussions</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CONTRIBUTING.md">Contributing</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Legal</h4>
+      <ul>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/LICENSE">MIT License</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="meta">
+    SlothDB v0.1.3 · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
+  </div>
+</footer>
+
+<script>
+fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
+  .then(r => r.json())
+  .then(d => {
+    if (d && typeof d.stargazers_count === 'number')
+      document.getElementById('gh-stars').textContent = '★ ' + d.stargazers_count;
+  })
+  .catch(() => {});
+</script>
+
+</body>
+</html>

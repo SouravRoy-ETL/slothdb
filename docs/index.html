@@ -17,7 +17,6 @@
 <meta property="og:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 <meta property="og:image:width" content="1000">
 <meta property="og:image:height" content="520">
-<meta property="og:image:alt" content="SlothDB vs DuckDB benchmark chart — SlothDB is 1.04x to 8.6x faster across 15 queries">
 <meta property="og:site_name" content="SlothDB">
 
 <meta name="twitter:card" content="summary_large_image">
@@ -28,6 +27,7 @@
 
 <link rel="canonical" href="https://slothdb.org/">
 <link rel="icon" type="image/svg+xml" href="assets/icon.svg">
+<link rel="stylesheet" href="style.css">
 
 <script type="application/ld+json">
 {
@@ -37,7 +37,7 @@
       "@type": "SoftwareApplication",
       "name": "SlothDB",
       "alternateName": ["slothdb"],
-      "description": "Fast in-process SQL database for local data files. A drop-in DuckDB alternative with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite. 1.1x–8.6x faster than DuckDB on every benchmark.",
+      "description": "Fast in-process SQL database for local data files. A drop-in DuckDB alternative with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite. 1.1x-8.6x faster than DuckDB on every benchmark.",
       "applicationCategory": "DatabaseApplication",
       "operatingSystem": "Windows, macOS, Linux",
       "url": "https://slothdb.org/",
@@ -47,228 +47,24 @@
       "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
       "author": { "@type": "Person", "name": "Sourav Roy", "url": "https://github.com/SouravRoy-ETL" },
       "programmingLanguage": "C++20",
-      "codeRepository": "https://github.com/SouravRoy-ETL/slothdb",
-      "sameAs": [
-        "https://github.com/SouravRoy-ETL/slothdb",
-        "https://pypi.org/project/slothdb/"
-      ]
+      "codeRepository": "https://github.com/SouravRoy-ETL/slothdb"
     }
   ]
 }
 </script>
-
-<style>
-:root {
-  --bg: #0D1117;
-  --bg-elev: #161B22;
-  --bg-code: #1A1D25;
-  --border: #30363D;
-  --text: #E6E8EB;
-  --text-dim: #8B949E;
-  --text-muted: #6B7280;
-  --accent: #A78BFA;
-  --accent-dim: #7C6BC9;
-  --win: #34D399;
-  --warn: #F59E0B;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html { scroll-behavior: smooth; }
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--font);
-  font-size: 16px;
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-}
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-code, pre { font-family: var(--mono); }
-
-/* Top nav */
-nav.top {
-  position: sticky; top: 0; z-index: 50;
-  background: rgba(13, 17, 23, 0.85);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
-  padding: 14px 32px;
-  display: flex; align-items: center; justify-content: space-between;
-}
-nav.top .brand {
-  display: flex; align-items: center; gap: 10px;
-  color: var(--text); font-weight: 600; font-size: 17px;
-}
-nav.top .brand img { height: 28px; width: 28px; }
-nav.top ul { list-style: none; display: flex; gap: 28px; align-items: center; }
-nav.top ul a { color: var(--text-dim); font-size: 14px; font-weight: 500; }
-nav.top ul a:hover { color: var(--text); text-decoration: none; }
-nav.top .gh-btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  background: var(--bg-elev); border: 1px solid var(--border);
-  padding: 6px 12px; border-radius: 6px;
-  color: var(--text) !important; font-size: 13px; font-weight: 500;
-}
-nav.top .gh-btn:hover { background: var(--bg-code); text-decoration: none; }
-nav.top .gh-btn .star-count { color: var(--text-dim); }
-
-/* Hero */
-section.hero {
-  padding: 80px 32px 60px;
-  max-width: 1100px; margin: 0 auto;
-  text-align: center;
-}
-section.hero img.banner { max-width: 100%; height: auto; margin-bottom: 28px; }
-section.hero h1 {
-  font-size: 44px; line-height: 1.2; font-weight: 700;
-  margin-bottom: 18px; letter-spacing: -0.02em;
-}
-section.hero h1 .accent { color: var(--accent); }
-section.hero p.lede {
-  font-size: 19px; color: var(--text-dim);
-  max-width: 720px; margin: 0 auto 36px;
-}
-section.hero .ctas {
-  display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
-  margin-bottom: 24px;
-}
-section.hero .cta {
-  padding: 12px 22px; border-radius: 6px; font-weight: 600; font-size: 15px;
-  display: inline-flex; align-items: center; gap: 8px;
-}
-section.hero .cta.primary { background: var(--accent); color: #fff; }
-section.hero .cta.primary:hover { background: var(--accent-dim); text-decoration: none; }
-section.hero .cta.ghost { background: var(--bg-elev); border: 1px solid var(--border); color: var(--text); }
-section.hero .cta.ghost:hover { background: var(--bg-code); text-decoration: none; }
-section.hero .install-line {
-  background: var(--bg-code); border: 1px solid var(--border);
-  padding: 14px 20px; border-radius: 8px;
-  display: inline-flex; align-items: center; gap: 14px;
-  font-family: var(--mono); font-size: 14px;
-  color: var(--text);
-  max-width: 100%; overflow: hidden;
-}
-section.hero .install-line .prompt { color: var(--text-muted); }
-section.hero .install-line button {
-  background: transparent; border: 1px solid var(--border);
-  color: var(--text-dim); padding: 4px 10px; border-radius: 4px;
-  cursor: pointer; font-family: var(--mono); font-size: 12px;
-}
-section.hero .install-line button:hover { color: var(--text); border-color: var(--accent); }
-
-/* Section wrapper */
-section.page { max-width: 1100px; margin: 0 auto; padding: 60px 32px; }
-section.page h2 {
-  font-size: 30px; font-weight: 700; margin-bottom: 16px;
-  letter-spacing: -0.01em;
-}
-section.page h2 .accent { color: var(--accent); }
-section.page p.section-lede { color: var(--text-dim); font-size: 17px; margin-bottom: 36px; max-width: 780px; }
-
-/* Demo */
-section.demo { border-top: 1px solid var(--border); }
-section.demo .demo-wrap {
-  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
-  padding: 20px; display: flex; justify-content: center;
-}
-section.demo .demo-wrap img { max-width: 100%; height: auto; }
-
-/* Features grid */
-section.features { border-top: 1px solid var(--border); }
-section.features .grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 20px; margin-top: 30px;
-}
-section.features .card {
-  background: var(--bg-elev); border: 1px solid var(--border);
-  padding: 24px; border-radius: 10px;
-}
-section.features .card h3 {
-  font-size: 17px; font-weight: 600; margin-bottom: 10px;
-  display: flex; align-items: center; gap: 10px;
-}
-section.features .card h3 .dot {
-  width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
-}
-section.features .card p { color: var(--text-dim); font-size: 14px; line-height: 1.6; }
-
-/* Benchmarks */
-section.bench { border-top: 1px solid var(--border); }
-section.bench table {
-  width: 100%; border-collapse: collapse;
-  margin-top: 20px; font-size: 14px;
-  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
-  overflow: hidden;
-}
-section.bench th, section.bench td {
-  padding: 12px 18px; text-align: left;
-  border-bottom: 1px solid var(--border);
-}
-section.bench th {
-  background: var(--bg-code); color: var(--text-dim);
-  font-weight: 600; font-size: 13px;
-  text-transform: uppercase; letter-spacing: 0.04em;
-}
-section.bench td.num { text-align: right; font-family: var(--mono); }
-section.bench td.win { color: var(--win); font-weight: 600; text-align: right; font-family: var(--mono); }
-section.bench tr:last-child td { border-bottom: none; }
-section.bench .note { color: var(--text-muted); font-size: 13px; margin-top: 14px; }
-
-/* Code blocks */
-pre.code {
-  background: var(--bg-code); border: 1px solid var(--border);
-  padding: 20px; border-radius: 8px;
-  font-size: 14px; color: var(--text);
-  overflow-x: auto; line-height: 1.55;
-}
-pre.code .cm { color: var(--text-muted); }
-pre.code .kw { color: var(--accent); font-weight: 500; }
-pre.code .str { color: var(--win); }
-
-section.install .grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 20px; margin-top: 30px;
-}
-section.install .card { background: var(--bg-elev); border: 1px solid var(--border); padding: 22px; border-radius: 10px; }
-section.install .card h3 { font-size: 16px; margin-bottom: 12px; }
-section.install .card pre { background: var(--bg-code); padding: 14px; border-radius: 6px; font-size: 13px; overflow-x: auto; border: 1px solid var(--border); }
-
-/* Footer */
-footer {
-  border-top: 1px solid var(--border);
-  padding: 40px 32px 60px;
-  text-align: center;
-  color: var(--text-muted); font-size: 14px;
-}
-footer .links { display: flex; gap: 28px; justify-content: center; margin-bottom: 18px; }
-footer .links a { color: var(--text-dim); }
-footer .meta { font-size: 13px; }
-
-@media (max-width: 700px) {
-  nav.top { padding: 12px 18px; }
-  nav.top ul { gap: 14px; }
-  nav.top ul li.hide-sm { display: none; }
-  section.hero { padding: 50px 20px 40px; }
-  section.hero h1 { font-size: 32px; }
-  section.hero p.lede { font-size: 16px; }
-  section.page { padding: 40px 20px; }
-  section.page h2 { font-size: 24px; }
-}
-</style>
 </head>
 <body>
 
 <nav class="top">
   <a class="brand" href="/">
     <img src="assets/icon.svg" alt="SlothDB logo">
-    SlothDB
+    SlothDB <span class="ver">v0.1.3</span>
   </a>
   <ul>
+    <li class="hide-sm"><a href="docs.html">Docs</a></li>
     <li class="hide-sm"><a href="#install">Install</a></li>
     <li class="hide-sm"><a href="#benchmarks">Benchmarks</a></li>
-    <li class="hide-sm"><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/DOCUMENTATION.md">Docs</a></li>
-    <li class="hide-sm"><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">Changelog</a></li>
+    <li class="hide-sm"><a href="community.html">Community</a></li>
     <li>
       <a class="gh-btn" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
@@ -281,87 +77,185 @@ footer .meta { font-size: 13px; }
 
 <section class="hero">
   <img class="banner" src="assets/hero.svg" alt="SlothDB beats DuckDB">
-  <h1>A fast, in-process SQL database<br>for your <span class="accent">local data files</span>.</h1>
-  <p class="lede">SlothDB is a drop-in DuckDB alternative with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite. 1.1×–8.6× faster than DuckDB on every query in the benchmark suite.</p>
+  <h1>A fast in-process SQL database<br>for your <span class="accent">local data files</span>.</h1>
+  <p class="lede">SlothDB is a drop-in DuckDB alternative. Point SQL at Parquet, CSV, JSON, Avro, Arrow or SQLite — no server, no import step, no extensions. 1.1×–8.6× faster than DuckDB on every query in the benchmark suite.</p>
   <div class="install-line">
     <span class="prompt">$</span>
     <span id="install-cmd">pip install slothdb</span>
     <button onclick="copyInstall()">Copy</button>
   </div>
-  <div class="ctas" style="margin-top: 28px;">
-    <a class="cta primary" href="#install">Get started</a>
-    <a class="cta ghost" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">View on GitHub</a>
+  <div class="ctas">
+    <a class="btn primary" href="#quickstart">Get started</a>
+    <a class="btn ghost" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">View on GitHub</a>
+    <a class="btn ghost" href="docs.html">Read the docs</a>
   </div>
 </section>
 
-<section class="demo page">
-  <h2>60-second tour</h2>
-  <p class="section-lede">After <code>pip install slothdb</code>, run <code>python -c "import slothdb; slothdb.demo()"</code> — it generates a 100 000-row CSV, runs three queries, and prints a side-by-side against DuckDB on your own machine.</p>
+<section class="page" id="quickstart">
+  <h2>Try it <span class="accent">in 60 seconds</span></h2>
+  <p class="section-lede">No files to find. The demo generates a 100 000-row CSV, runs three queries through SlothDB, and prints a side-by-side timing against DuckDB on your own machine.</p>
   <div class="demo-wrap">
     <img src="assets/demo.svg" alt="SlothDB demo — side-by-side timing vs DuckDB">
   </div>
 </section>
 
-<section class="features page">
-  <h2>What makes it <span class="accent">different</span></h2>
-  <p class="section-lede">Same embedded model as DuckDB and SQLite — link it in, point SQL at files on disk. The defaults are different.</p>
-  <div class="grid">
-    <div class="card">
-      <h3><span class="dot"></span>Seven file formats built in</h3>
-      <p>Parquet, CSV, JSON, Avro, Arrow, SQLite, Excel — all in core. DuckDB needs separate extensions for Avro, SQLite and Excel.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>1.1×–8.6× faster than DuckDB</h3>
-      <p>On a 1M-row benchmark across 15 queries spanning every supported format. Avro SUM is 5.4×. CSV COUNT(*) is 5.1×. Parquet SUM is a tie.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>Stable C ABI for extensions</h3>
-      <p>Numeric error codes (<code>ErrorCode::TABLE_NOT_FOUND = 2000</code>) that never change. Extensions built for v0.1 keep working on v1.0.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>~8 MB self-contained binary</h3>
-      <p>One file on disk. No runtime dependencies. Embeds into your app, runs as a shell, or imports into Python.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>No server, no import, no setup</h3>
-      <p>Point SQL at the file and go. No <code>CREATE TABLE</code>, no <code>COPY FROM</code>, no extension to load first.</p>
-    </div>
-    <div class="card">
-      <h3><span class="dot"></span>MIT licensed</h3>
-      <p>Use it anywhere, including commercial products. Source on GitHub, 326 tests, 131 000+ assertions.</p>
-    </div>
-  </div>
-</section>
-
 <section class="page">
-  <h2>Query any file with <span class="accent">SQL</span></h2>
-  <p class="section-lede">No <code>CREATE TABLE</code>. No import step. Point at the file.</p>
-<pre class="code"><span class="cm">-- Local Parquet / CSV / JSON</span>
+  <h2>Use it from <span class="accent">any language</span></h2>
+  <p class="section-lede">SlothDB links into your process. No server to start, no network. The same binary powers the Python package, the CLI, and C/C++ embedding.</p>
+
+  <div class="tabs" role="tablist">
+    <button class="active" onclick="showTab(event, 'py')">Python</button>
+    <button onclick="showTab(event, 'cli')">CLI</button>
+    <button onclick="showTab(event, 'cpp')">C/C++</button>
+    <button onclick="showTab(event, 'sql')">SQL</button>
+  </div>
+
+  <div id="py" class="tab-panel active">
+<pre class="code"><span class="kw">import</span> slothdb
+
+db = slothdb.<span class="fn">connect</span>()                                  <span class="cm"># in-memory</span>
+db = slothdb.<span class="fn">connect</span>(<span class="str">"analytics.slothdb"</span>)              <span class="cm"># persistent</span>
+
+<span class="cm"># Query files directly — no CREATE TABLE, no COPY FROM</span>
+df = db.<span class="fn">sql</span>(<span class="str">"""
+    SELECT region, SUM(revenue)
+    FROM 'sales.parquet'
+    WHERE year &gt;= 2023
+    GROUP BY region
+"""</span>).<span class="fn">fetchdf</span>()    <span class="cm"># → pandas DataFrame</span></pre>
+  </div>
+
+  <div id="cli" class="tab-panel">
+<pre class="code"><span class="cm"># Interactive shell</span>
+$ slothdb
+<span class="kw">slothdb&gt;</span> <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="str">'data.parquet'</span> <span class="kw">LIMIT</span> 5;
+
+<span class="cm"># Or one-shot from the command line</span>
+$ slothdb -c <span class="str">"SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region;"</span>
+
+<span class="cm"># Persistent database</span>
+$ slothdb analytics.slothdb</pre>
+  </div>
+
+  <div id="cpp" class="tab-panel">
+<pre class="code"><span class="cm">#include &lt;slothdb/api/slothdb.h&gt;</span>
+
+slothdb_database *db;
+slothdb_connection *conn;
+slothdb_result *result;
+
+<span class="fn">slothdb_open</span>(<span class="str">"analytics.slothdb"</span>, &amp;db);
+<span class="fn">slothdb_connect</span>(db, &amp;conn);
+<span class="fn">slothdb_query</span>(conn,
+  <span class="str">"SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region"</span>,
+  &amp;result);
+
+<span class="kw">for</span> (uint64_t r = 0; r &lt; <span class="fn">slothdb_row_count</span>(result); r++)
+  printf(<span class="str">"%s: %s\n"</span>,
+    <span class="fn">slothdb_value_varchar</span>(result, r, 0),
+    <span class="fn">slothdb_value_varchar</span>(result, r, 1));
+
+<span class="fn">slothdb_free_result</span>(result);</pre>
+  </div>
+
+  <div id="sql" class="tab-panel">
+<pre class="code"><span class="cm">-- Parquet / CSV / JSON / Arrow — same syntax</span>
 <span class="kw">SELECT</span> region, <span class="kw">SUM</span>(revenue)
 <span class="kw">FROM</span> <span class="str">'sales.parquet'</span>
 <span class="kw">WHERE</span> year &gt;= 2023
 <span class="kw">GROUP BY</span> region;
 
 <span class="cm">-- Avro, Arrow, SQLite — no extension load needed</span>
-<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="kw">read_avro</span>(<span class="str">'events.avro'</span>) <span class="kw">LIMIT</span> 100;
-<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="kw">sqlite_scan</span>(<span class="str">'app.db'</span>, <span class="str">'users'</span>);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">read_avro</span>(<span class="str">'events.avro'</span>);
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">sqlite_scan</span>(<span class="str">'app.db'</span>, <span class="str">'users'</span>);
 
-<span class="cm">-- Export results to any format</span>
+<span class="cm">-- Export to any format</span>
 <span class="kw">COPY</span> (<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="str">'big.csv'</span> <span class="kw">WHERE</span> year &gt;= 2024)
 <span class="kw">TO</span> <span class="str">'filtered.parquet'</span> <span class="kw">WITH</span> (<span class="kw">FORMAT</span> PARQUET);
-</pre>
+
+<span class="cm">-- QUALIFY for top-N-per-group without subqueries</span>
+<span class="kw">SELECT</span> name, department, salary
+<span class="kw">FROM</span> <span class="str">'employees.parquet'</span>
+<span class="kw">QUALIFY</span> <span class="fn">ROW_NUMBER</span>() <span class="kw">OVER</span> (<span class="kw">PARTITION BY</span> department <span class="kw">ORDER BY</span> salary <span class="kw">DESC</span>) = 1;</pre>
+  </div>
 </section>
 
-<section class="bench page" id="benchmarks">
+<section class="page">
+  <h2>Why <span class="accent">SlothDB</span>?</h2>
+  <p class="section-lede">Same embedded model as DuckDB and SQLite. The defaults are different.</p>
+  <div class="grid cols-3">
+    <div class="card">
+      <h3><span class="dot"></span>Simple</h3>
+      <p>Point SQL at a file. No <code>CREATE TABLE</code>, no import, no extension to load. <code>pip install slothdb</code> and you're running.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot"></span>Seven formats built in</h3>
+      <p>Parquet, CSV, JSON, Avro, Arrow, SQLite and Excel — all in core. DuckDB needs extensions for Avro, SQLite and Excel.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot"></span>Fast</h3>
+      <p>1.1×–8.6× faster than DuckDB across 15 benchmark queries. Vectorized columnar execution, morsel-driven parallelism, typed streaming scans.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot"></span>Portable</h3>
+      <p>Single ~8 MB binary. Runs on Windows, Linux, macOS. Links into Python, C, C++. No runtime dependencies.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot"></span>Stable C ABI</h3>
+      <p>Numeric error codes (<code>ErrorCode::TABLE_NOT_FOUND = 2000</code>) that never change. Extensions built for v0.1 keep working on v1.0.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot"></span>Free and open</h3>
+      <p>MIT licensed. Source on GitHub. 326 tests, 131 000+ assertions. Use it anywhere, including in commercial products.</p>
+    </div>
+  </div>
+</section>
+
+<section class="page">
+  <h2>Ecosystem</h2>
+  <p class="section-lede">One engine, many on-ramps.</p>
+  <div class="grid cols-3">
+    <div class="card">
+      <h3>File formats</h3>
+      <p>Parquet (zstd/snappy), CSV (RFC 4180), JSON/NDJSON, Avro, Arrow IPC, SQLite, Excel (xlsx). All native readers — no plugins, no conversion step.</p>
+    </div>
+    <div class="card">
+      <h3>Python</h3>
+      <p>Installable via pip. Connection API, <code>fetchdf()</code> returns a pandas DataFrame. Works in Jupyter, scripts, FastAPI, Dagster.</p>
+      <a class="card-link" href="https://pypi.org/project/slothdb/">pypi.org/project/slothdb →</a>
+    </div>
+    <div class="card">
+      <h3>C / C++</h3>
+      <p>Stable C ABI headers, CMake integration, RAII-friendly pointer lifecycle. Embed in desktop apps or server-side tools.</p>
+      <a class="card-link" href="docs.html#cpp-api">C/C++ API reference →</a>
+    </div>
+    <div class="card">
+      <h3>CLI shell</h3>
+      <p>Interactive shell with line editing, <code>.tables</code> / <code>.schema</code> / <code>.help</code> meta-commands, persistent history, UTF-8 support.</p>
+    </div>
+    <div class="card">
+      <h3>Extensions</h3>
+      <p>Build custom functions and table scans against a stable C header. Load at runtime via <code>LOAD 'my_ext'</code>. Won't break on version bumps.</p>
+      <a class="card-link" href="docs.html#extensions">Extension guide →</a>
+    </div>
+    <div class="card">
+      <h3>Dataframe interchange</h3>
+      <p>Convert query results directly to pandas DataFrames. Arrow IPC read/write for zero-copy handoff to other tools.</p>
+    </div>
+  </div>
+</section>
+
+<section class="page" id="benchmarks">
   <h2>Performance</h2>
   <p class="section-lede">1M-row dataset · warm cache · 5-run median · same machine · same queries.</p>
-  <table>
+  <table class="data">
     <thead>
       <tr><th>Format</th><th>Query</th><th style="text-align:right">SlothDB</th><th style="text-align:right">DuckDB</th><th style="text-align:right">Speedup</th></tr>
     </thead>
     <tbody>
       <tr><td>CSV</td><td>COUNT(*)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
       <tr><td>CSV</td><td>GROUP BY region</td><td class="num">100 ms</td><td class="num">191 ms</td><td class="win">1.91×</td></tr>
+      <tr><td>CSV</td><td>WHERE + GROUP BY</td><td class="num">107 ms</td><td class="num">194 ms</td><td class="win">1.81×</td></tr>
       <tr><td>Parquet</td><td>COUNT(*)</td><td class="num">12 ms</td><td class="num">34 ms</td><td class="win">2.83×</td></tr>
       <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td class="win">1.04×</td></tr>
       <tr><td>Parquet</td><td>GROUP BY region</td><td class="num">76 ms</td><td class="num">88 ms</td><td class="win">1.16×</td></tr>
@@ -371,31 +265,31 @@ footer .meta { font-size: 13px; }
       <tr><td>Excel</td><td>GROUP BY region</td><td class="num">2.5 s</td><td class="num">3.56 s</td><td class="win">1.41×</td></tr>
     </tbody>
   </table>
-  <p class="note">Full 15-query table and methodology in the <a href="https://github.com/SouravRoy-ETL/slothdb#performance--11---86-faster-than-duckdb-every-format-every-query">README</a>.</p>
+  <p style="color: var(--text-muted); font-size: 13px; margin-top: 14px;">Full 15-query table and methodology in the <a href="https://github.com/SouravRoy-ETL/slothdb#performance--11---86-faster-than-duckdb-every-format-every-query">README</a>.</p>
 </section>
 
-<section class="install page" id="install">
+<section class="page" id="install">
   <h2>Install</h2>
-  <p class="section-lede">Pick a platform. Single binary, no dependencies.</p>
-  <div class="grid">
+  <p class="section-lede">Single binary. No runtime dependencies.</p>
+  <div class="grid cols-2">
     <div class="card">
       <h3>Python</h3>
-      <pre>pip install slothdb
-python -c "import slothdb; slothdb.demo()"</pre>
+<pre class="code">pip install slothdb
+python -c <span class="str">"import slothdb; slothdb.demo()"</span></pre>
     </div>
     <div class="card">
-      <h3>Linux / macOS (curl)</h3>
-      <pre>curl -fsSL https://raw.githubusercontent.com/\
-SouravRoy-ETL/slothdb/main/install.sh | bash</pre>
+      <h3>Linux / macOS</h3>
+<pre class="code">curl -fsSL \
+  https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh \
+  | bash</pre>
     </div>
     <div class="card">
       <h3>Windows</h3>
-      <pre>Download slothdb.exe from
-github.com/SouravRoy-ETL/slothdb/releases/latest</pre>
+      <p style="margin-bottom: 12px;">Download <code>slothdb.exe</code> from the <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest">latest release</a>.</p>
     </div>
     <div class="card">
       <h3>Build from source</h3>
-      <pre>git clone https://github.com/SouravRoy-ETL/slothdb
+<pre class="code">git clone https://github.com/SouravRoy-ETL/slothdb
 cd slothdb
 cmake -B build -DSLOTHDB_BUILD_SHELL=ON
 cmake --build build --config Release</pre>
@@ -404,15 +298,43 @@ cmake --build build --config Release</pre>
 </section>
 
 <footer>
-  <div class="links">
-    <a href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
-    <a href="https://pypi.org/project/slothdb/">PyPI</a>
-    <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/DOCUMENTATION.md">Docs</a>
-    <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">Changelog</a>
-    <a href="https://github.com/SouravRoy-ETL/slothdb/issues">Issues</a>
+  <div class="cols">
+    <div>
+      <h4>Project</h4>
+      <ul>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb">GitHub repo</a></li>
+        <li><a href="https://pypi.org/project/slothdb/">PyPI package</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/releases">Releases</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">Changelog</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Documentation</h4>
+      <ul>
+        <li><a href="docs.html">Overview</a></li>
+        <li><a href="docs.html#python-api">Python API</a></li>
+        <li><a href="docs.html#sql">SQL reference</a></li>
+        <li><a href="docs.html#benchmarks">Benchmarks</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Community</h4>
+      <ul>
+        <li><a href="community.html">Overview</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/issues">Issues</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/discussions">Discussions</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CONTRIBUTING.md">Contributing</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Legal</h4>
+      <ul>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/LICENSE">MIT License</a></li>
+      </ul>
+    </div>
   </div>
   <div class="meta">
-    SlothDB v0.1.3 · MIT licensed · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
+    SlothDB v0.1.3 · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
   </div>
 </footer>
 
@@ -426,13 +348,17 @@ function copyInstall() {
     setTimeout(() => { btn.textContent = orig; }, 1600);
   });
 }
-
+function showTab(ev, id) {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  ev.currentTarget.classList.add('active');
+  document.getElementById(id).classList.add('active');
+}
 fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
   .then(r => r.json())
   .then(d => {
-    if (d && typeof d.stargazers_count === 'number') {
+    if (d && typeof d.stargazers_count === 'number')
       document.getElementById('gh-stars').textContent = '★ ' + d.stargazers_count;
-    }
   })
   .catch(() => {});
 </script>

@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Documentation · SlothDB</title>
+<meta name="description" content="SlothDB documentation — install, Python API, SQL reference, file format guides, benchmarks, extensions, and internals.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0D1117">
+<link rel="canonical" href="https://slothdb.org/docs.html">
+<link rel="icon" type="image/svg+xml" href="assets/icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top">
+  <a class="brand" href="/">
+    <img src="assets/icon.svg" alt="SlothDB logo">
+    SlothDB <span class="ver">v0.1.3</span>
+  </a>
+  <ul>
+    <li class="hide-sm"><a href="docs.html" class="active">Docs</a></li>
+    <li class="hide-sm"><a href="index.html#install">Install</a></li>
+    <li class="hide-sm"><a href="index.html#benchmarks">Benchmarks</a></li>
+    <li class="hide-sm"><a href="community.html">Community</a></li>
+    <li>
+      <a class="gh-btn" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        <span>GitHub</span>
+        <span class="star-count" id="gh-stars">★ …</span>
+      </a>
+    </li>
+  </ul>
+</nav>
+
+<div class="docs-layout">
+
+  <aside class="docs-sidebar">
+    <div class="group">
+      <h4>Getting Started</h4>
+      <ul>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#installation">Installation</a></li>
+        <li><a href="#first-query">Your first query</a></li>
+      </ul>
+    </div>
+    <div class="group">
+      <h4>Querying Files</h4>
+      <ul>
+        <li><a href="#parquet">Parquet</a></li>
+        <li><a href="#csv">CSV</a></li>
+        <li><a href="#json">JSON</a></li>
+        <li><a href="#avro">Avro</a></li>
+        <li><a href="#arrow">Arrow IPC</a></li>
+        <li><a href="#sqlite">SQLite</a></li>
+      </ul>
+    </div>
+    <div class="group">
+      <h4>Clients</h4>
+      <ul>
+        <li><a href="#python-api">Python</a></li>
+        <li><a href="#cli">CLI shell</a></li>
+        <li><a href="#cpp-api">C / C++</a></li>
+      </ul>
+    </div>
+    <div class="group">
+      <h4>SQL</h4>
+      <ul>
+        <li><a href="#sql">Overview</a></li>
+        <li><a href="#sql-joins">Joins &amp; CTEs</a></li>
+        <li><a href="#sql-windows">Window functions</a></li>
+      </ul>
+    </div>
+    <div class="group">
+      <h4>Internals</h4>
+      <ul>
+        <li><a href="#benchmarks">Benchmarks</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#extensions">Extensions</a></li>
+      </ul>
+    </div>
+    <div class="group">
+      <h4>Meta</h4>
+      <ul>
+        <li><a href="#limitations">Limitations</a></li>
+        <li><a href="#roadmap">Roadmap</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <main class="docs-content">
+
+    <h1 id="overview">SlothDB Documentation</h1>
+    <p class="doc-lede">SlothDB is a fast in-process SQL database for your local data files. It runs inside your application or as a standalone shell, reads seven file formats natively, and is 1.1×–8.6× faster than DuckDB on every benchmark query.</p>
+
+    <p>This page is the short reference. For long-form guides, see the <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/DOCUMENTATION.md">full documentation on GitHub</a>. For the SQL cheat sheet, see the <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/SQL_REFERENCE.md">SQL reference</a>.</p>
+
+    <h2 id="installation">Installation</h2>
+    <p>SlothDB ships as a single binary with no runtime dependencies. Pick whichever entry point fits your workflow:</p>
+
+    <h3>Python</h3>
+<pre class="code">pip install slothdb
+python -c <span class="str">"import slothdb; slothdb.demo()"</span></pre>
+    <p>The <code>demo()</code> call generates a 100 000-row synthetic CSV, runs three queries with timing, and (if <code>duckdb</code> is installed) prints a side-by-side comparison.</p>
+
+    <h3>Linux / macOS (install script)</h3>
+<pre class="code">curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash</pre>
+
+    <h3>Windows</h3>
+    <p>Download <code>slothdb.exe</code> from the <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest">latest release</a>. Unzip and run.</p>
+
+    <h3>Build from source</h3>
+<pre class="code">git clone https://github.com/SouravRoy-ETL/slothdb
+cd slothdb
+cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release</pre>
+
+    <h2 id="first-query">Your first query</h2>
+<pre class="code">$ slothdb
+<span class="kw">slothdb&gt;</span> <span class="kw">SELECT</span> <span class="str">'Hello, world!'</span> <span class="kw">AS</span> greeting;
+<span class="kw">slothdb&gt;</span> <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="str">'sales.csv'</span> <span class="kw">LIMIT</span> 5;</pre>
+    <p>No <code>CREATE TABLE</code>. No <code>COPY FROM</code>. SlothDB auto-detects the format and streams results.</p>
+
+    <h2 id="parquet">Querying Parquet</h2>
+<pre class="code"><span class="cm">-- Auto-detected by extension</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="str">'events.parquet'</span> <span class="kw">WHERE</span> year &gt;= 2023;
+
+<span class="cm">-- Explicit function call for globs and options</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">read_parquet</span>(<span class="str">'logs/*.parquet'</span>);</pre>
+    <p>Supports zstd, snappy, and gzip compression. Filter pushdown drops whole row groups when possible.</p>
+
+    <h2 id="csv">Querying CSV</h2>
+<pre class="code"><span class="kw">SELECT</span> region, <span class="kw">SUM</span>(revenue)
+<span class="kw">FROM</span> <span class="fn">read_csv</span>(<span class="str">'sales/*.csv'</span>)
+<span class="kw">GROUP BY</span> region;</pre>
+    <p>RFC 4180 compliant. Handles quoted fields, embedded newlines, and custom delimiters. Headers auto-detected.</p>
+
+    <h2 id="json">Querying JSON</h2>
+<pre class="code"><span class="cm">-- JSON array, object, or NDJSON — all work</span>
+<span class="kw">SELECT</span> status, <span class="kw">COUNT</span>(*)
+<span class="kw">FROM</span> <span class="str">'api_logs.json'</span>
+<span class="kw">GROUP BY</span> status;</pre>
+
+    <h2 id="avro">Querying Avro</h2>
+<pre class="code"><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">read_avro</span>(<span class="str">'events.avro'</span>);</pre>
+    <p>Avro is built in — no extension load needed. This is one of SlothDB's biggest wins over DuckDB (which requires <code>INSTALL avro; LOAD avro;</code>).</p>
+
+    <h2 id="arrow">Querying Arrow IPC</h2>
+<pre class="code"><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">read_arrow</span>(<span class="str">'file.arrow'</span>);</pre>
+
+    <h2 id="sqlite">Querying SQLite</h2>
+<pre class="code"><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">sqlite_scan</span>(<span class="str">'app.db'</span>, <span class="str">'users'</span>);</pre>
+    <p>Reads an existing SQLite file in place. No conversion. Columnar streaming on top of row-oriented storage gives a 10-100× win over raw SQLite on analytical aggregates.</p>
+
+    <h2 id="python-api">Python API</h2>
+<pre class="code"><span class="kw">import</span> slothdb
+
+<span class="cm"># Connect (empty string = in-memory)</span>
+db = slothdb.<span class="fn">connect</span>()
+db = slothdb.<span class="fn">connect</span>(<span class="str">"analytics.slothdb"</span>)   <span class="cm"># persistent</span>
+
+<span class="cm"># Query returns QueryResult</span>
+result = db.<span class="fn">sql</span>(<span class="str">"SELECT * FROM 'data.csv'"</span>)
+result.<span class="fn">show</span>()                              <span class="cm"># pretty print</span>
+rows = result.<span class="fn">fetchall</span>()                    <span class="cm"># list of tuples</span>
+df = result.<span class="fn">fetchdf</span>()                       <span class="cm"># pandas DataFrame</span>
+
+<span class="cm"># One-shot shortcut</span>
+slothdb.<span class="fn">sql</span>(<span class="str">"SELECT 42"</span>).<span class="fn">show</span>()</pre>
+
+    <div class="note">
+      <b>Context manager:</b> <code>with slothdb.connect() as db: ...</code> closes the database when the block exits.
+    </div>
+
+    <h2 id="cli">CLI shell</h2>
+<pre class="code">$ slothdb                      <span class="cm"># interactive, in-memory</span>
+$ slothdb analytics.slothdb    <span class="cm"># interactive, persistent</span>
+$ slothdb -c <span class="str">"SELECT * FROM 'sales.csv' LIMIT 5"</span>
+$ slothdb -f queries.sql       <span class="cm"># run a SQL script</span>
+
+<span class="cm"># Inside the shell:</span>
+<span class="kw">slothdb&gt;</span> .tables         <span class="cm"># list tables</span>
+<span class="kw">slothdb&gt;</span> .schema sales   <span class="cm"># describe a table</span>
+<span class="kw">slothdb&gt;</span> .help           <span class="cm"># full command list</span>
+<span class="kw">slothdb&gt;</span> .quit</pre>
+
+    <h2 id="cpp-api">C / C++ API</h2>
+<pre class="code"><span class="cm">#include &lt;slothdb/api/slothdb.h&gt;</span>
+
+slothdb_database *db;
+slothdb_connection *conn;
+slothdb_result *result;
+
+<span class="fn">slothdb_open</span>(<span class="str">"analytics.slothdb"</span>, &amp;db);
+<span class="fn">slothdb_connect</span>(db, &amp;conn);
+<span class="fn">slothdb_query</span>(conn,
+  <span class="str">"SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region"</span>,
+  &amp;result);
+
+<span class="kw">for</span> (uint64_t r = 0; r &lt; <span class="fn">slothdb_row_count</span>(result); r++)
+  printf(<span class="str">"%s: %s\n"</span>,
+    <span class="fn">slothdb_value_varchar</span>(result, r, 0),
+    <span class="fn">slothdb_value_varchar</span>(result, r, 1));
+
+<span class="fn">slothdb_free_result</span>(result);
+<span class="fn">slothdb_disconnect</span>(conn);
+<span class="fn">slothdb_close</span>(db);</pre>
+    <p>Headers are in <code>include/slothdb/</code>. Link against the built static or shared library. CMake <code>find_package</code> is supported.</p>
+
+    <h2 id="sql">SQL</h2>
+    <p>SlothDB implements 130+ SQL features covering the standard OLAP workload:</p>
+    <ul>
+      <li><b>Data types</b>: <code>INTEGER</code>, <code>BIGINT</code>, <code>DOUBLE</code>, <code>VARCHAR</code>, <code>DATE</code>, <code>TIMESTAMP</code>, <code>BOOLEAN</code>, <code>BLOB</code>, <code>DECIMAL</code>, <code>NULL</code></li>
+      <li><b>Predicates</b>: comparisons, <code>BETWEEN</code>, <code>IN</code>, <code>LIKE</code>, <code>IS NULL</code>, <code>EXISTS</code></li>
+      <li><b>Aggregates</b>: <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code>, <code>STRING_AGG</code>, <code>ARRAY_AGG</code>, <code>FIRST</code>, <code>LAST</code>, <code>MEDIAN</code>, <code>QUANTILE</code></li>
+      <li><b>Window functions</b>: <code>ROW_NUMBER</code>, <code>RANK</code>, <code>DENSE_RANK</code>, <code>LAG</code>, <code>LEAD</code>, <code>SUM() OVER</code>, custom partitions</li>
+      <li><b>CTE</b>: non-recursive and recursive <code>WITH</code></li>
+      <li><b>MERGE</b>: <code>MERGE INTO t USING s ON ... WHEN MATCHED / NOT MATCHED</code></li>
+      <li><b>Set ops</b>: <code>UNION</code>, <code>UNION ALL</code>, <code>INTERSECT</code>, <code>EXCEPT</code></li>
+      <li><b>QUALIFY</b>: filter on window results without a subquery (Snowflake-style)</li>
+    </ul>
+
+    <h2 id="sql-joins">Joins and CTEs</h2>
+<pre class="code"><span class="cm">-- All join types supported</span>
+<span class="kw">WITH</span> top_regions <span class="kw">AS</span> (
+  <span class="kw">SELECT</span> region, <span class="kw">SUM</span>(revenue) <span class="kw">AS</span> total
+  <span class="kw">FROM</span> <span class="str">'sales.parquet'</span>
+  <span class="kw">GROUP BY</span> region
+  <span class="kw">ORDER BY</span> total <span class="kw">DESC</span> <span class="kw">LIMIT</span> 5
+)
+<span class="kw">SELECT</span> s.*, t.total
+<span class="kw">FROM</span> <span class="str">'sales.parquet'</span> s
+<span class="kw">INNER JOIN</span> top_regions t <span class="kw">USING</span> (region);</pre>
+
+    <h2 id="sql-windows">Window functions</h2>
+<pre class="code"><span class="cm">-- Top earner per department</span>
+<span class="kw">SELECT</span> name, department, salary
+<span class="kw">FROM</span> <span class="str">'employees.parquet'</span>
+<span class="kw">QUALIFY</span> <span class="fn">ROW_NUMBER</span>() <span class="kw">OVER</span>
+  (<span class="kw">PARTITION BY</span> department <span class="kw">ORDER BY</span> salary <span class="kw">DESC</span>) = 1;
+
+<span class="cm">-- Running total per region</span>
+<span class="kw">SELECT</span> region, order_date,
+       <span class="kw">SUM</span>(revenue) <span class="kw">OVER</span>
+         (<span class="kw">PARTITION BY</span> region <span class="kw">ORDER BY</span> order_date) <span class="kw">AS</span> running
+<span class="kw">FROM</span> <span class="str">'orders.csv'</span>;</pre>
+
+    <h2 id="benchmarks">Benchmarks</h2>
+    <p>Same machine, same queries, 1M rows, 5-run median, warm cache. SlothDB is faster than DuckDB on every single query.</p>
+    <table class="data">
+      <thead>
+        <tr><th>Format</th><th>Query</th><th style="text-align:right">SlothDB</th><th style="text-align:right">DuckDB</th><th style="text-align:right">Speedup</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>CSV</td><td>COUNT(*)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
+        <tr><td>Parquet</td><td>COUNT(*)</td><td class="num">12 ms</td><td class="num">34 ms</td><td class="win">2.83×</td></tr>
+        <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td class="win">1.04×</td></tr>
+        <tr><td>JSON</td><td>SUM(revenue)</td><td class="num">242 ms</td><td class="num">314 ms</td><td class="win">1.30×</td></tr>
+        <tr><td>Avro</td><td>SUM(revenue)</td><td class="num">140 ms</td><td class="num">760 ms</td><td class="win">5.43×</td></tr>
+        <tr><td>Avro</td><td>GROUP BY region</td><td class="num">170 ms</td><td class="num">800 ms</td><td class="win">4.71×</td></tr>
+        <tr><td>Excel</td><td>GROUP BY region</td><td class="num">2.5 s</td><td class="num">3.56 s</td><td class="win">1.41×</td></tr>
+      </tbody>
+    </table>
+    <p>Full 15-query breakdown in the <a href="https://github.com/SouravRoy-ETL/slothdb#performance--11---86-faster-than-duckdb-every-format-every-query">README benchmarks section</a>.</p>
+
+    <h2 id="architecture">Architecture</h2>
+    <p>SlothDB is a vectorized, morsel-parallel columnar execution engine:</p>
+    <ul>
+      <li><b>Columnar</b>: data flows as <code>DataChunk</code> batches of 2048 values per column.</li>
+      <li><b>Vectorized</b>: loops operate on entire columns at once rather than row-at-a-time.</li>
+      <li><b>Morsel-driven parallelism</b>: work is split into small morsels distributed across all CPU cores.</li>
+      <li><b>PhysicalXXXScan operators</b>: each format (Parquet, CSV, Avro, etc.) has a dedicated scan that decodes directly into typed DataChunk vectors — no bulk-load-to-DataTable roundtrip.</li>
+      <li><b>Fused scan + aggregate</b>: common shapes like <code>SUM(col) FROM file GROUP BY col2</code> run in a single pass with no intermediate materialization.</li>
+      <li><b>Zero-copy VARCHAR</b>: short strings (≤12 bytes) live inline in the vector; longer strings are pointer-shared into a buffer.</li>
+    </ul>
+
+    <h2 id="extensions">Extensions</h2>
+    <p>SlothDB has a stable C ABI for third-party extensions. Unlike DuckDB's internal C++ API, extensions built against v0.1 will keep working on v1.0, v2.0, and beyond.</p>
+<pre class="code"><span class="cm">// Register a custom function from an extension</span>
+<span class="fn">slothdb_register_function</span>(db, <span class="str">"my_func"</span>, my_callback);</pre>
+    <p>Full extension API headers are in <code>include/slothdb/extension/extension_api.h</code>. Load at runtime with <code>LOAD 'my_ext'</code>.</p>
+
+    <h2 id="limitations">Limitations</h2>
+    <p>SlothDB is v0.1.3. What it <b>does not do</b> (yet):</p>
+    <ul>
+      <li><b>No distributed execution</b> — single-node embedded engine. Use ClickHouse if you outgrow one machine.</li>
+      <li><b>No MVCC / multi-writer transactions</b> — single-writer, crash-safe checkpoint.</li>
+      <li><b>Incomplete SQL dialect</b> — some corners will surprise you. <a href="https://github.com/SouravRoy-ETL/slothdb/issues">Open an issue</a> when they do.</li>
+      <li><b>Excel writes not supported yet</b> — reads work; <code>COPY TO 'file.xlsx'</code> is on the roadmap.</li>
+    </ul>
+
+    <h2 id="roadmap">Roadmap</h2>
+    <ul>
+      <li>ClickBench submission (external benchmark parity)</li>
+      <li>Extended window function coverage</li>
+      <li>HTTP and S3 file readers</li>
+      <li>R and Node.js bindings</li>
+      <li>Excel write path</li>
+    </ul>
+
+    <h2 id="faq">FAQ</h2>
+
+    <h3>How is this different from DuckDB?</h3>
+    <p>Same embedded model, different defaults. SlothDB ships Avro, Excel, and SQLite in core (DuckDB needs extensions), has a stable C ABI for extensions, uses numeric error codes, and is 1.1×–8.6× faster on the shipped benchmark suite.</p>
+
+    <h3>Can I use it with pandas?</h3>
+    <p>Yes. <code>db.sql("...").fetchdf()</code> returns a pandas DataFrame.</p>
+
+    <h3>Does it work on Apple Silicon?</h3>
+    <p>Yes. SlothDB builds on x86_64 and arm64 on Linux, macOS, and Windows.</p>
+
+    <h3>Is it production-ready?</h3>
+    <p>It's v0.1.3 and about six months old. 326 tests pass on every CI run, but you'll find edge cases. Treat it as beta. Don't put it in front of paying customers yet without a load test.</p>
+
+    <h3>How can I help?</h3>
+    <p>File issues, open PRs, share benchmark results, or just tell people about it. See the <a href="community.html">community page</a>.</p>
+
+  </main>
+</div>
+
+<footer>
+  <div class="cols">
+    <div>
+      <h4>Project</h4>
+      <ul>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb">GitHub repo</a></li>
+        <li><a href="https://pypi.org/project/slothdb/">PyPI package</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/releases">Releases</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">Changelog</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Documentation</h4>
+      <ul>
+        <li><a href="docs.html">Overview</a></li>
+        <li><a href="docs.html#python-api">Python API</a></li>
+        <li><a href="docs.html#sql">SQL reference</a></li>
+        <li><a href="docs.html#benchmarks">Benchmarks</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Community</h4>
+      <ul>
+        <li><a href="community.html">Overview</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/issues">Issues</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/discussions">Discussions</a></li>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CONTRIBUTING.md">Contributing</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>Legal</h4>
+      <ul>
+        <li><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/LICENSE">MIT License</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="meta">
+    SlothDB v0.1.3 · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
+  </div>
+</footer>
+
+<script>
+fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
+  .then(r => r.json())
+  .then(d => {
+    if (d && typeof d.stargazers_count === 'number')
+      document.getElementById('gh-stars').textContent = '★ ' + d.stargazers_count;
+  })
+  .catch(() => {});
+
+// Highlight active sidebar link on scroll
+const links = document.querySelectorAll('.docs-sidebar a');
+const sections = [...links].map(a => {
+  const id = a.getAttribute('href').slice(1);
+  return { link: a, el: document.getElementById(id) };
+}).filter(s => s.el);
+window.addEventListener('scroll', () => {
+  let active = null;
+  for (const s of sections) {
+    const top = s.el.getBoundingClientRect().top;
+    if (top < 120) active = s;
+  }
+  links.forEach(l => l.classList.remove('active'));
+  if (active) active.link.classList.add('active');
+}, { passive: true });
+</script>
+
+</body>
+</html>
