@@ -12,7 +12,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social)](https://github.com/SouravRoy-ETL/slothdb)
 
-[Website](https://slothdb.org) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance--11---66-faster-than-duckdb-every-format-every-query) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
+[Website](https://slothdb.org) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance--11---86-faster-than-duckdb-every-format-every-query) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
 
 <br>
 
@@ -59,7 +59,7 @@ Same embedded model. SlothDB is a near-drop-in swap for local file analytics. Th
 
 | | SlothDB | DuckDB |
 |---|---|---|
-| 1 M-row benchmark (15 queries) | **1.04× – 6.6× faster on every single one** | baseline |
+| 1 M-row benchmark (15 queries) | **1.04× – 8.6× faster on every single one** | baseline |
 | Built-in file formats | **7** — CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite | 3 built in (Excel, Avro, SQLite need extensions) |
 | Extension stability | **Stable C ABI** — extensions keep working across releases | Internal C++ API, often breaks on upgrade |
 | Error handling | **Numeric error codes** (`ErrorCode::TABLE_NOT_FOUND = 2000`) | Free-form error strings |
@@ -143,7 +143,7 @@ df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
 
 </details>
 
-## Performance — 1.1× – 6.6× faster than DuckDB, every format, every query
+## Performance — 1.1× – 8.6× faster than DuckDB, every format, every query
 
 > 1 M-row dataset · warm cache · 5-run median · same machine · same queries.
 

@@ -17,7 +17,7 @@ Known follow-up: `ORDER BY` on VARCHAR output of `PhysicalSQLiteScan` currently 
 
 ## 0.1.2
 
-### Performance — SlothDB now beats DuckDB 1.1×–6.6× on every benchmarked format
+### Performance — SlothDB now beats DuckDB 1.1×–8.6× on every benchmarked format
 
 1 M-row benchmarks, 5-run median, same machine, warm cache:
 
