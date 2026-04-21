@@ -220,19 +220,17 @@
 
   <div class="ecosystem">
 
-    <svg class="eco-connectors" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true">
+    <svg class="eco-connectors" viewBox="0 0 1000 620" preserveAspectRatio="none" aria-hidden="true">
       <g class="base">
-        <path d="M 320 130 C 430 130, 470 360, 500 530"/>
-        <path d="M 320 390 C 430 390, 470 470, 500 540"/>
-        <path d="M 680 130 C 570 130, 530 360, 500 530"/>
-        <path d="M 680 390 C 570 390, 530 470, 500 540"/>
+        <path d="M 330 140 H 480 V 550"/>
+        <path d="M 330 440 H 480 V 550"/>
+        <path d="M 670 140 H 520 V 550"/>
+        <path d="M 670 440 H 520 V 550"/>
       </g>
-      <g>
-        <path class="flow d1" d="M 320 130 C 430 130, 470 360, 500 530"/>
-        <path class="flow d2" d="M 320 390 C 430 390, 470 470, 500 540"/>
-        <path class="flow d3" d="M 680 130 C 570 130, 530 360, 500 530"/>
-        <path class="flow d4" d="M 680 390 C 570 390, 530 470, 500 540"/>
-      </g>
+      <path class="pulse p1" d="M 330 140 H 480 V 550"/>
+      <path class="pulse p2" d="M 670 140 H 520 V 550"/>
+      <path class="pulse p3" d="M 670 440 H 520 V 550"/>
+      <path class="pulse p4" d="M 330 440 H 480 V 550"/>
     </svg>
 
     <div class="eco-grid">
@@ -240,29 +238,51 @@
       <div class="eco-col">
         <div class="eco-box">
           <div class="eco-title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>
             Formats
           </div>
           <div class="eco-tiles">
-            <div class="eco-tile" title="Parquet">PQ</div>
-            <div class="eco-tile" title="CSV">CSV</div>
-            <div class="eco-tile" title="JSON">JSON</div>
-            <div class="eco-tile" title="Avro">AVR</div>
-            <div class="eco-tile" title="Arrow IPC">ARR</div>
-            <div class="eco-tile" title="SQLite">SQL</div>
-            <div class="eco-tile" title="Excel">XLS</div>
-            <div class="eco-tile" title="NDJSON">NDJ</div>
+            <div class="eco-tile" title="Parquet">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+            </div>
+            <div class="eco-tile" title="CSV">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+            </div>
+            <div class="eco-tile" title="JSON">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></svg>
+            </div>
+            <div class="eco-tile" title="Avro">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><path d="M6.5 12h4M13.5 12h4"/></svg>
+            </div>
+            <div class="eco-tile" title="Arrow IPC">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 6 12 12 6 18"/><polyline points="12 6 18 12 12 18"/></svg>
+            </div>
+            <div class="eco-tile" title="SQLite">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+            </div>
+            <div class="eco-tile" title="Excel">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m8 9 8 6M16 9l-8 6"/></svg>
+            </div>
+            <div class="eco-tile" title="NDJSON">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/><circle cx="6" cy="6" r="0.8" fill="currentColor"/><circle cx="6" cy="12" r="0.8" fill="currentColor"/><circle cx="6" cy="18" r="0.8" fill="currentColor"/></svg>
+            </div>
           </div>
         </div>
         <div class="eco-box">
           <div class="eco-title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
             Storage
           </div>
           <div class="eco-tiles narrow">
-            <div class="eco-tile" title="Local filesystem">FS</div>
-            <div class="eco-tile" title=".slothdb persistent format">.DB</div>
-            <div class="eco-tile" title="Glob patterns">GLOB</div>
+            <div class="eco-tile" title="Local filesystem">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>
+            </div>
+            <div class="eco-tile" title=".slothdb persistent format">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>
+            </div>
+            <div class="eco-tile" title="Glob patterns">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M4.93 4.93l14.14 14.14M2 12h20M19.07 4.93 4.93 19.07"/></svg>
+            </div>
           </div>
         </div>
       </div>
@@ -270,25 +290,39 @@
       <div class="eco-col">
         <div class="eco-box">
           <div class="eco-title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="1"/><line x1="2" y1="20" x2="22" y2="20"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
             Platforms
           </div>
           <div class="eco-tiles narrow">
-            <div class="eco-tile" title="Linux">LNX</div>
-            <div class="eco-tile" title="macOS">OSX</div>
-            <div class="eco-tile" title="Windows">WIN</div>
+            <div class="eco-tile" title="Linux">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-1.7 0-3 1.3-3 3v2.2c-.5.4-1 1-1.4 1.7-.6 1-.8 2.2-.8 3.4 0 1.6.5 3 1.4 4.2-.3.4-.6.7-.9 1-.8.6-1.5 1.3-1.5 2.2 0 .7.5 1.2 1.3 1.5.5.2 1.3.3 2 .5.4.1.6.3.8.5.4.4 1 .8 1.8.8h.6c.8 0 1.4-.4 1.8-.8.2-.2.4-.4.8-.5.7-.2 1.5-.3 2-.5.8-.3 1.3-.8 1.3-1.5 0-.9-.7-1.6-1.5-2.2-.3-.3-.6-.6-.9-1 .9-1.2 1.4-2.6 1.4-4.2 0-1.2-.2-2.4-.8-3.4-.4-.7-.9-1.3-1.4-1.7V5c0-1.7-1.3-3-3-3Zm-1 4.5c.3 0 .6.2.6.5s-.3.5-.6.5-.6-.2-.6-.5.3-.5.6-.5Zm2 0c.3 0 .6.2.6.5s-.3.5-.6.5-.6-.2-.6-.5.3-.5.6-.5Z"/></svg>
+            </div>
+            <div class="eco-tile" title="macOS">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01ZM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25Z"/></svg>
+            </div>
+            <div class="eco-tile" title="Windows">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5 10.5 4.5v7.5H3V5.5zM3 18.5 10.5 19.5v-7.5H3v6.5zM11.5 4.4 21 3v9h-9.5V4.4zM11.5 12v9L21 19.6V12h-9.5z"/></svg>
+            </div>
           </div>
         </div>
         <div class="eco-box">
           <div class="eco-title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
             Clients
           </div>
           <div class="eco-tiles">
-            <div class="eco-tile" title="CLI shell">CLI</div>
-            <div class="eco-tile" title="Python">PY</div>
-            <div class="eco-tile" title="C">C</div>
-            <div class="eco-tile" title="C++">C++</div>
+            <div class="eco-tile" title="CLI shell">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            </div>
+            <div class="eco-tile" title="Python">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-2.5 0-4.5 1.3-4.5 3.5v2.5H12v.8H5.5C3.3 8.8 2 10.8 2 13.3c0 2.5 1.3 4.5 3.5 4.5H7v-2.5c0-2.5 2-4.5 4.5-4.5h5c2 0 3.5-1.6 3.5-3.5V5.5C20 3.3 18 2 15.5 2H12Zm-2.5 1.8c.6 0 1 .4 1 1s-.4 1-1 1-1-.4-1-1 .4-1 1-1ZM22 10.7v2.5c0 2.5-2 4.5-4.5 4.5h-5c-2 0-3.5 1.6-3.5 3.5v2.3c0 2.2 2 3.5 4.5 3.5h3.5c2.5 0 4.5-1.3 4.5-3.5v-2.5H17v-.8h6.5c2.2 0 3.5-2 3.5-4.5 0-2.5-1.3-4.5-3.5-4.5H22Zm-7.5 11.5c.6 0 1 .4 1 1s-.4 1-1 1-1-.4-1-1 .4-1 1-1Z" transform="scale(0.75) translate(4 3)"/></svg>
+            </div>
+            <div class="eco-tile" title="C">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0 0 8"/></svg>
+            </div>
+            <div class="eco-tile" title="C++">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 8a6 6 0 1 0 0 8"/><line x1="19" y1="10" x2="19" y2="14"/><line x1="17" y1="12" x2="21" y2="12"/></svg>
+            </div>
           </div>
         </div>
         <div class="eco-center-anchor">
@@ -300,24 +334,36 @@
       <div class="eco-col">
         <div class="eco-box">
           <div class="eco-title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
             Data science
           </div>
           <div class="eco-tiles narrow">
-            <div class="eco-tile" title="pandas">PD</div>
-            <div class="eco-tile" title="Arrow IPC">ARR</div>
-            <div class="eco-tile" title="Jupyter">JPY</div>
+            <div class="eco-tile" title="pandas">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="6" y="14" width="3" height="5"/><rect x="11" y="9" width="3" height="10"/><rect x="16" y="5" width="3" height="14"/></svg>
+            </div>
+            <div class="eco-tile" title="Arrow IPC">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </div>
+            <div class="eco-tile" title="Jupyter">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><ellipse cx="12" cy="12" rx="10" ry="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(-60 12 12)"/></svg>
+            </div>
           </div>
         </div>
         <div class="eco-box">
           <div class="eco-title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
             Extensions
           </div>
           <div class="eco-tiles narrow">
-            <div class="eco-tile" title="Stable C ABI">ABI</div>
-            <div class="eco-tile" title="Custom functions">FN</div>
-            <div class="eco-tile" title="Custom scans">SCN</div>
+            <div class="eco-tile" title="Stable C ABI">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5M9 8V2M15 8V2M18 8v2a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8h12Z"/></svg>
+            </div>
+            <div class="eco-tile" title="Custom functions">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1"/><path d="M10 4h3a4 4 0 0 1 0 8h-3a4 4 0 0 0 0 8h3"/><path d="M7 13h4"/></svg>
+            </div>
+            <div class="eco-tile" title="Custom scans">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            </div>
           </div>
         </div>
       </div>
