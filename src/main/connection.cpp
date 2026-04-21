@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 
 namespace slothdb {
 
@@ -46,6 +47,39 @@ static void BulkLoadRows(DataTable &storage, const std::vector<LogicalType> &typ
         chunk.SetCardinality(count);
         storage.Append(chunk);
     }
+}
+
+// If `path_or_url` starts with http://, https://, or s3://, fetch it to a
+// system temp file and return the temp path (with the original extension
+// preserved so format detection still works). Returns the input unchanged for
+// local paths. s3:// is rewritten to virtual-host HTTPS — anonymous read of
+// public buckets. No SigV4 / credentials yet.
+static std::string ResolveRemoteFile(const std::string &path_or_url) {
+    bool is_http  = path_or_url.rfind("http://", 0)  == 0;
+    bool is_https = path_or_url.rfind("https://", 0) == 0;
+    bool is_s3    = path_or_url.rfind("s3://", 0)    == 0;
+    if (!is_http && !is_https && !is_s3) return path_or_url;
+
+    std::string url = is_s3 ? S3Client::S3ToHTTPS(path_or_url) : path_or_url;
+
+    // Preserve the extension so downstream format sniffing picks the right reader.
+    std::string ext;
+    auto qpos = path_or_url.find('?');
+    std::string clean = (qpos == std::string::npos) ? path_or_url : path_or_url.substr(0, qpos);
+    auto dot = clean.rfind('.');
+    auto slash = clean.find_last_of("/\\");
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+        ext = clean.substr(dot);
+    }
+
+    auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto tmp = std::filesystem::temp_directory_path() /
+               ("slothdb_remote_" + std::to_string(ts) + ext);
+
+    if (!HTTPClient::DownloadToFile(url, tmp.string())) {
+        throw IOException(ErrorCode::FILE_NOT_FOUND, "Failed to download: " + url);
+    }
+    return tmp.string();
 }
 
 Connection::Connection(Database &database) : db_(database) {}
@@ -302,7 +336,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     if (upper != "READ_CSV" && upper != "READ_CSV_AUTO") return;
                     auto &args = tref.function_args;
                     if (args.empty() || args[0]->GetExpressionType() != ExpressionType::CONSTANT) return;
-                    auto file_pattern = static_cast<ConstantExpression &>(*args[0]).value;
+                    auto file_pattern = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
                     auto files = FileGlob::Glob(file_pattern);
                     if (files.empty()) throw IOException("No files: " + file_pattern);
                     FastCSVReader r(files[0], ',', true, 65536);
@@ -625,7 +659,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 auto &args = tref.function_args;
                 if (args.empty() || args[0]->GetExpressionType() != ExpressionType::CONSTANT) return false;
 
-                auto file_pattern = static_cast<ConstantExpression &>(*args[0]).value;
+                auto file_pattern = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
                 auto files = FileGlob::Glob(file_pattern);
                 if (files.empty()) throw IOException("No files matching: " + file_pattern);
 
@@ -673,7 +707,7 @@ QueryResult Connection::Query(const std::string &sql) {
                  StringUtil::Upper(sel.from_table->table_name) == "READ_JSON_AUTO")) {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
-                    auto file_path = static_cast<ConstantExpression &>(*args[0]).value;
+                    auto file_path = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
 
                     JSONReader reader(file_path);
                     reader.DetectSchemaLight();
@@ -708,7 +742,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 StringUtil::Upper(sel.from_table->table_name) == "READ_PARQUET") {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
-                    auto file_path = static_cast<ConstantExpression &>(*args[0]).value;
+                    auto file_path = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
 
                     // Open just to read the footer metadata (cheap). We stash
                     // the reader on the catalog entry so PhysicalParquetScan
@@ -743,7 +777,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 StringUtil::Upper(sel.from_table->table_name) == "READ_ARROW") {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
-                    auto fp = static_cast<ConstantExpression &>(*args[0]).value;
+                    auto fp = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
                     // Schema-only parse — body gets streamed by
                     // PhysicalArrowScan at execution time.
                     ArrowIPCReader reader(fp);
@@ -773,7 +807,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 StringUtil::Upper(sel.from_table->table_name) == "READ_AVRO") {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
-                    auto fp = static_cast<ConstantExpression &>(*args[0]).value;
+                    auto fp = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
                     AvroReader reader(fp);
                     reader.DetectSchemaLight();
                     auto col_names = reader.GetColumnNames();
@@ -802,7 +836,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 StringUtil::Upper(sel.from_table->table_name) == "READ_XLSX") {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
-                    auto fp = static_cast<ConstantExpression &>(*args[0]).value;
+                    auto fp = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
                     ExcelReader reader(fp);
                     // ReadAll must run first — it is what actually parses the
                     // xlsx and populates column_names_/column_types_.
@@ -833,7 +867,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 if (args.size() >= 2 &&
                     args[0]->GetExpressionType() == ExpressionType::CONSTANT &&
                     args[1]->GetExpressionType() == ExpressionType::CONSTANT) {
-                    auto db_path = static_cast<ConstantExpression &>(*args[0]).value;
+                    auto db_path = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
                     auto table_name = static_cast<ConstantExpression &>(*args[1]).value;
 
                     // Schema-only probe — body gets streamed at execution
@@ -867,7 +901,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 sel.from_table->table_name == "__FILE__") {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
-                    auto file_path = static_cast<ConstantExpression &>(*args[0]).value;
+                    auto file_path = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
 
                     // Detect format from extension.
                     auto ext = file_path.substr(file_path.find_last_of('.') + 1);
@@ -968,7 +1002,7 @@ QueryResult Connection::Query(const std::string &sql) {
             auto &args = tref.function_args;
             if (args.empty() || args[0]->GetExpressionType() != ExpressionType::CONSTANT) return false;
 
-            auto file_pattern = static_cast<ConstantExpression &>(*args[0]).value;
+            auto file_pattern = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
             auto files = FileGlob::Glob(file_pattern);
             if (files.empty()) throw IOException("No files matching: " + file_pattern);
 
