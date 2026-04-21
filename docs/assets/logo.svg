@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Sloth icon - stylized database cylinder with sloth face -->
+  <g transform="translate(20, 10)">
+    <!-- Database cylinder body -->
+    <ellipse cx="45" cy="25" rx="35" ry="12" fill="url(#grad)" opacity="0.9"/>
+    <rect x="10" y="25" width="70" height="55" fill="url(#grad)" opacity="0.9"/>
+    <ellipse cx="45" cy="80" rx="35" ry="12" fill="url(#grad)" opacity="0.8"/>
+    <ellipse cx="45" cy="25" rx="35" ry="12" fill="url(#grad)" opacity="0.95"/>
+    <ellipse cx="45" cy="45" rx="35" ry="10" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.3"/>
+    <ellipse cx="45" cy="62" rx="35" ry="10" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.3"/>
+
+    <!-- Sloth eyes -->
+    <circle cx="33" cy="48" r="8" fill="#1e1b4b" opacity="0.8"/>
+    <circle cx="57" cy="48" r="8" fill="#1e1b4b" opacity="0.8"/>
+    <circle cx="35" cy="47" r="3.5" fill="#fff"/>
+    <circle cx="59" cy="47" r="3.5" fill="#fff"/>
+    <circle cx="36" cy="46.5" r="1.8" fill="#1e1b4b"/>
+    <circle cx="60" cy="46.5" r="1.8" fill="#1e1b4b"/>
+
+    <!-- Sloth smile -->
+    <path d="M 36 58 Q 45 65 54 58" fill="none" stroke="#1e1b4b" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+
+    <!-- Sloth nose -->
+    <ellipse cx="45" cy="54" rx="4" ry="2.5" fill="#1e1b4b" opacity="0.6"/>
+  </g>
+
+  <!-- Text -->
+  <text x="115" y="55" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="42" font-weight="800" fill="#1e1b4b" letter-spacing="-1">
+    Sloth<tspan fill="url(#grad)">DB</tspan>
+  </text>
+
+  <!-- Tagline -->
+  <text x="117" y="82" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="14" fill="#6b7280" letter-spacing="0.5">
+    Embedded Analytical Database Engine
+  </text>
+
+  <!-- Accent dots -->
+  <circle cx="117" cy="95" r="2" fill="#6366f1" opacity="0.6"/>
+  <text x="124" y="99" font-family="system-ui, sans-serif" font-size="10" fill="#9ca3af">
+    Zero deps · GPU accelerated · 130+ SQL features
+  </text>
+</svg>

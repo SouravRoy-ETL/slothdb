@@ -3,37 +3,32 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SlothDB — DuckDB alternative · embedded analytical database · 1.1×–6.6× faster</title>
-<meta name="description" content="SlothDB is a single-binary embedded OLAP database in C++20 — a faster DuckDB alternative. Query CSV, Parquet, JSON, Avro, Excel, Arrow IPC, SQLite directly with SQL. No server, no import. 1.1×–6.6× faster than DuckDB on every benchmark. MIT licensed.">
-<meta name="keywords" content="DuckDB alternative, embedded OLAP database, columnar database, Parquet query, CSV SQL, DuckDB replacement, SQLite OLAP, analytical database C++, fast Parquet reader, DuckDB vs ClickHouse, query Parquet with SQL">
+<title>SlothDB — a fast in-process SQL database for local data files</title>
+<meta name="description" content="SlothDB is a fast in-process SQL database for your local data files. A drop-in DuckDB alternative with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite — 1.1×–8.6× faster on every benchmark. MIT licensed.">
+<meta name="keywords" content="DuckDB alternative, in-process SQL database, embedded analytical database, Parquet query, CSV SQL, DuckDB replacement, SQLite OLAP, analytical database C++, fast Parquet reader, query Parquet with SQL">
 <meta name="author" content="Sourav Roy">
 <meta name="robots" content="index, follow">
-<meta name="theme-color" content="#0F0820">
+<meta name="theme-color" content="#0D1117">
 
-<!-- Open Graph / Facebook -->
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://slothdb.org/">
-<meta property="og:title" content="SlothDB — DuckDB alternative · 1.1×–6.6× faster on every benchmark">
-<meta property="og:description" content="Embedded analytical database in C++20. Query CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite directly with SQL. No server, no import step, no extensions. 8 MB binary, MIT.">
+<meta property="og:title" content="SlothDB — fast in-process SQL database, 1.1×–8.6× faster than DuckDB">
+<meta property="og:description" content="Drop-in DuckDB alternative with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite. 1.1×–8.6× faster on every benchmark. 8 MB binary, MIT.">
 <meta property="og:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 <meta property="og:image:width" content="1000">
 <meta property="og:image:height" content="520">
-<meta property="og:image:alt" content="Benchmark chart: SlothDB beats DuckDB 1.04x to 6.6x across 15 queries on 5 file formats">
+<meta property="og:image:alt" content="SlothDB vs DuckDB benchmark chart — SlothDB is 1.04x to 8.6x faster across 15 queries">
 <meta property="og:site_name" content="SlothDB">
 
-<!-- Twitter Card -->
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://slothdb.org/">
-<meta name="twitter:title" content="SlothDB — DuckDB alternative, 1.1×–6.6× faster on every benchmark">
-<meta name="twitter:description" content="Embedded analytical database in C++20. Reads CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite natively with SQL. 8 MB binary, MIT.">
+<meta name="twitter:title" content="SlothDB — fast in-process SQL database, 1.1×–8.6× faster than DuckDB">
+<meta name="twitter:description" content="Drop-in DuckDB alternative. Parquet / CSV / JSON / Avro / Arrow / SQLite built in. 8 MB binary, MIT.">
 <meta name="twitter:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 
 <link rel="canonical" href="https://slothdb.org/">
 <link rel="icon" type="image/svg+xml" href="assets/icon.svg">
 
-<!-- Structured data: tells Google this is a software product + what it does.
-     Gets you rich results (review stars, "Try it" buttons, etc.) when Google
-     picks it up. No guarantee but costs nothing. -->
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -41,1275 +36,405 @@
     {
       "@type": "SoftwareApplication",
       "name": "SlothDB",
-      "alternateName": ["slothdb", "SlothDB OLAP"],
-      "description": "Single-binary embedded analytical database in C++20. A DuckDB alternative that queries CSV / Parquet / JSON / Avro / Excel / Arrow / SQLite files directly with SQL. 1.1x-6.6x faster than DuckDB on every benchmark.",
+      "alternateName": ["slothdb"],
+      "description": "Fast in-process SQL database for local data files. A drop-in DuckDB alternative with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite. 1.1x–8.6x faster than DuckDB on every benchmark.",
       "applicationCategory": "DatabaseApplication",
-      "applicationSubCategory": "Analytical Database / OLAP",
       "operatingSystem": "Windows, macOS, Linux",
       "url": "https://slothdb.org/",
       "downloadUrl": "https://github.com/SouravRoy-ETL/slothdb/releases/latest",
       "softwareVersion": "0.1.3",
       "license": "https://opensource.org/licenses/MIT",
-      "offers": {
-        "@type": "Offer",
-        "price": "0",
-        "priceCurrency": "USD"
-      },
-      "author": {
-        "@type": "Person",
-        "name": "Sourav Roy",
-        "url": "https://github.com/SouravRoy-ETL"
-      },
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "author": { "@type": "Person", "name": "Sourav Roy", "url": "https://github.com/SouravRoy-ETL" },
       "programmingLanguage": "C++20",
       "codeRepository": "https://github.com/SouravRoy-ETL/slothdb",
       "sameAs": [
         "https://github.com/SouravRoy-ETL/slothdb",
         "https://pypi.org/project/slothdb/"
       ]
-    },
-    {
-      "@type": "WebSite",
-      "name": "SlothDB",
-      "url": "https://slothdb.org/",
-      "potentialAction": {
-        "@type": "SearchAction",
-        "target": "https://github.com/SouravRoy-ETL/slothdb/search?q={search_term_string}",
-        "query-input": "required name=search_term_string"
-      }
     }
   ]
 }
 </script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
 <style>
 :root {
-  --bg-deep: #0F0820;
-  --bg-surface: #1A0F35;
-  --bg-elev: #241648;
-  --purple: #8B5CF6;
-  --purple-lt: #C4B5FD;
-  --purple-dk: #4C1D95;
-  --cyan: #22D3EE;
-  --orange: #F97316;
-  --green: #10B981;
-  --red: #EF4444;
-  --yellow: #FDB515;
-  --text: #E4E4E7;
-  --text-dim: #9CA3AF;
+  --bg: #0D1117;
+  --bg-elev: #161B22;
+  --bg-code: #1A1D25;
+  --border: #30363D;
+  --text: #E6E8EB;
+  --text-dim: #8B949E;
   --text-muted: #6B7280;
-  --font: "JetBrains Mono", "Fira Code", "Courier New", monospace;
+  --accent: #A78BFA;
+  --accent-dim: #7C6BC9;
+  --win: #34D399;
+  --warn: #F59E0B;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 body {
-  background: var(--bg-deep); color: var(--text);
-  font-family: var(--font); font-size: 14px; line-height: 1.65;
-  min-height: 100vh; overflow-x: hidden;
-  /* Custom pixel cursor (purple arrow with black border, hot-spot at tip) */
-  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><path d='M4 2 L4 20 L9 15 L12 22 L14 21 L11 14 L17 14 Z' fill='%238B5CF6' stroke='%230F0820' stroke-width='1.5' stroke-linejoin='round'/></svg>") 4 2, auto;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
 }
-/* Yellow cursor when hovering any clickable element */
-a, button, [role="button"], .install-tab, .demo-query, .platform-card, .inv-cell, .stack-cat, .feature, label, select, .chip {
-  cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><path d='M4 2 L4 20 L9 15 L12 22 L14 21 L11 14 L17 14 Z' fill='%23FDB515' stroke='%230F0820' stroke-width='1.5' stroke-linejoin='round'/></svg>") 4 2, pointer;
-}
-/* I-beam for text inputs if we ever add them */
-input, textarea { cursor: text; }
-body::before, body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; }
-body::before {
-  background:
-    radial-gradient(ellipse at 20% 10%, rgba(139,92,246,0.14), transparent 42%),
-    radial-gradient(ellipse at 80% 90%, rgba(34,211,238,0.08), transparent 40%);
-}
-body::after {
-  background-image:
-    linear-gradient(rgba(139,92,246,0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(139,92,246,0.03) 1px, transparent 1px);
-  background-size: 32px 32px;
-}
-a { color: var(--cyan); text-decoration: none; border-bottom: 1px dashed transparent; transition: border 0.15s; }
-a:hover { border-bottom-color: var(--cyan); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre { font-family: var(--mono); }
 
-/* ═════════ Sticky install bar ═════════ */
-.install-bar {
-  position: fixed; top: 0; left: 0; right: 0;
-  background: rgba(26,15,53,0.92); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-  border-bottom: 2px solid var(--purple);
-  padding: 0.65rem 1rem; z-index: 90;
-  display: flex; align-items: center; justify-content: center; gap: 0.75rem;
-  font-size: 13px;
+/* Top nav */
+nav.top {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(13, 17, 23, 0.85);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 32px;
+  display: flex; align-items: center; justify-content: space-between;
 }
-.install-bar .tag { color: var(--yellow); font-weight: 700; letter-spacing: 2px; font-size: 11px; }
-.install-bar .tag::before { content: "▸ "; }
-.install-bar code {
-  background: var(--bg-deep); color: var(--purple-lt); padding: 0.3rem 0.7rem;
-  border: 1px solid var(--purple-dk); border-radius: 3px; font-size: 13px;
+nav.top .brand {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--text); font-weight: 600; font-size: 17px;
 }
-.install-bar .copy-x {
-  background: var(--purple); color: white; border: none;
-  padding: 0.4rem 0.85rem; font-family: var(--font); font-size: 11px; font-weight: 700;
-  letter-spacing: 1px; text-transform: uppercase; cursor: pointer; border-radius: 3px;
-  transition: background 0.15s;
+nav.top .brand img { height: 28px; width: 28px; }
+nav.top ul { list-style: none; display: flex; gap: 28px; align-items: center; }
+nav.top ul a { color: var(--text-dim); font-size: 14px; font-weight: 500; }
+nav.top ul a:hover { color: var(--text); text-decoration: none; }
+nav.top .gh-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 6px;
+  color: var(--text) !important; font-size: 13px; font-weight: 500;
 }
-.install-bar .copy-x:hover { background: var(--purple-lt); color: var(--bg-deep); }
-.install-bar .copy-x.done { background: var(--green); }
+nav.top .gh-btn:hover { background: var(--bg-code); text-decoration: none; }
+nav.top .gh-btn .star-count { color: var(--text-dim); }
 
-.install-bar .gh-link {
-  display: inline-flex; align-items: center; gap: 0.4rem;
-  background: transparent; color: var(--text);
-  border: 1px solid var(--purple-dk); padding: 0.35rem 0.7rem;
-  font-family: var(--font); font-size: 11px; font-weight: 700;
-  letter-spacing: 1px; text-transform: uppercase; border-radius: 3px;
-  transition: all 0.15s; border-bottom: 1px solid var(--purple-dk);
-}
-.install-bar .gh-link:hover { border-color: var(--cyan); color: var(--cyan); }
-.install-bar .gh-link .gh-ico { color: var(--text-dim); }
-.install-bar .gh-link:hover .gh-ico { color: var(--cyan); }
-.install-bar .gh-link .gh-stars { color: var(--yellow); font-weight: 700; }
-.install-bar .gh-link .gh-stars::before { content: "★ "; }
-.install-bar .sep { color: var(--purple-dk); margin: 0 0.25rem; }
-
-/* Windows .exe direct download pill in the sticky bar */
-.install-bar .exe-dl {
-  display: inline-flex; align-items: center; gap: 0.4rem;
-  background: linear-gradient(135deg, var(--orange), var(--yellow));
-  color: var(--bg-deep); border: 1px solid var(--yellow);
-  padding: 0.35rem 0.75rem;
-  font-family: var(--font); font-size: 11px; font-weight: 700;
-  letter-spacing: 1px; text-transform: uppercase; border-radius: 3px;
-  transition: all 0.15s;
-  border-bottom: 1px solid var(--yellow);
-  box-shadow: 0 0 12px rgba(253,181,21,0.25);
-}
-.install-bar .exe-dl:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 0 20px rgba(253,181,21,0.55);
-  color: var(--bg-deep);
-  border-bottom-color: var(--yellow);
-}
-.install-bar .exe-dl .exe-ico { font-size: 13px; }
-.install-bar .exe-dl .exe-win { font-size: 9px; opacity: 0.75; margin-left: 0.1rem; }
-
-@keyframes blink { 0%,55% { opacity: 1; } 56%,100% { opacity: 0.2; } }
-@keyframes pulse-shadow {
-  0%, 100% { box-shadow: 0 0 40px rgba(139,92,246,0.35); }
-  50%      { box-shadow: 0 0 70px rgba(139,92,246,0.65); }
-}
-
-/* Start-game overlay (non-fullscreen dim — banner stays visible behind it) */
-.splash {
-  position: fixed; inset: 0;
-  background: radial-gradient(circle at center, rgba(15,8,32,0.35) 0%, rgba(15,8,32,0.8) 80%);
-  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 70; cursor: pointer; padding: 2rem;
-  transition: opacity 0.5s ease;
-}
-.splash.hidden { opacity: 0; pointer-events: none; }
-.splash-box {
-  background: rgba(26,15,53,0.96);
-  border: 2px solid var(--purple);
-  padding: 2rem 3rem; text-align: center;
-  border-radius: 4px;
-  animation: pulse-shadow 2.4s ease-in-out infinite;
-  max-width: 440px;
-}
-.splash-tag {
-  color: var(--cyan); font-size: 10px; letter-spacing: 3px;
-  text-transform: uppercase; margin-bottom: 0.5rem;
-}
-.splash-prompt {
-  color: var(--yellow); font-weight: 700; letter-spacing: 3px;
-  font-size: 16px; animation: blink 1.2s infinite;
-  margin-bottom: 1rem;
-}
-.splash-mission {
-  color: var(--text-dim); font-size: 11px; letter-spacing: 1px; line-height: 1.7;
-  padding-top: 0.75rem; border-top: 1px dashed var(--purple-dk);
-}
-.splash-mission strong { color: var(--purple-lt); }
-.splash-controls {
-  margin-top: 1rem; color: var(--text-muted); font-size: 10px; letter-spacing: 1px;
-}
-.splash-controls kbd {
-  background: var(--bg-deep); border: 1px solid var(--purple-dk); color: var(--purple-lt);
-  padding: 1px 5px; margin: 0 1px; font-size: 10px; border-radius: 2px; font-family: var(--font);
-}
-
-/* ═════════ HUD ═════════ */
-.hud {
-  position: fixed; top: 4rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem;
-  z-index: 80;
-}
-.hud-box {
-  background: rgba(26,15,53,0.9); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  padding: 0.5rem 0.85rem; border: 1px solid var(--purple-dk);
-  font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--text-dim);
-  display: flex; gap: 1rem; align-items: center;
-}
-.hud-box .v { color: var(--purple-lt); font-weight: 700; }
-.hud-box .icon { color: var(--yellow); }
-
-/* Quest log */
-.quest-log {
-  background: rgba(26,15,53,0.95); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  border: 1px solid var(--purple-dk); padding: 0.75rem 1rem; font-size: 11px;
-  min-width: 220px;
-}
-.quest-log .head { color: var(--yellow); font-weight: 700; letter-spacing: 2px; margin-bottom: 0.5rem; font-size: 10px; }
-.quest-log .task { display: flex; align-items: center; gap: 0.5rem; color: var(--text-dim); padding: 2px 0; }
-.quest-log .task .mark { color: var(--text-muted); font-weight: 700; width: 14px; }
-.quest-log .task.done { color: var(--green); }
-.quest-log .task.done .mark { color: var(--green); }
-.quest-log .task.locked { color: var(--text-muted); }
-.quest-log .task.locked .mark { color: var(--text-muted); }
-.quest-log .task strong { color: inherit; font-weight: 500; }
-
-@media (max-width: 760px) { .hud { right: 0.5rem; top: 3.2rem; } .hud-box, .quest-log { font-size: 10px; padding: 0.4rem 0.7rem; } .quest-log { min-width: 0; } }
-
-/* ═════════ Main ═════════ */
-main { max-width: 1020px; margin: 0 auto; padding: 7rem 1.5rem 6rem; position: relative; z-index: 1; }
-
-.hero-banner {
-  width: 100%; display: block; margin: 0 auto 2rem;
-  border: 1px solid var(--purple-dk); border-radius: 4px;
-  box-shadow: 0 0 40px rgba(139,92,246,0.2);
-}
-.hero-cta {
-  text-align: center; margin: 2rem auto 4rem; max-width: 640px;
-}
-.hero-cta h1 {
-  font-size: clamp(1.4rem, 2.8vw, 1.9rem); line-height: 1.3; font-weight: 700;
-  color: var(--purple-lt); margin-bottom: 0.75rem; letter-spacing: -0.3px;
-}
-.hero-cta h1 .hl { color: var(--cyan); }
-.hero-cta p { color: var(--text-dim); margin-bottom: 2rem; font-size: 14px; }
-
-.install-hero {
-  background: rgba(139,92,246,0.08); border: 2px solid var(--purple);
-  border-radius: 6px; padding: 1.5rem; margin-bottom: 1.5rem;
-  box-shadow: 0 0 30px rgba(139,92,246,0.25);
-  position: relative;
-}
-.install-hero::before {
-  content: "★ INSTALL THE WEAPON"; position: absolute; top: -10px; left: 20px;
-  background: var(--bg-deep); padding: 0 10px;
-  color: var(--yellow); font-size: 10px; font-weight: 700; letter-spacing: 3px;
-}
-.install-hero-cmd {
-  background: var(--bg-deep); border: 1px solid var(--purple-dk);
-  padding: 0.75rem 1rem; border-radius: 3px;
-  display: flex; align-items: center; gap: 0.75rem; font-size: 14px;
-  margin-bottom: 0.75rem;
-}
-.install-hero-cmd .prompt { color: var(--green); user-select: none; }
-.install-hero-cmd code { color: var(--purple-lt); flex: 1; text-align: left; }
-.install-hero-cmd button {
-  background: var(--purple); color: white; border: none;
-  padding: 0.4rem 0.8rem; font-family: var(--font); font-size: 10px; font-weight: 700;
-  letter-spacing: 1px; text-transform: uppercase; cursor: pointer; border-radius: 3px;
-  transition: background 0.15s;
-}
-.install-hero-cmd button:hover { background: var(--purple-lt); color: var(--bg-deep); }
-.install-hero-cmd button.done { background: var(--green); }
-.install-tabs { display: flex; gap: 0.25rem; }
-.install-tab {
-  flex: 1; background: transparent; border: 1px solid var(--purple-dk);
-  color: var(--text-dim); padding: 0.4rem 0.6rem; font-family: var(--font); font-size: 10px;
-  letter-spacing: 1px; text-transform: uppercase; cursor: pointer; border-radius: 3px;
-  transition: all 0.15s;
-}
-.install-tab.active { background: var(--purple-dk); color: var(--purple-lt); border-color: var(--purple); }
-.install-tab:hover { color: var(--text); }
-
-.install-hero-dl {
-  background: linear-gradient(135deg, var(--purple), var(--cyan));
-  color: white; text-decoration: none;
-  padding: 0.85rem 1rem; border-radius: 3px;
-  display: flex; align-items: center; gap: 0.75rem;
-  font-family: var(--font); font-size: 13px; font-weight: 600;
-  letter-spacing: 0.5px;
-  transition: transform 0.15s, box-shadow 0.15s;
-  box-shadow: 0 4px 20px -4px rgba(139,92,246,0.5);
-}
-.install-hero-dl:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 24px -4px rgba(139,92,246,0.7);
-  color: white;
-  border-bottom: none;
-}
-.install-hero-dl .dl-icon {
-  font-size: 20px; color: var(--yellow);
-  background: rgba(15,8,32,0.35); border-radius: 50%;
-  width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-}
-.install-hero-dl .dl-label { flex: 1; color: white; }
-.install-hero-dl .dl-label strong { color: var(--yellow); }
-.install-hero-dl .dl-size {
-  color: rgba(255,255,255,0.75); font-size: 11px;
-  background: rgba(15,8,32,0.35); padding: 0.2rem 0.5rem; border-radius: 2px;
-  letter-spacing: 1px;
-}
-
-.ctas { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; margin-top: 1rem; }
-.btn {
-  display: inline-flex; align-items: center; gap: 0.4rem;
-  padding: 0.7rem 1.2rem; font-size: 12px; letter-spacing: 1px; text-transform: uppercase;
-  border-radius: 3px; font-family: var(--font); font-weight: 700;
-  text-decoration: none; border: 1px solid; transition: all 0.15s; cursor: pointer;
-  border-bottom: 1px solid;
-}
-.btn-primary { background: var(--purple); color: white; border-color: var(--purple); }
-.btn-primary:hover { background: var(--purple-lt); color: var(--bg-deep); border-color: var(--purple-lt); }
-.btn-ghost { background: transparent; color: var(--cyan); border-color: var(--cyan); }
-.btn-ghost:hover { background: var(--cyan); color: var(--bg-deep); }
-.btn::before { content: "▸ "; }
-
-/* Level sections */
-.level { margin-bottom: 5rem; opacity: 0; transform: translateY(24px); transition: opacity 0.7s ease, transform 0.7s ease; }
-.level.visible { opacity: 1; transform: translateY(0); }
-.level-label { color: var(--cyan); font-size: 11px; letter-spacing: 3px; margin-bottom: 0.5rem; text-transform: uppercase; }
-.level-label::before { content: "◆ "; color: var(--purple); }
-.level-title { color: var(--purple-lt); font-size: 1.75rem; margin-bottom: 0.35rem; letter-spacing: 1px; }
-.level-sub { color: var(--text-dim); font-size: 13px; margin-bottom: 2rem; }
-
-/* Terminal */
-.term {
-  background: var(--bg-surface); border: 1px solid var(--purple-dk); border-radius: 4px;
-  padding: 1.25rem 1.5rem; margin: 1rem 0; font-size: 13px; overflow-x: auto;
-}
-.term-head {
-  display: flex; justify-content: space-between; align-items: center;
-  color: var(--text-muted); font-size: 11px; letter-spacing: 1px;
-  margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--purple-dk);
-}
-.term-head .dots::before { content: "● "; color: var(--red); }
-.term-head .dots::after { content: " ● ● "; color: var(--yellow); }
-.term pre { white-space: pre-wrap; word-wrap: break-word; font-family: var(--font); color: var(--text); }
-.k { color: var(--purple-lt); font-weight: 500; }
-.s { color: var(--green); }
-.c { color: var(--text-muted); font-style: italic; }
-.n { color: var(--orange); }
-.f { color: var(--cyan); }
-.p { color: var(--text-dim); }
-.i { color: var(--yellow); }
-
-/* Inventory */
-.inv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
-.inv-cell {
-  background: var(--bg-surface); border: 1px solid var(--purple-dk); padding: 1rem 1.25rem;
-  transition: border-color 0.2s, transform 0.2s; border-radius: 4px;
-}
-.inv-cell:hover { border-color: var(--cyan); transform: translateY(-2px); }
-.inv-head { color: var(--cyan); font-size: 11px; letter-spacing: 2px; margin-bottom: 0.5rem; text-transform: uppercase; }
-.inv-list { list-style: none; }
-.inv-list li { color: var(--text); padding: 2px 0; font-size: 13px; }
-.inv-list li::before { content: "⊕ "; color: var(--purple); }
-
-/* Stats */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin: 2rem 0; }
-.stat { background: var(--bg-surface); border: 1px solid var(--purple-dk); padding: 1rem; text-align: center; border-radius: 4px; }
-.stat-v { font-size: 1.75rem; color: var(--purple-lt); font-weight: 700; display: block; margin-bottom: 0.25rem; }
-.stat-l { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 2px; }
-.stat-v.win { color: var(--cyan); }
-
-/* Benchmark bars */
-.bench-list { margin: 1.5rem 0; }
-.bench-row { display: grid; grid-template-columns: 220px 1fr 70px; gap: 1rem; align-items: center; padding: 0.45rem 0; border-bottom: 1px dashed rgba(76,29,149,0.3); }
-.bench-label { color: var(--text-dim); font-size: 12px; }
-.bench-bar-wrap { height: 24px; background: var(--bg-surface); border: 1px solid var(--purple-dk); position: relative; overflow: hidden; border-radius: 2px; }
-.bench-bar { height: 100%; background: linear-gradient(90deg, var(--purple), var(--cyan)); display: flex; align-items: center; padding: 0 8px; color: white; font-size: 11px; font-weight: 600; transition: width 1.2s cubic-bezier(0.25,1,0.5,1); width: 0; white-space: nowrap; }
-.bench-ratio { color: var(--purple-lt); font-weight: 700; text-align: right; font-size: 13px; }
-
-/* VS table */
-.vs-table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 13px; }
-.vs-table th, .vs-table td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid var(--purple-dk); }
-.vs-table th { color: var(--cyan); font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 2px; }
-.vs-table td:first-child { color: var(--text-dim); }
-.vs-table .win { color: var(--green); font-weight: 600; }
-.vs-table .loss { color: var(--text-muted); }
-
-/* Live terminal demo */
-.live-demo {
-  background: var(--bg-surface); border: 2px solid var(--purple);
-  border-radius: 4px; padding: 1.5rem; margin: 1.5rem 0;
-  position: relative;
-  box-shadow: 0 0 30px rgba(139,92,246,0.15);
-}
-.live-demo::before {
-  content: "◆ LIVE TERMINAL · TRY BEFORE YOU INSTALL"; position: absolute; top: -10px; left: 20px;
-  background: var(--bg-deep); padding: 0 10px;
-  color: var(--yellow); font-size: 10px; font-weight: 700; letter-spacing: 2px;
-}
-.demo-output { min-height: 160px; color: var(--text); font-size: 13px; white-space: pre-wrap; margin-bottom: 1rem; font-family: var(--font); }
-.demo-output .cursor { color: var(--purple-lt); animation: blink 1s infinite; }
-.demo-queries { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
-.demo-query {
-  background: transparent; border: 1px solid var(--purple-dk); color: var(--cyan);
-  padding: 0.45rem 0.8rem; font-family: var(--font); font-size: 11px;
-  cursor: pointer; border-radius: 3px; transition: all 0.15s;
-}
-.demo-query:hover { background: var(--purple-dk); color: var(--purple-lt); }
-.demo-hint { color: var(--text-muted); font-size: 11px; margin-top: 0.75rem; text-align: center; }
-.demo-hint strong { color: var(--yellow); }
-
-/* Boss pane */
-.boss-pane {
-  background: linear-gradient(180deg, var(--bg-elev), var(--bg-surface));
-  border: 2px solid var(--purple);
-  padding: 2rem; border-radius: 6px; margin: 2rem 0;
+/* Hero */
+section.hero {
+  padding: 80px 32px 60px;
+  max-width: 1100px; margin: 0 auto;
   text-align: center;
-  box-shadow: 0 0 50px rgba(139,92,246,0.2);
 }
-.boss-pane .boss-label { color: var(--red); letter-spacing: 4px; font-size: 11px; font-weight: 700; margin-bottom: 0.5rem; }
-.boss-pane .boss-label::before { content: "⚠ FINAL BOSS ⚠"; }
-.boss-pane h3 { color: var(--purple-lt); font-size: 1.4rem; margin: 1rem 0 0.5rem; letter-spacing: 1px; }
-.boss-pane p { color: var(--text-dim); margin-bottom: 1.5rem; font-size: 13px; }
-.boss-install {
-  background: var(--bg-deep); border: 1px solid var(--yellow);
-  padding: 0.9rem 1.25rem; border-radius: 3px; font-size: 15px;
-  display: inline-flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;
+section.hero img.banner { max-width: 100%; height: auto; margin-bottom: 28px; }
+section.hero h1 {
+  font-size: 44px; line-height: 1.2; font-weight: 700;
+  margin-bottom: 18px; letter-spacing: -0.02em;
 }
-.boss-install .prompt { color: var(--green); }
-.boss-install code { color: var(--yellow); flex: 1; }
-.boss-install button {
-  background: var(--yellow); color: var(--bg-deep); border: none;
-  padding: 0.4rem 0.9rem; font-family: var(--font); font-size: 11px; font-weight: 700;
-  letter-spacing: 1px; text-transform: uppercase; cursor: pointer; border-radius: 3px;
+section.hero h1 .accent { color: var(--accent); }
+section.hero p.lede {
+  font-size: 19px; color: var(--text-dim);
+  max-width: 720px; margin: 0 auto 36px;
 }
-.boss-install button.done { background: var(--green); color: white; }
+section.hero .ctas {
+  display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+section.hero .cta {
+  padding: 12px 22px; border-radius: 6px; font-weight: 600; font-size: 15px;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+section.hero .cta.primary { background: var(--accent); color: #fff; }
+section.hero .cta.primary:hover { background: var(--accent-dim); text-decoration: none; }
+section.hero .cta.ghost { background: var(--bg-elev); border: 1px solid var(--border); color: var(--text); }
+section.hero .cta.ghost:hover { background: var(--bg-code); text-decoration: none; }
+section.hero .install-line {
+  background: var(--bg-code); border: 1px solid var(--border);
+  padding: 14px 20px; border-radius: 8px;
+  display: inline-flex; align-items: center; gap: 14px;
+  font-family: var(--mono); font-size: 14px;
+  color: var(--text);
+  max-width: 100%; overflow: hidden;
+}
+section.hero .install-line .prompt { color: var(--text-muted); }
+section.hero .install-line button {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-dim); padding: 4px 10px; border-radius: 4px;
+  cursor: pointer; font-family: var(--mono); font-size: 12px;
+}
+section.hero .install-line button:hover { color: var(--text); border-color: var(--accent); }
 
-/* ═════════ Built for your stack ═════════ */
-.stack-wrap { position: relative; margin: 1.5rem 0 2rem; }
-.stack-center {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  background: linear-gradient(135deg, var(--purple), var(--cyan));
-  color: white; padding: 0.65rem 1.25rem;
-  font-weight: 700; letter-spacing: 3px; font-size: 13px;
-  border-radius: 3px;
-  box-shadow: 0 0 30px rgba(139,92,246,0.6);
-  z-index: 2; display: none;
+/* Section wrapper */
+section.page { max-width: 1100px; margin: 0 auto; padding: 60px 32px; }
+section.page h2 {
+  font-size: 30px; font-weight: 700; margin-bottom: 16px;
+  letter-spacing: -0.01em;
 }
-.stack-grid {
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
-}
-.stack-cat {
-  background: var(--bg-surface); border: 1px solid var(--purple-dk);
-  border-radius: 4px; padding: 1rem 1.1rem;
-  transition: border-color 0.2s, transform 0.2s;
-}
-.stack-cat:hover { border-color: var(--cyan); transform: translateY(-2px); }
-.stack-head {
-  color: var(--yellow); font-size: 11px; letter-spacing: 2px;
-  text-transform: uppercase; margin-bottom: 0.7rem; font-weight: 700;
-}
-.stack-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-.chip {
-  background: var(--bg-deep); border: 1px solid var(--purple-dk);
-  color: var(--text); padding: 0.3rem 0.55rem;
-  font-size: 11px; font-family: var(--font); border-radius: 3px;
-  white-space: nowrap;
-}
-.chip.roadmap { color: var(--text-muted); border-style: dashed; }
-.chip.roadmap::before { content: "+ "; color: var(--yellow); }
+section.page h2 .accent { color: var(--accent); }
+section.page p.section-lede { color: var(--text-dim); font-size: 17px; margin-bottom: 36px; max-width: 780px; }
 
-@media (max-width: 900px) { .stack-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 540px) { .stack-grid { grid-template-columns: 1fr; } }
+/* Demo */
+section.demo { border-top: 1px solid var(--border); }
+section.demo .demo-wrap {
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
+  padding: 20px; display: flex; justify-content: center;
+}
+section.demo .demo-wrap img { max-width: 100%; height: auto; }
 
-/* Platform download grid */
-.platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1.5rem; }
-.platform-card { background: var(--bg-surface); border: 1px solid var(--purple-dk); padding: 1rem 1.25rem; border-radius: 4px; transition: border 0.15s; }
-.platform-card:hover { border-color: var(--cyan); }
-.platform-head { color: var(--cyan); font-size: 11px; letter-spacing: 2px; margin-bottom: 0.5rem; text-transform: uppercase; font-weight: 700; }
-.platform-cmd { background: var(--bg-deep); border: 1px solid var(--purple-dk); padding: 0.5rem 0.75rem; border-radius: 3px; font-family: var(--font); font-size: 12px; overflow-x: auto; white-space: nowrap; color: var(--purple-lt); }
+/* Features grid */
+section.features { border-top: 1px solid var(--border); }
+section.features .grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px; margin-top: 30px;
+}
+section.features .card {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  padding: 24px; border-radius: 10px;
+}
+section.features .card h3 {
+  font-size: 17px; font-weight: 600; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 10px;
+}
+section.features .card h3 .dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+}
+section.features .card p { color: var(--text-dim); font-size: 14px; line-height: 1.6; }
 
-/* Victory overlay */
-.victory {
-  position: fixed; inset: 0; background: rgba(15,8,32,0.95);
-  display: none; flex-direction: column; align-items: center; justify-content: center;
-  z-index: 800; padding: 2rem;
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+/* Benchmarks */
+section.bench { border-top: 1px solid var(--border); }
+section.bench table {
+  width: 100%; border-collapse: collapse;
+  margin-top: 20px; font-size: 14px;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden;
 }
-.victory.show { display: flex; animation: fadein 0.4s ease; }
-@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
-.victory-art { color: var(--yellow); font-size: 10px; line-height: 1.1; white-space: pre; text-align: center; margin-bottom: 1rem; text-shadow: 0 0 12px rgba(253,181,21,0.6); }
-.victory-title { color: var(--purple-lt); font-size: 1.5rem; margin-bottom: 0.5rem; letter-spacing: 3px; }
-.victory-sub { color: var(--text-dim); font-size: 13px; text-align: center; margin-bottom: 2rem; max-width: 500px; }
-.victory .next-step { background: var(--bg-surface); border: 1px solid var(--purple); padding: 1rem 1.5rem; margin-bottom: 1.5rem; max-width: 500px; text-align: center; border-radius: 4px; }
-.victory .next-step .tag { color: var(--yellow); font-size: 10px; letter-spacing: 2px; font-weight: 700; display: block; margin-bottom: 0.5rem; }
-.victory .next-step code { color: var(--purple-lt); font-size: 13px; }
-.victory button.close-v {
-  background: transparent; color: var(--text-dim); border: 1px solid var(--purple-dk);
-  padding: 0.5rem 1rem; font-family: var(--font); font-size: 11px;
-  letter-spacing: 1px; text-transform: uppercase; cursor: pointer; border-radius: 3px;
+section.bench th, section.bench td {
+  padding: 12px 18px; text-align: left;
+  border-bottom: 1px solid var(--border);
 }
+section.bench th {
+  background: var(--bg-code); color: var(--text-dim);
+  font-weight: 600; font-size: 13px;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+section.bench td.num { text-align: right; font-family: var(--mono); }
+section.bench td.win { color: var(--win); font-weight: 600; text-align: right; font-family: var(--mono); }
+section.bench tr:last-child td { border-bottom: none; }
+section.bench .note { color: var(--text-muted); font-size: 13px; margin-top: 14px; }
 
-/* Toast */
-.toast {
-  position: fixed; bottom: 1rem; right: 1rem; background: var(--purple); color: white;
-  padding: 0.75rem 1.15rem; border: 2px solid var(--purple-lt); font-size: 12px;
-  letter-spacing: 1px; text-transform: uppercase; border-radius: 3px;
-  transform: translateX(120%); transition: transform 0.3s cubic-bezier(0.25,1,0.5,1);
-  z-index: 200; box-shadow: 0 0 20px rgba(139,92,246,0.4);
+/* Code blocks */
+pre.code {
+  background: var(--bg-code); border: 1px solid var(--border);
+  padding: 20px; border-radius: 8px;
+  font-size: 14px; color: var(--text);
+  overflow-x: auto; line-height: 1.55;
 }
-.toast.show { transform: translateX(0); }
-.toast .plus { color: var(--yellow); font-weight: 700; margin-right: 0.5rem; }
+pre.code .cm { color: var(--text-muted); }
+pre.code .kw { color: var(--accent); font-weight: 500; }
+pre.code .str { color: var(--win); }
 
-/* Easter-egg toast — Ctrl+U / F12 / right-click */
-.sloth-toast {
-  position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%) translateY(130%);
-  background: linear-gradient(135deg, var(--orange), var(--yellow));
-  color: var(--bg-deep); padding: 0.9rem 1.4rem;
-  border: 2px solid var(--yellow); border-radius: 4px;
-  font-size: 12px; letter-spacing: 1px; text-transform: uppercase; font-weight: 700;
-  transition: transform 0.45s cubic-bezier(0.25,1,0.5,1);
-  z-index: 900;
-  box-shadow: 0 0 40px rgba(253,181,21,0.55);
-  max-width: calc(100vw - 2rem);
-  text-align: center;
-  text-decoration: none;
+section.install .grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px; margin-top: 30px;
 }
-.sloth-toast.show { transform: translateX(-50%) translateY(0); }
-.sloth-toast .face {
-  font-size: 22px; vertical-align: middle; margin-right: 0.5rem;
-  animation: sloth-bounce 0.55s ease-in-out infinite alternate; display: inline-block;
-}
-.sloth-toast .caught-key {
-  color: var(--purple-dk); background: rgba(15,8,32,0.15); padding: 0.18rem 0.5rem;
-  border-radius: 2px; margin: 0 0.35rem; font-family: var(--font);
-}
-.sloth-toast .go-hint {
-  display: block; font-size: 10px; margin-top: 0.4rem;
-  color: rgba(15,8,32,0.8); font-weight: 500; letter-spacing: 2px;
-}
-.sloth-toast .go-hint strong { color: var(--bg-deep); }
-@keyframes sloth-bounce { from { transform: translateY(0); } to { transform: translateY(-4px); } }
+section.install .card { background: var(--bg-elev); border: 1px solid var(--border); padding: 22px; border-radius: 10px; }
+section.install .card h3 { font-size: 16px; margin-bottom: 12px; }
+section.install .card pre { background: var(--bg-code); padding: 14px; border-radius: 6px; font-size: 13px; overflow-x: auto; border: 1px solid var(--border); }
 
 /* Footer */
 footer {
-  margin-top: 4rem; padding: 2rem 1rem; border-top: 1px solid var(--purple-dk);
-  text-align: center; color: var(--text-muted); font-size: 11px; letter-spacing: 1px;
-  position: relative; z-index: 1;
+  border-top: 1px solid var(--border);
+  padding: 40px 32px 60px;
+  text-align: center;
+  color: var(--text-muted); font-size: 14px;
 }
-footer a { color: var(--text-dim); }
+footer .links { display: flex; gap: 28px; justify-content: center; margin-bottom: 18px; }
+footer .links a { color: var(--text-dim); }
+footer .meta { font-size: 13px; }
 
-@media (max-width: 760px) {
-  main { padding: 6rem 1rem 5rem; }
-  .level-title { font-size: 1.3rem; }
-  .bench-row { grid-template-columns: 1fr; gap: 0.3rem; padding: 0.75rem 0; }
-  .bench-ratio { text-align: left; }
-  .inv-grid { grid-template-columns: 1fr; }
-  .splash-art { font-size: 6px; }
-  .install-bar { font-size: 11px; gap: 0.4rem; flex-wrap: wrap; padding: 0.5rem 0.6rem; }
-  .install-bar code { font-size: 11px; padding: 0.2rem 0.45rem; }
-  .install-bar .copy-x { padding: 0.3rem 0.5rem; font-size: 9px; }
-  .install-bar .tag, .install-bar .sep { display: none; }
-  .install-bar .gh-link, .install-bar .exe-dl { padding: 0.25rem 0.5rem; font-size: 9px; }
-  .install-bar .gh-link .gh-ico, .install-bar .exe-dl .exe-win { display: none; }
-  .install-hero { padding: 1rem; }
-  .install-hero-cmd { font-size: 12px; padding: 0.5rem 0.75rem; gap: 0.4rem; }
-  .quest-log { display: none; }
+@media (max-width: 700px) {
+  nav.top { padding: 12px 18px; }
+  nav.top ul { gap: 14px; }
+  nav.top ul li.hide-sm { display: none; }
+  section.hero { padding: 50px 20px 40px; }
+  section.hero h1 { font-size: 32px; }
+  section.hero p.lede { font-size: 16px; }
+  section.page { padding: 40px 20px; }
+  section.page h2 { font-size: 24px; }
 }
 </style>
 </head>
 <body>
 
-<!-- ═════════ Game-start overlay ═════════ -->
-<div class="splash" id="splash" role="button" tabindex="0" aria-label="Click or press any key to begin">
-  <div class="splash-box">
-    <div class="splash-tag">★ SLOTHDB v0.1.3 · MIT</div>
-    <div class="splash-prompt">▸ CLICK TO START ◂</div>
-    <div class="splash-mission">
-      <strong>MISSION</strong> · 3 levels · 60 seconds<br>
-      Explore · See benchmarks · Install
-    </div>
-    <div class="splash-controls">Press any key or click anywhere</div>
-  </div>
-</div>
-
-<!-- ═════════ Sticky install bar ═════════ -->
-<div class="install-bar" id="install-bar">
-  <span class="tag">INSTALL</span>
-  <code id="bar-cmd">pip install slothdb</code>
-  <button class="copy-x" id="bar-copy" type="button">Copy</button>
-  <span class="sep">·</span>
-  <a class="exe-dl" href="https://github.com/SouravRoy-ETL/slothdb/releases/latest/download/slothdb.exe" download>
-    <span class="exe-ico">⬇</span>
-    slothdb.exe<span class="exe-win">WIN</span>
+<nav class="top">
+  <a class="brand" href="/">
+    <img src="assets/icon.svg" alt="SlothDB logo">
+    SlothDB
   </a>
-  <span class="sep">·</span>
-  <a class="gh-link" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">
-    <span class="gh-ico">⌘</span>
-    GitHub
-    <span class="gh-stars" id="gh-stars">★ …</span>
-  </a>
-</div>
-
-<!-- ═════════ HUD ═════════ -->
-<div class="hud">
-  <div class="hud-box">
-    <span>LVL <span class="v" id="hud-level">01</span></span>
-    <span><span class="icon">◆</span> <span class="v" id="hud-coins">0</span></span>
-    <span><span class="icon">★</span> <span class="v" id="hud-stars">0</span>/3</span>
-  </div>
-  <div class="quest-log" id="quest">
-    <div class="head">★ MISSION · 0/3</div>
-    <div class="task" id="q1"><span class="mark">[ ]</span> <strong>Explore features</strong></div>
-    <div class="task" id="q2"><span class="mark">[ ]</span> <strong>See benchmarks</strong></div>
-    <div class="task locked" id="q3"><span class="mark">[🔒]</span> <strong>Install SlothDB</strong></div>
-  </div>
-</div>
-
-<!-- ═════════ Main ═════════ -->
-<main>
-
-<img src="assets/hero.svg" class="hero-banner" alt="SlothDB pixel banner">
-
-<div class="hero-cta">
-  <h1>Query your files with SQL.<br><span class="hl">No server. No import. No extensions.</span></h1>
-  <p>Embedded analytical database in C++20. Built-in readers for CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite. <strong style="color:var(--cyan);">1.1×–6.6× faster than DuckDB</strong> on every benchmark we ran.</p>
-
-  <div class="install-hero">
-    <div class="install-tabs">
-      <button class="install-tab active" data-cmd="pip install slothdb" data-dl="">PYTHON</button>
-      <button class="install-tab" data-cmd="curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash" data-dl="">LINUX / MACOS</button>
-      <button class="install-tab" data-cmd="" data-dl="https://github.com/SouravRoy-ETL/slothdb/releases/latest/download/slothdb.exe">WINDOWS (.EXE)</button>
-    </div>
-    <div class="install-hero-cmd" id="install-hero-cmd">
-      <span class="prompt">$</span>
-      <code id="hero-cmd">pip install slothdb</code>
-      <button id="hero-copy" type="button">Copy</button>
-    </div>
-    <a class="install-hero-dl" id="install-hero-dl" href="https://github.com/SouravRoy-ETL/slothdb/releases/latest/download/slothdb.exe" style="display:none;">
-      <span class="dl-icon">⬇</span>
-      <span class="dl-label">Download <strong>slothdb.exe</strong> for Windows</span>
-      <span class="dl-size">v0.1.3 · ~8 MB</span>
-    </a>
-  </div>
-
-  <div class="ctas">
-    <a href="#install" class="btn btn-primary">Get SlothDB</a>
-    <a href="#demo" class="btn btn-ghost">Try it Live</a>
-  </div>
-</div>
-
-<!-- ─── 01 SYSTEM ─── -->
-<section class="level" id="system">
-  <div class="level-label">LEVEL 01 — SYSTEM</div>
-  <h2 class="level-title">whoami</h2>
-  <div class="level-sub"># SlothDB --version</div>
-  <div class="term">
-    <div class="term-head"><span class="dots">terminal</span><span>~/slothdb</span></div>
-    <pre><span class="k">NAME</span>         slothdb
-<span class="k">VERSION</span>      0.1.3
-<span class="k">CATEGORY</span>     embedded analytical database (OLAP)
-<span class="k">LANGUAGE</span>     C++20
-<span class="k">LICENSE</span>      MIT
-<span class="k">BINARY_SIZE</span>  8 MB, self-contained (no Java / Docker / daemon)
-<span class="k">FORMATS</span>      CSV · Parquet · JSON · Avro · Excel · Arrow · SQLite
-<span class="k">APIS</span>         CLI · Python (pip install slothdb) · C/C++ (stable ABI)
-<span class="k">GPU</span>          CUDA (NVIDIA) · Metal (Apple), auto at 100k rows
-<span class="k">PLATFORMS</span>    Linux · macOS · Windows · x86_64 + ARM64
-<span class="k">TESTS</span>        326 passing · 131,321 assertions
-<span class="k">SPEED</span>        <span class="n">1.1×</span>–<span class="n">6.6×</span> faster than DuckDB on 15/15 benchmarks
-<span class="c"># end-of-profile</span></pre>
-  </div>
-</section>
-
-<!-- ─── 02 INVENTORY ─── -->
-<section class="level" id="inventory">
-  <div class="level-label">LEVEL 02 — INVENTORY</div>
-  <h2 class="level-title">what ships in the binary</h2>
-  <div class="level-sub">Every format, feature, and API — no extension downloads, no "load extension first".</div>
-
-  <div class="inv-grid">
-    <div class="inv-cell"><div class="inv-head">◈ File readers</div><ul class="inv-list">
-      <li>CSV · read_csv()</li><li>Parquet · read_parquet()</li><li>JSON / NDJSON</li>
-      <li>Excel (.xlsx) · read_xlsx()</li><li>Avro · read_avro()</li>
-      <li>Arrow IPC</li><li>SQLite · sqlite_scan()</li>
-    </ul></div>
-    <div class="inv-cell"><div class="inv-head">◈ SQL surface</div><ul class="inv-list">
-      <li>130+ features</li><li>Window functions · QUALIFY</li><li>Recursive CTEs</li>
-      <li>MERGE · UPSERT</li><li>Lateral joins</li><li>UNION / INTERSECT / EXCEPT</li>
-    </ul></div>
-    <div class="inv-cell"><div class="inv-head">◈ Engine</div><ul class="inv-list">
-      <li>Vectorized columnar (2048 values/batch)</li><li>Morsel-driven parallelism</li>
-      <li>Zero-copy VARCHAR via shared buffers</li><li>Fused WHERE + aggregate</li>
-      <li>Dict-index GROUP BY fast path</li><li>mmap file I/O</li>
-    </ul></div>
-    <div class="inv-cell"><div class="inv-head">◈ APIs</div><ul class="inv-list">
-      <li>CLI with linenoise (arrow keys, history, TAB)</li>
-      <li>Python: pandas DataFrame output</li>
-      <li>C/C++: stable C ABI</li>
-      <li>Structured numeric error codes</li>
-    </ul></div>
-    <div class="inv-cell"><div class="inv-head">◈ Storage</div><ul class="inv-list">
-      <li>Single-file .slothdb format</li><li>Atomic checkpoints</li>
-      <li>RLE · dictionary · bitpacking</li><li>Zone maps / min-max</li>
-    </ul></div>
-    <div class="inv-cell"><div class="inv-head">◈ Reliability</div><ul class="inv-list">
-      <li>326 passing unit tests</li><li>131,321 assertions</li>
-      <li>Bounds-checked parsing · DoS limits</li>
-      <li>UTF-8 identifiers (CJK column names)</li>
-    </ul></div>
-  </div>
-</section>
-
-<!-- ─── Built for your stack ─── -->
-<section class="level" id="stack">
-  <div class="level-label">LEVEL 03 — BUILT FOR YOUR STACK</div>
-  <h2 class="level-title">ecosystem</h2>
-  <div class="level-sub">SlothDB links native into your platform, language, and data format — no bindings or extensions to install separately.</div>
-
-  <div class="stack-wrap">
-    <div class="stack-grid">
-      <div class="stack-cat">
-        <div class="stack-head">◆ Platforms</div>
-        <div class="stack-chips">
-          <span class="chip">🐧 Linux</span>
-          <span class="chip">🍎 macOS</span>
-          <span class="chip">🪟 Windows</span>
-          <span class="chip">x86_64</span>
-          <span class="chip">ARM64</span>
-          <span class="chip roadmap">WebAssembly</span>
-        </div>
-      </div>
-
-      <div class="stack-cat">
-        <div class="stack-head">◆ Clients / bindings</div>
-        <div class="stack-chips">
-          <span class="chip">⌘ CLI shell</span>
-          <span class="chip">🐍 Python</span>
-          <span class="chip">🔤 C</span>
-          <span class="chip">C++</span>
-          <span class="chip roadmap">Node.js</span>
-          <span class="chip roadmap">Go</span>
-          <span class="chip roadmap">R</span>
-        </div>
-      </div>
-
-      <div class="stack-cat">
-        <div class="stack-head">◆ File formats (native)</div>
-        <div class="stack-chips">
-          <span class="chip">CSV</span>
-          <span class="chip">Parquet</span>
-          <span class="chip">JSON / NDJSON</span>
-          <span class="chip">Avro</span>
-          <span class="chip">Excel .xlsx</span>
-          <span class="chip">Arrow IPC</span>
-          <span class="chip">SQLite</span>
-        </div>
-      </div>
-
-      <div class="stack-cat">
-        <div class="stack-head">◆ Data science</div>
-        <div class="stack-chips">
-          <span class="chip">🐼 pandas</span>
-          <span class="chip">📓 Jupyter</span>
-          <span class="chip">NumPy</span>
-          <span class="chip roadmap">Polars</span>
-          <span class="chip roadmap">Apache Arrow</span>
-        </div>
-      </div>
-
-      <div class="stack-cat">
-        <div class="stack-head">◆ Storage / I/O</div>
-        <div class="stack-chips">
-          <span class="chip">local filesystem</span>
-          <span class="chip">mmap'd reads</span>
-          <span class="chip">.slothdb file</span>
-          <span class="chip">GPU (CUDA)</span>
-          <span class="chip">GPU (Metal)</span>
-          <span class="chip roadmap">S3 · GCS · HTTP</span>
-        </div>
-      </div>
-
-      <div class="stack-cat">
-        <div class="stack-head">◆ SQL surface</div>
-        <div class="stack-chips">
-          <span class="chip">130+ features</span>
-          <span class="chip">Window fns</span>
-          <span class="chip">QUALIFY</span>
-          <span class="chip">Recursive CTEs</span>
-          <span class="chip">MERGE / UPSERT</span>
-          <span class="chip">Lateral joins</span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="level-sub" style="margin-top:1rem; text-align:center;">
-    <span style="color:var(--yellow);">+ </span> = on the roadmap · current features are green-lit in v0.1.3
-  </div>
-</section>
-
-<!-- ─── LIVE DEMO (install gravity) ─── -->
-<section class="level" id="demo">
-  <div class="level-label">LEVEL 04 — TRY IT</div>
-  <h2 class="level-title">run a query right now</h2>
-  <div class="level-sub">Click a query — see what SlothDB would print. To run on <em>your</em> files, install (30s).</div>
-
-  <div class="live-demo">
-    <div class="demo-queries" id="demo-queries">
-      <button class="demo-query" data-q="count">SELECT COUNT(*) FROM 'sales.csv'</button>
-      <button class="demo-query" data-q="group">SELECT region, SUM(revenue) GROUP BY region</button>
-      <button class="demo-query" data-q="where">WHERE year ≥ 2023</button>
-      <button class="demo-query" data-q="chinese">中文列名 (Chinese column names)</button>
-    </div>
-    <div class="demo-output" id="demo-output"><span class="c">slothdb&gt; </span><span class="cursor">▮</span></div>
-    <div class="demo-hint">↑ these outputs are real numbers from the benchmark. <strong>Install to run against your own data.</strong></div>
-  </div>
-</section>
-
-<!-- ─── 04 BENCHMARKS ─── -->
-<section class="level" id="bench">
-  <div class="level-label">LEVEL 05 — BENCHMARKS</div>
-  <h2 class="level-title">1M rows · warm cache · 5-run median</h2>
-  <div class="level-sub">Sort by speedup; every bar is SlothDB winning.</div>
-
-  <div class="stats">
-    <div class="stat"><span class="stat-v win">15/15</span><span class="stat-l">won</span></div>
-    <div class="stat"><span class="stat-v">6.6×</span><span class="stat-l">biggest</span></div>
-    <div class="stat"><span class="stat-v">1.04×</span><span class="stat-l">smallest</span></div>
-    <div class="stat"><span class="stat-v">5</span><span class="stat-l">formats</span></div>
-  </div>
-
-  <div class="bench-list">
-    <div class="bench-row"><span class="bench-label">Avro · SUM</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="5.43">140ms vs 760ms</div></div><span class="bench-ratio">5.43×</span></div>
-    <div class="bench-row"><span class="bench-label">CSV · COUNT(*)</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="5.08">33ms vs 170ms</div></div><span class="bench-ratio">5.08×</span></div>
-    <div class="bench-row"><span class="bench-label">Avro · GROUP BY</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="4.71">170ms vs 800ms</div></div><span class="bench-ratio">4.71×</span></div>
-    <div class="bench-row"><span class="bench-label">Parquet · COUNT(*)</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="2.83">12ms vs 34ms</div></div><span class="bench-ratio">2.83×</span></div>
-    <div class="bench-row"><span class="bench-label">CSV · GROUP BY</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.91">100ms vs 191ms</div></div><span class="bench-ratio">1.91×</span></div>
-    <div class="bench-row"><span class="bench-label">CSV · WHERE + GBY</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.81">107ms vs 194ms</div></div><span class="bench-ratio">1.81×</span></div>
-    <div class="bench-row"><span class="bench-label">CSV · GBY 2-col</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.70">117ms vs 198ms</div></div><span class="bench-ratio">1.70×</span></div>
-    <div class="bench-row"><span class="bench-label">CSV · SUM</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.67">106ms vs 177ms</div></div><span class="bench-ratio">1.67×</span></div>
-    <div class="bench-row"><span class="bench-label">Excel · GROUP BY</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.41">2.5s vs 3.56s</div></div><span class="bench-ratio">1.41×</span></div>
-    <div class="bench-row"><span class="bench-label">JSON · SUM</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.30">242ms vs 314ms</div></div><span class="bench-ratio">1.30×</span></div>
-    <div class="bench-row"><span class="bench-label">Parquet · WHERE + GBY</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.26">157ms vs 198ms</div></div><span class="bench-ratio">1.26×</span></div>
-    <div class="bench-row"><span class="bench-label">Parquet · GBY 2-col</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.18">146ms vs 173ms</div></div><span class="bench-ratio">1.18×</span></div>
-    <div class="bench-row"><span class="bench-label">Parquet · GROUP BY</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.16">76ms vs 88ms</div></div><span class="bench-ratio">1.16×</span></div>
-    <div class="bench-row"><span class="bench-label">JSON · GROUP BY</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.14">284ms vs 324ms</div></div><span class="bench-ratio">1.14×</span></div>
-    <div class="bench-row"><span class="bench-label">Parquet · SUM</span><div class="bench-bar-wrap"><div class="bench-bar" data-ratio="1.04">46ms vs 48ms</div></div><span class="bench-ratio">1.04×</span></div>
-  </div>
-
-  <div class="level-sub" style="margin-top:1.5rem;">Parquet SUM at 4% is within run-to-run noise. The Avro gap is wide partly because DuckDB reads Avro through an extension — not apples-to-apples there.</div>
-</section>
-
-<!-- ─── 05 BOSS BATTLE ─── -->
-<section class="level" id="boss">
-  <div class="level-label">LEVEL 06 — BOSS BATTLE</div>
-  <h2 class="level-title">SlothDB vs {DuckDB, ClickHouse, SQLite}</h2>
-  <div class="level-sub">Honest, side-by-side. If another tool wins for your workload, we say so.</div>
-
-  <h3 style="color:var(--purple-lt); margin:1.5rem 0 0.5rem; font-size:1rem;">vs DuckDB — same category</h3>
-  <table class="vs-table">
-    <thead><tr><th></th><th>SlothDB</th><th>DuckDB</th></tr></thead>
-    <tbody>
-      <tr><td>1M-row benchmark</td><td class="win">1.04×–6.6× faster on 15/15</td><td class="loss">baseline</td></tr>
-      <tr><td>Built-in file formats</td><td class="win">7 (all in binary)</td><td class="loss">3 (Excel/Avro/SQLite need extensions)</td></tr>
-      <tr><td>Extension ABI</td><td class="win">Stable C ABI</td><td class="loss">Internal C++ API, breaks often</td></tr>
-      <tr><td>GPU offload</td><td class="win">CUDA + Metal</td><td class="loss">CPU only</td></tr>
-      <tr><td>Binary size</td><td class="win">~8 MB</td><td class="loss">~50 MB</td></tr>
-    </tbody>
-  </table>
-
-  <h3 style="color:var(--purple-lt); margin:2rem 0 0.5rem; font-size:1rem;">vs ClickHouse — different category</h3>
-  <table class="vs-table">
-    <thead><tr><th></th><th>SlothDB</th><th>ClickHouse</th></tr></thead>
-    <tbody>
-      <tr><td>Deployment</td><td class="win">8 MB, embedded</td><td class="loss">server + Keeper + config</td></tr>
-      <tr><td>Cold start</td><td class="win">&lt; 10 ms</td><td class="loss">tens of seconds</td></tr>
-      <tr><td>Ops overhead</td><td class="win">none</td><td class="loss">daemon, ports, upgrades</td></tr>
-      <tr><td>Cluster / distributed</td><td class="loss">no</td><td class="win">yes</td></tr>
-    </tbody>
-  </table>
-
-  <h3 style="color:var(--text-dim); margin:2rem 0 0.5rem; font-size:1rem;">What SlothDB does not do</h3>
-  <ul class="inv-list" style="margin-left:0.5rem;">
-    <li>No distributed queries · use ClickHouse at scale</li>
-    <li>No MVCC transactions · OLTP is a poor fit</li>
-    <li>Younger codebase · open issues on GitHub when you find bugs</li>
+  <ul>
+    <li class="hide-sm"><a href="#install">Install</a></li>
+    <li class="hide-sm"><a href="#benchmarks">Benchmarks</a></li>
+    <li class="hide-sm"><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/DOCUMENTATION.md">Docs</a></li>
+    <li class="hide-sm"><a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">Changelog</a></li>
+    <li>
+      <a class="gh-btn" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        <span>GitHub</span>
+        <span class="star-count" id="gh-stars">★ …</span>
+      </a>
+    </li>
   </ul>
+</nav>
+
+<section class="hero">
+  <img class="banner" src="assets/hero.svg" alt="SlothDB beats DuckDB">
+  <h1>A fast, in-process SQL database<br>for your <span class="accent">local data files</span>.</h1>
+  <p class="lede">SlothDB is a drop-in DuckDB alternative with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite. 1.1×–8.6× faster than DuckDB on every query in the benchmark suite.</p>
+  <div class="install-line">
+    <span class="prompt">$</span>
+    <span id="install-cmd">pip install slothdb</span>
+    <button onclick="copyInstall()">Copy</button>
+  </div>
+  <div class="ctas" style="margin-top: 28px;">
+    <a class="cta primary" href="#install">Get started</a>
+    <a class="cta ghost" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
 </section>
 
-<!-- ─── 06 FINAL BOSS (install) ─── -->
-<section class="level" id="install">
-  <div class="level-label">LEVEL 07 — FINAL BOSS</div>
-  <h2 class="level-title">defeat the install command</h2>
-  <div class="level-sub">You made it this far. The last boss is one line of shell.</div>
+<section class="demo page">
+  <h2>60-second tour</h2>
+  <p class="section-lede">After <code>pip install slothdb</code>, run <code>python -c "import slothdb; slothdb.demo()"</code> — it generates a 100 000-row CSV, runs three queries, and prints a side-by-side against DuckDB on your own machine.</p>
+  <div class="demo-wrap">
+    <img src="assets/demo.svg" alt="SlothDB demo — side-by-side timing vs DuckDB">
+  </div>
+</section>
 
-  <div class="boss-pane">
-    <div class="boss-label"></div>
-    <h3>★ INSTALL SLOTHDB v0.1.3</h3>
-    <p>Pick your platform. Every method is free, MIT licensed, no signup.</p>
-
-    <div class="boss-install">
-      <span class="prompt">$</span>
-      <code id="boss-cmd">pip install slothdb</code>
-      <button id="boss-copy" type="button">Copy</button>
+<section class="features page">
+  <h2>What makes it <span class="accent">different</span></h2>
+  <p class="section-lede">Same embedded model as DuckDB and SQLite — link it in, point SQL at files on disk. The defaults are different.</p>
+  <div class="grid">
+    <div class="card">
+      <h3><span class="dot"></span>Seven file formats built in</h3>
+      <p>Parquet, CSV, JSON, Avro, Arrow, SQLite, Excel — all in core. DuckDB needs separate extensions for Avro, SQLite and Excel.</p>
     </div>
-
-    <div class="platform-grid">
-      <div class="platform-card">
-        <div class="platform-head">🐍 PYTHON</div>
-        <div class="platform-cmd">pip install slothdb</div>
-      </div>
-      <div class="platform-card">
-        <div class="platform-head">🐧 LINUX / 🍎 MACOS</div>
-        <div class="platform-cmd">curl -fsSL .../install.sh | bash</div>
-      </div>
-      <div class="platform-card">
-        <div class="platform-head">🪟 WINDOWS</div>
-        <div class="platform-cmd"><a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest" style="color:var(--purple-lt);">download slothdb.exe →</a></div>
-      </div>
-      <div class="platform-card">
-        <div class="platform-head">📦 DEBIAN / UBUNTU</div>
-        <div class="platform-cmd">dpkg -i slothdb_0.1.3_amd64.deb</div>
-      </div>
+    <div class="card">
+      <h3><span class="dot"></span>1.1×–8.6× faster than DuckDB</h3>
+      <p>On a 1M-row benchmark across 15 queries spanning every supported format. Avro SUM is 5.4×. CSV COUNT(*) is 5.1×. Parquet SUM is a tie.</p>
     </div>
-
-    <div style="margin-top:2rem;">
-      <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest" class="btn btn-primary">ALL DOWNLOADS</a>
-      <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/DOCUMENTATION.md" class="btn btn-ghost">READ THE DOCS</a>
+    <div class="card">
+      <h3><span class="dot"></span>Stable C ABI for extensions</h3>
+      <p>Numeric error codes (<code>ErrorCode::TABLE_NOT_FOUND = 2000</code>) that never change. Extensions built for v0.1 keep working on v1.0.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot"></span>~8 MB self-contained binary</h3>
+      <p>One file on disk. No runtime dependencies. Embeds into your app, runs as a shell, or imports into Python.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot"></span>No server, no import, no setup</h3>
+      <p>Point SQL at the file and go. No <code>CREATE TABLE</code>, no <code>COPY FROM</code>, no extension to load first.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot"></span>MIT licensed</h3>
+      <p>Use it anywhere, including commercial products. Source on GitHub, 326 tests, 131 000+ assertions.</p>
     </div>
   </div>
 </section>
 
-</main>
+<section class="page">
+  <h2>Query any file with <span class="accent">SQL</span></h2>
+  <p class="section-lede">No <code>CREATE TABLE</code>. No import step. Point at the file.</p>
+<pre class="code"><span class="cm">-- Local Parquet / CSV / JSON</span>
+<span class="kw">SELECT</span> region, <span class="kw">SUM</span>(revenue)
+<span class="kw">FROM</span> <span class="str">'sales.parquet'</span>
+<span class="kw">WHERE</span> year &gt;= 2023
+<span class="kw">GROUP BY</span> region;
 
-<!-- ═════════ Victory ═════════ -->
-<div class="victory" id="victory">
-  <div class="victory-art">  ██╗   ██╗██╗ ██████╗████████╗ ██████╗ ██████╗ ██╗   ██╗
-  ██║   ██║██║██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗╚██╗ ██╔╝
-  ██║   ██║██║██║        ██║   ██║   ██║██████╔╝ ╚████╔╝
-  ╚██╗ ██╔╝██║██║        ██║   ██║   ██║██╔══██╗  ╚██╔╝
-   ╚████╔╝ ██║╚██████╗   ██║   ╚██████╔╝██║  ██║   ██║
-    ╚═══╝  ╚═╝ ╚═════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝ </div>
-  <div class="victory-title">ALL 3 MISSIONS COMPLETE</div>
-  <div class="victory-sub" id="victory-sub">Install is underway. Point SlothDB at any CSV / Parquet / JSON file you have lying around — first query in under 30 seconds.</div>
-  <div class="next-step">
-    <span class="tag">NEXT STEP</span>
-    <code>slothdb -c "SELECT * FROM 'your_file.csv' LIMIT 10;"</code>
+<span class="cm">-- Avro, Arrow, SQLite — no extension load needed</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="kw">read_avro</span>(<span class="str">'events.avro'</span>) <span class="kw">LIMIT</span> 100;
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="kw">sqlite_scan</span>(<span class="str">'app.db'</span>, <span class="str">'users'</span>);
+
+<span class="cm">-- Export results to any format</span>
+<span class="kw">COPY</span> (<span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="str">'big.csv'</span> <span class="kw">WHERE</span> year &gt;= 2024)
+<span class="kw">TO</span> <span class="str">'filtered.parquet'</span> <span class="kw">WITH</span> (<span class="kw">FORMAT</span> PARQUET);
+</pre>
+</section>
+
+<section class="bench page" id="benchmarks">
+  <h2>Performance</h2>
+  <p class="section-lede">1M-row dataset · warm cache · 5-run median · same machine · same queries.</p>
+  <table>
+    <thead>
+      <tr><th>Format</th><th>Query</th><th style="text-align:right">SlothDB</th><th style="text-align:right">DuckDB</th><th style="text-align:right">Speedup</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>CSV</td><td>COUNT(*)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
+      <tr><td>CSV</td><td>GROUP BY region</td><td class="num">100 ms</td><td class="num">191 ms</td><td class="win">1.91×</td></tr>
+      <tr><td>Parquet</td><td>COUNT(*)</td><td class="num">12 ms</td><td class="num">34 ms</td><td class="win">2.83×</td></tr>
+      <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td class="win">1.04×</td></tr>
+      <tr><td>Parquet</td><td>GROUP BY region</td><td class="num">76 ms</td><td class="num">88 ms</td><td class="win">1.16×</td></tr>
+      <tr><td>JSON</td><td>SUM(revenue)</td><td class="num">242 ms</td><td class="num">314 ms</td><td class="win">1.30×</td></tr>
+      <tr><td>Avro</td><td>SUM(revenue)</td><td class="num">140 ms</td><td class="num">760 ms</td><td class="win">5.43×</td></tr>
+      <tr><td>Avro</td><td>GROUP BY region</td><td class="num">170 ms</td><td class="num">800 ms</td><td class="win">4.71×</td></tr>
+      <tr><td>Excel</td><td>GROUP BY region</td><td class="num">2.5 s</td><td class="num">3.56 s</td><td class="win">1.41×</td></tr>
+    </tbody>
+  </table>
+  <p class="note">Full 15-query table and methodology in the <a href="https://github.com/SouravRoy-ETL/slothdb#performance--11---86-faster-than-duckdb-every-format-every-query">README</a>.</p>
+</section>
+
+<section class="install page" id="install">
+  <h2>Install</h2>
+  <p class="section-lede">Pick a platform. Single binary, no dependencies.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Python</h3>
+      <pre>pip install slothdb
+python -c "import slothdb; slothdb.demo()"</pre>
+    </div>
+    <div class="card">
+      <h3>Linux / macOS (curl)</h3>
+      <pre>curl -fsSL https://raw.githubusercontent.com/\
+SouravRoy-ETL/slothdb/main/install.sh | bash</pre>
+    </div>
+    <div class="card">
+      <h3>Windows</h3>
+      <pre>Download slothdb.exe from
+github.com/SouravRoy-ETL/slothdb/releases/latest</pre>
+    </div>
+    <div class="card">
+      <h3>Build from source</h3>
+      <pre>git clone https://github.com/SouravRoy-ETL/slothdb
+cd slothdb
+cmake -B build -DSLOTHDB_BUILD_SHELL=ON
+cmake --build build --config Release</pre>
+    </div>
   </div>
-  <button class="close-v" id="close-v">CONTINUE EXPLORING</button>
-</div>
-
-<!-- ═════════ Toast ═════════ -->
-<div class="toast" id="toast"><span class="plus">+10</span><span id="toast-msg">SECTION</span></div>
-
-<!-- ═════════ Easter-egg toast: caught trying to view source ═════════ -->
-<a class="sloth-toast" id="sloth-toast" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">
-  <span class="face">🦥</span><span id="sloth-caught">caught you</span>
-  <span class="go-hint">SOURCE IS MIT · <strong>github.com/SouravRoy-ETL/slothdb</strong> · click to open</span>
-</a>
+</section>
 
 <footer>
-  <div>SLOTHDB v0.1.3 · MIT · <a href="https://github.com/SouravRoy-ETL/slothdb">github</a> · © SOURAV ROY</div>
-  <div style="margin-top:0.5rem;color:var(--text-muted);">HONEST NUMBERS · HONEST CAVEATS</div>
+  <div class="links">
+    <a href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
+    <a href="https://pypi.org/project/slothdb/">PyPI</a>
+    <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/DOCUMENTATION.md">Docs</a>
+    <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/SouravRoy-ETL/slothdb/issues">Issues</a>
+  </div>
+  <div class="meta">
+    SlothDB v0.1.3 · MIT licensed · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
+  </div>
 </footer>
 
 <script>
-(function () {
-  // Game-start gate. The banner is visible through the semi-transparent
-  // overlay — click or press any key to dismiss and activate quest tracking.
-  var splash = document.getElementById('splash');
-  var started = false;
-  function start() {
-    if (started) return;
-    started = true;
-    if (splash) {
-      splash.classList.add('hidden');
-      setTimeout(function(){ splash.style.display = 'none'; }, 500);
+function copyInstall() {
+  const txt = document.getElementById('install-cmd').textContent;
+  navigator.clipboard.writeText(txt).then(() => {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = orig; }, 1600);
+  });
+}
+
+fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
+  .then(r => r.json())
+  .then(d => {
+    if (d && typeof d.stargazers_count === 'number') {
+      document.getElementById('gh-stars').textContent = '★ ' + d.stargazers_count;
     }
-    revealVisible();
-    animateBars();
-  }
-  if (splash) {
-    splash.addEventListener('click', start);
-    splash.addEventListener('keydown', start);
-  }
-  window.addEventListener('keydown', function(e){
-    if (!started) { start(); }
-  });
-
-  // ── HUD + Quests ──
-  var hud = { level: document.getElementById('hud-level'), coins: document.getElementById('hud-coins'), stars: document.getElementById('hud-stars') };
-  var coins = 0, stars = 0;
-  function setCoins(n){ coins = n; hud.coins.textContent = n; }
-  function setStars(n){ stars = n; hud.stars.textContent = n; }
-  function setLevel(n){ hud.level.textContent = String(n).padStart(2,'0'); }
-
-  var quests = { explore: false, bench: false, install: false };
-  function updateQuest(id, done) {
-    var el = document.getElementById(id);
-    if (!el || quests[{ q1:'explore', q2:'bench', q3:'install' }[id]] ) {} // already set check below
-    var key = { q1:'explore', q2:'bench', q3:'install' }[id];
-    if (quests[key]) return;
-    quests[key] = done;
-    if (done) {
-      el.classList.remove('locked');
-      el.classList.add('done');
-      el.querySelector('.mark').textContent = '[x]';
-      setStars(stars + 1);
-      updateQuestHead();
-    }
-  }
-  function updateQuestHead() {
-    var done = Object.values(quests).filter(Boolean).length;
-    document.querySelector('#quest .head').textContent = '★ MISSION · ' + done + '/3';
-  }
-
-  // ── Toast ──
-  var toast = document.getElementById('toast'), toastMsg = document.getElementById('toast-msg'), toastTimer;
-  function showToast(msg, prefix) {
-    toast.querySelector('.plus').textContent = prefix || '+10';
-    toastMsg.textContent = msg;
-    toast.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(function(){ toast.classList.remove('show'); }, 2200);
-  }
-
-  // ── Level visibility ──
-  var levels = Array.prototype.slice.call(document.querySelectorAll('.level'));
-  var seen = {};
-  var names = { system:'SYSTEM PROFILE', inventory:'INVENTORY', stack:'BUILT FOR YOUR STACK', demo:'LIVE DEMO', bench:'BENCHMARKS', boss:'BOSS BATTLE', install:'FINAL BOSS' };
-  var io = new IntersectionObserver(function(entries){
-    entries.forEach(function(e){
-      if (e.isIntersecting) {
-        e.target.classList.add('visible');
-        if (!seen[e.target.id]) {
-          seen[e.target.id] = true;
-          var idx = levels.indexOf(e.target) + 1;
-          setLevel(idx);
-          setCoins(coins + 10);
-          showToast(names[e.target.id] || 'SECTION');
-          if (e.target.id === 'inventory') updateQuest('q1', true);
-          if (e.target.id === 'bench') updateQuest('q2', true);
-        }
-      }
-    });
-  }, { threshold: 0.25 });
-  function revealVisible(){ levels.forEach(function(l){ io.observe(l); }); }
-
-  // ── Bench bars ──
-  var bars = document.querySelectorAll('.bench-bar'); var MAX = 6.6;
-  function animateBars(){
-    requestAnimationFrame(function(){
-      bars.forEach(function(b){
-        var r = parseFloat(b.dataset.ratio || '1');
-        b.style.width = Math.min(100, (r / MAX) * 100) + '%';
-      });
-    });
-  }
-
-  // ── Install tabs ──
-  var tabs = document.querySelectorAll('.install-tab');
-  var heroCmd = document.getElementById('hero-cmd');
-  var heroCmdBox = document.getElementById('install-hero-cmd');
-  var heroDl = document.getElementById('install-hero-dl');
-  tabs.forEach(function(t){
-    t.addEventListener('click', function(){
-      tabs.forEach(function(x){ x.classList.remove('active'); });
-      t.classList.add('active');
-      var dl = t.dataset.dl;
-      if (dl) {
-        // Windows tab — show direct download, hide command card.
-        heroCmdBox.style.display = 'none';
-        heroDl.style.display = 'flex';
-        heroDl.href = dl;
-        heroCmd.textContent = dl; // so copy buttons still work (copies URL)
-      } else {
-        heroCmdBox.style.display = 'flex';
-        heroDl.style.display = 'none';
-        heroCmd.textContent = t.dataset.cmd;
-      }
-    });
-  });
-
-  // ── Shared: install quest complete + victory screen ──
-  function unlockInstall(method) {
-    updateQuest('q3', true);
-    setCoins(coins + 20);
-    showToast(method, '+20');
-    if (!window.__won) {
-      window.__won = true;
-      // Update the Victory "next step" snippet to match how they installed.
-      var ns = document.querySelector('#victory .next-step code');
-      if (ns) {
-        if (method.indexOf('EXE') !== -1 || method.indexOf('DOWNLOAD') !== -1) {
-          ns.textContent = 'slothdb.exe -c "SELECT * FROM \'your.csv\' LIMIT 10;"';
-          var ts = document.querySelector('#victory .next-step .tag');
-          if (ts) ts.textContent = 'RUN IT';
-        } else {
-          ns.textContent = 'slothdb -c "SELECT * FROM \'your.csv\' LIMIT 10;"';
-        }
-      }
-      setTimeout(function(){ document.getElementById('victory').classList.add('show'); }, 600);
-    }
-  }
-
-  // ── Copy buttons (all copy current hero cmd) ──
-  function wireCopy(btnId, srcGetter) {
-    var btn = document.getElementById(btnId);
-    if (!btn) return;
-    btn.addEventListener('click', function(){
-      var txt = srcGetter();
-      navigator.clipboard.writeText(txt).then(function(){
-        btn.textContent = '✓ COPIED'; btn.classList.add('done');
-        setTimeout(function(){
-          btn.textContent = 'Copy'; btn.classList.remove('done');
-        }, 1600);
-        unlockInstall('INSTALL COMMAND COPIED');
-      });
-    });
-  }
-  wireCopy('bar-copy',  function(){ return heroCmd.textContent; });
-  wireCopy('hero-copy', function(){ return heroCmd.textContent; });
-  wireCopy('boss-copy', function(){ return heroCmd.textContent; });
-
-  // ── .exe download links ──
-  // Fire the same victory flow, but DON'T preventDefault — the actual
-  // download must still happen.
-  Array.prototype.forEach.call(
-    document.querySelectorAll('a[href$=".exe"], a[href*="/slothdb.exe"], .exe-dl, #install-hero-dl'),
-    function (el) {
-      el.addEventListener('click', function () {
-        unlockInstall('.EXE DOWNLOAD STARTED');
-      });
-    }
-  );
-
-  // ── Live demo ──
-  var output = document.getElementById('demo-output');
-  var demoResults = {
-    count: [
-      { t: 0,    l: '<span class="c">slothdb&gt; </span><span class="k">SELECT</span> <span class="f">COUNT</span>(*) <span class="k">FROM</span> <span class="s">\'sales.csv\'</span>;' },
-      { t: 250,  l: '' },
-      { t: 400,  l: '<span class="c">┌─────────────────┐</span>' },
-      { t: 450,  l: '<span class="c">│    count(*)     │</span>' },
-      { t: 500,  l: '<span class="c">├─────────────────┤</span>' },
-      { t: 550,  l: '<span class="c">│    </span><span class="n">1,000,000</span><span class="c">    │</span>' },
-      { t: 600,  l: '<span class="c">└─────────────────┘</span>' },
-      { t: 700,  l: '' },
-      { t: 750,  l: '<span class="c">Executed in </span><span class="n">33 ms</span> <span class="c">(SlothDB) vs </span><span class="n">170 ms</span> <span class="c">(DuckDB)</span>' },
-      { t: 900,  l: '<span class="p">╌╌╌ <span class="i">install to run on YOUR data ↓</span> ╌╌╌</span>' },
-    ],
-    group: [
-      { t: 0,    l: '<span class="c">slothdb&gt; </span><span class="k">SELECT</span> region, <span class="f">SUM</span>(revenue) <span class="k">FROM</span> <span class="s">\'sales.csv\'</span> <span class="k">GROUP BY</span> region;' },
-      { t: 300,  l: '' },
-      { t: 400,  l: '<span class="c">┌──────────┬───────────────────┐</span>' },
-      { t: 450,  l: '<span class="c">│  region  │   sum(revenue)    │</span>' },
-      { t: 500,  l: '<span class="c">├──────────┼───────────────────┤</span>' },
-      { t: 550,  l: '<span class="c">│ </span>MEA      <span class="c"> │ </span><span class="n">2,573,123,153.22</span><span class="c"> │</span>' },
-      { t: 600,  l: '<span class="c">│ </span>LATAM    <span class="c"> │ </span><span class="n">2,556,868,580.02</span><span class="c"> │</span>' },
-      { t: 650,  l: '<span class="c">│ </span>US-East  <span class="c"> │ </span><span class="n">2,580,097,798.27</span><span class="c"> │</span>' },
-      { t: 700,  l: '<span class="c">│ </span>APAC     <span class="c"> │ </span><span class="n">2,562,815,156.01</span><span class="c"> │</span>' },
-      { t: 750,  l: '<span class="c">└──────────┴───────────────────┘</span>' },
-      { t: 850,  l: '<span class="c">10 rows · </span><span class="n">100 ms</span> <span class="c">(DuckDB: </span><span class="n">191 ms</span><span class="c">) · 1.91× faster</span>' },
-      { t: 1000, l: '<span class="p">╌╌╌ <span class="i">install to run on YOUR data ↓</span> ╌╌╌</span>' },
-    ],
-    where: [
-      { t: 0,    l: '<span class="c">slothdb&gt; </span><span class="k">SELECT</span> region, <span class="f">SUM</span>(revenue) <span class="k">FROM</span> <span class="s">\'sales.csv\'</span>' },
-      { t: 100,  l: '       <span class="k">WHERE</span> year <span class="p">&gt;=</span> <span class="n">2023</span> <span class="k">AND</span> quantity <span class="p">&gt;</span> <span class="n">100</span>' },
-      { t: 200,  l: '       <span class="k">GROUP BY</span> region;' },
-      { t: 450,  l: '' },
-      { t: 500,  l: '<span class="c">(10 regions, filtered)</span>' },
-      { t: 650,  l: '<span class="c">Executed in </span><span class="n">107 ms</span> <span class="c">(SlothDB fused WHERE+GROUPBY)</span>' },
-      { t: 750,  l: '<span class="c">                 </span><span class="n">194 ms</span> <span class="c">(DuckDB) · 1.81× faster</span>' },
-      { t: 900,  l: '<span class="p">╌╌╌ <span class="i">install to run on YOUR data ↓</span> ╌╌╌</span>' },
-    ],
-    chinese: [
-      { t: 0,    l: '<span class="c">slothdb&gt; </span><span class="k">CREATE TABLE</span> <span class="i">销售</span> (<span class="i">区域</span> <span class="k">VARCHAR</span>, <span class="i">销售额</span> <span class="k">BIGINT</span>);' },
-      { t: 200,  l: '<span class="c">slothdb&gt; </span><span class="k">INSERT INTO</span> <span class="i">销售</span> <span class="k">VALUES</span> (<span class="s">\'华东\'</span>, <span class="n">100</span>), (<span class="s">\'华南\'</span>, <span class="n">200</span>);' },
-      { t: 400,  l: '<span class="c">slothdb&gt; </span><span class="k">SELECT</span> <span class="i">区域</span>, <span class="f">SUM</span>(<span class="i">销售额</span>) <span class="k">FROM</span> <span class="i">销售</span> <span class="k">GROUP BY</span> <span class="i">区域</span>;' },
-      { t: 600,  l: '<span class="c">┌────────┬──────────────┐</span>' },
-      { t: 650,  l: '<span class="c">│  </span><span class="i">区域</span><span class="c">  │   sum(</span><span class="i">销售额</span><span class="c">)   │</span>' },
-      { t: 700,  l: '<span class="c">├────────┼──────────────┤</span>' },
-      { t: 750,  l: '<span class="c">│ </span>华东   <span class="c"> │          </span><span class="n">100</span><span class="c"> │</span>' },
-      { t: 800,  l: '<span class="c">│ </span>华南   <span class="c"> │          </span><span class="n">200</span><span class="c"> │</span>' },
-      { t: 850,  l: '<span class="c">└────────┴──────────────┘</span>' },
-      { t: 1000, l: '<span class="c">UTF-8 identifiers — Chinese, Japanese, Korean all work unquoted.</span>' },
-      { t: 1150, l: '<span class="p">╌╌╌ <span class="i">install to run on YOUR data ↓</span> ╌╌╌</span>' },
-    ],
-  };
-  document.querySelectorAll('.demo-query').forEach(function(b){
-    b.addEventListener('click', function(){
-      var key = b.dataset.q;
-      var steps = demoResults[key];
-      output.innerHTML = '<span class="cursor">▮</span>';
-      var lines = [];
-      steps.forEach(function(s){
-        setTimeout(function(){
-          lines.push(s.l);
-          output.innerHTML = lines.join('\n') + '\n<span class="cursor">▮</span>';
-        }, s.t);
-      });
-      setCoins(coins + 5);
-    });
-  });
-
-  // ── Victory close ──
-  document.getElementById('close-v').addEventListener('click', function(){
-    document.getElementById('victory').classList.remove('show');
-  });
-  document.getElementById('victory').addEventListener('click', function(e){
-    if (e.target.id === 'victory') document.getElementById('victory').classList.remove('show');
-  });
-
-  // If the URL has a hash (direct deep-link), skip the gate.
-  if (location.hash) start();
-
-  // ── Easter egg: Ctrl+U / F12 / Right-click / Ctrl+Shift+I ──
-  // Cannot genuinely block source viewing (browser ships the source to
-  // every visitor). We just intercept the common shortcuts, show a
-  // friendly toast pointing at the open-source repo. Users can still
-  // hit "view-source:" in the URL bar if they really want — which is
-  // correct behavior, since the whole project is MIT-licensed.
-  var slothToast = document.getElementById('sloth-toast');
-  var slothCaught = document.getElementById('sloth-caught');
-  var slothTimer;
-  function slothSpot(caughtLabel) {
-    if (!slothToast) return;
-    slothCaught.innerHTML = 'caught you hitting <span class="caught-key">' + caughtLabel + '</span>';
-    slothToast.classList.add('show');
-    clearTimeout(slothTimer);
-    slothTimer = setTimeout(function(){ slothToast.classList.remove('show'); }, 4500);
-  }
-  document.addEventListener('contextmenu', function(e){
-    e.preventDefault();
-    slothSpot('right-click');
-  });
-  window.addEventListener('keydown', function(e){
-    var k = e.key;
-    var ctrl = e.ctrlKey || e.metaKey;
-    if (k === 'F12') { e.preventDefault(); slothSpot('F12'); return; }
-    if (ctrl && !e.shiftKey && (k === 'u' || k === 'U')) { e.preventDefault(); slothSpot('Ctrl+U'); return; }
-    if (ctrl && !e.shiftKey && (k === 's' || k === 'S') && !e.target.closest('input, textarea')) {
-      e.preventDefault(); slothSpot('Ctrl+S'); return;
-    }
-    if (ctrl && e.shiftKey && (k === 'I' || k === 'i')) { e.preventDefault(); slothSpot('Ctrl+Shift+I'); return; }
-    if (ctrl && e.shiftKey && (k === 'J' || k === 'j')) { e.preventDefault(); slothSpot('Ctrl+Shift+J'); return; }
-    if (ctrl && e.shiftKey && (k === 'C' || k === 'c')) { e.preventDefault(); slothSpot('Ctrl+Shift+C'); return; }
-  });
-
-  // ── Live GitHub star count ──
-  (function fetchStars() {
-    var el = document.getElementById('gh-stars');
-    if (!el) return;
-    fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) {
-        if (!d || typeof d.stargazers_count !== 'number') return;
-        var n = d.stargazers_count;
-        var s = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
-        el.textContent = '★ ' + s;
-      })
-      .catch(function () {});
-  })();
-})();
+  })
+  .catch(() => {});
 </script>
 
 </body>
