@@ -1261,6 +1261,17 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto ts_val = ts_vec.GetValue(i);
             if (ts_val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             int64_t micros = ts_val.GetValue<int64_t>();
+
+            // Sub-second truncation needs no tm round-trip.
+            if (part == "MICROSECOND" || part == "MICROSECONDS") {
+                result.SetValue(i, Value::BIGINT(micros));
+                continue;
+            }
+            if (part == "MILLISECOND" || part == "MILLISECONDS") {
+                result.SetValue(i, Value::BIGINT((micros / 1000) * 1000));
+                continue;
+            }
+
             auto seconds = micros / 1000000;
             auto time_t_val = static_cast<time_t>(seconds);
             struct tm tm_buf;
@@ -1269,10 +1280,41 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 #else
             gmtime_r(&time_t_val, &tm_buf);
 #endif
-            if (part == "YEAR") { tm_buf.tm_mon = 0; tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
-            else if (part == "MONTH") { tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
-            else if (part == "DAY") { tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
-            else if (part == "HOUR") { tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
+            if (part == "SECOND" || part == "SECONDS") { /* already second-precise */ }
+            else if (part == "MINUTE" || part == "MINUTES") { tm_buf.tm_sec = 0; }
+            else if (part == "HOUR" || part == "HOURS") { tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
+            else if (part == "DAY" || part == "DAYS") { tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0; }
+            else if (part == "WEEK" || part == "WEEKS") {
+                // Truncate to the Monday of that week (ISO 8601).
+                int days_back = (tm_buf.tm_wday == 0) ? 6 : tm_buf.tm_wday - 1;
+                tm_buf.tm_mday -= days_back;
+                tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+            }
+            else if (part == "MONTH" || part == "MONTHS") {
+                tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+            }
+            else if (part == "QUARTER" || part == "QUARTERS") {
+                tm_buf.tm_mon = (tm_buf.tm_mon / 3) * 3;
+                tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+            }
+            else if (part == "YEAR" || part == "YEARS") {
+                tm_buf.tm_mon = 0; tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+            }
+            else if (part == "DECADE" || part == "DECADES") {
+                int year = tm_buf.tm_year + 1900;
+                tm_buf.tm_year = (year - (year % 10)) - 1900;
+                tm_buf.tm_mon = 0; tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+            }
+            else if (part == "CENTURY" || part == "CENTURIES") {
+                int year = tm_buf.tm_year + 1900;
+                tm_buf.tm_year = (year - (year % 100)) - 1900;
+                tm_buf.tm_mon = 0; tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+            }
+            else if (part == "MILLENNIUM" || part == "MILLENNIA") {
+                int year = tm_buf.tm_year + 1900;
+                tm_buf.tm_year = (year - (year % 1000)) - 1900;
+                tm_buf.tm_mon = 0; tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+            }
 
             auto truncated = static_cast<int64_t>(
 #ifdef _MSC_VER
@@ -1313,6 +1355,103 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             if (val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             int64_t micros = val.GetValue<int64_t>();
             result.SetValue(i, Value::DOUBLE(static_cast<double>(micros) / 1000.0));
+        }
+        return;
+    }
+
+    if (name == "MONTHNAME" || name == "DAYNAME") {
+        static const char* const month_names[] = {
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        };
+        static const char* const day_names[] = {
+            "Sunday", "Monday", "Tuesday", "Wednesday",
+            "Thursday", "Friday", "Saturday"
+        };
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto val = arg.GetValue(i);
+            if (val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t micros = val.GetValue<int64_t>();
+            auto seconds = micros / 1000000;
+            auto time_t_val = static_cast<time_t>(seconds);
+            struct tm tm_buf;
+#ifdef _MSC_VER
+            gmtime_s(&tm_buf, &time_t_val);
+#else
+            gmtime_r(&time_t_val, &tm_buf);
+#endif
+            if (name == "MONTHNAME") {
+                int m = tm_buf.tm_mon;
+                if (m < 0) m = 0; if (m > 11) m = 11;
+                result.SetValue(i, Value::VARCHAR(month_names[m]));
+            } else {
+                int d = tm_buf.tm_wday;
+                if (d < 0) d = 0; if (d > 6) d = 6;
+                result.SetValue(i, Value::VARCHAR(day_names[d]));
+            }
+        }
+        return;
+    }
+
+    if (name == "LAST_DAY") {
+        // Return the timestamp (microseconds) of the last day of the month at 00:00 UTC.
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto val = arg.GetValue(i);
+            if (val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t micros = val.GetValue<int64_t>();
+            auto seconds = micros / 1000000;
+            auto time_t_val = static_cast<time_t>(seconds);
+            struct tm tm_buf;
+#ifdef _MSC_VER
+            gmtime_s(&tm_buf, &time_t_val);
+#else
+            gmtime_r(&time_t_val, &tm_buf);
+#endif
+            // Day 0 of the following month is the last day of this month (mkgmtime normalizes).
+            tm_buf.tm_mon += 1;
+            tm_buf.tm_mday = 0;
+            tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+            auto last = static_cast<int64_t>(
+#ifdef _MSC_VER
+                _mkgmtime(&tm_buf)
+#else
+                timegm(&tm_buf)
+#endif
+            ) * 1000000;
+            result.SetValue(i, Value::BIGINT(last));
+        }
+        return;
+    }
+
+    if (name == "MAKE_DATE") {
+        // MAKE_DATE(year, month, day) -> INTEGER (YYYYMMDD, matches CURRENT_DATE encoding).
+        if (expr.arguments.size() != 3) {
+            throw NotImplementedException("MAKE_DATE requires 3 arguments: year, month, day");
+        }
+        Vector y_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector m_vec(expr.arguments[1]->GetReturnType(), count);
+        Vector d_vec(expr.arguments[2]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, y_vec, count);
+        Execute(*expr.arguments[1], input, m_vec, count);
+        Execute(*expr.arguments[2], input, d_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto yv = y_vec.GetValue(i);
+            auto mv = m_vec.GetValue(i);
+            auto dv = d_vec.GetValue(i);
+            if (yv.IsNull() || mv.IsNull() || dv.IsNull()) {
+                result.GetValidity().SetInvalid(i); continue;
+            }
+            int32_t y = yv.type().id() == LogicalTypeId::BIGINT
+                ? static_cast<int32_t>(yv.GetValue<int64_t>()) : yv.GetValue<int32_t>();
+            int32_t m = mv.type().id() == LogicalTypeId::BIGINT
+                ? static_cast<int32_t>(mv.GetValue<int64_t>()) : mv.GetValue<int32_t>();
+            int32_t d = dv.type().id() == LogicalTypeId::BIGINT
+                ? static_cast<int32_t>(dv.GetValue<int64_t>()) : dv.GetValue<int32_t>();
+            result.SetValue(i, Value::INTEGER(y * 10000 + m * 100 + d));
         }
         return;
     }

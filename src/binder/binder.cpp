@@ -609,8 +609,13 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     else if (name == "DATE_DIFF" || name == "DATEDIFF" || name == "DATE_ADD" ||
              name == "DATEADD") {
         return_type = LogicalType::BIGINT();
-    } else if (name == "STRFTIME" || name == "FORMAT_TIMESTAMP") {
+    } else if (name == "STRFTIME" || name == "FORMAT_TIMESTAMP" ||
+               name == "MONTHNAME" || name == "DAYNAME") {
         return_type = LogicalType::VARCHAR();
+    } else if (name == "LAST_DAY") {
+        return_type = LogicalType::BIGINT(); // microseconds since epoch
+    } else if (name == "MAKE_DATE") {
+        return_type = LogicalType::INTEGER(); // YYYYMMDD
     }
     // Aggregate functions that work both as window and regular.
     else if (name == "STRING_AGG" || name == "LISTAGG" || name == "GROUP_CONCAT") {
