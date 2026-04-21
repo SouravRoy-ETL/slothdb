@@ -10,7 +10,8 @@
 
 <p align="center">
   <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white" alt="PyPI"></a>
-  <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/dm/slothdb?color=3775A9&label=downloads" alt="Downloads"></a>
+  <a href="https://pepy.tech/project/slothdb"><img src="https://static.pepy.tech/badge/slothdb" alt="Downloads"></a>
+  <a href="https://pepy.tech/project/slothdb"><img src="https://static.pepy.tech/badge/slothdb/month" alt="Downloads/month"></a>
   <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/pyversions/slothdb" alt="Python versions"></a>
   <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
