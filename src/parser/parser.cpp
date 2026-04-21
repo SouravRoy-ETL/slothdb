@@ -68,19 +68,98 @@ const Token &Parser::Expect(TokenType type, const std::string &context) {
 }
 
 bool Parser::IsIdentifierOrNonReserved(TokenType t) {
+    if (t == TokenType::IDENTIFIER) return true;
+    // Reserved keywords — would be parse-ambiguous if allowed as identifiers.
+    // Everything else that tokenizes as a keyword falls through to the default
+    // branch and is treated as non-reserved (legal in alias / column / table
+    // positions). Matches DuckDB's non-reserved set.
     switch (t) {
-    case TokenType::IDENTIFIER:
-    case TokenType::KW_YEAR:
-    case TokenType::KW_MONTH:
-    case TokenType::KW_DAY:
-    case TokenType::KW_HOUR:
-    case TokenType::KW_MINUTE:
-    case TokenType::KW_SECOND:
-    case TokenType::KW_EPOCH:
-    case TokenType::KW_DOW:
-        return true;
-    default:
+    // Statement verbs and clause starters.
+    case TokenType::KW_SELECT:
+    case TokenType::KW_FROM:
+    case TokenType::KW_WHERE:
+    case TokenType::KW_GROUP:
+    case TokenType::KW_ORDER:
+    case TokenType::KW_HAVING:
+    case TokenType::KW_LIMIT:
+    case TokenType::KW_OFFSET:
+    case TokenType::KW_QUALIFY:
+    case TokenType::KW_UNION:
+    case TokenType::KW_INTERSECT:
+    case TokenType::KW_EXCEPT:
+    case TokenType::KW_WITH:
+    case TokenType::KW_RECURSIVE:
+    case TokenType::KW_INSERT:
+    case TokenType::KW_INTO:
+    case TokenType::KW_UPDATE:
+    case TokenType::KW_DELETE:
+    case TokenType::KW_SET:
+    case TokenType::KW_VALUES:
+    case TokenType::KW_CREATE:
+    case TokenType::KW_DROP:
+    case TokenType::KW_ALTER:
+    case TokenType::KW_EXPLAIN:
+    case TokenType::KW_COPY:
+    case TokenType::KW_TABLE:
+    case TokenType::KW_TO:
+    // JOIN family.
+    case TokenType::KW_JOIN:
+    case TokenType::KW_INNER:
+    case TokenType::KW_LEFT:
+    case TokenType::KW_RIGHT:
+    case TokenType::KW_FULL:
+    case TokenType::KW_OUTER:
+    case TokenType::KW_CROSS:
+    case TokenType::KW_ON:
+    case TokenType::KW_USING:
+    case TokenType::KW_NATURAL:
+    // Logical / boolean / comparison operators and modifiers.
+    case TokenType::KW_AND:
+    case TokenType::KW_OR:
+    case TokenType::KW_NOT:
+    case TokenType::KW_IS:
+    case TokenType::KW_IN:
+    case TokenType::KW_LIKE:
+    case TokenType::KW_BETWEEN:
+    case TokenType::KW_NULL:
+    case TokenType::KW_TRUE:
+    case TokenType::KW_FALSE:
+    case TokenType::KW_DISTINCT:
+    case TokenType::KW_DISTINCT_FROM:
+    case TokenType::KW_ALL:
+    case TokenType::KW_ASC:
+    case TokenType::KW_DESC:
+    case TokenType::KW_AS:
+    case TokenType::KW_BY:
+    // Expression control.
+    case TokenType::KW_CASE:
+    case TokenType::KW_WHEN:
+    case TokenType::KW_THEN:
+    case TokenType::KW_ELSE:
+    case TokenType::KW_END:
+    case TokenType::KW_CAST:
+    case TokenType::KW_EXISTS:
+    // Post-expression anchors (would swallow the next clause if mistaken for alias).
+    case TokenType::KW_OVER:
+    case TokenType::KW_PARTITION:
+    case TokenType::KW_FILTER:
+    // Ordering modifiers.
+    case TokenType::KW_NULLS:
+    case TokenType::KW_FIRST:
+    case TokenType::KW_LAST:
+    // DDL fragments.
+    case TokenType::KW_COLUMN:
+    case TokenType::KW_IF:
+    case TokenType::KW_ADD:
         return false;
+    default:
+        // Any other keyword (time units, type names, constraint keywords,
+        // window-frame words, aggregate function names, transaction verbs,
+        // MERGE / PIVOT / RETURNING / CONFLICT, etc.) is non-reserved —
+        // legal as an identifier in alias / column / table-alias position.
+        // Guard against non-keyword token types (punctuation, operators, EOF).
+        return (static_cast<int>(t) >= static_cast<int>(TokenType::KW_SELECT) &&
+                static_cast<int>(t) <= static_cast<int>(TokenType::KW_TRANSACTION));
     }
 }
 

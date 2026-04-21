@@ -89,6 +89,30 @@ TEST_CASE("Parser - non-reserved keywords as aliases") {
         auto &sel = static_cast<SelectStatement &>(*stmts[0]);
         CHECK(sel.from_table->alias == "month");
     }
+    {
+        // Window-frame keywords (ROWS, RANGE, ROW, UNBOUNDED, PRECEDING,
+        // FOLLOWING, CURRENT) must also be non-reserved. User-reported:
+        // SELECT COUNT(*) AS rows FROM t.
+        auto stmts = Parser::Parse("SELECT COUNT(*) AS rows FROM t");
+        auto &sel = static_cast<SelectStatement &>(*stmts[0]);
+        CHECK(sel.select_list[0]->alias == "rows");
+    }
+    {
+        // Aggregate function names (COUNT, SUM, AVG, MIN, MAX) as aliases.
+        auto stmts = Parser::Parse("SELECT x AS count, y AS sum, z AS avg FROM t");
+        auto &sel = static_cast<SelectStatement &>(*stmts[0]);
+        CHECK(sel.select_list[0]->alias == "count");
+        CHECK(sel.select_list[1]->alias == "sum");
+        CHECK(sel.select_list[2]->alias == "avg");
+    }
+    {
+        // Reserved keywords (WHERE, GROUP, JOIN, etc.) must still be
+        // rejected as aliases — regression guard so the non-reserved set
+        // doesn't swallow clause terminators.
+        CHECK_THROWS_AS(Parser::Parse("SELECT x AS where FROM t"), ParserException);
+        CHECK_THROWS_AS(Parser::Parse("SELECT x AS join FROM t"),  ParserException);
+        CHECK_THROWS_AS(Parser::Parse("SELECT x AS qualify FROM t"), ParserException);
+    }
 }
 
 TEST_CASE("Parser - SELECT DISTINCT") {
