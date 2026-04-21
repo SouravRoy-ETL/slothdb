@@ -337,51 +337,88 @@ section.hero .hero-chips .chip {
 }
 .demo-wrap img { max-width: 100%; height: auto; }
 
-/* Ecosystem stack visualization */
+/* Ecosystem stack visualization — DuckDB-style with glowing SVG connectors */
 .ecosystem {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 24px; align-items: start;
+  position: relative;
   max-width: 1120px; margin: 40px auto 0;
   text-align: left;
 }
-.eco-col { display: flex; flex-direction: column; gap: 24px; }
+.eco-connectors {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none; z-index: 0;
+  overflow: visible;
+}
+.eco-connectors .base {
+  stroke: var(--border-card);
+  stroke-width: 1.5; fill: none;
+  stroke-linecap: round;
+  opacity: 0.55;
+}
+.eco-connectors .flow {
+  stroke: var(--accent);
+  stroke-width: 1.5; fill: none;
+  stroke-linecap: round;
+  stroke-dasharray: 2 22;
+  filter: drop-shadow(0 0 4px var(--accent));
+  animation: eco-flow 3.2s linear infinite;
+}
+.eco-connectors .flow.d1 { animation-delay: 0s; }
+.eco-connectors .flow.d2 { animation-delay: 0.8s; }
+.eco-connectors .flow.d3 { animation-delay: 1.6s; }
+.eco-connectors .flow.d4 { animation-delay: 2.4s; }
+@keyframes eco-flow {
+  from { stroke-dashoffset: 0; }
+  to   { stroke-dashoffset: -24; }
+}
+[data-theme="light"] .eco-connectors .flow { filter: drop-shadow(0 0 3px var(--accent)); }
+
+.eco-grid {
+  position: relative; z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 28px; align-items: start;
+}
+.eco-col { display: flex; flex-direction: column; gap: 22px; }
 .eco-box {
   background: var(--bg-card); border: 1px solid var(--border-card);
-  border-radius: 14px; padding: 22px;
+  border-radius: 14px; padding: 20px;
+  backdrop-filter: blur(2px);
 }
 .eco-box .eco-title {
   display: flex; align-items: center; gap: 10px;
-  color: var(--text); font-size: 15px; font-weight: 600;
-  margin-bottom: 18px;
+  color: var(--text); font-size: 14px; font-weight: 600;
+  margin-bottom: 16px;
 }
-.eco-box .eco-title svg { color: var(--accent); }
-.eco-box .eco-grid {
+.eco-box .eco-title svg { color: var(--accent); flex-shrink: 0; }
+.eco-box .eco-tiles {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
+  gap: 8px;
 }
-.eco-box.narrow .eco-grid { grid-template-columns: repeat(3, 1fr); }
+.eco-box.narrow .eco-tiles { grid-template-columns: repeat(3, 1fr); }
 .eco-tile {
   aspect-ratio: 1; border-radius: 10px;
   background: var(--bg-icon); border: 1px solid var(--border);
   display: flex; align-items: center; justify-content: center;
-  color: var(--text-dim); font-family: var(--mono); font-size: 11px;
-  font-weight: 600;
+  color: var(--text-dim); font-family: var(--mono); font-size: 10px;
+  font-weight: 600; letter-spacing: 0.03em;
   transition: all 0.15s ease;
 }
 .eco-tile:hover { border-color: var(--accent); color: var(--accent); }
-.eco-tile svg { width: 22px; height: 22px; }
 .eco-center-anchor {
-  background: var(--bg-card); border: 1px solid var(--accent);
+  background: var(--bg-card);
+  border: 1.5px solid var(--accent);
   border-radius: 14px; padding: 20px;
   display: flex; align-items: center; justify-content: center; gap: 10px;
-  color: var(--text); font-size: 20px; font-weight: 700;
+  color: var(--text); font-size: 18px; font-weight: 700;
+  box-shadow: 0 0 32px -4px var(--accent-soft);
 }
-.eco-center-anchor img { height: 28px; width: 28px; }
+.eco-center-anchor img { height: 26px; width: 26px; }
 
 @media (max-width: 900px) {
-  .ecosystem { grid-template-columns: 1fr; }
+  .eco-grid { grid-template-columns: 1fr; }
+  .eco-connectors { display: none; }
 }
 
 /* ─── Docs page (sidebar layout) ─── */

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Documentation · SlothDB</title>
-<meta name="description" content="SlothDB documentation — install, Python API, SQL reference, file format guides, benchmarks, extensions, and internals.">
+<meta name="description" content="SlothDB documentation: install, Python API, SQL reference, file format guides, benchmarks, extensions, and internals.">
 <meta name="robots" content="index, follow">
 <meta name="theme-color" content="#0D1117">
 <link rel="canonical" href="https://slothdb.org/docs.html">
@@ -148,14 +148,14 @@ cmake --build build --config Release</pre>
     <p>RFC 4180 compliant. Handles quoted fields, embedded newlines, and custom delimiters. Headers auto-detected.</p>
 
     <h2 id="json">Querying JSON</h2>
-<pre class="code"><span class="cm">-- JSON array, object, or NDJSON — all work</span>
+<pre class="code"><span class="cm">-- JSON array, object, or NDJSON, all work</span>
 <span class="kw">SELECT</span> status, <span class="kw">COUNT</span>(*)
 <span class="kw">FROM</span> <span class="str">'api_logs.json'</span>
 <span class="kw">GROUP BY</span> status;</pre>
 
     <h2 id="avro">Querying Avro</h2>
 <pre class="code"><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">read_avro</span>(<span class="str">'events.avro'</span>);</pre>
-    <p>Avro is built in — no extension load needed. This is one of SlothDB's biggest wins over DuckDB (which requires <code>INSTALL avro; LOAD avro;</code>).</p>
+    <p>Avro is built in. No extension load needed. This is one of SlothDB's biggest wins over DuckDB (which requires <code>INSTALL avro; LOAD avro;</code>).</p>
 
     <h2 id="arrow">Querying Arrow IPC</h2>
 <pre class="code"><span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">read_arrow</span>(<span class="str">'file.arrow'</span>);</pre>
@@ -281,7 +281,7 @@ slothdb_result *result;
       <li><b>Columnar</b>: data flows as <code>DataChunk</code> batches of 2048 values per column.</li>
       <li><b>Vectorized</b>: loops operate on entire columns at once rather than row-at-a-time.</li>
       <li><b>Morsel-driven parallelism</b>: work is split into small morsels distributed across all CPU cores.</li>
-      <li><b>PhysicalXXXScan operators</b>: each format (Parquet, CSV, Avro, etc.) has a dedicated scan that decodes directly into typed DataChunk vectors — no bulk-load-to-DataTable roundtrip.</li>
+      <li><b>PhysicalXXXScan operators</b>: each format (Parquet, CSV, Avro, etc.) has a dedicated scan that decodes directly into typed DataChunk vectors. No bulk-load-to-DataTable roundtrip.</li>
       <li><b>Fused scan + aggregate</b>: common shapes like <code>SUM(col) FROM file GROUP BY col2</code> run in a single pass with no intermediate materialization.</li>
       <li><b>Zero-copy VARCHAR</b>: short strings (≤12 bytes) live inline in the vector; longer strings are pointer-shared into a buffer.</li>
     </ul>
@@ -295,10 +295,10 @@ slothdb_result *result;
     <h2 id="limitations">Limitations</h2>
     <p>SlothDB is v0.1.3. What it <b>does not do</b> (yet):</p>
     <ul>
-      <li><b>No distributed execution</b> — single-node embedded engine. Use ClickHouse if you outgrow one machine.</li>
-      <li><b>No MVCC / multi-writer transactions</b> — single-writer, crash-safe checkpoint.</li>
-      <li><b>Incomplete SQL dialect</b> — some corners will surprise you. <a href="https://github.com/SouravRoy-ETL/slothdb/issues">Open an issue</a> when they do.</li>
-      <li><b>Excel writes not supported yet</b> — reads work; <code>COPY TO 'file.xlsx'</code> is on the roadmap.</li>
+      <li><b>No distributed execution.</b> Single-node embedded engine. Use ClickHouse if you outgrow one machine.</li>
+      <li><b>No MVCC or multi-writer transactions.</b> Single-writer, crash-safe checkpoint.</li>
+      <li><b>Incomplete SQL dialect.</b> Some corners will surprise you. <a href="https://github.com/SouravRoy-ETL/slothdb/issues">Open an issue</a> when they do.</li>
+      <li><b>Excel writes not supported yet.</b> Reads work. <code>COPY TO 'file.xlsx'</code> is on the roadmap.</li>
     </ul>
 
     <h2 id="roadmap">Roadmap</h2>
