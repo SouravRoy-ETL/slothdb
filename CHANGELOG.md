@@ -2,6 +2,60 @@
 
 All notable changes to SlothDB are documented here.
 
+## 0.1.4 — Remote file reading and extended date functions
+
+Two feature additions that close visible DuckDB-parity gaps. 359 tests / 131 382 assertions green on Windows, Linux, macOS.
+
+### Remote file reading — `https://` and `s3://` URLs work directly from SQL
+
+Any table reference that takes a file path now accepts an HTTP(S) or S3 URL:
+
+```sql
+SELECT region, SUM(revenue)
+FROM 'https://example.com/data.csv'
+GROUP BY region;
+
+SELECT * FROM 's3://public-bucket/events.parquet';
+```
+
+- Works for all seven built-in formats (CSV, Parquet, JSON, Avro, Arrow, SQLite, Excel). Integration is at the path-resolution layer in `src/main/connection.cpp`, so every existing reader picks it up for free.
+- `s3://bucket/key` is rewritten to virtual-host HTTPS (`https://bucket.s3.amazonaws.com/key`) and read anonymously. Public buckets only — AWS SigV4 for private buckets is follow-up work.
+- Windows uses WinHTTP for HTTPS; POSIX currently supports HTTP only (POSIX HTTPS will land with the next patch via libcurl).
+- No new build dependencies. Reuses the existing `HTTPClient` stack in `src/storage/http_client.cpp`.
+- Limitation: the whole URL is downloaded to a temp file before the reader opens it. Fast for small files, wasteful for large Parquet. Range-request streaming into `ParquetReader` is a separate patch.
+
+### Extended `DATE_TRUNC` + four new date scalars
+
+`DATE_TRUNC` previously accepted only `YEAR`, `MONTH`, `DAY`, `HOUR`. Calls like `DATE_TRUNC('week', ts)` or `DATE_TRUNC('quarter', ts)` silently returned the input unchanged — a trap for analytics users. The full DuckDB-compatible interval set is now implemented:
+
+- `MICROSECOND`, `MILLISECOND`, `SECOND`, `MINUTE`, `HOUR`, `DAY`
+- `WEEK` (snaps to Monday, ISO 8601)
+- `MONTH`, `QUARTER`, `YEAR`
+- `DECADE`, `CENTURY`, `MILLENNIUM`
+
+Singular and plural forms both accepted.
+
+Four new scalars matching DuckDB output (validated side-by-side on the real-life-testing demo script):
+
+| Function | Type | Result |
+|---|---|---|
+| `MONTHNAME(ts)` | `VARCHAR` | `"January"`..`"December"` |
+| `DAYNAME(ts)` | `VARCHAR` | `"Sunday"`..`"Saturday"` |
+| `LAST_DAY(ts)` | `BIGINT` | Last day of month at 00:00 UTC (leap-aware) |
+| `MAKE_DATE(y, m, d)` | `INTEGER` | `YYYYMMDD`, matches `CURRENT_DATE` encoding |
+
+Implementation: `src/execution/expression_executor.cpp` gained 150 LOC in the DATE_TRUNC branch and the four new function branches; `src/binder/binder.cpp` gets the return-type registrations. Zero subsystem changes — no new types, no parser tokens.
+
+### Testing
+
+- **22 new unit tests** in `test/unit/execution/test_date_functions.cpp` — covers leap-year February, week-start on Sunday/Monday/Friday, decade/century snapping, MAKE_DATE with single-digit and end-of-year days.
+- **4 new unit tests** in `test/unit/execution/test_httpfs.cpp` — gated on `SLOTHDB_HTTPFS_ONLINE=1` so offline CI skips cleanly. Fetches `raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/examples/employees.csv` (committed fixture, 12 rows) and verifies COUNT, GROUP BY, WHERE, and ORDER BY.
+- **Real-life-testing demo scripts** at `real-life-testing/bench_date_functions.py` and `bench_httpfs.py` reproduce the comparison against `duckdb.exe`.
+
+### Versioning
+
+Shell version string returns `"0.1.4"`, Python wheel bumped to 0.1.4, CMake project version bumped.
+
 ## 0.1.3 — Arrow + SQLite on the fast path
 
 Arrow IPC and SQLite were the last two readers still using the bulk-load-to-DataTable roundtrip. Both now stream typed `DataChunk`s at execution time — the same pattern Parquet / JSON / Avro / CSV use.

@@ -76,7 +76,7 @@ df = db.sql("SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region").fetc
 - No multi-writer transactions (single-writer, crash-safe checkpoint).
 - No distributed execution — single-node embedded engine.
 - Some SQL corners still surprise you (open an [issue](https://github.com/SouravRoy-ETL/slothdb/issues)).
-- v0.1.3, ~6 months old. Treat as beta.
+- v0.1.4, ~6 months old. Treat as beta.
 
 ## Performance
 

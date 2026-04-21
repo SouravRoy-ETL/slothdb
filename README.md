@@ -51,6 +51,10 @@ FROM 'employees.parquet'
 WHERE hire_year >= 2020
 GROUP BY department
 ORDER BY AVG(salary) DESC;
+
+-- Local, HTTP(S), or public S3 — same SQL.
+SELECT region, SUM(revenue) FROM 'https://host/data.csv' GROUP BY region;
+SELECT * FROM 's3://public-bucket/events.parquet';
 ```
 
 ### If you're using DuckDB today
@@ -61,6 +65,7 @@ Same embedded model. SlothDB is a near-drop-in swap for local file analytics. Th
 |---|---|---|
 | 1 M-row benchmark (15 queries) | **1.04× – 8.6× faster on every single one** | baseline |
 | Built-in file formats | **7** — CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite | 3 built in (Excel, Avro, SQLite need extensions) |
+| Remote file reading | **Built in** — HTTP(S) and public-bucket S3 work from SQL out of the box | Needs `httpfs` extension |
 | Extension stability | **Stable C ABI** — extensions keep working across releases | Internal C++ API, often breaks on upgrade |
 | Error handling | **Numeric error codes** (`ErrorCode::TABLE_NOT_FOUND = 2000`) | Free-form error strings |
 | Binary size | **~8 MB** self-contained | ~50 MB |
@@ -89,7 +94,7 @@ SQLite is row-oriented and tuned for transactional workloads. Aggregate queries 
 
 - **No distributed query execution.** One-node embedded engine. Use ClickHouse if you outgrow one machine.
 - **No MVCC / multi-writer transactions.** Single-writer, crash-safe checkpoint. OLTP workloads are a poor fit.
-- **Younger codebase.** 326 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
+- **Younger codebase.** 359 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
 
 ---
 
@@ -135,8 +140,8 @@ df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
 
 | Platform | Command |
 |----------|---------|
-| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.3_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
-| Fedora / RHEL | `sudo rpm -i slothdb-0.1.3.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
+| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.4_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
+| Fedora / RHEL | `sudo rpm -i slothdb-0.1.4.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
 | Arch Linux | `makepkg -si` ([PKGBUILD](packaging/arch/PKGBUILD)) |
 | macOS (Homebrew) | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
 | Build from source | See [below](#build-from-source) |
@@ -290,12 +295,13 @@ slothdb_close(db);
 |----------|---------|
 | **SQL** | 130+ features — JOINs, CTEs (recursive), window functions, QUALIFY, MERGE, subqueries, set operations |
 | **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in with auto-detection, glob patterns, virtual views |
-| **Functions** | 70+ functions — string, math, date/time, aggregate, regex, trigonometric |
+| **Remote files** | `https://` and public-bucket `s3://` URLs work directly in any SQL path |
+| **Functions** | 70+ functions — string, math, date/time (including `DATE_TRUNC` with WEEK/QUARTER/DECADE + `MONTHNAME` / `DAYNAME` / `LAST_DAY` / `MAKE_DATE`), aggregate, regex, trigonometric |
 | **Performance** | Vectorized columnar engine (2,048 values/batch), morsel-driven parallelism, fused scan+aggregate, zero-copy VARCHAR |
 | **Storage** | Single-file `.slothdb` persistence, RLE/dictionary/bitpacking compression, zone maps |
 | **Optimizer** | Constant folding, filter pushdown, TopN optimization |
 | **APIs** | CLI shell, Python (with pandas), C/C++ (stable ABI) |
-| **Reliability** | 326 tests, 131,321 assertions, bounds-checked parsing, DoS limits |
+| **Reliability** | 359 tests, 131,382 assertions, bounds-checked parsing, DoS limits |
 
 ## Documentation
 
@@ -327,7 +333,7 @@ build\src\Release\slothdb.exe  # Windows
 ```bash
 cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=ON
 cmake --build build --config Release
-ctest --test-dir build -C Release    # 326 tests
+ctest --test-dir build -C Release    # 359 tests
 ```
 
 | Build Option | Description |

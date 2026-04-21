@@ -98,20 +98,21 @@ ctest --test-dir build -C Release</pre>
     </div>
     <div class="card">
       <h3>Testing</h3>
-      <p>326 tests, 131 000+ assertions via doctest. Every new feature needs a test. Benchmarks live in <code>real-life-testing/</code> (run before and after perf changes).</p>
+      <p>359 tests, 131 000+ assertions via doctest. Every new feature needs a test. Benchmarks live in <code>real-life-testing/</code> (run before and after perf changes).</p>
     </div>
   </div>
 </section>
 
 <section class="page narrow">
   <h2>Project status</h2>
-  <p>SlothDB is v0.1.3. About six months old, one primary author, CI-green on Windows, Linux and macOS. Use it in real workflows, expect to file bugs. It's not production-critical yet.</p>
+  <p>SlothDB is v0.1.4. About six months old, one primary author, CI-green on Windows, Linux and macOS. Use it in real workflows, expect to file bugs. It's not production-critical yet.</p>
   <p>The project is developed in the open. Every optimization, every benchmark change, every extension is one commit in the <a href="https://github.com/SouravRoy-ETL/slothdb/commits/main">git log</a>.</p>
 </section>
 
 <section class="page narrow">
   <h2>Release history</h2>
   <ul>
+    <li><b>v0.1.4</b>: remote file reading (<code>https://</code> and public <code>s3://</code> URLs), extended <code>DATE_TRUNC</code> (week/quarter/decade/etc.), new scalars <code>MONTHNAME</code> / <code>DAYNAME</code> / <code>LAST_DAY</code> / <code>MAKE_DATE</code></li>
     <li><b>v0.1.3</b>: Arrow IPC and SQLite on the fast path, <code>PhysicalArrowScan</code> and <code>PhysicalSQLiteScan</code></li>
     <li><b>v0.1.2</b>: CSV beats DuckDB on every query (vectorized filter, fused WHERE, parallel no-GROUP-BY aggregate)</li>
     <li><b>v0.1.1</b>: JSON parser rewrite, Excel streaming scan</li>
@@ -164,7 +165,7 @@ ctest --test-dir build -C Release</pre>
     </div>
   </div>
   <div class="meta">
-    SlothDB v0.1.3 · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
+    SlothDB v0.1.4 · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
   </div>
 </footer>
 
