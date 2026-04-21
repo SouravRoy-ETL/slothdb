@@ -35,12 +35,12 @@ test_*.slothdb
 Thumbs.db
 desktop.ini
 
-# Claude
+# Local editor state
 .claude/
+.claude-plugin/
 CLAUDE.md
 EXAMPLES.md
 skills/
-.claude-plugin/
 *.parquet
 python/dist/
 python/*.egg-info/
