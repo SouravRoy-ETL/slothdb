@@ -67,6 +67,31 @@ const Token &Parser::Expect(TokenType type, const std::string &context) {
     return Advance();
 }
 
+bool Parser::IsIdentifierOrNonReserved(TokenType t) {
+    switch (t) {
+    case TokenType::IDENTIFIER:
+    case TokenType::KW_YEAR:
+    case TokenType::KW_MONTH:
+    case TokenType::KW_DAY:
+    case TokenType::KW_HOUR:
+    case TokenType::KW_MINUTE:
+    case TokenType::KW_SECOND:
+    case TokenType::KW_EPOCH:
+    case TokenType::KW_DOW:
+        return true;
+    default:
+        return false;
+    }
+}
+
+const Token &Parser::ExpectIdentifier(const std::string &context) {
+    if (!IsIdentifierOrNonReserved(Current().type)) {
+        ThrowError("Expected identifier " + context +
+                   ", got '" + Current().value + "'");
+    }
+    return Advance();
+}
+
 bool Parser::IsAtEnd() const { return Current().type == TokenType::END_OF_FILE; }
 
 [[noreturn]] void Parser::ThrowError(const std::string &msg) {
@@ -104,7 +129,7 @@ ParsedStmtPtr Parser::ParseStatement() {
                 static_cast<SelectStatement *>(inner.release()));
             Expect(TokenType::RPAREN, "after COPY subquery");
         } else {
-            stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+            stmt->table_name = ExpectIdentifier("for table name").value;
         }
 
         if (MatchKeyword(TokenType::KW_TO)) {
@@ -155,24 +180,24 @@ ParsedStmtPtr Parser::ParseStatement() {
         Advance(); // ALTER
         Expect(TokenType::KW_TABLE, "after ALTER");
         auto stmt = std::make_unique<AlterTableStatement>();
-        stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+        stmt->table_name = ExpectIdentifier("for table name").value;
 
         if (MatchKeyword(TokenType::KW_ADD)) {
             MatchKeyword(TokenType::KW_COLUMN); // optional
             stmt->action = AlterTableStatement::AlterAction::ADD_COLUMN;
-            stmt->column_name = Expect(TokenType::IDENTIFIER, "for column name").value;
+            stmt->column_name = ExpectIdentifier("for column name").value;
             stmt->column_type = ParseTypeName();
         } else if (MatchKeyword(TokenType::KW_DROP)) {
             MatchKeyword(TokenType::KW_COLUMN);
             stmt->action = AlterTableStatement::AlterAction::DROP_COLUMN;
-            stmt->column_name = Expect(TokenType::IDENTIFIER, "for column name").value;
+            stmt->column_name = ExpectIdentifier("for column name").value;
         } else if (Check(TokenType::IDENTIFIER) && StringUtil::Upper(Current().value) == "RENAME") {
             Advance();
             MatchKeyword(TokenType::KW_COLUMN);
             stmt->action = AlterTableStatement::AlterAction::RENAME_COLUMN;
-            stmt->column_name = Expect(TokenType::IDENTIFIER, "for old column name").value;
+            stmt->column_name = ExpectIdentifier("for old column name").value;
             Expect(TokenType::KW_TO, "in RENAME");
-            stmt->new_column_name = Expect(TokenType::IDENTIFIER, "for new column name").value;
+            stmt->new_column_name = ExpectIdentifier("for new column name").value;
         } else {
             ThrowError("Expected ADD, DROP, or RENAME after ALTER TABLE name");
         }
@@ -182,7 +207,7 @@ ParsedStmtPtr Parser::ParseStatement() {
         Advance(); // TRUNCATE
         MatchKeyword(TokenType::KW_TABLE); // optional TABLE
         auto stmt = std::make_unique<TruncateStatement>();
-        stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+        stmt->table_name = ExpectIdentifier("for table name").value;
         return stmt;
     }
     ThrowUnexpected("at start of statement");
@@ -199,7 +224,7 @@ ParsedStmtPtr Parser::ParseSelectStatement() {
         do {
             SelectStatement::CTE cte;
             cte.recursive = is_recursive;
-            cte.name = Expect(TokenType::IDENTIFIER, "for CTE name").value;
+            cte.name = ExpectIdentifier("for CTE name").value;
             // Optional column alias list: nums(n) or nums(a, b).
             if (Match(TokenType::LPAREN)) {
                 // Skip column names — they're just aliases.
@@ -229,8 +254,8 @@ ParsedStmtPtr Parser::ParseSelectStatement() {
         auto expr = ParseExpression();
         // Alias: expr AS name, or expr name
         if (MatchKeyword(TokenType::KW_AS)) {
-            expr->alias = Expect(TokenType::IDENTIFIER, "after AS").value;
-        } else if (Check(TokenType::IDENTIFIER) &&
+            expr->alias = ExpectIdentifier("after AS").value;
+        } else if (IsIdentifierOrNonReserved(Current().type) &&
                    !CheckKeyword(TokenType::KW_FROM) &&
                    !CheckKeyword(TokenType::KW_WHERE) &&
                    !CheckKeyword(TokenType::KW_GROUP) &&
@@ -331,13 +356,13 @@ ParsedStmtPtr Parser::ParseInsertStatement() {
     Expect(TokenType::KW_INSERT, "");
     Expect(TokenType::KW_INTO, "after INSERT");
 
-    stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+    stmt->table_name = ExpectIdentifier("for table name").value;
 
     // Optional column list.
     if (Match(TokenType::LPAREN)) {
         do {
             stmt->column_names.push_back(
-                Expect(TokenType::IDENTIFIER, "for column name").value);
+                ExpectIdentifier("for column name").value);
         } while (Match(TokenType::COMMA));
         Expect(TokenType::RPAREN, "after column list");
     }
@@ -393,7 +418,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
         Expect(TokenType::RPAREN, "after table function args");
 
         if (MatchKeyword(TokenType::KW_AS)) {
-            ref->alias = Expect(TokenType::IDENTIFIER, "for alias").value;
+            ref->alias = ExpectIdentifier("for alias").value;
         } else if (Check(TokenType::IDENTIFIER) &&
                    !CheckKeyword(TokenType::KW_WHERE) &&
                    !CheckKeyword(TokenType::KW_GROUP) &&
@@ -419,7 +444,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
             std::make_unique<ConstantExpression>(file_path, TokenType::STRING_LITERAL));
 
         if (MatchKeyword(TokenType::KW_AS)) {
-            ref->alias = Expect(TokenType::IDENTIFIER, "for alias").value;
+            ref->alias = ExpectIdentifier("for alias").value;
         } else if (Check(TokenType::IDENTIFIER) &&
                    !CheckKeyword(TokenType::KW_WHERE) &&
                    !CheckKeyword(TokenType::KW_GROUP) &&
@@ -447,17 +472,17 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
         Expect(TokenType::RPAREN, "after GENERATE_SERIES args");
 
         if (MatchKeyword(TokenType::KW_AS)) {
-            ref->alias = Expect(TokenType::IDENTIFIER, "for alias").value;
+            ref->alias = ExpectIdentifier("for alias").value;
         } else if (Check(TokenType::IDENTIFIER)) {
             ref->alias = Advance().value;
         }
         // Fall through to JOIN handling.
     } else {
-        ref->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+        ref->table_name = ExpectIdentifier("for table name").value;
 
     // Optional alias.
     if (MatchKeyword(TokenType::KW_AS)) {
-        ref->alias = Expect(TokenType::IDENTIFIER, "for table alias").value;
+        ref->alias = ExpectIdentifier("for table alias").value;
     } else if (Check(TokenType::IDENTIFIER) &&
                !CheckKeyword(TokenType::KW_WHERE) &&
                !CheckKeyword(TokenType::KW_GROUP) &&
@@ -872,7 +897,7 @@ ParsedExprPtr Parser::ParsePrimary() {
         if (Check(TokenType::LPAREN)) return ParseFunctionCall(name);
         if (Match(TokenType::DOT)) {
             if (Match(TokenType::STAR)) return std::make_unique<StarExpression>(name);
-            auto col = Expect(TokenType::IDENTIFIER, "after '.'").value;
+            auto col = ExpectIdentifier("after '.'").value;
             return std::make_unique<ColumnRefExpression>(col, name);
         }
         return std::make_unique<ColumnRefExpression>(name);
@@ -892,7 +917,7 @@ ParsedExprPtr Parser::ParsePrimary() {
             if (Match(TokenType::STAR)) {
                 return std::make_unique<StarExpression>(name);
             }
-            auto col = Expect(TokenType::IDENTIFIER, "after '.'").value;
+            auto col = ExpectIdentifier("after '.'").value;
             return std::make_unique<ColumnRefExpression>(col, name);
         }
 
@@ -964,12 +989,12 @@ ParsedExprPtr Parser::ParseFunctionCall(const std::string &name) {
 ParsedStmtPtr Parser::ParseUpdateStatement() {
     auto stmt = std::make_unique<UpdateStatement>();
     Expect(TokenType::KW_UPDATE, "");
-    stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+    stmt->table_name = ExpectIdentifier("for table name").value;
     Expect(TokenType::KW_SET, "after table name");
 
     do {
         UpdateAssignment assign;
-        assign.column_name = Expect(TokenType::IDENTIFIER, "for column name").value;
+        assign.column_name = ExpectIdentifier("for column name").value;
         Expect(TokenType::EQUALS, "in SET clause");
         assign.value = ParseExpression();
         stmt->assignments.push_back(std::move(assign));
@@ -987,7 +1012,7 @@ ParsedStmtPtr Parser::ParseDeleteStatement() {
     auto stmt = std::make_unique<DeleteStatement>();
     Expect(TokenType::KW_DELETE, "");
     Expect(TokenType::KW_FROM, "after DELETE");
-    stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+    stmt->table_name = ExpectIdentifier("for table name").value;
 
     if (MatchKeyword(TokenType::KW_WHERE)) {
         stmt->where_clause = ParseExpression();
@@ -1014,7 +1039,7 @@ ParsedStmtPtr Parser::ParseCreateStatement() {
         Advance(); // consume VIEW
         auto stmt = std::make_unique<CreateViewStatement>();
         stmt->or_replace = or_replace;
-        stmt->view_name = Expect(TokenType::IDENTIFIER, "for view name").value;
+        stmt->view_name = ExpectIdentifier("for view name").value;
         Expect(TokenType::KW_AS, "after view name");
         auto inner = ParseSelectStatement();
         stmt->query = std::unique_ptr<SelectStatement>(
@@ -1033,7 +1058,7 @@ ParsedStmtPtr Parser::ParseCreateStatement() {
         stmt->if_not_exists = true;
     }
 
-    stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+    stmt->table_name = ExpectIdentifier("for table name").value;
 
     // CREATE TABLE ... AS SELECT ...
     if (MatchKeyword(TokenType::KW_AS)) {
@@ -1050,7 +1075,7 @@ ParsedStmtPtr Parser::ParseCreateStatement() {
     Expect(TokenType::LPAREN, "after table name");
     do {
         ParsedColumnDef col;
-        col.name = Expect(TokenType::IDENTIFIER, "for column name").value;
+        col.name = ExpectIdentifier("for column name").value;
         col.type_name = ParseTypeName();
         while (true) {
             if (MatchKeyword(TokenType::KW_NOT)) {
@@ -1081,7 +1106,7 @@ ParsedStmtPtr Parser::ParseDropStatement() {
             Expect(TokenType::KW_EXISTS, "after IF");
             stmt->if_exists = true;
         }
-        stmt->table_name = Expect(TokenType::IDENTIFIER, "for view name").value;
+        stmt->table_name = ExpectIdentifier("for view name").value;
         return stmt;
     }
 
@@ -1091,7 +1116,7 @@ ParsedStmtPtr Parser::ParseDropStatement() {
         Expect(TokenType::KW_EXISTS, "after IF");
         stmt->if_exists = true;
     }
-    stmt->table_name = Expect(TokenType::IDENTIFIER, "for table name").value;
+    stmt->table_name = ExpectIdentifier("for table name").value;
     return stmt;
 }
 
@@ -1110,14 +1135,14 @@ ParsedStmtPtr Parser::ParseMergeStatement() {
     Expect(TokenType::KW_MERGE, "");
     Expect(TokenType::KW_INTO, "after MERGE");
 
-    stmt->target_table = Expect(TokenType::IDENTIFIER, "for target table").value;
+    stmt->target_table = ExpectIdentifier("for target table").value;
     if (MatchKeyword(TokenType::KW_AS) || Check(TokenType::IDENTIFIER)) {
         stmt->target_alias = Advance().value;
     }
 
     // USING source
     MatchKeyword(TokenType::KW_USING);
-    stmt->source_table = Expect(TokenType::IDENTIFIER, "for source table").value;
+    stmt->source_table = ExpectIdentifier("for source table").value;
     if (MatchKeyword(TokenType::KW_AS) || (Check(TokenType::IDENTIFIER) &&
         !CheckKeyword(TokenType::KW_ON))) {
         stmt->source_alias = Advance().value;
@@ -1138,7 +1163,7 @@ ParsedStmtPtr Parser::ParseMergeStatement() {
             if (Match(TokenType::LPAREN)) {
                 do {
                     stmt->insert_columns.push_back(
-                        Expect(TokenType::IDENTIFIER, "for column").value);
+                        ExpectIdentifier("for column").value);
                 } while (Match(TokenType::COMMA));
                 Expect(TokenType::RPAREN, "after column list");
             }
@@ -1158,7 +1183,7 @@ ParsedStmtPtr Parser::ParseMergeStatement() {
 
             do {
                 UpdateAssignment assign;
-                assign.column_name = Expect(TokenType::IDENTIFIER, "for column").value;
+                assign.column_name = ExpectIdentifier("for column").value;
                 Expect(TokenType::EQUALS, "in SET");
                 assign.value = ParseExpression();
                 stmt->update_assignments.push_back(std::move(assign));

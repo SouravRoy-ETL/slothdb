@@ -53,6 +53,11 @@ private:
     bool Check(TokenType type) const;
     bool Match(TokenType type);
     const Token &Expect(TokenType type, const std::string &context);
+    // Consume an IDENTIFIER or a non-reserved keyword (YEAR, MONTH, DAY, HOUR,
+    // MINUTE, SECOND, EPOCH, DOW) — these tokenize as keywords for the sake of
+    // DATE_TRUNC / EXTRACT but are legal as column names, aliases, etc.
+    const Token &ExpectIdentifier(const std::string &context);
+    static bool IsIdentifierOrNonReserved(TokenType t);
     bool IsAtEnd() const;
 
     // Keyword matching (case-insensitive by token type).

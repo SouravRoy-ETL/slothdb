@@ -60,6 +60,37 @@ TEST_CASE("Parser - SELECT with alias") {
     CHECK(sel.select_list[1]->alias == "col_b");
 }
 
+TEST_CASE("Parser - non-reserved keywords as aliases") {
+    // Time-unit keywords (MONTH, DAY, YEAR, HOUR, MINUTE, SECOND, EPOCH, DOW)
+    // tokenize as keywords for DATE_TRUNC / EXTRACT but must remain legal as
+    // column aliases and table-alias identifiers. Regression for a bug where
+    // `SELECT MONTHNAME(x) AS month` threw "Expected IDENTIFIER after AS".
+    {
+        auto stmts = Parser::Parse("SELECT MONTHNAME(x) AS month FROM t");
+        auto &sel = static_cast<SelectStatement &>(*stmts[0]);
+        CHECK(sel.select_list[0]->alias == "month");
+    }
+    {
+        auto stmts = Parser::Parse("SELECT DAYNAME(x) AS day, MONTHNAME(x) AS month, x AS year FROM t");
+        auto &sel = static_cast<SelectStatement &>(*stmts[0]);
+        CHECK(sel.select_list[0]->alias == "day");
+        CHECK(sel.select_list[1]->alias == "month");
+        CHECK(sel.select_list[2]->alias == "year");
+    }
+    {
+        // Bare alias (no AS) must also accept non-reserved keywords.
+        auto stmts = Parser::Parse("SELECT MONTHNAME(x) month FROM t");
+        auto &sel = static_cast<SelectStatement &>(*stmts[0]);
+        CHECK(sel.select_list[0]->alias == "month");
+    }
+    {
+        // Table alias in FROM.
+        auto stmts = Parser::Parse("SELECT x FROM t AS month");
+        auto &sel = static_cast<SelectStatement &>(*stmts[0]);
+        CHECK(sel.from_table->alias == "month");
+    }
+}
+
 TEST_CASE("Parser - SELECT DISTINCT") {
     auto stmts = Parser::Parse("SELECT DISTINCT x FROM t");
     auto &sel = static_cast<SelectStatement &>(*stmts[0]);

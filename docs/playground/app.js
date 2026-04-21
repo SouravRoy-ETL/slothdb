@@ -162,7 +162,7 @@ const SNIPPETS = [
     { name: 'WHERE + GROUP BY',
       sql: "SELECT region, COUNT(*) AS n, SUM(revenue) AS rev\nFROM '/data/sales.csv'\nWHERE year >= 2023 AND qty > 100\nGROUP BY region\nORDER BY region;" },
     { name: 'Date functions (0.1.4)',
-      sql: "SELECT DATE_TRUNC('quarter', CURRENT_DATE) AS quarter_start,\n       MONTHNAME(CURRENT_DATE) AS month_name,\n       DAYNAME(CURRENT_DATE)   AS day_name,\n       LAST_DAY(CURRENT_DATE)  AS last_day;" },
+      sql: "SELECT DATE_TRUNC('quarter', CURRENT_DATE) AS q,\n       MONTHNAME(CURRENT_DATE) AS month,\n       DAYNAME(CURRENT_DATE)   AS day,\n       LAST_DAY(CURRENT_DATE)  AS eom;" },
 ];
 
 function renderSnippetsView() {
