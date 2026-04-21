@@ -105,10 +105,10 @@ WHERE year >= 2023 AND qty > 100
 GROUP BY region
 ORDER BY region;">
               <span class="si">▸</span>WHERE + GROUP BY</li>
-            <li class="snippet" data-sql="SELECT DATE_TRUNC('quarter', CURRENT_DATE) AS q,
-       MONTHNAME(CURRENT_DATE) AS month,
-       DAYNAME(CURRENT_DATE)   AS day,
-       LAST_DAY(CURRENT_DATE)  AS eom;">
+            <li class="snippet" data-sql="SELECT DATE_TRUNC('quarter', CURRENT_DATE) AS quarter_start,
+       MONTHNAME(CURRENT_DATE) AS month_name,
+       DAYNAME(CURRENT_DATE)   AS day_name,
+       LAST_DAY(CURRENT_DATE)  AS last_day;">
               <span class="si">▸</span>Date functions (0.1.4)</li>
           </ul>
         </div>
