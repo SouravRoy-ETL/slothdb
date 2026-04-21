@@ -247,7 +247,7 @@ footer .meta { font-size: 13px; padding-top: 24px; border-top: 1px solid var(--b
 
 section.hero {
   position: relative;
-  padding: 120px 32px 100px;
+  padding: 90px 32px 80px;
   max-width: 1280px; margin: 0 auto;
   text-align: center;
   overflow: hidden;
@@ -274,16 +274,16 @@ section.hero img.banner {
   margin: 0 auto 36px; display: block;
 }
 section.hero h1 {
-  font-size: clamp(42px, 7.5vw, 92px);
-  line-height: 1.05; font-weight: 800;
-  margin-bottom: 32px; letter-spacing: -0.035em;
+  font-size: clamp(34px, 5.2vw, 68px);
+  line-height: 1.1; font-weight: 800;
+  margin-bottom: 26px; letter-spacing: -0.03em;
 }
 section.hero h1 .accent { color: var(--accent); }
 section.hero p.lede {
-  font-size: clamp(17px, 1.6vw, 22px);
+  font-size: clamp(15px, 1.2vw, 18px);
   color: var(--text-dim); font-weight: 400;
-  max-width: 680px; margin: 0 auto 44px;
-  line-height: 1.5;
+  max-width: 620px; margin: 0 auto 36px;
+  line-height: 1.55;
 }
 section.hero .ctas { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
 section.hero .used-by {
