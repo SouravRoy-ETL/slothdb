@@ -1,37 +1,35 @@
 <p align="center">
-  <h1 align="center">SlothDB</h1>
-  <p align="center">
-    <b>Fast in-process OLAP engine for Python</b><br>
-    Query Parquet, CSV, JSON, Arrow and SQLite files directly with SQL.<br>
-    1.1–8.6× faster than DuckDB on every benchmark.
-  </p>
-  <p align="center">
-    <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white" alt="PyPI"></a>
-    <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/dm/slothdb?color=3775A9&label=downloads" alt="Downloads"></a>
-    <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/pyversions/slothdb" alt="Python versions"></a>
-    <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-  </p>
+  <img src="https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/assets/hero.svg" alt="SlothDB" width="100%">
+</p>
+
+<h3 align="center">SlothDB is a fast, in-process SQL database for your local data files.</h3>
+
+<p align="center">
+  A drop-in alternative to DuckDB with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite — <b>1.1×–8.6× faster</b> on every benchmark query.
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white" alt="PyPI"></a>
+  <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/dm/slothdb?color=3775A9&label=downloads" alt="Downloads"></a>
+  <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/pyversions/slothdb" alt="Python versions"></a>
+  <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/assets/demo.svg" alt="SlothDB 60-second demo" width="90%">
 </p>
 
 ---
 
-## 60-second tour
+## Try it in 60 seconds
 
 ```bash
 pip install slothdb
 python -c "import slothdb; slothdb.demo()"
 ```
 
-Generates synthetic sales data, runs 3 queries, prints side-by-side timing vs DuckDB (if installed):
-
-```
-Query                            SlothDB     DuckDB    Speedup
---------------------------------------------------------------
-COUNT(*)                          3.1 ms    17.0 ms     5.48x
-SUM(revenue) WHERE year>=2023    10.6 ms    17.7 ms     1.67x
-GROUP BY region                  10.0 ms    19.1 ms     1.91x
-```
+Generates a 100 000-row CSV, runs three queries, and prints the side-by-side with DuckDB shown above. No files to find, no setup.
 
 ## Using your own files
 

@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 540" width="900" height="540" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace">
+  <style>
+    .bg { fill: #0f1117; }
+    .chrome { fill: #1a1d25; }
+    .stroke { stroke: #2a2d35; stroke-width: 1; }
+    .title { fill: #8b8f9a; font-size: 12px; }
+    .prompt { fill: #a78bfa; font-size: 15px; font-weight: 600; }
+    .cmd { fill: #e6e8eb; font-size: 15px; }
+    .muted { fill: #6b7280; font-size: 15px; }
+    .ok { fill: #34d399; font-size: 15px; }
+    .header { fill: #e6e8eb; font-size: 15px; font-weight: 600; }
+    .rule { fill: #3a3d45; font-size: 15px; }
+    .win { fill: #34d399; font-size: 15px; font-weight: 600; }
+    .cta { fill: #f59e0b; font-size: 15px; font-weight: 600; }
+    .cursor { fill: #a78bfa; font-size: 15px; }
+    .line { opacity: 0; }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="900" height="540" rx="8"/>
+  <rect class="chrome stroke" x="0" y="0" width="900" height="32" rx="8"/>
+  <circle cx="18" cy="16" r="6" fill="#ff5f56"/>
+  <circle cx="38" cy="16" r="6" fill="#ffbd2e"/>
+  <circle cx="58" cy="16" r="6" fill="#27c93f"/>
+  <text class="title" x="450" y="20" text-anchor="middle">slothdb demo — python</text>
+
+  <g transform="translate(24, 70)">
+
+    <g class="line">
+      <text class="prompt" x="0" y="0">$</text>
+      <text class="cmd" x="18" y="0">pip install slothdb</text>
+      <animate attributeName="opacity" from="0" to="1" begin="0s" dur="0.2s" fill="freeze"/>
+    </g>
+
+    <g class="line">
+      <text class="muted" x="0" y="26">Successfully installed slothdb-0.1.4</text>
+      <animate attributeName="opacity" from="0" to="1" begin="0.9s" dur="0.2s" fill="freeze"/>
+    </g>
+
+    <g class="line">
+      <text class="prompt" x="0" y="60">$</text>
+      <text class="cmd" x="18" y="60">python -c "import slothdb; slothdb.demo()"</text>
+      <animate attributeName="opacity" from="0" to="1" begin="1.5s" dur="0.2s" fill="freeze"/>
+    </g>
+
+    <g class="line">
+      <text class="muted" x="0" y="90">Generating sample data at ~/.slothdb/demo/sales_100000.csv (100,000 rows, ~3 MB)...</text>
+      <animate attributeName="opacity" from="0" to="1" begin="2.3s" dur="0.2s" fill="freeze"/>
+    </g>
+
+    <g class="line">
+      <text class="rule" x="0" y="120">============================================================</text>
+      <animate attributeName="opacity" from="0" to="1" begin="3.0s" dur="0.2s" fill="freeze"/>
+    </g>
+    <g class="line">
+      <text class="header" x="0" y="142">SlothDB demo — 100,000 rows, CSV on disk</text>
+      <animate attributeName="opacity" from="0" to="1" begin="3.1s" dur="0.2s" fill="freeze"/>
+    </g>
+    <g class="line">
+      <text class="rule" x="0" y="164">============================================================</text>
+      <animate attributeName="opacity" from="0" to="1" begin="3.2s" dur="0.2s" fill="freeze"/>
+    </g>
+
+    <g class="line">
+      <text class="header" x="0" y="200">Query                            SlothDB     DuckDB    Speedup</text>
+      <animate attributeName="opacity" from="0" to="1" begin="3.5s" dur="0.2s" fill="freeze"/>
+    </g>
+    <g class="line">
+      <text class="rule" x="0" y="222">--------------------------------------------------------------</text>
+      <animate attributeName="opacity" from="0" to="1" begin="3.7s" dur="0.2s" fill="freeze"/>
+    </g>
+
+    <g class="line">
+      <text class="cmd" x="0" y="252">COUNT(*)</text>
+      <text class="cmd" x="350" y="252" text-anchor="end">3.1 ms</text>
+      <text class="muted" x="475" y="252" text-anchor="end">17.0 ms</text>
+      <text class="win" x="595" y="252" text-anchor="end">5.48×</text>
+      <animate attributeName="opacity" from="0" to="1" begin="4.2s" dur="0.25s" fill="freeze"/>
+    </g>
+
+    <g class="line">
+      <text class="cmd" x="0" y="278">SUM(revenue) WHERE year&gt;=2023</text>
+      <text class="cmd" x="350" y="278" text-anchor="end">10.6 ms</text>
+      <text class="muted" x="475" y="278" text-anchor="end">17.7 ms</text>
+      <text class="win" x="595" y="278" text-anchor="end">1.67×</text>
+      <animate attributeName="opacity" from="0" to="1" begin="5.0s" dur="0.25s" fill="freeze"/>
+    </g>
+
+    <g class="line">
+      <text class="cmd" x="0" y="304">GROUP BY region</text>
+      <text class="cmd" x="350" y="304" text-anchor="end">10.0 ms</text>
+      <text class="muted" x="475" y="304" text-anchor="end">19.1 ms</text>
+      <text class="win" x="595" y="304" text-anchor="end">1.91×</text>
+      <animate attributeName="opacity" from="0" to="1" begin="5.8s" dur="0.25s" fill="freeze"/>
+    </g>
+
+    <g class="line">
+      <text class="rule" x="0" y="340">============================================================</text>
+      <animate attributeName="opacity" from="0" to="1" begin="6.5s" dur="0.2s" fill="freeze"/>
+    </g>
+    <g class="line">
+      <text class="cta" x="0" y="362">Liked it?</text>
+      <text class="cmd" x="85" y="362">Star the repo: github.com/SouravRoy-ETL/slothdb</text>
+      <animate attributeName="opacity" from="0" to="1" begin="6.7s" dur="0.3s" fill="freeze"/>
+    </g>
+
+    <g>
+      <text class="prompt" x="0" y="400">$</text>
+      <text class="cursor" x="18" y="400">▋
+        <animate attributeName="opacity" values="1;0;1" dur="1s" begin="7.2s" repeatCount="indefinite"/>
+      </text>
+    </g>
+
+  </g>
+</svg>

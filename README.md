@@ -1,8 +1,10 @@
 <div align="center">
 
-<img src="assets/hero.svg" alt="SlothDB" height="140">
+<img src="assets/hero.svg" alt="SlothDB" width="100%">
 
-### An embedded OLAP database. Query Parquet, CSV, JSON, Arrow and SQLite with SQL — no server, no import, no extensions.
+<h3>SlothDB is a fast, in-process SQL database for your local data files.</h3>
+
+<p>A drop-in alternative to DuckDB with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite — <b>1.1×–8.6× faster</b> on every benchmark query.</p>
 
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white)](https://pypi.org/project/slothdb/)
 [![Downloads](https://img.shields.io/pypi/dm/slothdb?color=3775A9&label=downloads)](https://pypi.org/project/slothdb/)
@@ -12,21 +14,29 @@
 
 [Website](https://slothdb.org) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance--11---66-faster-than-duckdb-every-format-every-query) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
 
+<br>
+
+<img src="assets/demo.svg" alt="SlothDB 60-second demo — side-by-side timing vs DuckDB" width="90%">
+
 </div>
 
 ---
 
+## Try it in 60 seconds
+
 ```bash
 pip install slothdb
+python -c "import slothdb; slothdb.demo()"
 ```
 
+That generates a 100 000-row CSV, runs three queries, and prints the side-by-side with DuckDB shown above. No files to find, no setup.
+
 ```python
+# Your own files, same API:
 import slothdb
 db = slothdb.connect()
 db.sql("SELECT region, SUM(revenue) FROM 'sales.parquet' GROUP BY region").show()
 ```
-
-**1.1× – 8.6× faster than DuckDB** on a 1M-row benchmark across 15 queries spanning 7 file formats. [See numbers →](#performance--11---66-faster-than-duckdb-every-format-every-query)
 
 ---
 
