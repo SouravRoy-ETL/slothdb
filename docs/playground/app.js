@@ -3,13 +3,13 @@
 //
 // BUILD_VERSION — bump on every rebuild/push so browsers refetch the
 // wasm / js / css / cm bundle instead of serving the cached prior version.
-const BUILD_VERSION = '20260422-4';
+const BUILD_VERSION = '20260422-5';
 
-import createSlothDB from './slothdb.js?v=20260422-4';
+import createSlothDB from './slothdb.js?v=20260422-5';
 import {
     EditorView, basicSetup, keymap, EditorState,
     indentWithTab, sql, oneDark,
-} from './vendor/cm.js?v=20260422-4';
+} from './vendor/cm.js?v=20260422-5';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
@@ -581,4 +581,173 @@ boot().catch((e) => {
     setStatus('boot failed', 'err');
     log(`Boot failed: ${e.message || e}`, 'err');
     console.error(e);
+}).then(() => {
+    // First-visit guided tour — runs once per browser, dismissable.
+    setTimeout(() => maybeStartTour(), 600);
 });
+
+// ────────────────────────────────────────────────────────────
+// Guided tour (first-visit onboarding)
+
+const TOUR_KEY = 'slothdb-tour-v1';
+
+const TOUR_STEPS = [
+    {
+        selector: '#editor',
+        title: 'SQL editor',
+        body: 'Write SQL here. A demo query is already loaded — press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> or click Run to execute.',
+        placement: 'right',
+    },
+    {
+        selector: '.tree-group[data-group="data"]',
+        title: 'Your data files',
+        body: 'The demo CSV and Parquet are preloaded at <code>/data/</code>. Click any file to insert its path into the editor.',
+        placement: 'right',
+    },
+    {
+        selector: '.tree-action[data-tooltip]',
+        title: 'Add your own files',
+        body: 'Upload CSV, Parquet, JSON, Arrow, SQLite, or Excel. Files stay in your browser — nothing is uploaded to a server.',
+        placement: 'bottom',
+    },
+    {
+        selector: '.tree-group[data-group="snippets-mini"]',
+        title: 'Snippet library',
+        body: 'Ready-made queries — COUNT, GROUP BY, format comparisons, date functions. Click any to load and run.',
+        placement: 'right',
+    },
+    {
+        selector: '#run',
+        title: 'Run your query',
+        body: 'Click Run or press <kbd>Ctrl</kbd>+<kbd>Enter</kbd>. Results appear in the grid below. Column headers sort; the Export button saves as CSV.',
+        placement: 'bottom',
+    },
+];
+
+function maybeStartTour() {
+    if (localStorage.getItem(TOUR_KEY)) return;
+    startTour();
+}
+
+// Expose a way to replay the tour from the UI (About view button).
+window.slothdbReplayTour = () => {
+    localStorage.removeItem(TOUR_KEY);
+    startTour();
+};
+
+function startTour() {
+    // Bail if any target is missing (defensive — e.g. responsive hidden).
+    for (const s of TOUR_STEPS) {
+        if (!document.querySelector(s.selector)) return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'tour-overlay';
+    const spot = document.createElement('div');
+    spot.className = 'tour-spotlight';
+    const card = document.createElement('div');
+    card.className = 'tour-card';
+    document.body.append(overlay, spot, card);
+
+    let idx = 0;
+
+    function render() {
+        const step = TOUR_STEPS[idx];
+        const target = document.querySelector(step.selector);
+        const r = target.getBoundingClientRect();
+
+        // Spotlight around the target.
+        const pad = 6;
+        spot.style.top    = `${r.top - pad}px`;
+        spot.style.left   = `${r.left - pad}px`;
+        spot.style.width  = `${r.width + pad * 2}px`;
+        spot.style.height = `${r.height + pad * 2}px`;
+
+        // Card contents.
+        const isLast = idx === TOUR_STEPS.length - 1;
+        card.innerHTML = `
+            <div class="tour-step">${idx + 1} of ${TOUR_STEPS.length}</div>
+            <h4>${step.title}</h4>
+            <p>${step.body}</p>
+            <div class="tour-actions">
+                <button class="tour-skip">Skip tour</button>
+                <div class="tour-nav">
+                    ${idx > 0 ? '<button class="tour-prev">Back</button>' : ''}
+                    <button class="tour-next">${isLast ? 'Got it' : 'Next →'}</button>
+                </div>
+            </div>
+        `;
+
+        // Position card near the spotlight.
+        positionCard(step.placement, r);
+
+        card.querySelector('.tour-skip').onclick = finish;
+        card.querySelector('.tour-next').onclick = () => {
+            if (isLast) finish();
+            else { idx++; render(); }
+        };
+        const prev = card.querySelector('.tour-prev');
+        if (prev) prev.onclick = () => { idx--; render(); };
+    }
+
+    function positionCard(placement, targetRect) {
+        // Make card visible to measure, then position.
+        card.style.visibility = 'hidden';
+        card.classList.add('show');
+        const cw = card.offsetWidth;
+        const ch = card.offsetHeight;
+        card.style.visibility = '';
+        const GAP = 14;
+
+        let top, left;
+        const centerX = targetRect.left + targetRect.width / 2;
+        const centerY = targetRect.top  + targetRect.height / 2;
+
+        if (placement === 'right' && targetRect.right + GAP + cw < window.innerWidth - 8) {
+            left = targetRect.right + GAP;
+            top  = Math.max(12, Math.min(centerY - ch / 2, window.innerHeight - ch - 12));
+        } else if (placement === 'bottom') {
+            top  = targetRect.bottom + GAP;
+            left = Math.max(12, Math.min(centerX - cw / 2, window.innerWidth - cw - 12));
+            // Flip if would overflow bottom.
+            if (top + ch > window.innerHeight - 12) {
+                top = Math.max(12, targetRect.top - GAP - ch);
+            }
+        } else {
+            // Default: try right; fall back to below the target.
+            if (targetRect.right + GAP + cw < window.innerWidth - 8) {
+                left = targetRect.right + GAP;
+                top  = Math.max(12, Math.min(centerY - ch / 2, window.innerHeight - ch - 12));
+            } else {
+                top  = targetRect.bottom + GAP;
+                left = Math.max(12, Math.min(centerX - cw / 2, window.innerWidth - cw - 12));
+            }
+        }
+
+        card.style.top  = `${top}px`;
+        card.style.left = `${left}px`;
+    }
+
+    function finish() {
+        overlay.remove();
+        spot.remove();
+        card.remove();
+        localStorage.setItem(TOUR_KEY, '1');
+        window.removeEventListener('resize', render);
+        document.removeEventListener('keydown', onKey);
+    }
+
+    function onKey(e) {
+        if (e.key === 'Escape') { finish(); }
+        else if (e.key === 'Enter' || e.key === 'ArrowRight') {
+            if (idx < TOUR_STEPS.length - 1) { idx++; render(); } else finish();
+        }
+        else if (e.key === 'ArrowLeft') {
+            if (idx > 0) { idx--; render(); }
+        }
+    }
+
+    window.addEventListener('resize', render);
+    document.addEventListener('keydown', onKey);
+    render();
+}
