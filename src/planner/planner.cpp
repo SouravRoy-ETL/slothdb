@@ -66,53 +66,85 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
 
     // 3. Aggregation or Projection.
     if (stmt.has_aggregation) {
-        // Separate the select list into group-by columns and aggregates.
+        // The aggregate operator emits rows in [groups..., aggregates...]
+        // order regardless of how the user wrote the SELECT list. To give
+        // back the user's order (e.g. `SELECT COUNT(*), k ... GROUP BY k`
+        // where the aggregate comes before the group column), we build a
+        // Projection above the aggregate that picks columns out of the
+        // aggregate's internal schema in SELECT-list order.
         std::vector<BoundExprPtr> groups;
-        std::vector<BoundExprPtr> aggregates;
-
-        // Collect group-by expressions.
         for (auto &g : mutable_stmt.group_by) {
             groups.push_back(std::move(g));
         }
 
-        // Collect aggregate expressions from select list.
-        // Non-aggregate, non-group-by expressions in select list are
-        // kept as-is (they should reference group-by columns).
+        std::vector<BoundExprPtr> aggregates;
+        std::vector<LogicalType> group_types;
+        std::vector<LogicalType> agg_types;
+        for (auto &g : groups) {
+            group_types.push_back(g->GetReturnType());
+        }
+
+        std::vector<BoundExprPtr> proj_exprs;
+        proj_exprs.reserve(mutable_stmt.select_list.size());
+
         for (auto &expr : mutable_stmt.select_list) {
+            bool handled = false;
             if (expr && expr->GetExpressionType() == BoundExpressionType::FUNCTION) {
                 auto *fn = static_cast<BoundFunction *>(expr.get());
                 if (fn->is_aggregate) {
+                    idx_t internal_pos = group_types.size() + agg_types.size();
+                    auto ret = fn->GetReturnType();
+                    agg_types.push_back(ret);
+                    proj_exprs.push_back(std::make_unique<BoundColumnRef>(
+                        fn->function_name, internal_pos, ret));
                     aggregates.push_back(std::move(expr));
-                    continue;
+                    handled = true;
                 }
             }
-            // Non-aggregate expression — if not already in groups, add as group.
-            if (expr) {
-                // Check if this is a group-by column already handled.
-                bool is_group = false;
-                for (auto &g : groups) {
-                    if (g && expr->GetExpressionType() == BoundExpressionType::COLUMN_REF &&
-                        g->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                        auto &e_col = static_cast<BoundColumnRef &>(*expr);
-                        auto &g_col = static_cast<BoundColumnRef &>(*g);
-                        if (e_col.column_index == g_col.column_index) {
-                            is_group = true;
+            if (!handled && expr &&
+                expr->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                // Must be a reference to a GROUP BY column; locate its
+                // position in the aggregate's internal schema.
+                auto &cref = static_cast<BoundColumnRef &>(*expr);
+                idx_t group_idx = INVALID_INDEX;
+                for (idx_t gi = 0; gi < groups.size(); gi++) {
+                    if (groups[gi] &&
+                        groups[gi]->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                        auto &g_col = static_cast<BoundColumnRef &>(*groups[gi]);
+                        if (g_col.column_index == cref.column_index) {
+                            group_idx = gi;
                             break;
                         }
                     }
                 }
-                if (!is_group && expr->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                    // This column should be in GROUP BY; treat as group.
-                    // (In a stricter mode, we'd error here.)
+                if (group_idx != INVALID_INDEX) {
+                    proj_exprs.push_back(std::make_unique<BoundColumnRef>(
+                        cref.column_name, group_idx, cref.GetReturnType()));
+                    handled = true;
                 }
+            }
+            if (!handled) {
+                // Fallback for shapes we don't yet classify (constants or
+                // composite expressions in the select list). Forward the
+                // expression unchanged — the projection evaluates it against
+                // the aggregate's output, which won't be meaningful for
+                // non-trivial cases but preserves prior behavior.
+                proj_exprs.push_back(std::move(expr));
             }
         }
 
-        // If no explicit GROUP BY but we have aggregates, it's a full-table agg.
+        std::vector<LogicalType> agg_internal_types = group_types;
+        agg_internal_types.insert(agg_internal_types.end(),
+                                   agg_types.begin(), agg_types.end());
+
         auto agg = std::make_unique<LogicalAggregate>(
-            std::move(groups), std::move(aggregates), stmt.result_types);
+            std::move(groups), std::move(aggregates), std::move(agg_internal_types));
         agg->children.push_back(std::move(plan));
-        plan = std::move(agg);
+
+        auto proj = std::make_unique<LogicalProjection>(
+            std::move(proj_exprs), stmt.result_types);
+        proj->children.push_back(std::move(agg));
+        plan = std::move(proj);
     } else if (stmt.has_window) {
         // Window function evaluation.
         auto window = std::make_unique<LogicalWindow>(
