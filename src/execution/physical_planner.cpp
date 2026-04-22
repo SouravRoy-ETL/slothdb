@@ -14,10 +14,12 @@
 #include <cmath>
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 #include <atomic>
@@ -210,10 +212,38 @@ public:
     void Init() override {
         reader_ = std::make_unique<FastCSVReader>(file_path_, delimiter_);
         reader_->ReadHeader();
+        // A JOIN may call Init() twice (once on build, again on probe if the
+        // LEFT side turns out to be larger) so reset the parallel state too.
+        mode_decided_ = false;
+        use_parallel_ = false;
+        pre_chunks_.clear();
+        pre_chunk_idx_ = 0;
     }
 
     bool GetData(DataChunk &result) override {
-        // Initialize if chunk is fresh; reuse + reset if already set up.
+        // First call: for files above a size threshold, do a one-shot
+        // parallel parse into a vector of pre-built DataChunks. On small
+        // files we stay on the single-threaded streaming path since the
+        // thread-spawn overhead would dominate.
+        if (!mode_decided_) {
+            mode_decided_ = true;
+            size_t sz = reader_->GetSize();
+            use_parallel_ = (sz >= 2 * 1024 * 1024);
+            if (use_parallel_) {
+                const std::vector<bool> *proj_ptr =
+                    projection_.empty() ? nullptr : &projection_;
+                reader_->ReadIntoChunks(pre_chunks_, GetTypes(), proj_ptr);
+                pre_chunk_idx_ = 0;
+            }
+        }
+
+        if (use_parallel_) {
+            if (pre_chunk_idx_ >= pre_chunks_.size()) return false;
+            result = std::move(pre_chunks_[pre_chunk_idx_++]);
+            return true;
+        }
+
+        // Streaming path.
         if (result.ColumnCount() != GetTypes().size()) {
             result.Initialize(GetTypes());
         } else {
@@ -244,6 +274,11 @@ private:
     std::unique_ptr<FastCSVReader> reader_;
     bool initialized_ = false;
     std::vector<bool> projection_;
+
+    bool mode_decided_ = false;
+    bool use_parallel_ = false;
+    std::vector<DataChunk> pre_chunks_;
+    size_t pre_chunk_idx_ = 0;
 };
 
 // Streaming Parquet scan with thread-parallel row-group decode.
@@ -5111,35 +5146,36 @@ private:
             return;
         }
 
-        // Try to materialize LEFT side with a size guard.
-        // If LEFT exceeds threshold, bail and use RIGHT as build side instead.
+        // Pick build side. If both children are file scans, compare file sizes
+        // upfront: picking the smaller side avoids a speculative LEFT pass that
+        // would abort mid-way and force LEFT to be re-scanned — parsing the
+        // same CSV twice on a big × small join. Falls back to the historic
+        // "try LEFT, threshold-bail to RIGHT" path when we don't have a cheap
+        // size hint.
         static constexpr idx_t SMALL_SIDE_THRESHOLD = 100000;
-        std::vector<std::vector<Value>> left_rows;
-        bool left_too_big = false;
-        while (!left_too_big) {
-            chunk.Initialize(children[0]->GetTypes());
-            if (!children[0]->GetData(chunk)) break;
-            for (idx_t i = 0; i < chunk.size(); i++) {
-                std::vector<Value> row;
-                for (idx_t col = 0; col < chunk.ColumnCount(); col++)
-                    row.push_back(chunk.GetValue(col, i));
-                left_rows.push_back(std::move(row));
-                if (left_rows.size() > SMALL_SIDE_THRESHOLD) {
-                    left_too_big = true;
-                    break;
+        std::vector<std::vector<Value>> build_rows;
+        bool build_is_right = false;
+        bool sized_hint = false;
+        {
+            auto *lfs = dynamic_cast<PhysicalFileScan *>(children[0].get());
+            auto *rfs = children.size() > 1 ? dynamic_cast<PhysicalFileScan *>(children[1].get()) : nullptr;
+            if (lfs && rfs) {
+                std::error_code ec1, ec2;
+                auto lsz = std::filesystem::file_size(lfs->GetFilePath(), ec1);
+                auto rsz = std::filesystem::file_size(rfs->GetFilePath(), ec2);
+                if (!ec1 && !ec2) {
+                    sized_hint = true;
+                    build_is_right = (rsz <= lsz);
                 }
             }
         }
 
-        // If LEFT too big, switch: materialize RIGHT as build side instead.
-        bool build_is_right = false;
-        std::vector<std::vector<Value>> build_rows;
-        if (left_too_big) {
-            children[0]->Init(); // reset left scan
-            build_is_right = true;
+        if (sized_hint) {
+            // Direct build — no speculative pass, no re-scan of the probe side.
+            idx_t build_side = build_is_right ? 1 : 0;
             while (true) {
-                chunk.Initialize(children[1]->GetTypes());
-                if (!children[1]->GetData(chunk)) break;
+                chunk.Initialize(children[build_side]->GetTypes());
+                if (!children[build_side]->GetData(chunk)) break;
                 for (idx_t i = 0; i < chunk.size(); i++) {
                     std::vector<Value> row;
                     for (idx_t col = 0; col < chunk.ColumnCount(); col++)
@@ -5147,9 +5183,43 @@ private:
                     build_rows.push_back(std::move(row));
                 }
             }
-            left_rows.clear();
         } else {
-            build_rows = std::move(left_rows);
+            // Try to materialize LEFT side with a size guard.
+            // If LEFT exceeds threshold, bail and use RIGHT as build side instead.
+            std::vector<std::vector<Value>> left_rows;
+            bool left_too_big = false;
+            while (!left_too_big) {
+                chunk.Initialize(children[0]->GetTypes());
+                if (!children[0]->GetData(chunk)) break;
+                for (idx_t i = 0; i < chunk.size(); i++) {
+                    std::vector<Value> row;
+                    for (idx_t col = 0; col < chunk.ColumnCount(); col++)
+                        row.push_back(chunk.GetValue(col, i));
+                    left_rows.push_back(std::move(row));
+                    if (left_rows.size() > SMALL_SIDE_THRESHOLD) {
+                        left_too_big = true;
+                        break;
+                    }
+                }
+            }
+
+            if (left_too_big) {
+                children[0]->Init(); // reset left scan for the probe phase
+                build_is_right = true;
+                while (true) {
+                    chunk.Initialize(children[1]->GetTypes());
+                    if (!children[1]->GetData(chunk)) break;
+                    for (idx_t i = 0; i < chunk.size(); i++) {
+                        std::vector<Value> row;
+                        for (idx_t col = 0; col < chunk.ColumnCount(); col++)
+                            row.push_back(chunk.GetValue(col, i));
+                        build_rows.push_back(std::move(row));
+                    }
+                }
+                left_rows.clear();
+            } else {
+                build_rows = std::move(left_rows);
+            }
         }
 
         // Extract join column indices from condition.
