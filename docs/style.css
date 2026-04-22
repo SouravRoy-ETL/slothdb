@@ -366,25 +366,29 @@ section.hero .hero-chips .chip {
 #eco-anchor-glow .halo-inner { stop-color: var(--accent); stop-opacity: 0.25; }
 #eco-anchor-glow .halo-outer { stop-color: var(--accent); stop-opacity: 0;    }
 .eco-connectors .flow {
-  /* The paths use vector-effect="non-scaling-stroke" so the 2.6 px
-     reads as 2.6 screen pixels regardless of how preserveAspectRatio
-     scales the viewBox. Without that, non-uniform scaling could
-     collapse the stroke-width toward zero on one axis. */
+  /* Full-path glowing pulse — each channel fades in bright, holds,
+     fades out. The drop-shadow is what gives the "glow"; without it
+     the flow just looks like a plain stroke. vector-effect on the
+     paths keeps the stroke width from collapsing when preserve-
+     AspectRatio="none" scales the viewBox non-uniformly. */
   stroke: var(--accent);
-  stroke-width: 2.6;
-  stroke-dasharray: 48 240;
-  stroke-dashoffset: 0;
-  opacity: 1;
-  animation: eco-travel 3.6s linear infinite;
+  stroke-width: 2.4;
+  fill: none;
+  opacity: 0;
+  filter: drop-shadow(0 0 6px var(--accent))
+          drop-shadow(0 0 14px var(--accent));
+  animation: eco-pulse 6s ease-in-out infinite;
 }
 .eco-connectors .flow.f1 { animation-delay: 0s;    }
-.eco-connectors .flow.f2 { animation-delay: 0.8s;  }
-.eco-connectors .flow.f3 { animation-delay: 1.6s;  }
-.eco-connectors .flow.f4 { animation-delay: 2.4s;  }
-.eco-connectors .flow.f5 { animation-delay: 3.2s;  }
-@keyframes eco-travel {
-  from { stroke-dashoffset: 0;    }
-  to   { stroke-dashoffset: -288; }  /* matches dasharray 48 + 240 */
+.eco-connectors .flow.f2 { animation-delay: 1.2s;  }
+.eco-connectors .flow.f3 { animation-delay: 2.4s;  }
+.eco-connectors .flow.f4 { animation-delay: 3.6s;  }
+.eco-connectors .flow.f5 { animation-delay: 4.8s;  }
+@keyframes eco-pulse {
+  0%, 100% { opacity: 0; }
+  12%      { opacity: 1;    }
+  35%      { opacity: 0.95; }
+  55%      { opacity: 0;    }
 }
 .eco-connectors .anchor-halo {
   animation: eco-halo 3.2s ease-in-out infinite;
