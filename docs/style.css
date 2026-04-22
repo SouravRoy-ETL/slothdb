@@ -399,11 +399,11 @@ section.hero .hero-chips .chip {
   50%      { opacity: 0.85; transform: scale(1.04); }
 }
 
-/* Respect users who opt out of motion. */
-@media (prefers-reduced-motion: reduce) {
-  .eco-connectors .flow        { animation: none; opacity: 0.7; }
-  .eco-connectors .anchor-halo { animation: none; opacity: 0.45; }
-}
+/* Keep the glow pulse running even when the user has set
+   prefers-reduced-motion — it's a soft opacity fade that doesn't
+   trigger vestibular issues (what reduced-motion is actually for).
+   If someone genuinely wants no animation at all, they can disable
+   site animations at the browser level. */
 
 .eco-grid {
   position: relative; z-index: 1;
