@@ -7,6 +7,7 @@
 <p>A drop-in alternative to DuckDB with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite — <b>1.1×–8.6× faster</b> on every benchmark query.</p>
 
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
+[![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm&label=npm)](https://www.npmjs.com/package/@slothdb/wasm)
 [![Downloads](https://static.pepy.tech/badge/slothdb)](https://pepy.tech/project/slothdb)
 [![Downloads/month](https://static.pepy.tech/badge/slothdb/month)](https://pepy.tech/project/slothdb)
 [![CI](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg)](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml)
@@ -27,7 +28,15 @@
 
 **In your browser** — no install, no account: **[slothdb.org/playground](https://slothdb.org/playground/)**. Full SlothDB compiled to WebAssembly, with a pre-loaded 1,000-row demo CSV + matching Parquet to compare format performance. Files you add stay on your machine.
 
-**Or locally:**
+**In Node/JS** — `npm install @slothdb/wasm`:
+
+```js
+import { SlothDB } from '@slothdb/wasm';
+const db = await SlothDB.create();
+const { columns, rows } = db.query("SELECT 1 AS n");
+```
+
+**Or Python locally:**
 
 ```bash
 pip install slothdb
