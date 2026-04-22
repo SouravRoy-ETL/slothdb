@@ -37,6 +37,12 @@ Also: per-iteration unique suffix on every auto-generated temp-table name (`__au
 
 `COPY (SELECT ... FROM 'data.csv' WHERE ...) TO 'out.csv'` now works — previously COPY's own preprocessing only recognised `read_csv()` form, so bare `__FILE__` references inside the subquery crashed the binder. Parquet / JSON COPY-from remains a known follow-up.
 
+### Shell: `.open` on a missing/invalid file no longer exits the REPL
+
+`tools/shell/shell.cpp` previously closed the current database *before* attempting the new `.open`. If the new open failed, there were no valid handles left, and the handler did `return 1` — exiting the entire shell process instead of falling back to the `slothdb>` prompt.
+
+Fixed by reordering: open the new database first, swap in only on success. On failure, the old session stays active and the shell returns to the prompt. Also added a hint for the common confusion — when the failing path ends in `.csv` / `.parquet` / `.json` / `.arrow` / `.xlsx` / `.tsv`, the error now suggests `SELECT * FROM '<path>';` which is what the user almost certainly wanted.
+
 ### Platform
 
 - CMake project version bumped to 0.1.5. Engine `slothdb_version()` returns `"0.1.5"`.
