@@ -1,5 +1,5 @@
 {
-  "name": "@slothdb/wasm",
+  "name": "slothdb-wasm",
   "version": "0.1.5",
   "description": "Fast embedded SQL database in WebAssembly. Query Parquet, CSV, JSON, Arrow, SQLite, and Excel files directly from SQL — no server, no install. A DuckDB alternative: 1.1×–8.6× faster on file benchmarks.",
   "keywords": [

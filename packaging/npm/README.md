@@ -1,8 +1,8 @@
-# @slothdb/wasm
+# slothdb-wasm
 
 > Fast embedded SQL database in WebAssembly. Query Parquet, CSV, JSON, Arrow, SQLite, and Excel files directly from SQL — no server, no install, 1.3 MB wasm.
 
-[![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm)](https://www.npmjs.com/package/@slothdb/wasm)
+[![npm](https://img.shields.io/npm/v/slothdb-wasm?color=CB3837&logo=npm)](https://www.npmjs.com/package/slothdb-wasm)
 [![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/SouravRoy-ETL/slothdb/blob/main/LICENSE)
 
 - **Website:** https://slothdb.org
@@ -14,7 +14,7 @@ SlothDB is a full analytical SQL engine compiled to WebAssembly. It reads seven 
 ## Install
 
 ```bash
-npm install @slothdb/wasm
+npm install slothdb-wasm
 ```
 
 No native dependencies. Works on Linux, macOS, Windows (and WSL).
@@ -22,7 +22,7 @@ No native dependencies. Works on Linux, macOS, Windows (and WSL).
 ## Quick start
 
 ```js
-import { SlothDB } from '@slothdb/wasm';
+import { SlothDB } from 'slothdb-wasm';
 import fs from 'node:fs/promises';
 
 const db = await SlothDB.create();
@@ -69,7 +69,7 @@ Full SQL reference: https://slothdb.org/docs.html
 SlothDB works the same in the browser — the only differences are that you load files via `fetch`/`<input type="file">` instead of `fs`, and the package needs to be served over HTTP (not `file://`).
 
 ```js
-import { SlothDB } from '@slothdb/wasm';
+import { SlothDB } from 'slothdb-wasm';
 
 const db = await SlothDB.create();
 
