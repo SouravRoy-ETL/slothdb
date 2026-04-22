@@ -25,6 +25,7 @@
     SlothDB
   </a>
   <ul>
+    <li class="hide-sm"><a href="playground/">Playground</a></li>
     <li class="hide-sm"><a href="docs.html" class="active">Documentation</a></li>
     <li class="hide-sm"><a href="community.html">Community</a></li>
     <li class="hide-sm">
@@ -70,6 +71,7 @@
       <h4>Clients</h4>
       <ul>
         <li><a href="#python-api">Python</a></li>
+        <li><a href="#installation">Node / Browser (WASM)</a></li>
         <li><a href="#cli">CLI shell</a></li>
         <li><a href="#cpp-api">C / C++</a></li>
       </ul>
@@ -114,6 +116,17 @@
 <pre class="code">pip install slothdb
 python -c <span class="str">"import slothdb; slothdb.demo()"</span></pre>
     <p>The <code>demo()</code> call generates a 100 000-row synthetic CSV, runs three queries with timing, and (if <code>duckdb</code> is installed) prints a side-by-side comparison.</p>
+
+    <h3>Node.js / Browser (WebAssembly)</h3>
+<pre class="code">npm install @slothdb/wasm</pre>
+<pre class="code"><span class="str">import</span> { SlothDB } <span class="str">from</span> <span class="str">'@slothdb/wasm'</span>;
+
+<span class="str">const</span> db = <span class="str">await</span> SlothDB.create();
+<span class="str">const</span> { columns, rows, ms } = db.query(
+    <span class="str">"SELECT region, SUM(revenue) AS total "</span> +
+    <span class="str">"FROM '/data/sales.parquet' GROUP BY region"</span>
+);</pre>
+    <p>1.3 MB wasm, works in Node ≥18 and every modern browser. Full engine, all seven file formats. <a href="../playground/">Try it live without installing anything</a>.</p>
 
     <h3>Linux / macOS (install script)</h3>
 <pre class="code">curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash</pre>
