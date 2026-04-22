@@ -350,13 +350,14 @@ section.hero .hero-chips .chip {
   overflow: visible;
 }
 .eco-connectors path {
-  stroke-width: 1.4; fill: none;
+  fill: none;
   stroke-linecap: round; stroke-linejoin: round;
 }
 .eco-connectors .base {
-  stroke: var(--border-card);
-  opacity: 0.55;
-  stroke-dasharray: 3 5;
+  stroke: var(--text-muted);
+  stroke-width: 1.2;
+  opacity: 0.45;
+  stroke-dasharray: 4 7;
 }
 .eco-connectors .flow-layer { pointer-events: none; }
 
@@ -365,19 +366,16 @@ section.hero .hero-chips .chip {
 #eco-anchor-glow .halo-inner { stop-color: var(--accent); stop-opacity: 0.25; }
 #eco-anchor-glow .halo-outer { stop-color: var(--accent); stop-opacity: 0;    }
 .eco-connectors .flow {
-  /* Flat accent stroke. Dropped the SVG <linearGradient> with CSS-styled
-     stops because cross-browser behavior on `stop-color` via CSS is
-     inconsistent (Safari and some cached Chromium builds render the
-     stroke as transparent when the gradient reference can't find its
-     styled stops, which makes the animation look "gone"). The traveling
-     dash reads fine with a single accent color. */
+  /* The paths use vector-effect="non-scaling-stroke" so the 2.6 px
+     reads as 2.6 screen pixels regardless of how preserveAspectRatio
+     scales the viewBox. Without that, non-uniform scaling could
+     collapse the stroke-width toward zero on one axis. */
   stroke: var(--accent);
-  stroke-width: 2.2;
-  stroke-dasharray: 36 400;
+  stroke-width: 2.6;
+  stroke-dasharray: 48 240;
   stroke-dashoffset: 0;
-  filter: drop-shadow(0 0 4px var(--accent));
-  opacity: 0.95;
-  animation: eco-travel 4.2s linear infinite;
+  opacity: 1;
+  animation: eco-travel 3.6s linear infinite;
 }
 .eco-connectors .flow.f1 { animation-delay: 0s;    }
 .eco-connectors .flow.f2 { animation-delay: 0.8s;  }
@@ -386,7 +384,7 @@ section.hero .hero-chips .chip {
 .eco-connectors .flow.f5 { animation-delay: 3.2s;  }
 @keyframes eco-travel {
   from { stroke-dashoffset: 0;    }
-  to   { stroke-dashoffset: -436; }
+  to   { stroke-dashoffset: -288; }  /* matches dasharray 48 + 240 */
 }
 .eco-connectors .anchor-halo {
   animation: eco-halo 3.2s ease-in-out infinite;
