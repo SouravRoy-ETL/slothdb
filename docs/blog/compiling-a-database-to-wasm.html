@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Compiling a database to WebAssembly: what broke · SlothDB</title>
+<meta name="description" content="A week-long log of porting SlothDB — a C++20 analytical database — to WebAssembly via Emscripten. Threads, exceptions, HTTP, CodeMirror, and one 90 KB cache-bust.">
+<meta name="keywords" content="WebAssembly, Emscripten, SQL in browser, wasm database, DuckDB alternative, OLAP wasm, porting C++ to wasm, pthread wasm">
+<meta name="author" content="Sourav Roy">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#000000">
+
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://slothdb.org/blog/compiling-a-database-to-wasm.html">
+<meta property="og:title" content="Compiling a database to WebAssembly: what broke">
+<meta property="og:description" content="A week-long log of porting SlothDB — a C++20 analytical database — to WebAssembly. Threads, exceptions, HTTP, CodeMirror, and one 90 KB cache-bust.">
+<meta property="og:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
+<meta property="og:site_name" content="SlothDB">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Compiling a database to WebAssembly: what broke">
+<meta name="twitter:description" content="A week-long log of porting SlothDB — a C++20 analytical database — to WebAssembly.">
+<meta name="twitter:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
+
+<link rel="canonical" href="https://slothdb.org/blog/compiling-a-database-to-wasm.html">
+<link rel="icon" type="image/svg+xml" href="../assets/icon.svg">
+<link rel="stylesheet" href="../style.css">
+<script>
+  (function(){
+    var t = localStorage.getItem('slothdb-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Compiling a database to WebAssembly: what broke",
+  "author": { "@type": "Person", "name": "Sourav Roy" },
+  "datePublished": "2026-04-22",
+  "dateModified": "2026-04-22",
+  "publisher": { "@type": "Organization", "name": "SlothDB" },
+  "url": "https://slothdb.org/blog/compiling-a-database-to-wasm.html",
+  "about": ["WebAssembly", "Emscripten", "Database", "SQL"],
+  "mainEntityOfPage": "https://slothdb.org/blog/compiling-a-database-to-wasm.html"
+}
+</script>
+
+<style>
+  .post { max-width: 760px; margin: 0 auto; padding: 48px 24px 96px; }
+  .post h1 { font-size: 32px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.02em; }
+  .post .meta { color: var(--text-muted); font-size: 13px; margin-bottom: 32px; }
+  .post h2 { font-size: 22px; margin: 40px 0 12px; letter-spacing: -0.01em; }
+  .post h3 { font-size: 17px; margin: 28px 0 8px; color: var(--text-dim); }
+  .post p { color: var(--text); line-height: 1.65; font-size: 16px; margin: 0 0 14px; }
+  .post ul, .post ol { color: var(--text); line-height: 1.65; padding-left: 22px; margin: 0 0 14px; }
+  .post li { margin: 4px 0; }
+  .post code { font-family: var(--mono); font-size: 13.5px; background: var(--bg-code); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border-soft); }
+  .post pre { background: var(--bg-code); border: 1px solid var(--border-soft); border-radius: 8px; padding: 16px 18px; overflow-x: auto; font-size: 13px; line-height: 1.55; margin: 14px 0 18px; }
+  .post pre code { background: transparent; border: none; padding: 0; font-size: 13px; }
+  .post blockquote { border-left: 2px solid var(--accent); padding: 2px 16px; margin: 14px 0; color: var(--text-dim); font-style: italic; }
+  .post .callout { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 14px 18px; border-radius: 8px; margin: 18px 0; font-size: 14px; }
+  .post .callout strong { color: var(--accent); }
+  .post a { color: var(--accent-bright); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
+  .post a:hover { border-color: var(--accent-bright); }
+  .post .tldr { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin: 20px 0 32px; }
+  .post .tldr h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); }
+  .post hr { border: none; border-top: 1px solid var(--border-soft); margin: 36px 0; }
+  .post table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+  .post th, .post td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
+  .post th { color: var(--text-dim); font-weight: 600; }
+  .post td { color: var(--text); }
+  .post .cta { display: inline-block; padding: 10px 18px; background: var(--accent); color: #0A0A0B; border-radius: 6px; font-weight: 600; border: none; margin: 8px 8px 8px 0; }
+  .post .cta:hover { background: var(--accent-bright); }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <a class="brand" href="/">
+    <img src="../assets/icon.svg" alt="SlothDB logo">
+    SlothDB
+  </a>
+  <ul>
+    <li class="hide-sm"><a href="/playground/">Playground</a></li>
+    <li class="hide-sm"><a href="/docs.html">Documentation</a></li>
+    <li class="hide-sm"><a href="/community.html">Community</a></li>
+    <li class="hide-sm">
+      <a class="gh-btn" href="https://github.com/SouravRoy-ETL/slothdb" target="_blank" rel="noopener">GitHub</a>
+    </li>
+  </ul>
+</nav>
+
+<article class="post">
+
+<h1>Compiling a database to WebAssembly: what broke</h1>
+<div class="meta">April 22, 2026 · Sourav Roy · ~9 min read</div>
+
+<div class="tldr">
+  <h3>TL;DR</h3>
+  <p style="margin:0;">
+    SlothDB is a C++20 analytical database. Over a week I ported it to WebAssembly via Emscripten. Final build: <strong>1.3 MB wasm + 97 KB JS</strong>, boots in under a second, runs a 1,000-row GROUP BY in under 5 ms. The port itself was straightforward. The four things that ate real time were threads that compile-time-succeed but runtime-fail, exceptions that have to be enabled twice, HTTP being a complete fiction in the browser, and a CodeMirror cache-miss that cost two hours to diagnose. Full working playground at <a href="/playground/">slothdb.org/playground</a>.
+  </p>
+</div>
+
+<h2>Why bother?</h2>
+
+<p>SlothDB's pitch is <em>SQL where your files live</em> — you point at a CSV or Parquet file on disk and query it. That works fine from the CLI and from Python, but the 2 minutes between "read a Hacker News post" and "install a CLI to try it" is where most projects lose readers. A URL that runs the same engine in the browser, against a file you drag-drop in, closes that loop.</p>
+
+<p>There is a second reason. Compiling an analytical database to WebAssembly is a reasonable litmus test for the quality of its portability layer. If the code is riddled with <code>#ifdef _WIN32</code>, threads spawned via platform APIs, and syscalls baked into hot paths, porting to WASM will surface all of it in one go.</p>
+
+<h2>Setup (the easy part)</h2>
+
+<p>Installing <a href="https://github.com/emscripten-core/emsdk">emsdk</a> and pointing CMake at it is a five-minute job:</p>
+
+<pre><code>git clone --depth 1 https://github.com/emscripten-core/emsdk.git
+./emsdk/emsdk.bat install latest
+./emsdk/emsdk.bat activate latest
+source emsdk/emsdk_env.sh
+
+emcmake cmake -S . -B build-wasm \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DSLOTHDB_BUILD_TESTS=OFF \
+    -DSLOTHDB_BUILD_SHELL=OFF
+
+emmake cmake --build build-wasm --target slothdb_wasm</code></pre>
+
+<p>The <code>slothdb_wasm</code> target is a new CMake executable that links <code>slothdb_lib</code> with a thin <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/tools/playground/wasm_bindings.cpp">embind wrapper</a> exposing three functions: <code>openDatabase()</code>, <code>runQuery(sql)</code>, and <code>version()</code>. The wrapper returns JSON strings so the JS side never has to touch C++ types.</p>
+
+<p>The first <code>emmake</code> invocation linked cleanly on the very first try. I was briefly optimistic.</p>
+
+<h2>Problem 1: threads that compile but don't exist</h2>
+
+<p>SlothDB uses <code>std::thread</code> in four places: the thread pool, parallel CSV parsing, parallel JSON parsing, and the Parquet row-group decoder. Without <code>-pthread</code>, Emscripten still compiles <code>&lt;thread&gt;</code> — <code>std::thread::hardware_concurrency()</code> returns a fixed value, <code>std::thread</code>'s constructor exists. At <em>runtime</em>, instantiating one aborts the WASM instance.</p>
+
+<p>Two ways to fix this, both ugly:</p>
+
+<ol>
+  <li><strong>Link with <code>-pthread</code></strong>. This enables real multi-threading via Web Workers + <code>SharedArrayBuffer</code>. The price is that every page serving the wasm must send <code>Cross-Origin-Opener-Policy: same-origin</code> and <code>Cross-Origin-Embedder-Policy: require-corp</code>. Simple static hosts (Python's <code>http.server</code>, the default GitHub Pages config) don't send these, and the wasm refuses to instantiate. Local development becomes a chore.</li>
+  <li><strong>Compile without <code>-pthread</code> and guard every <code>std::thread</code> use</strong>. No COOP/COEP requirement, but every hot-path parallel site needs an <code>#ifdef __EMSCRIPTEN__</code> serial fallback.</li>
+</ol>
+
+<p>I ran into a stroke of luck here: most of SlothDB's threading paths already had an <code>if (nt &lt;= 1)</code> serial-fallback, written defensively for single-core machines. Forcing <code>hardware_concurrency()</code> to return 1 under Emscripten dodged most spawn sites for free. The parallel Parquet consumer-mode pool didn't have a fallback and needed three lines added. Total threading-specific code: about 20 lines of preprocessor guards.</p>
+
+<p>The cost: browser-side queries are single-threaded. On 1,000 rows this is invisible. On a million rows you'd notice. For a playground it's the correct call.</p>
+
+<h2>Problem 2: exceptions that compile but don't catch</h2>
+
+<p>SlothDB's C API wraps every internal call in <code>try { ... } catch (const std::exception &amp;e) { ... }</code> and returns an error code. Straightforward. On the first wasm build, a query like <code>SELECT * FROM not_a_table</code> — which should return a clean <code>"Table not found"</code> string — instead threw:</p>
+
+<pre><code>CppException { excPtr: 5311112 }
+Aborted(CppException)</code></pre>
+
+<p>Emscripten ships with C++ exception <em>catching</em> disabled by default as a code-size optimization. The binary can still <code>throw</code>. It just can't <code>catch</code>. The exception walks past every <code>try</code> block and aborts the program.</p>
+
+<p>The fix requires committing <em>twice</em> — once at compile, once at link:</p>
+
+<pre><code>target_compile_options(slothdb_lib PRIVATE "-fexceptions")
+target_link_options(slothdb_lib   INTERFACE "-fexceptions")
+target_compile_options(slothdb_wasm PRIVATE "-fexceptions")
+target_link_options(slothdb_wasm    PRIVATE "-fexceptions")</code></pre>
+
+<p>Miss either, and you get the same abort. There's no warning; you just get a runtime crash on the first thrown exception. I lost an hour before checking the Emscripten docs on this.</p>
+
+<div class="callout">
+  <strong>Lesson:</strong> Emscripten ships the exception-handling model you chose at the <em>compile</em> level baked into every object file. If any one translation unit is compiled without <code>-fexceptions</code>, the final link silently wires in the "abort on throw" runtime. Add <code>-fexceptions</code> globally or not at all.
+</div>
+
+<h2>Problem 3: HTTP doesn't exist</h2>
+
+<p>SlothDB added <code>SELECT * FROM 'https://…'</code> support in v0.1.4. The implementation uses WinHTTP on Windows and raw POSIX sockets on Linux/macOS. Both are meaningless in a browser: <code>&lt;windows.h&gt;</code> doesn't exist under Emscripten, and <code>&lt;sys/socket.h&gt;</code> compiles but the sockets can only speak to a websockify-style proxy, not arbitrary HTTPS endpoints.</p>
+
+<p>The fix was a single preprocessor guard in <code>src/storage/http_client.cpp</code>:</p>
+
+<pre><code>#ifdef _MSC_VER
+// Windows: WinHTTP.
+#include &lt;winhttp.h&gt;
+#elif defined(__EMSCRIPTEN__)
+// WASM: HTTP not supported. Files come from MEMFS.
+#else
+// POSIX: raw sockets.
+#include &lt;sys/socket.h&gt;
+#endif</code></pre>
+
+<p>…plus stubbing <code>HTTPClient::Get()</code> to return a friendly error. The playground handles file input through the browser's <code>&lt;input type="file"&gt;</code> and writes the bytes directly into Emscripten's MEMFS at <code>/data/&lt;name&gt;</code>. The rest of the database code reads via <code>fopen</code> / <code>fread</code>, which MEMFS emulates natively. Zero changes to the 12 storage readers.</p>
+
+<h2>Problem 4: two copies of <code>@codemirror/state</code></h2>
+
+<p>The playground's SQL editor uses <a href="https://codemirror.net/">CodeMirror 6</a>. CodeMirror's architecture is explicitly plugin-based — every extension is a tiny npm package that shares identity checks on <code>EditorState</code> and <code>EditorView</code> classes.</p>
+
+<p>The obvious wiring is six ESM imports from <a href="https://esm.sh">esm.sh</a>:</p>
+
+<pre><code>import { EditorView, basicSetup } from 'https://esm.sh/codemirror@6.0.1';
+import { keymap }                 from 'https://esm.sh/@codemirror/view@6.32.0';
+import { EditorState }            from 'https://esm.sh/@codemirror/state@6.4.1';
+import { sql }                    from 'https://esm.sh/@codemirror/lang-sql@6.8.0';
+// …</code></pre>
+
+<p>This failed with:</p>
+
+<pre><code>Error: Unrecognized extension value in extension set ([object Object]).
+This sometimes happens because multiple instances of @codemirror/state
+are loaded, breaking instanceof checks.</code></pre>
+
+<p>esm.sh was serving <em>two</em> different copies of <code>@codemirror/state</code> — one pulled in by <code>codemirror@6.0.1</code>'s transitive dependency graph, another pinned directly via my import. Each version hashes into a different URL path. Modules load independently. <code>EditorState</code> from copy A is not <code>EditorState</code> from copy B, and CodeMirror's <code>instanceof</code> guards reject extensions that don't share its singleton.</p>
+
+<p>I tried esm.sh's <code>?deps=@codemirror/state@6.5.2</code> URL parameter, bumped versions, matched semvers. Each attempt got closer but never fully deduped. Two hours in, I gave up on the CDN and bundled locally with esbuild:</p>
+
+<pre><code>mkdir /tmp/cm-bundle && cd /tmp/cm-bundle
+cat &gt; entry.js &lt;&lt;'EOF'
+export { EditorView, basicSetup } from 'codemirror';
+export { keymap }                 from '@codemirror/view';
+export { EditorState }            from '@codemirror/state';
+export { sql }                    from '@codemirror/lang-sql';
+export { oneDark }                from '@codemirror/theme-one-dark';
+EOF
+
+npm install codemirror@6.0.1 @codemirror/view@6.41.1 \
+            @codemirror/state@6.6.0 @codemirror/lang-sql@6.8.0 \
+            @codemirror/theme-one-dark@6.1.2 esbuild
+
+npx esbuild entry.js --bundle --format=esm --minify \
+    --outfile=docs/playground/vendor/cm.js</code></pre>
+
+<p>Result: one 429 KB file, one <code>@codemirror/state</code>, zero identity checks failing. Checked into git. The playground imports <code>./vendor/cm.js</code> and nothing else.</p>
+
+<blockquote>
+  CDN ESM is fine until it isn't. When it fails, it fails at runtime with cryptic errors. Bundling the exact dependency graph you tested is five minutes of work and pays itself back the first time you ship.
+</blockquote>
+
+<h2>The 90 KB cache-bust</h2>
+
+<p>After the first deploy I pushed a bug fix, redeployed, and the old bug was still there. Hard-refresh: fixed. Close the tab, reopen: broken again. The browser was serving <code>slothdb.wasm</code> from disk cache.</p>
+
+<p>Standard cache-bust is a query string: <code>slothdb.wasm?v=20260421-2</code>. The catch is that Emscripten's generated JS computes the wasm URL itself, using <code>new URL("slothdb.wasm", import.meta.url)</code>. Appending <code>?v=...</code> to the JS import's URL flows into <code>import.meta.url</code> but <em>not</em> into the wasm path — the wasm stays cached.</p>
+
+<p>The fix is the <code>locateFile</code> hook that Emscripten gives you precisely for this:</p>
+
+<pre><code>const mod = await createSlothDB({
+    locateFile: (path) =&gt; path + '?v=' + BUILD_VERSION,
+});</code></pre>
+
+<p>Bump <code>BUILD_VERSION</code> on every push, and all five assets — HTML, CSS, two JS files, and the wasm — refetch. One line.</p>
+
+<h2>What I did not have to do</h2>
+
+<p>A partial list of things that worked out of the box — which is the more interesting half of the story:</p>
+
+<ul>
+  <li><strong>File I/O.</strong> The <code>FileHandle</code> abstraction uses pure <code>fopen</code> / <code>fread</code> / <code>fseeko</code>. MEMFS emulates all of them. Every one of SlothDB's seven readers — CSV, Parquet, JSON, Avro, Arrow IPC, SQLite, Excel — works unmodified.</li>
+  <li><strong>mmap.</strong> Parquet and JSON readers use <code>mmap</code> for large files. Emscripten implements <code>mmap</code> as a memory-copy backed by <code>read</code>. Slower than native, but transparent to the reader code.</li>
+  <li><strong>Parser, binder, planner, executor.</strong> No platform-specific code. Zero changes.</li>
+  <li><strong>The C API.</strong> The stable C ABI is what embind bound to; the JS surface is 30 lines.</li>
+</ul>
+
+<h2>Final numbers</h2>
+
+<table>
+  <thead><tr><th>Artifact</th><th>Size</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>slothdb.wasm</code></td><td>1.3 MB</td><td>-O3, <code>-fexceptions</code>, single-threaded</td></tr>
+    <tr><td><code>slothdb.js</code> (loader)</td><td>97 KB</td><td>Emscripten glue + embind</td></tr>
+    <tr><td><code>vendor/cm.js</code></td><td>429 KB</td><td>CodeMirror 6 bundled</td></tr>
+    <tr><td>Demo CSV</td><td>25 KB</td><td>1,000 rows, 5 columns</td></tr>
+    <tr><td>Demo Parquet</td><td>10 KB</td><td>Same data, SNAPPY</td></tr>
+    <tr><td>Cold boot</td><td>~750 ms</td><td>Over local 100 Mbps</td></tr>
+    <tr><td>1,000-row GROUP BY</td><td>~3 ms</td><td>After warm-up</td></tr>
+  </tbody>
+</table>
+
+<p>The playground is at <a href="/playground/">slothdb.org/playground</a>. The source is <a href="https://github.com/SouravRoy-ETL/slothdb">on GitHub</a>. Every fix described in this post lives in the main branch in a single commit each, linked from the commit log under <code>Playground:</code> prefixes.</p>
+
+<h2>The overall lesson</h2>
+
+<p>Compiling to WebAssembly isn't the hard part. The hard part is everything that silently assumes threads, exceptions, a network stack, and a filesystem — the browser reverses the defaults on all four. If your code is organized around platform-agnostic abstractions (stdio for file I/O, a C API boundary, preprocessor-guarded syscall usage), the port is a day. If it isn't, no amount of <code>-sALLOW_MEMORY_GROWTH</code> will save you; the browser will keep telling you, one cryptic abort at a time, exactly which assumption you made.</p>
+
+<p>Try it: <a class="cta" href="/playground/">Open the playground →</a> <a class="cta" href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a></p>
+
+<hr>
+
+<p style="font-size: 13px; color: var(--text-muted);">
+SlothDB is an MIT-licensed embedded SQL database built by a solo maintainer. It reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel directly from SQL — <a href="/#benchmarks">1.1×–8.6× faster than DuckDB</a> on every benchmarked format. If this post helped you, the maintainer would appreciate a <a href="https://github.com/SouravRoy-ETL/slothdb">star</a>.
+</p>
+
+</article>
+
+</body>
+</html>

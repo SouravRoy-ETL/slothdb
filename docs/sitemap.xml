@@ -20,6 +20,18 @@
     <priority>0.7</priority>
   </url>
   <url>
+    <loc>https://slothdb.org/playground/</loc>
+    <lastmod>2026-04-22</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://slothdb.org/blog/compiling-a-database-to-wasm.html</loc>
+    <lastmod>2026-04-22</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>https://slothdb.org/#install</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
