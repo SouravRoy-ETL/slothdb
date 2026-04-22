@@ -6,7 +6,7 @@
 <title>SlothDB Playground — SQL on CSV / Parquet / JSON in your browser</title>
 <meta name="description" content="Run SQL against CSV, Parquet, JSON, Arrow, SQLite, and Excel files in your browser. Files stay on your machine." />
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='80'>🦥</text></svg>" />
-<link rel="stylesheet" href="styles.css?v=20260422-3" />
+<link rel="stylesheet" href="styles.css?v=20260422-4" />
 </head>
 <body>
 <div class="ide">
@@ -57,7 +57,7 @@
           <div class="tree-head">
             <svg class="caret" width="10" height="10" viewBox="0 0 10 10"><path d="M3 2 L7 5 L3 8 Z" fill="currentColor"/></svg>
             <span>Data</span>
-            <label class="tree-action" title="Add files">
+            <label class="tree-action" data-tooltip="Upload a custom file to test (CSV, Parquet, JSON, Arrow, SQLite, Excel)">
               <input type="file" id="file-input" multiple
                      accept=".csv,.parquet,.json,.arrow,.sqlite,.db,.xlsx" />
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -223,6 +223,6 @@ ORDER BY region;">
 
 </div>
 
-<script type="module" src="app.js?v=20260422-3"></script>
+<script type="module" src="app.js?v=20260422-4"></script>
 </body>
 </html>

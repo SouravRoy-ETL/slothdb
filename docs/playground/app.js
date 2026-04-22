@@ -3,13 +3,13 @@
 //
 // BUILD_VERSION — bump on every rebuild/push so browsers refetch the
 // wasm / js / css / cm bundle instead of serving the cached prior version.
-const BUILD_VERSION = '20260422-3';
+const BUILD_VERSION = '20260422-4';
 
-import createSlothDB from './slothdb.js?v=20260422-3';
+import createSlothDB from './slothdb.js?v=20260422-4';
 import {
     EditorView, basicSetup, keymap, EditorState,
     indentWithTab, sql, oneDark,
-} from './vendor/cm.js?v=20260422-3';
+} from './vendor/cm.js?v=20260422-4';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
@@ -127,6 +127,66 @@ async function handleFiles(flist) {
 }
 
 $('#file-input').addEventListener('change', (e) => handleFiles(e.target.files));
+
+// ────────────────────────────────────────────────────────────
+// Floating tooltip — rendered at <body> so it isn't clipped by any
+// ancestor overflow (e.g. the sidebar's overflow-y: auto). Any element
+// with `data-tooltip="..."` gets it for free.
+
+(function wireTooltips() {
+    const bubble = document.createElement('div');
+    bubble.className = 'tt-bubble';
+    bubble.setAttribute('role', 'tooltip');
+    document.body.appendChild(bubble);
+
+    function show(target) {
+        const text = target.getAttribute('data-tooltip');
+        if (!text) return;
+        bubble.textContent = text;
+        const r = target.getBoundingClientRect();
+        const GAP = 10;
+        // Measure after text set.
+        bubble.style.visibility = 'hidden';
+        bubble.classList.remove('below');
+        bubble.classList.add('show');
+        const bw = bubble.offsetWidth;
+        const bh = bubble.offsetHeight;
+        bubble.style.visibility = '';
+
+        // Horizontal: center on the target, clamp to viewport.
+        const centerX = r.left + r.width / 2;
+        const maxLeft = window.innerWidth - bw - 8;
+        const left = Math.max(8, Math.min(centerX - bw / 2, maxLeft));
+
+        // Vertical: prefer above; flip below if we'd crowd the title bar
+        // (first 40 px of viewport). Accounts for multi-line tooltips whose
+        // height puts them into the chrome even when their top is positive.
+        const aboveTop = r.top - bh - GAP;
+        const below = aboveTop < 40;
+        const top = below ? r.bottom + GAP : aboveTop;
+
+        bubble.style.left = `${left}px`;
+        bubble.style.top = `${top}px`;
+        if (below) bubble.classList.add('below');
+        // Anchor the arrow back at the target's center regardless of clamp.
+        bubble.style.setProperty('--arrow-x', `${centerX - left}px`);
+    }
+    function hide() {
+        bubble.classList.remove('show');
+    }
+
+    document.addEventListener('mouseenter', (e) => {
+        const t = e.target.closest?.('[data-tooltip]');
+        if (t) show(t);
+    }, true);
+    document.addEventListener('mouseleave', (e) => {
+        if (e.target.closest?.('[data-tooltip]')) hide();
+    }, true);
+    document.addEventListener('focusin', (e) => {
+        if (e.target.closest?.('[data-tooltip]')) show(e.target.closest('[data-tooltip]'));
+    });
+    document.addEventListener('focusout', hide);
+})();
 
 // ────────────────────────────────────────────────────────────
 // Activity bar / view switching
