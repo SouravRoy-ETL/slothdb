@@ -3,13 +3,13 @@
 //
 // BUILD_VERSION — bump on every rebuild/push so browsers refetch the
 // wasm / js / css / cm bundle instead of serving the cached prior version.
-const BUILD_VERSION = '20260422-1';
+const BUILD_VERSION = '20260422-2';
 
-import createSlothDB from './slothdb.js?v=20260422-1';
+import createSlothDB from './slothdb.js?v=20260422-2';
 import {
     EditorView, basicSetup, keymap, EditorState,
     indentWithTab, sql, oneDark,
-} from './vendor/cm.js?v=20260422-1';
+} from './vendor/cm.js?v=20260422-2';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
@@ -296,6 +296,19 @@ function switchPanel(name) {
     $$('.tab-panel').forEach((p) => p.classList.toggle('active', p.id === `${name}-panel`));
 }
 $$('.ptab').forEach((btn) => btn.addEventListener('click', () => switchPanel(btn.dataset.tab)));
+
+// Run button click handler — the editor's own Mod-Enter keymap only fires
+// when CodeMirror has focus, so the button needs its own binding.
+$('#run').addEventListener('click', () => runQuery());
+
+// Global Ctrl/Cmd+Enter — works even when focus is outside the editor
+// (e.g. a snippet button was just clicked, or the user is on the results pane).
+document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        runQuery();
+    }
+});
 
 function runQuery() {
     if (!mod) return;
