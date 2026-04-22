@@ -37,6 +37,37 @@ TEST_CASE("Binder - SELECT *") {
     CHECK(sel.result_types[2].id() == LogicalTypeId::DOUBLE);
 }
 
+TEST_CASE("Binder - SELECT * with ORDER BY named column") {
+    // Regression: 'SELECT * FROM t ORDER BY name' was throwing
+    // "Internal Error: Unhandled expression type in binder" because
+    // the alias-resolution fast-path re-bound select_list[0] — which
+    // is an unbound STAR expression. Guard added: skip alias path if
+    // select_list[i] is a STAR, fall through to generic name lookup.
+    auto catalog = make_catalog();
+    Binder binder(*catalog);
+
+    auto stmts = Parser::Parse("SELECT * FROM users ORDER BY name");
+    auto bound = binder.Bind(*stmts[0]);
+    auto &sel = static_cast<BoundSelectStatement &>(*bound);
+    CHECK(sel.order_by.size() == 1);
+
+    auto stmts2 = Parser::Parse("SELECT * FROM users ORDER BY score DESC");
+    auto bound2 = binder.Bind(*stmts2[0]);
+    auto &sel2 = static_cast<BoundSelectStatement &>(*bound2);
+    CHECK(sel2.order_by.size() == 1);
+    CHECK(sel2.order_by[0].ascending == false);
+
+    // Positional ORDER BY, which was already working, should still work.
+    auto stmts3 = Parser::Parse("SELECT * FROM users ORDER BY 1");
+    auto bound3 = binder.Bind(*stmts3[0]);
+    CHECK(static_cast<BoundSelectStatement &>(*bound3).order_by.size() == 1);
+
+    // Alias-to-select-list resolution (non-star) must still work.
+    auto stmts4 = Parser::Parse("SELECT id + 1 AS bumped FROM users ORDER BY bumped");
+    auto bound4 = binder.Bind(*stmts4[0]);
+    CHECK(static_cast<BoundSelectStatement &>(*bound4).order_by.size() == 1);
+}
+
 TEST_CASE("Binder - SELECT specific columns") {
     auto catalog = make_catalog();
     Binder binder(*catalog);

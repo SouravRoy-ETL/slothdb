@@ -220,13 +220,29 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         BoundOrderBy bound_item;
         bool resolved = false;
         // Check if this ORDER BY expression is a select-list alias.
+        // The alias-resolution branch re-binds the ORIGINAL (unbound)
+        // select_list expression; that only works when select_list[i] is
+        // itself a scalar. With SELECT *, result_names comes from star
+        // expansion but select_list[0] is still an unbound STAR — re-
+        // binding it as a scalar throws "Unhandled expression type in
+        // binder". Skip alias-resolution for any index whose select_list
+        // entry is a star; fall through to normal column-name resolution.
         if (item.expression->GetExpressionType() == ExpressionType::COLUMN_REF) {
             auto &col_ref = static_cast<ColumnRefExpression &>(*item.expression);
             if (col_ref.table_name.empty()) {
                 for (idx_t i = 0; i < result->result_names.size(); i++) {
                     if (result->result_names[i] == col_ref.column_name) {
+                        // Map back to the select_list entry that produced
+                        // this result-name. With a bare STAR at index 0,
+                        // every expanded name maps to select_list[0] —
+                        // which is the star itself. Guard against that.
+                        idx_t sl_idx = std::min<idx_t>(i, stmt.select_list.size() - 1);
+                        if (stmt.select_list[sl_idx]->GetExpressionType()
+                                == ExpressionType::STAR) {
+                            break; // fall through to generic binding
+                        }
                         // Re-bind the original select-list expression.
-                        bound_item.expression = BindExpression(*stmt.select_list[i], context);
+                        bound_item.expression = BindExpression(*stmt.select_list[sl_idx], context);
                         resolved = true;
                         break;
                     }
