@@ -1,0 +1,59 @@
+{
+  "name": "slothdb",
+  "version": "0.1.5",
+  "description": "Fast embedded SQL database in WebAssembly. Query Parquet, CSV, JSON, Arrow, SQLite, and Excel files directly from SQL — no server, no install. A DuckDB alternative: 1.1×–8.6× faster on file benchmarks.",
+  "keywords": [
+    "sql",
+    "database",
+    "olap",
+    "analytical-database",
+    "embedded-database",
+    "wasm",
+    "webassembly",
+    "parquet",
+    "csv",
+    "json",
+    "arrow",
+    "sqlite",
+    "xlsx",
+    "duckdb-alternative",
+    "analytics",
+    "in-process",
+    "query"
+  ],
+  "type": "module",
+  "main": "./index.mjs",
+  "module": "./index.mjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "default": "./index.mjs"
+    }
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "slothdb.js",
+    "slothdb.wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SouravRoy-ETL/slothdb.git",
+    "directory": "packaging/npm"
+  },
+  "homepage": "https://slothdb.org",
+  "bugs": "https://github.com/SouravRoy-ETL/slothdb/issues",
+  "author": {
+    "name": "Sourav Roy",
+    "url": "https://github.com/SouravRoy-ETL"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false
+}

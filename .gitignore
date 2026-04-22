@@ -39,6 +39,10 @@ desktop.ini
 # Build artifacts
 *.parquet
 !docs/playground/data/*.parquet
+
+# npm package build output
+packaging/npm/*.tgz
+packaging/npm/node_modules/
 python/dist/
 python/*.egg-info/
 python/build/
