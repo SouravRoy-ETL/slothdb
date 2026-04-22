@@ -87,6 +87,43 @@ static inline const char *find_char2_simd(const char *p, const char *end, char c
 #endif
 }
 
+// Find first byte equal to any of c1, c2, c3. Used to scan for the end of an
+// unquoted CSV field in one pass — delim / '\n' / '\r'.
+static inline const char *find_char3_simd(const char *p, const char *end,
+                                          char c1, char c2, char c3) {
+#ifdef SLOTHDB_HAS_SSE2
+    const __m128i v1 = _mm_set1_epi8(c1);
+    const __m128i v2 = _mm_set1_epi8(c2);
+    const __m128i v3 = _mm_set1_epi8(c3);
+    while (p < end && (reinterpret_cast<uintptr_t>(p) & 15)) {
+        if (*p == c1 || *p == c2 || *p == c3) return p;
+        p++;
+    }
+    while (p + 16 <= end) {
+        __m128i chunk = _mm_load_si128(reinterpret_cast<const __m128i *>(p));
+        __m128i cmp = _mm_or_si128(
+            _mm_or_si128(_mm_cmpeq_epi8(chunk, v1), _mm_cmpeq_epi8(chunk, v2)),
+            _mm_cmpeq_epi8(chunk, v3));
+        int mask = _mm_movemask_epi8(cmp);
+        if (mask) {
+#ifdef _MSC_VER
+            unsigned long idx;
+            _BitScanForward(&idx, static_cast<unsigned long>(mask));
+            return p + idx;
+#else
+            return p + __builtin_ctz(mask);
+#endif
+        }
+        p += 16;
+    }
+    while (p < end) { if (*p == c1 || *p == c2 || *p == c3) return p; p++; }
+    return end;
+#else
+    while (p < end) { if (*p == c1 || *p == c2 || *p == c3) return p; p++; }
+    return end;
+#endif
+}
+
 } // namespace slothdb_internal
 
 #ifdef _WIN32
@@ -231,14 +268,16 @@ bool FastCSVReader::NextField(const char *&field_start, size_t &field_len) {
         return true;
     }
 
-    // Unquoted field — byte-by-byte scan (faster than memchr for short fields).
+    // Unquoted field — SIMD-scan to the next delimiter / newline. Processes
+    // 16 bytes per iteration instead of one, which is the single biggest win
+    // on wide or long-field CSVs.
     field_start = buffer_ + pos_;
-    size_t start = pos_;
-    while (pos_ < size_ && buffer_[pos_] != delimiter_ &&
-           buffer_[pos_] != '\n' && buffer_[pos_] != '\r') {
-        pos_++;
-    }
-    field_len = pos_ - start;
+    const char *start_p = buffer_ + pos_;
+    const char *end_p   = buffer_ + size_;
+    const char *stop_p  = slothdb_internal::find_char3_simd(
+        start_p, end_p, delimiter_, '\n', '\r');
+    field_len = static_cast<size_t>(stop_p - start_p);
+    pos_ = static_cast<size_t>(stop_p - buffer_);
     if (pos_ < size_ && buffer_[pos_] == delimiter_) pos_++;
     return true;
 }
