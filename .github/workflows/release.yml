@@ -3,12 +3,22 @@ name: Release
 on:
   push:
     tags: [ 'v*' ]
+  # Manual trigger for backfilling artifacts on a tag that already exists
+  # (e.g. after a release was created manually without CI). Pass the tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build artifacts for (e.g. v0.1.5)'
+        required: true
+        type: string
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.tag || github.ref }}
     - name: Build
       run: |
         cmake -B build -DSLOTHDB_BUILD_SHELL=ON
@@ -23,6 +33,15 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.tag || github.ref }}
+    - name: Derive version from tag
+      id: ver
+      run: |
+        TAG="${{ github.event.inputs.tag || github.ref_name }}"
+        VERSION="${TAG#v}"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "Building version: $VERSION"
     - name: Build
       run: |
         cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
@@ -30,23 +49,25 @@ jobs:
         strip build/src/slothdb
     - name: Build .deb package
       run: |
+        VERSION="${{ steps.ver.outputs.version }}"
         mkdir -p pkg/DEBIAN pkg/usr/local/bin pkg/usr/share/doc/slothdb
         cp build/src/slothdb pkg/usr/local/bin/
         cp README.md LICENSE pkg/usr/share/doc/slothdb/
-        cat > pkg/DEBIAN/control << 'EOF'
+        cat > pkg/DEBIAN/control << EOF
         Package: slothdb
-        Version: 0.1.4
+        Version: ${VERSION}
         Section: database
         Priority: optional
         Architecture: amd64
         Depends: libc6 (>= 2.31)
         Maintainer: Sourav Roy <souravroy7864@gmail.com>
-        Description: Embedded analytical database engine
-         Zero dependencies. GPU accelerated. 130+ SQL features.
+        Description: Fast in-process SQL OLAP database
+         Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel
+         directly from SQL. Zero dependencies. MIT licensed.
         Homepage: https://github.com/SouravRoy-ETL/slothdb
         EOF
         sed -i 's/^        //' pkg/DEBIAN/control
-        dpkg-deb --build pkg slothdb_0.1.4_amd64.deb
+        dpkg-deb --build pkg "slothdb_${VERSION}_amd64.deb"
     - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
@@ -56,12 +77,14 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: slothdb-deb
-        path: slothdb_0.1.4_amd64.deb
+        path: slothdb_${{ steps.ver.outputs.version }}_amd64.deb
 
   build-macos:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.tag || github.ref }}
     - name: Build
       run: |
         cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
@@ -79,12 +102,28 @@ jobs:
       contents: write
     steps:
     - uses: actions/download-artifact@v4
-    - name: Create Release
+    - name: Derive version
+      id: ver
+      run: |
+        TAG="${{ github.event.inputs.tag || github.ref_name }}"
+        VERSION="${TAG#v}"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+    # Rename platform binaries so each asset has a distinct, platform-
+    # tagged filename when attached to the GitHub Release. Without this
+    # the three `slothdb` files collide on upload.
+    - name: Rename assets
+      run: |
+        mv slothdb-linux-x64/slothdb slothdb-linux-x64/slothdb-linux-x64
+        mv slothdb-macos/slothdb     slothdb-macos/slothdb-macos
+    - name: Attach to release
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: ${{ steps.ver.outputs.tag }}
         files: |
           slothdb-windows-x64/slothdb.exe
-          slothdb-linux-x64/slothdb
-          slothdb-macos/slothdb
-          slothdb-deb/slothdb_0.1.4_amd64.deb
-        generate_release_notes: true
+          slothdb-linux-x64/slothdb-linux-x64
+          slothdb-macos/slothdb-macos
+          slothdb-deb/slothdb_${{ steps.ver.outputs.version }}_amd64.deb
+        # Don't overwrite the hand-written release notes — only attach files.
+        fail_on_unmatched_files: true
