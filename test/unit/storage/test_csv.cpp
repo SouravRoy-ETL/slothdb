@@ -148,3 +148,77 @@ TEST_CASE("COPY round-trip") {
 
     cleanup();
 }
+
+TEST_CASE("File-literal JOIN across two CSVs") {
+    // Regression: 'FROM a.csv JOIN b.csv' fails with
+    // "Binder Error: Table '__FILE__' not found" because the
+    // preprocessing only walked the left side of the JOIN tree.
+    // Fix walks the JOIN right-hand chain (deepest-first) and applies
+    // the same __FILE__ auto-detect / read_xxx expansion to each.
+    std::ofstream u("test_users.csv");
+    u << "id,name\n1,Alice\n2,Bob\n3,Carol\n";
+    u.close();
+    std::ofstream o("test_orders.csv");
+    o << "user_id,amount\n1,100\n1,250\n2,50\n";
+    o.close();
+
+    Database db;
+    Connection conn(db);
+
+    SUBCASE("INNER JOIN on file literals") {
+        auto r = conn.Query(
+            "SELECT u.name, o.amount FROM 'test_users.csv' u "
+            "INNER JOIN 'test_orders.csv' o ON u.id = o.user_id "
+            "ORDER BY u.name, o.amount");
+        CHECK(r.RowCount() == 3);
+    }
+
+    SUBCASE("LEFT JOIN includes unmatched rows") {
+        auto r = conn.Query(
+            "SELECT u.id FROM 'test_users.csv' u "
+            "LEFT JOIN 'test_orders.csv' o ON u.id = o.user_id "
+            "WHERE o.user_id IS NULL");
+        CHECK(r.RowCount() == 1);
+        CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 3);
+    }
+
+    SUBCASE("Repeat query does not zombie the auto-table") {
+        // Exercises both the JOIN fix AND the earlier RAII cleanup.
+        for (int i = 0; i < 3; i++) {
+            auto r = conn.Query(
+                "SELECT COUNT(*) FROM 'test_users.csv' u "
+                "INNER JOIN 'test_orders.csv' o ON u.id = o.user_id");
+            CHECK(r.RowCount() == 1);
+        }
+    }
+
+    std::remove("test_users.csv");
+    std::remove("test_orders.csv");
+}
+
+TEST_CASE("COPY with file-literal source (CSV)") {
+    // Regression: 'COPY (SELECT ... FROM a.csv ...) TO out.csv' failed
+    // because COPY's preprocessing only knew about read_csv() form; bare
+    // file literals stayed as __FILE__ and crashed the binder.
+    std::ofstream in("test_src.csv");
+    in << "id,val\n1,a\n2,b\n3,c\n";
+    in.close();
+
+    Database db;
+    Connection conn(db);
+    conn.Query(
+        "COPY (SELECT id, val FROM 'test_src.csv' WHERE id > 1) "
+        "TO 'test_copy_out.csv'");
+
+    // Confirm the file got written and has the expected content.
+    std::ifstream out("test_copy_out.csv");
+    REQUIRE(out.is_open());
+    std::string line;
+    int line_count = 0;
+    while (std::getline(out, line)) line_count++;
+    out.close();
+    CHECK(line_count >= 2);  // header + 2 data rows
+
+    std::remove("test_src.csv");
+    std::remove("test_copy_out.csv");
+}

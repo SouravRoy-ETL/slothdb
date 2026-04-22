@@ -2,6 +2,49 @@
 
 All notable changes to SlothDB are documented here.
 
+## 0.1.5 — WASM playground, npm package, engine fixes
+
+Browser-runnable build plus a wave of binder/planner fixes shaken out by the playground and community feedback. **363 tests / 131 408 assertions** green on Windows, Linux, macOS.
+
+### New distribution surfaces
+
+- **WebAssembly build** — full engine compiles to a 1.3 MB `slothdb.wasm` + 97 KB JS glue via Emscripten. Live playground at **https://slothdb.org/playground** with drag-drop CSV / Parquet / JSON / Arrow / SQLite / Excel upload, CodeMirror SQL editor, sortable result grid, and CSV export.
+- **npm package** — `npm install @slothdb/wasm` ships the same WASM build with a clean JS wrapper and TypeScript types. Published at https://www.npmjs.com/package/@slothdb/wasm.
+- **Technical blog post** — `/blog/compiling-a-database-to-wasm.html` walks through the threading / exceptions / HTTP / CodeMirror bundling gotchas.
+
+### Parser: non-reserved keywords as identifiers (DuckDB parity)
+
+`MONTH`, `DAY`, `YEAR`, `HOUR`, `ROWS`, `COUNT`, `SUM`, all type names, all constraint keywords, MERGE/PIVOT/transaction verbs — any keyword that isn't a clause-starter or operator is now legal as a column alias, table alias, or column name. Previously `SELECT COUNT(*) AS rows FROM t` threw `Expected identifier after AS`. Now it works. Regression tests cover negative cases (AS where / AS join still throw) so the reserved set stays tight.
+
+### Binder: `SELECT * ... ORDER BY <named_column>`
+
+The ORDER-BY alias-resolution fast-path re-bound `select_list[i]` when the sort column matched a result name. With `SELECT *`, every expanded name mapped back to `select_list[0]` which was an unbound STAR expression — re-binding it as a scalar threw `Internal Error: Unhandled expression type in binder`. Fixed by skipping the alias path for star entries and falling through to normal column-name resolution.
+
+### Connection: UNION right side + JOIN right side preprocessing
+
+The file-literal preprocessing (view expansion, `read_csv` / `read_parquet` / `read_json` / `read_arrow` / `read_avro` / `read_xlsx` / `sqlite_scan` / `__FILE__` auto-detect) only walked the left-hand root of the FROM clause. Two fixes:
+
+1. **UNION / INTERSECT / EXCEPT**: wrapped preprocessing in a loop that walks the `set_right` chain. Without it, `SELECT ... FROM 'a.csv' UNION ALL SELECT ... FROM 'b.parquet'` failed with `Table '__FILE__' not found`.
+2. **JOIN chain**: same preprocessing now walks `from_table->right` recursively (deepest-first detach / swap / reattach). Without it, `FROM 'a.csv' JOIN 'b.csv' ON ...` failed identically.
+
+### Connection: RAII cleanup for temp tables
+
+A failing query used to leave zombie `__auto_file__` / `__read_parquet__` / CTE temp tables in the catalog because the cleanup block only ran on the success path. Replaced with a stack-allocated `TableCleanupGuard` declared at the top of each statement iteration — drops on scope exit, whether the query succeeded or threw. Prevents the `Table '__auto_file__' already exists` error that bit users on the second query after an error.
+
+Also: per-iteration unique suffix on every auto-generated temp-table name (`__auto_file_N__`, `__read_parquet_N__`, etc.) so the two sides of a UNION with file literals don't overwrite each other's catalog entry.
+
+### Connection: COPY with bare file-literal source (CSV)
+
+`COPY (SELECT ... FROM 'data.csv' WHERE ...) TO 'out.csv'` now works — previously COPY's own preprocessing only recognised `read_csv()` form, so bare `__FILE__` references inside the subquery crashed the binder. Parquet / JSON COPY-from remains a known follow-up.
+
+### Platform
+
+- CMake project version bumped to 0.1.5. Engine `slothdb_version()` returns `"0.1.5"`.
+- Python wheel targets 0.1.6 for the next PyPI release.
+- npm package targets 0.1.7 for the next `@slothdb/wasm` publish (0.1.6 shipped the ORDER-BY fix; 0.1.7 adds JOIN + COPY + pre-reserved-keyword fixes).
+
+---
+
 ## 0.1.4 — Remote file reading and extended date functions
 
 Two feature additions that close visible DuckDB-parity gaps. 359 tests / 131 382 assertions green on Windows, Linux, macOS.

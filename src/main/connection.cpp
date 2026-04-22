@@ -354,7 +354,30 @@ QueryResult Connection::Query(const std::string &sql) {
                     e.SetStorage(st);
                     e.SetFilePath(files[0]);
                 };
+                // Rewrite bare file-literal FROM clauses (__FILE__ from the
+                // parser) into read_xxx() form so the downstream expand_csv
+                // can pick them up. Currently supports CSV / TSV sources —
+                // Parquet / JSON COPY-from will come with the full
+                // preprocessing refactor.
+                auto rewrite_file_ref = [&](TableRef &tref) {
+                    if (!tref.is_table_function) return;
+                    if (tref.table_name != "__FILE__") return;
+                    if (tref.function_args.empty()) return;
+                    if (tref.function_args[0]->GetExpressionType() != ExpressionType::CONSTANT) return;
+                    auto path = static_cast<ConstantExpression &>(*tref.function_args[0]).value;
+                    auto dot = path.find_last_of('.');
+                    if (dot == std::string::npos) return;
+                    std::string ext = path.substr(dot + 1);
+                    for (auto &c : ext) c = static_cast<char>(std::tolower(c));
+                    if (ext == "csv" || ext == "tsv") {
+                        tref.table_name = "READ_CSV";
+                    }
+                    // Leave Parquet / JSON / etc. as __FILE__ so the binder
+                    // surfaces a clear error instead of a silent mis-read.
+                };
                 if (copy.source_query->from_table) {
+                    rewrite_file_ref(*copy.source_query->from_table);
+                    if (copy.source_query->from_table->right) rewrite_file_ref(*copy.source_query->from_table->right);
                     expand_csv(*copy.source_query->from_table);
                     if (copy.source_query->from_table->right) expand_csv(*copy.source_query->from_table->right);
                 }
@@ -628,6 +651,14 @@ QueryResult Connection::Query(const std::string &sql) {
                  cur_sel = cur_sel->set_right.get()) {
             auto &sel = *cur_sel;
             ++preproc_uid;
+
+            // Wrap the whole preprocessing below in a zero-arg lambda so
+            // we can re-run it for each TableRef in a JOIN chain. The
+            // lambda reads/writes `sel.from_table`; after the main pass
+            // we swap each JOIN right-hand-side into that slot in turn.
+            // Without this, `FROM 'a.csv' JOIN 'b.csv' ON ...` leaves
+            // the right side as __FILE__ and the binder errors out.
+            auto run_preprocess = [&]() {
 
             // Expand virtual views in the FROM clause.
             auto expand_view = [&](TableRef &ref) {
@@ -1031,6 +1062,29 @@ QueryResult Connection::Query(const std::string &sql) {
                         temp_tables.push_back(tbl_name);
                     }
                 }
+            }
+            }; // end run_preprocess lambda
+
+            // Pass 1: process the original sel.from_table (the JOIN root).
+            run_preprocess();
+
+            // Pass 2+: walk the JOIN right-hand chain. For each parent
+            // whose `->right` is a file-literal / read_xxx / __FILE__,
+            // detach it, swap into sel.from_table, rerun the same
+            // preprocessing, swap back. We process deepest-first so
+            // each detach-swap-reattach cycle is independent.
+            std::vector<TableRef*> join_parents;
+            for (auto *node = sel.from_table.get();
+                 node && node->right; node = node->right.get()) {
+                join_parents.push_back(node);
+            }
+            for (auto it = join_parents.rbegin(); it != join_parents.rend(); ++it) {
+                TableRef *parent = *it;
+                auto rhs = std::move(parent->right);    // detach
+                std::swap(sel.from_table, rhs);         // RHS is now the active from_table
+                run_preprocess();
+                std::swap(sel.from_table, rhs);         // put root back
+                parent->right = std::move(rhs);         // reattach mutated RHS
             }
             } // end for-loop over set_right chain
         }
