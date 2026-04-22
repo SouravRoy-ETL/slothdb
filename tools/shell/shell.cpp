@@ -290,13 +290,38 @@ int main(int argc, char *argv[]) {
             if (cmd == ".clear") { printf("\033[2J\033[H"); fflush(stdout); continue; }
             if (cmd == ".open") {
                 if (arg.empty()) { printf("Usage: .open <path>\n"); continue; }
+                // Open the new database FIRST; swap in only on success.
+                // Previously this closed the old db before attempting the
+                // new open, so a failure left the shell with invalid
+                // handles and `return 1`'d the whole process — exiting
+                // the REPL instead of returning to the prompt.
+                slothdb_database   *new_db   = nullptr;
+                slothdb_connection *new_conn = nullptr;
+                if (slothdb_open(arg.c_str(), &new_db) != SLOTHDB_OK ||
+                    slothdb_connect(new_db, &new_conn) != SLOTHDB_OK) {
+                    fprintf(stderr, "Failed to open: %s\n", arg.c_str());
+                    // Hint if the user handed us what looks like a CSV/Parquet.
+                    auto ends_with = [&](const char *suf) {
+                        size_t n = strlen(suf);
+                        return arg.size() >= n &&
+                               arg.compare(arg.size() - n, n, suf) == 0;
+                    };
+                    if (ends_with(".csv") || ends_with(".tsv") ||
+                        ends_with(".parquet") || ends_with(".json") ||
+                        ends_with(".arrow") || ends_with(".xlsx")) {
+                        fprintf(stderr,
+                            "Hint: .open is for persistent .slothdb files. "
+                            "To query a data file, use:\n"
+                            "  SELECT * FROM '%s';\n", arg.c_str());
+                    }
+                    if (new_db) slothdb_close(new_db);
+                    continue;  // back to the prompt, old db still active
+                }
+                // Success — dispose of the old handles and swap.
                 slothdb_disconnect(conn);
                 slothdb_close(db);
-                if (slothdb_open(arg.c_str(), &db) != SLOTHDB_OK ||
-                    slothdb_connect(db, &conn) != SLOTHDB_OK) {
-                    fprintf(stderr, "Failed to open: %s\n", arg.c_str());
-                    return 1;
-                }
+                db = new_db;
+                conn = new_conn;
                 printf("Connected to: %s\n", arg.c_str());
                 continue;
             }
