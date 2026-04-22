@@ -350,23 +350,53 @@ section.hero .hero-chips .chip {
   overflow: visible;
 }
 .eco-connectors path {
-  stroke-width: 1.2; fill: none;
+  stroke-width: 1.4; fill: none;
   stroke-linecap: round; stroke-linejoin: round;
 }
-.eco-connectors .base { stroke: var(--border-card); opacity: 0.6; }
-.eco-connectors .pulse {
-  stroke: var(--accent);
-  opacity: 0;
-  filter: drop-shadow(0 0 5px var(--accent));
-  animation: eco-pulse 10s ease-in-out infinite;
+.eco-connectors .base {
+  stroke: var(--border-card);
+  opacity: 0.55;
+  stroke-dasharray: 3 5;
 }
-.eco-connectors .pulse.p1 { animation-delay: 0s; }
-.eco-connectors .pulse.p2 { animation-delay: 2.5s; }
-.eco-connectors .pulse.p3 { animation-delay: 5s; }
-.eco-connectors .pulse.p4 { animation-delay: 7.5s; }
-@keyframes eco-pulse {
-  0%, 20%, 100% { opacity: 0; }
-  8%, 14%       { opacity: 0.85; }
+.eco-connectors .flow-layer { pointer-events: none; }
+
+/* SVG gradient stops — CSS (not attributes) so var() works. */
+#eco-flow-grad .stop-start { stop-color: var(--accent-dim); stop-opacity: 0.3; }
+#eco-flow-grad .stop-mid   { stop-color: var(--accent);     stop-opacity: 1;   }
+#eco-flow-grad .stop-end   { stop-color: var(--accent-bright); stop-opacity: 0.4; }
+#eco-anchor-glow .halo-inner { stop-color: var(--accent); stop-opacity: 0.25; }
+#eco-anchor-glow .halo-outer { stop-color: var(--accent); stop-opacity: 0;    }
+.eco-connectors .flow {
+  stroke: url(#eco-flow-grad);
+  stroke-width: 2;
+  stroke-dasharray: 36 400;
+  stroke-dashoffset: 0;
+  filter: drop-shadow(0 0 4px var(--accent));
+  opacity: 0.9;
+  animation: eco-travel 4.2s linear infinite;
+}
+.eco-connectors .flow.f1 { animation-delay: 0s;    }
+.eco-connectors .flow.f2 { animation-delay: 0.8s;  }
+.eco-connectors .flow.f3 { animation-delay: 1.6s;  }
+.eco-connectors .flow.f4 { animation-delay: 2.4s;  }
+.eco-connectors .flow.f5 { animation-delay: 3.2s;  }
+@keyframes eco-travel {
+  from { stroke-dashoffset: 0;    }
+  to   { stroke-dashoffset: -436; }
+}
+.eco-connectors .anchor-halo {
+  animation: eco-halo 3.2s ease-in-out infinite;
+  transform-origin: 500px 540px;
+}
+@keyframes eco-halo {
+  0%, 100% { opacity: 0.35; transform: scale(0.92); }
+  50%      { opacity: 0.85; transform: scale(1.04); }
+}
+
+/* Respect users who opt out of motion. */
+@media (prefers-reduced-motion: reduce) {
+  .eco-connectors .flow        { animation: none; opacity: 0.7; }
+  .eco-connectors .anchor-halo { animation: none; opacity: 0.45; }
 }
 
 .eco-grid {
@@ -404,14 +434,34 @@ section.hero .hero-chips .chip {
 .eco-tile:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
 
 .eco-center-anchor {
+  position: relative;
   background: var(--bg-card);
   border: 1.5px solid var(--accent);
   border-radius: 14px; padding: 18px;
   display: flex; align-items: center; justify-content: center; gap: 12px;
   color: var(--text); font-size: 18px; font-weight: 700;
-  box-shadow: 0 0 32px -6px var(--accent-soft);
+  box-shadow: 0 0 40px -4px var(--accent-soft),
+              0 0 0 1px var(--accent-soft) inset;
 }
 .eco-center-anchor img { height: 26px; width: 26px; }
+.eco-center-anchor::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 18px;
+  border: 1px solid var(--accent);
+  opacity: 0;
+  animation: eco-anchor-ring 3.2s ease-out infinite;
+  pointer-events: none;
+}
+@keyframes eco-anchor-ring {
+  0%   { opacity: 0.6; inset: 0;   }
+  80%  { opacity: 0;   inset: -14px;}
+  100% { opacity: 0;   inset: -14px;}
+}
+@media (prefers-reduced-motion: reduce) {
+  .eco-center-anchor::after { animation: none; opacity: 0; }
+}
 
 @media (max-width: 900px) {
   .eco-grid { grid-template-columns: 1fr; }

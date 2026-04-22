@@ -2,16 +2,15 @@
 
 <img src="assets/hero.svg" alt="SlothDB" width="100%">
 
-<h3>SlothDB is a fast, in-process SQL database for your local data files.</h3>
+<h3>SlothDB is a fast in-process SQL OLAP database.</h3>
 
-<p>A drop-in alternative to DuckDB with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite — <b>1.1×–8.6× faster</b> on every benchmark query.</p>
+<p>Portable C++20 analytical engine. Runs in Python, Node, the browser, or as a single binary. Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel natively — <b>1.1×–8.6× faster than DuckDB</b> on every benchmarked format.</p>
 
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
 [![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm&label=npm)](https://www.npmjs.com/package/@slothdb/wasm)
 [![PyPI downloads](https://static.pepy.tech/badge/slothdb)](https://pepy.tech/project/slothdb)
 [![PyPI/month](https://static.pepy.tech/badge/slothdb/month)](https://pepy.tech/project/slothdb)
 [![npm downloads](https://img.shields.io/npm/dt/@slothdb/wasm?label=npm%20downloads&color=CB3837)](https://www.npmjs.com/package/@slothdb/wasm)
-[![npm/month](https://img.shields.io/npm/dm/@slothdb/wasm?label=npm%2Fmonth&color=CB3837)](https://www.npmjs.com/package/@slothdb/wasm)
 [![CI](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg)](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social)](https://github.com/SouravRoy-ETL/slothdb)
