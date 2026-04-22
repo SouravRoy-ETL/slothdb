@@ -360,19 +360,23 @@ section.hero .hero-chips .chip {
 }
 .eco-connectors .flow-layer { pointer-events: none; }
 
-/* SVG gradient stops — CSS (not attributes) so var() works. */
-#eco-flow-grad .stop-start { stop-color: var(--accent-dim); stop-opacity: 0.3; }
-#eco-flow-grad .stop-mid   { stop-color: var(--accent);     stop-opacity: 1;   }
-#eco-flow-grad .stop-end   { stop-color: var(--accent-bright); stop-opacity: 0.4; }
+/* SVG gradient stops — styled via CSS so CSS var() resolves. Still used
+   by the radial anchor-glow; the flow paths no longer use a gradient. */
 #eco-anchor-glow .halo-inner { stop-color: var(--accent); stop-opacity: 0.25; }
 #eco-anchor-glow .halo-outer { stop-color: var(--accent); stop-opacity: 0;    }
 .eco-connectors .flow {
-  stroke: url(#eco-flow-grad);
-  stroke-width: 2;
+  /* Flat accent stroke. Dropped the SVG <linearGradient> with CSS-styled
+     stops because cross-browser behavior on `stop-color` via CSS is
+     inconsistent (Safari and some cached Chromium builds render the
+     stroke as transparent when the gradient reference can't find its
+     styled stops, which makes the animation look "gone"). The traveling
+     dash reads fine with a single accent color. */
+  stroke: var(--accent);
+  stroke-width: 2.2;
   stroke-dasharray: 36 400;
   stroke-dashoffset: 0;
   filter: drop-shadow(0 0 4px var(--accent));
-  opacity: 0.9;
+  opacity: 0.95;
   animation: eco-travel 4.2s linear infinite;
 }
 .eco-connectors .flow.f1 { animation-delay: 0s;    }
