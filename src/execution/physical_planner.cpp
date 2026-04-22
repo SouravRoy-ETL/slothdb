@@ -5073,13 +5073,21 @@ private:
             condition_->GetExpressionType() == BoundExpressionType::COMPARISON) {
             auto &cmp = static_cast<BoundComparison &>(*condition_);
             idx_t left_key = 0, right_key = 0;
-            if (cmp.left->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                left_key = static_cast<BoundColumnRef &>(*cmp.left).column_index;
-            }
-            if (cmp.right->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                idx_t combined = static_cast<BoundColumnRef &>(*cmp.right).column_index;
-                right_key = combined >= left_col_count_ ? combined - left_col_count_ : combined;
-            }
+            // Classify each side of the equi-join as LEFT- or RIGHT-table
+            // relative based on its combined column index. A user-written
+            // `b.k = s.k` may put the right-table column first (cmp.left),
+            // so we can't assume cmp.left == LEFT table.
+            auto classify = [&](BoundExpression *e, idx_t &local) -> int {
+                if (!e || e->GetExpressionType() != BoundExpressionType::COLUMN_REF) return -1;
+                idx_t combined = static_cast<BoundColumnRef &>(*e).column_index;
+                if (combined >= left_col_count_) { local = combined - left_col_count_; return 1; }
+                local = combined; return 0;
+            };
+            idx_t la = 0, ra = 0;
+            int ls = classify(cmp.left.get(), la);
+            int rs = classify(cmp.right.get(), ra);
+            if (ls == 0 && rs == 1)      { left_key = la; right_key = ra; }
+            else if (ls == 1 && rs == 0) { left_key = ra; right_key = la; }
 
             // Left child: keep the join column + any left-side output columns needed.
             if (!children.empty() && children[0]) {
@@ -5222,21 +5230,24 @@ private:
             }
         }
 
-        // Extract join column indices from condition.
+        // Extract join column indices from condition. See the note in the
+        // projection-pushdown block above: the predicate may be written with
+        // the right table's column first (e.g. `ON b.k = s.k`), so each side
+        // of the comparison is classified by its combined column index.
         idx_t left_join_col = 0, right_join_col = 0;
         if (condition_ && condition_->GetExpressionType() == BoundExpressionType::COMPARISON) {
             auto &cmp = static_cast<BoundComparison &>(*condition_);
-            if (cmp.left->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                left_join_col = static_cast<BoundColumnRef &>(*cmp.left).column_index;
-            }
-            if (cmp.right->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                idx_t combined = static_cast<BoundColumnRef &>(*cmp.right).column_index;
-                if (combined >= left_col_count_) {
-                    right_join_col = combined - left_col_count_;
-                } else {
-                    right_join_col = combined;
-                }
-            }
+            auto classify = [&](BoundExpression *e, idx_t &local) -> int {
+                if (!e || e->GetExpressionType() != BoundExpressionType::COLUMN_REF) return -1;
+                idx_t combined = static_cast<BoundColumnRef &>(*e).column_index;
+                if (combined >= left_col_count_) { local = combined - left_col_count_; return 1; }
+                local = combined; return 0;
+            };
+            idx_t la = 0, ra = 0;
+            int ls = classify(cmp.left.get(), la);
+            int rs = classify(cmp.right.get(), ra);
+            if (ls == 0 && rs == 1)      { left_join_col = la; right_join_col = ra; }
+            else if (ls == 1 && rs == 0) { left_join_col = ra; right_join_col = la; }
         }
 
         // Store state for streaming probe.
