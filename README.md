@@ -27,6 +27,14 @@
 
 ## What's new in 0.1.6
 
+- **`CREATE LIVE VIEW`** — first piece of the live-views moat. Views over files auto-refresh on mtime change, with an **incremental append path** for growing CSV logs that parses only the new tail instead of the full file. DuckDB is snapshot-only and structurally can't match this.
+  ```sql
+  CREATE LIVE VIEW app AS SELECT * FROM 'app.log';
+  SELECT level, COUNT(*) FROM app GROUP BY level;   -- parses file once
+  -- append 50 rows to app.log externally...
+  SELECT level, COUNT(*) FROM app GROUP BY level;   -- parses only the 50 new rows
+  ```
+- **Edge build (`-DSLOTHDB_EDGE=ON`)** — CSV / JSON / Parquet only. Strips Excel / Avro / Arrow IPC / SQLite so the WASM bundle fits under Cloudflare Workers' 1 MB cap. See [docs/EDGE_BUILD.md](docs/EDGE_BUILD.md).
 - **JOIN hot path now ~2.5× faster than DuckDB** on big × small integer-key joins (288 ms → 85 ms; DuckDB 212 ms). Typed int64 hash path, parallel CSV pre-parse, file-size-based build-side selection, build-side projection pushdown, SIMD unquoted-field scan, and COUNT(*)-over-JOIN fused into the aggregate. See [CHANGELOG.md](CHANGELOG.md) for the commit-by-commit breakdown.
 - **DESCRIBE** — `DESCRIBE <query>` and `DESCRIBE <table>` return the result schema as rows, DuckDB-format byte-for-byte.
 - **PRAGMA** — `PRAGMA table_info('t')` and `PRAGMA database_list`, so BI tools (DBT, Metabase, SQLAlchemy, DBeaver) can introspect through their JDBC/ODBC drivers.
@@ -34,7 +42,7 @@
 - **ORDER BY on narrowed projections** — fixed a crash when `SELECT <col> ... ORDER BY <col>` projected away source columns whose indices the sort still referenced.
 - **JOIN reverse-order** — `FROM a JOIN b ON b.k = a.k` (right-table column first) no longer returns 0 rows.
 
-373 tests, 131 446 assertions, green on Windows / Linux / macOS.
+381 tests, 131 464 assertions, green on Windows / Linux / macOS.
 
 ---
 
@@ -122,7 +130,7 @@ SQLite is row-oriented and tuned for transactional workloads. Aggregate queries 
 
 - **No distributed query execution.** One-node embedded engine. Use ClickHouse if you outgrow one machine.
 - **No MVCC / multi-writer transactions.** Single-writer, crash-safe checkpoint. OLTP workloads are a poor fit.
-- **Younger codebase.** 373 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
+- **Younger codebase.** 381 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
 
 ---
 
@@ -323,16 +331,18 @@ slothdb_close(db);
 | Category | Details |
 |----------|---------|
 | **SQL** | 130+ features — JOINs, CTEs (recursive), window functions, QUALIFY, MERGE, subqueries, set operations |
+| **Live file views** | `CREATE LIVE VIEW` caches the result and auto-refreshes on file change. Incremental CSV append path parses only new bytes on log-tail workloads |
 | **Metadata** | `DESCRIBE <query>`, `DESCRIBE <table>`, `PRAGMA table_info('t')`, `PRAGMA database_list` — BI-tool introspection out of the box |
 | **Type constraints** | `VARCHAR(n)` length enforced on INSERT (stricter than DuckDB — no silent truncation) |
 | **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in with auto-detection, glob patterns, virtual views |
 | **Remote files** | `https://` and public-bucket `s3://` URLs work directly in any SQL path |
 | **Functions** | 70+ functions — string, math, date/time (including `DATE_TRUNC` with WEEK/QUARTER/DECADE + `MONTHNAME` / `DAYNAME` / `LAST_DAY` / `MAKE_DATE`), aggregate, regex, trigonometric |
 | **Performance** | Vectorized columnar engine (2,048 values/batch), morsel-driven parallelism, fused scan+aggregate, typed int64 JOIN hash path, parallel CSV pre-parse, zero-copy VARCHAR |
+| **Build flavours** | Default full build (~8 MB binary) or `-DSLOTHDB_EDGE=ON` for sub-MB WASM bundles that fit under Cloudflare Workers' 1 MB cap |
 | **Storage** | Single-file `.slothdb` persistence, RLE/dictionary/bitpacking compression, zone maps |
 | **Optimizer** | Constant folding, filter pushdown, TopN optimization |
 | **APIs** | CLI shell, Python (with pandas), C/C++ (stable ABI) |
-| **Reliability** | 373 tests, 131,446 assertions, bounds-checked parsing, DoS limits |
+| **Reliability** | 381 tests, 131,464 assertions, bounds-checked parsing, DoS limits |
 
 ## Documentation
 
@@ -364,7 +374,7 @@ build\src\Release\slothdb.exe  # Windows
 ```bash
 cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=ON
 cmake --build build --config Release
-ctest --test-dir build -C Release    # 373 tests
+ctest --test-dir build -C Release    # 381 tests
 ```
 
 | Build Option | Description |
@@ -372,6 +382,7 @@ ctest --test-dir build -C Release    # 373 tests
 | `-DSLOTHDB_BUILD_SHELL=ON` | Build CLI shell |
 | `-DSLOTHDB_BUILD_TESTS=ON` | Build test suite |
 | `-DSLOTHDB_SANITIZERS=ON` | Enable ASan/UBSan |
+| `-DSLOTHDB_EDGE=ON` | Edge / WASM minimal build — strips Excel / Avro / Arrow IPC / SQLite readers. Target: sub-1 MB WASM for Cloudflare Workers. See [docs/EDGE_BUILD.md](docs/EDGE_BUILD.md) |
 
 ## Contributing
 

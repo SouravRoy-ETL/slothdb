@@ -65,6 +65,18 @@ cmake --build build --config Release
 build\src\Release\slothdb.exe  # Windows
 ```
 
+**Edge build** (sub-MB WASM for Cloudflare Workers / Deno Deploy / Vercel Edge — strips Excel / Avro / Arrow IPC / SQLite readers, keeps CSV / JSON / Parquet):
+
+```bash
+cmake -B build-edge -DSLOTHDB_EDGE=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-edge --config Release
+# Or through Emscripten:
+emcmake cmake -B build-wasm-edge -DSLOTHDB_EDGE=ON
+cmake --build build-wasm-edge
+```
+
+See [EDGE_BUILD.md](EDGE_BUILD.md) for audience, included/excluded readers, and the runtime distinction (no emscripten FS — reads via `fetch()` + `ArrayBuffer`).
+
 ---
 
 ## 2. Query Your Files
@@ -411,6 +423,35 @@ DROP VIEW IF EXISTS sales;
 ```
 
 **Why this matters:** If the underlying file changes (new rows added, updated data), the view automatically reflects it on the next query. No need to re-import or refresh.
+
+### Live Views (`CREATE LIVE VIEW`)
+
+A plain `CREATE VIEW` re-executes the underlying query on every SELECT. For large files that change rarely, that's wasteful — every SELECT re-parses megabytes. `CREATE LIVE VIEW` caches the result and only refreshes when the source file actually changes.
+
+```sql
+CREATE LIVE VIEW app AS SELECT * FROM 'app.log';
+
+SELECT level, COUNT(*) FROM app GROUP BY level;
+-- first call: file parsed, result cached
+
+SELECT level, COUNT(*) FROM app GROUP BY level;
+-- file unchanged: cache hit, no re-parse
+
+-- a logger appends 100 rows to app.log externally...
+
+SELECT level, COUNT(*) FROM app GROUP BY level;
+-- file grew: SlothDB parses only the 100 new rows and appends
+-- them to the cache. The 10M rows already cached aren't touched.
+```
+
+The incremental-append path triggers when:
+- the view is a pass-through (`SELECT * FROM 'file.csv'` — no `WHERE`, `GROUP BY`, `ORDER BY`, `JOIN`, `DISTINCT`, `LIMIT`), and
+- the source is a `.csv` or `.tsv` file, and
+- the file only grew (first 64 bytes unchanged, size ≥ previous).
+
+Otherwise — view has `WHERE` / aggregation, or the file was rewritten / truncated — the view still refreshes correctly via full rescan. Only a single file source is supported (no JOINs, no multi-file globs) in the current release.
+
+**Why this matters:** Dashboards over a rotating log file, log-tail analytics, and "near-real-time" views over append-only CSVs all get per-SELECT cost proportional to *how much was added*, not total file size. DuckDB's execution model is snapshot-based and has no equivalent.
 
 ### SELECT — Querying Data
 

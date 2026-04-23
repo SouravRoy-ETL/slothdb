@@ -91,6 +91,8 @@
         <li><a href="#benchmarks">Benchmarks</a></li>
         <li><a href="#architecture">Architecture</a></li>
         <li><a href="#extensions">Extensions</a></li>
+        <li><a href="#live-views">Live file views</a></li>
+        <li><a href="#edge-build">Edge / WASM build</a></li>
       </ul>
     </div>
     <div class="group">
@@ -306,6 +308,28 @@ slothdb_result *result;
 <span class="fn">slothdb_register_function</span>(db, <span class="str">"my_func"</span>, my_callback);</pre>
     <p>Full extension API headers are in <code>include/slothdb/extension/extension_api.h</code>. Load at runtime with <code>LOAD 'my_ext'</code>.</p>
 
+    <h2 id="live-views">Live file views</h2>
+    <p><code>CREATE LIVE VIEW</code> caches a view's result and auto-refreshes when the source file changes. DuckDB's execution model is snapshot-based and has no equivalent — every SELECT re-reads the whole file unconditionally.</p>
+<pre class="code"><span class="kw">CREATE LIVE VIEW</span> app <span class="kw">AS SELECT</span> * <span class="kw">FROM</span> <span class="str">'app.log'</span>;
+
+<span class="cm">-- First SELECT parses the file, caches the result.</span>
+<span class="kw">SELECT</span> level, <span class="fn">COUNT</span>(*) <span class="kw">FROM</span> app <span class="kw">GROUP BY</span> level;
+
+<span class="cm">-- Later, once more rows have been appended to app.log externally:</span>
+<span class="kw">SELECT</span> level, <span class="fn">COUNT</span>(*) <span class="kw">FROM</span> app <span class="kw">GROUP BY</span> level;</pre>
+    <p>For the common log-tail shape — CSV that only grows, never rewrites — SlothDB parses <em>only the newly-appended bytes</em> and appends them to the cache. Append cost scales with how much was appended, not the total file size.</p>
+    <p>Eligibility for the incremental path: the view is a pass-through (<code>SELECT * FROM 'file.csv'</code> with no <code>WHERE</code> / <code>GROUP BY</code> / <code>ORDER BY</code> / <code>JOIN</code> / <code>DISTINCT</code> / <code>LIMIT</code>) over a <code>.csv</code> or <code>.tsv</code> source. Other shapes still refresh correctly via full rescan on change. Rewriting the file in place (different header bytes) forces a full rescan even if the size increased.</p>
+
+    <h2 id="edge-build">Edge / WASM minimal build</h2>
+    <p>The default WASM bundle is ~1.3 MB. For Cloudflare Workers (hard 1 MB script cap), Deno Deploy, and Vercel Edge, build with <code>-DSLOTHDB_EDGE=ON</code> — this strips Excel / Avro / Arrow IPC / SQLite readers to get the bundle under the cap.</p>
+<pre class="code">cmake -B build -DSLOTHDB_EDGE=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+
+<span class="cm"># Or through Emscripten:</span>
+emcmake cmake -B build-wasm-edge -DSLOTHDB_EDGE=ON
+cmake --build build-wasm-edge</pre>
+    <p>CSV, JSON, and Parquet are still built in. Calling an excluded reader (<code>read_xlsx</code>, <code>read_avro</code>, <code>read_arrow</code>, <code>sqlite_scan</code>) throws a clear error pointing at the full build. See <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/EDGE_BUILD.md">EDGE_BUILD.md</a> for audience, runtime distinctions, and expected sizes.</p>
+
     <h2 id="limitations">Limitations</h2>
     <p>SlothDB is v0.1.6. What it <b>does not do</b> (yet):</p>
     <ul>
@@ -336,7 +360,7 @@ slothdb_result *result;
     <p>Yes. SlothDB builds on x86_64 and arm64 on Linux, macOS, and Windows.</p>
 
     <h3>Is it production-ready?</h3>
-    <p>It's v0.1.6 and about seven months old. 373 tests pass on every CI run, but you'll find edge cases. Treat it as beta. Don't put it in front of paying customers yet without a load test.</p>
+    <p>It's v0.1.6 and about seven months old. 381 tests pass on every CI run, but you'll find edge cases. Treat it as beta. Don't put it in front of paying customers yet without a load test.</p>
 
     <h3>How can I help?</h3>
     <p>File issues, open PRs, share benchmark results, or just tell people about it. See the <a href="community.html">community page</a>.</p>

@@ -65,9 +65,9 @@ These I'm less sure about. Each is a week-ish of prototyping before I know if it
 
 **Stable-ABI extension registry.** SlothDB has a stable C ABI for scalar functions — DuckDB doesn't; their extensions break on minor version bumps. If I can package five useful extensions (regex, crypto, ULID generation, HTTP UDF, DNS lookup) and make `slothdb install crypto; LOAD crypto;` work across releases, the "extensions just keep working" story is genuinely a differentiator. Most of the work is packaging, signing, and a small CDN for the binaries — the extensions themselves are 100–300 lines each.
 
-**Live-refreshing file views.** `CREATE LIVE VIEW logs AS SELECT * FROM 'app.log'` that re-reads when the file changes. `inotify` on Linux, `ReadDirectoryChangesW` on Windows, `kqueue` on macOS. MVP is just a dirty flag and a lazy re-scan on the next SELECT; append-only streaming (only read new bytes) is v2. DuckDB is snapshot-only and nobody in the embedded-OLAP space does this well.
+**Live-refreshing file views.** *Partially shipped in 0.1.6.* `CREATE LIVE VIEW logs AS SELECT * FROM 'app.log'` caches the result and refreshes on mtime change; for the log-tail shape (pass-through view over a CSV that only grows) the v2 incremental path parses only the newly-appended bytes. Next increments: JSONL append, `WHERE`-compatible incremental, background file watcher (`inotify` / `ReadDirectoryChangesW` / `kqueue`) so SELECTs don't pay a `stat()` per call.
 
-I'm not planning to start either until the small+middle list above is mostly done, but if you're a contributor who wants to take one on, reach out.
+I'm not planning to start the stable-ABI extension registry until the small+middle list above is mostly done, but if you're a contributor who wants to take it on, reach out.
 
 ---
 

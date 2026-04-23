@@ -2,9 +2,9 @@
 
 All notable changes to SlothDB are documented here.
 
-## 0.1.6 — JOIN perf overhaul, ORDER BY correctness, DuckDB-parity metadata
+## 0.1.6 — JOIN perf overhaul, ORDER BY correctness, DuckDB-parity metadata, `CREATE LIVE VIEW`, edge build
 
-The JOIN hot path goes from ~1.3× slower than DuckDB to ~2.5× faster on the big×small join benchmark, two latent ORDER BY / aggregate correctness bugs get closed, and three roadmap-driven metadata features land: DESCRIBE, PRAGMA, and VARCHAR(n) enforcement. **373 tests / 131 446 assertions** green on Windows, Linux, macOS.
+The JOIN hot path goes from ~1.3× slower than DuckDB to ~2.5× faster on the big × small join benchmark. Two latent ORDER BY / aggregate correctness bugs get closed. Three roadmap-driven metadata features land — `DESCRIBE`, `PRAGMA`, and `VARCHAR(n)` enforcement. And two moat-track features ship for the first time: a file-mtime-cached `CREATE LIVE VIEW` with incremental CSV append, and an `SLOTHDB_EDGE` build that strips to CSV / JSON / Parquet for sub-megabyte WASM bundles. **381 tests / 131 464 assertions** green on Windows, Linux, macOS.
 
 ### JOIN: from slower than DuckDB to faster
 
@@ -69,10 +69,48 @@ INSERT INTO t VALUES ('toolong'); -- Error: Value too long for column 0 (VARCHAR
 
 Bare `VARCHAR` / `TEXT` / `STRING` stay unbounded, so existing tables behave identically. `DESCRIBE` and `PRAGMA table_info` both render the declared length (e.g. `VARCHAR(3)`).
 
+### `CREATE LIVE VIEW` — cached views that refresh when the source file changes
+
+First shipped piece of the live-views moat. `CREATE LIVE VIEW app AS SELECT * FROM 'app.log'` caches the result after the first SELECT; subsequent SELECTs compare the file's mtime against the cached value and only re-execute when the file has changed. DuckDB's execution model is snapshot-based and has no equivalent — the only way to refresh a DuckDB view over a file is to re-execute it unconditionally.
+
+Implementation:
+
+- New `LIVE` keyword. Parser accepts `CREATE [OR REPLACE] [LIVE] VIEW`.
+- `TableCatalogEntry` gains `is_live_view_`, `watched_file_path_`, `cached_mtime_`, and `cache_valid_` fields.
+- `Connection::Query` extracts the single file path from the inner SELECT (`FROM 'path'`, `read_csv`, `read_parquet`, `read_json`, `read_avro`, `read_arrow`, `read_xlsx`). JOINs and multi-file globs are rejected with a clear error for the MVP.
+- `expand_view` polls the file's mtime on every SELECT, skips re-execution on cache hit, refreshes on miss.
+
+#### v2 — incremental append for growing CSV logs
+
+Shipped in the same release. For the common log-tail shape — CSV file that only grows, never rewrites — the view now parses only the new bytes instead of re-executing the full SELECT. Append cost scales with `appended_bytes / total_bytes`, not `total_bytes`.
+
+Eligibility is decided at CREATE time: the view must be a pass-through (`SELECT * FROM 'file.csv'` with no `WHERE`, `GROUP BY`, `ORDER BY`, `JOIN`, `DISTINCT`, or `LIMIT`) over a `.csv` or `.tsv` source. Anything else stays on the v1 full-rescan path. The first 64 bytes of the file are stashed at CREATE time as a sentinel — a rewrite-in-place (new header) forces full rescan even when the new size is ≥ the old.
+
+The append path uses `FastCSVReader` in borrowed-buffer mode, seeks past any partial tail line via `FindLineStart`, loops `ReadChunk` appending into the existing `DataTable`. No header re-parse, no re-materialisation of rows already in the cache.
+
+Follow-ups (deferred): JSONL append, WHERE-compatible incremental, background file watcher (inotify / `ReadDirectoryChangesW` / kqueue) to avoid the per-SELECT `stat()`.
+
+### Edge build: `SLOTHDB_EDGE` strips Excel / Avro / Arrow IPC / SQLite
+
+First step of the browser-native moat. A CMake flag that carves the engine down to CSV + JSON + Parquet + core SQL — the readers Cloudflare Workers / Deno Deploy / Vercel Edge targets don't need, and that blow up the WASM bundle past the 1 MB Worker-script cap that blocks DuckDB-wasm.
+
+What's excluded under `-DSLOTHDB_EDGE=ON`:
+
+- `excel_reader.cpp` + `miniz.c` (zip inflate)
+- `avro_reader.cpp`
+- `arrow_ipc.cpp`
+- `sqlite_scanner.cpp`
+
+Source files are dropped from the library via `list(FILTER)` in `src/CMakeLists.txt`. Every call site in `connection.cpp` and `physical_planner.cpp` is `#ifdef`-guarded — excluded readers throw `BinderException` pointing at `@slothdb/wasm` for the full build, and the auto-detect path (`SELECT * FROM 'foo.xlsx'`) emits a clear *"edge build supports CSV / JSON / Parquet only"* error at parse time.
+
+Emscripten flags tighten under EDGE: `-Oz` (size over speed), `-sMALLOC=emmalloc`, `-sFILESYSTEM=0` (read via `fetch()` + `ArrayBuffer`, not the emscripten FS), `--closure=1` for JS minification.
+
+On a native MSVC build the static library shrinks ~6% (the linker already strips most dead code). The real WASM win is larger — Emscripten's DCE is looser, and the `-Oz` + closure pass compound once the template-heavy readers are out. Actual bundle size numbers land with the first Emscripten build using this config. See `docs/EDGE_BUILD.md`.
+
 ### Platform
 
 - CMake project version bumped to 0.1.6. Engine `slothdb_version()` returns `"0.1.6"`.
-- Test suite: 363 → 373 (10 new tests covering DESCRIBE, PRAGMA, VARCHAR(n)).
+- Test suite: 363 → 381 (18 new tests covering DESCRIBE, PRAGMA, VARCHAR(n), CREATE LIVE VIEW v1 + v2).
 
 ---
 

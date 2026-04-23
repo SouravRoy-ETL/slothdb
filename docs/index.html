@@ -110,7 +110,7 @@
       <a class="btn ghost" href="playground/">Try in browser →</a>
       <a class="btn ghost" href="docs.html">Read the docs →</a>
     </div>
-    <div class="used-by">MIT licensed · 373 tests · 1.1×–8.6× faster than DuckDB on 15 benchmarks</div>
+    <div class="used-by">MIT licensed · 381 tests · 1.1×–8.6× faster than DuckDB on 15 benchmarks</div>
 
     <div class="hero-chips">
       <div class="chip-group">
@@ -174,7 +174,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </div>
       <h3>Feature-rich</h3>
-      <p>130+ SQL features: joins, CTEs, recursive queries, window functions, QUALIFY, MERGE, aggregates, set operations, <code>DESCRIBE</code>, <code>PRAGMA table_info</code>, <code>VARCHAR(n)</code> enforcement. Seven file formats built in, no extensions needed.</p>
+      <p>130+ SQL features: joins, CTEs, recursive queries, window functions, QUALIFY, MERGE, aggregates, set operations, <code>DESCRIBE</code>, <code>PRAGMA table_info</code>, <code>VARCHAR(n)</code> enforcement, <code>CREATE LIVE VIEW</code> with incremental CSV append. Seven file formats built in, no extensions needed.</p>
       <a class="card-link" href="docs.html#sql">Read more</a>
     </div>
 
@@ -201,7 +201,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </div>
       <h3>Portable</h3>
-      <p>A single ~8 MB binary. Runs on Windows, Linux, macOS, across x86_64 and arm64. Links into Python, C, C++. No runtime dependencies, no JVM, no Python required for the CLI.</p>
+      <p>A single ~8 MB binary. Runs on Windows, Linux, macOS, across x86_64 and arm64. Links into Python, C, C++. An <code>-DSLOTHDB_EDGE=ON</code> build option strips the engine to CSV / JSON / Parquet for sub-megabyte WASM bundles that fit under Cloudflare Workers' 1 MB cap.</p>
       <a class="card-link" href="#install">Read more</a>
     </div>
 

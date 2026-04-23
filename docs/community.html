@@ -100,7 +100,7 @@ ctest --test-dir build -C Release</pre>
     </div>
     <div class="card">
       <h3>Testing</h3>
-      <p>373 tests, 131 000+ assertions via doctest. Every new feature needs a test. Benchmarks live in <code>real-life-testing/</code> (run before and after perf changes).</p>
+      <p>381 tests, 131 000+ assertions via doctest. Every new feature needs a test. Benchmarks live in <code>real-life-testing/</code> (run before and after perf changes).</p>
     </div>
   </div>
 </section>
@@ -114,7 +114,7 @@ ctest --test-dir build -C Release</pre>
 <section class="page narrow">
   <h2>Release history</h2>
   <ul>
-    <li><b>v0.1.6</b>: JOIN hot-path overhaul (288 ms → 85 ms on big × small, now 2.5× faster than DuckDB), <code>DESCRIBE</code>, <code>PRAGMA table_info</code> / <code>database_list</code>, <code>VARCHAR(n)</code> length enforcement, ORDER BY on narrowed projections, JOIN reverse-order equi-join fix</li>
+    <li><b>v0.1.6</b>: JOIN hot-path overhaul (288 ms → 85 ms on big × small, now 2.5× faster than DuckDB), <code>CREATE LIVE VIEW</code> with incremental CSV-append path (the first moat-track feature — DuckDB is snapshot-only), <code>SLOTHDB_EDGE</code> build for sub-MB WASM bundles (Cloudflare Workers target), <code>DESCRIBE</code>, <code>PRAGMA table_info</code> / <code>database_list</code>, <code>VARCHAR(n)</code> length enforcement, ORDER BY on narrowed projections, JOIN reverse-order equi-join fix</li>
     <li><b>v0.1.5</b>: WASM playground at <a href="playground/">slothdb.org/playground</a>, <code>@slothdb/wasm</code> npm package, binder / planner fixes (non-reserved keywords as identifiers, SELECT * ORDER BY, UNION + JOIN file-literal preprocessing, COPY with bare file literal)</li>
     <li><b>v0.1.4</b>: remote file reading (<code>https://</code> and public <code>s3://</code> URLs), extended <code>DATE_TRUNC</code> (week/quarter/decade/etc.), new scalars <code>MONTHNAME</code> / <code>DAYNAME</code> / <code>LAST_DAY</code> / <code>MAKE_DATE</code></li>
     <li><b>v0.1.3</b>: Arrow IPC and SQLite on the fast path, <code>PhysicalArrowScan</code> and <code>PhysicalSQLiteScan</code></li>
