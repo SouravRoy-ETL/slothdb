@@ -1,8 +1,21 @@
 #include "doctest.h"
 #include "slothdb/main/database.hpp"
 #include "slothdb/main/connection.hpp"
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <thread>
 
 using namespace slothdb;
+
+namespace {
+// Write a full file replacing its previous contents. Used by LIVE VIEW
+// tests — the mtime change is what the cache check observes.
+void WriteFile(const std::string &path, const std::string &content) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    f << content;
+}
+} // namespace
 
 // ============================================================================
 // BETWEEN
@@ -179,6 +192,79 @@ TEST_CASE("VARCHAR without length stays unbounded") {
                "abcdefghijklmnopqrstuvwxyz0123456789')");
     auto r = conn.Query("SELECT * FROM t");
     CHECK(r.RowCount() == 1);
+}
+
+// ============================================================================
+// CREATE LIVE VIEW
+// ============================================================================
+
+TEST_CASE("LIVE VIEW - refreshes when file mtime changes") {
+    auto dir = std::filesystem::temp_directory_path() / "slothdb_live_view";
+    std::filesystem::create_directories(dir);
+    auto path = dir / "data.csv";
+    WriteFile(path.string(), "k,label\n1,a\n2,b\n");
+
+    Database db;
+    Connection conn(db);
+
+    auto sql = "CREATE LIVE VIEW app AS SELECT * FROM '" + path.string() + "'";
+    conn.Query(sql);
+
+    auto before = conn.Query("SELECT COUNT(*) FROM app");
+    CHECK(before.GetValue(0, 0).GetValue<int64_t>() == 2);
+
+    // Sleep enough for a detectable mtime change on all filesystems.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    WriteFile(path.string(), "k,label\n1,a\n2,b\n3,c\n4,d\n");
+
+    auto after = conn.Query("SELECT COUNT(*) FROM app");
+    CHECK(after.GetValue(0, 0).GetValue<int64_t>() == 4);
+
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("LIVE VIEW - cache hit when file unchanged") {
+    auto dir = std::filesystem::temp_directory_path() / "slothdb_live_view_cache";
+    std::filesystem::create_directories(dir);
+    auto path = dir / "data.csv";
+    WriteFile(path.string(), "k\n1\n2\n3\n");
+
+    Database db;
+    Connection conn(db);
+
+    conn.Query("CREATE LIVE VIEW v AS SELECT * FROM '" + path.string() + "'");
+
+    // Two back-to-back SELECTs with no file change should see identical
+    // row counts — the second one reads from the cache.
+    auto r1 = conn.Query("SELECT COUNT(*) FROM v");
+    auto r2 = conn.Query("SELECT COUNT(*) FROM v");
+    CHECK(r1.GetValue(0, 0).GetValue<int64_t>() == 3);
+    CHECK(r2.GetValue(0, 0).GetValue<int64_t>() == 3);
+
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("LIVE VIEW - rejects missing file source") {
+    Database db;
+    Connection conn(db);
+    // No FROM clause with a file literal — should error.
+    CHECK_THROWS(conn.Query(
+        "CREATE LIVE VIEW bad AS SELECT 1 AS x"));
+}
+
+TEST_CASE("Non-live VIEW still re-executes unconditionally") {
+    // Regression: the live-view path must not accidentally gate non-live
+    // views on mtime.
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE t (x INTEGER)");
+    conn.Query("INSERT INTO t VALUES (1), (2)");
+    conn.Query("CREATE VIEW v AS SELECT * FROM t");
+    auto r1 = conn.Query("SELECT COUNT(*) FROM v");
+    CHECK(r1.GetValue(0, 0).GetValue<int64_t>() == 2);
+    conn.Query("INSERT INTO t VALUES (3)");
+    auto r2 = conn.Query("SELECT COUNT(*) FROM v");
+    CHECK(r2.GetValue(0, 0).GetValue<int64_t>() == 3);
 }
 
 // ============================================================================

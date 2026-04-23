@@ -179,13 +179,16 @@ public:
     std::string arg; // empty when pragma takes no argument
 };
 
-// CREATE VIEW statement.
+// CREATE VIEW statement. `is_live` marks CREATE LIVE VIEW, which caches the
+// result and invalidates via file mtime on every SELECT (see
+// Connection::ExpandLiveView). Non-live views re-execute unconditionally.
 class CreateViewStatement : public ParsedStatement {
 public:
     CreateViewStatement() : ParsedStatement(StatementType::CREATE_VIEW) {}
     std::string view_name;
     std::unique_ptr<SelectStatement> query;
     bool or_replace = false;
+    bool is_live = false;
     std::string original_sql; // The original SELECT SQL for virtual view re-execution.
 };
 

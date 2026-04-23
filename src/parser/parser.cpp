@@ -1116,10 +1116,18 @@ ParsedStmtPtr Parser::ParseCreateStatement() {
         }
     }
 
+    // CREATE [OR REPLACE] [LIVE] VIEW
+    bool is_live = false;
+    if (CheckKeyword(TokenType::KW_LIVE)) {
+        Advance();
+        is_live = true;
+    }
+
     if (CheckKeyword(TokenType::KW_VIEW)) {
         Advance(); // consume VIEW
         auto stmt = std::make_unique<CreateViewStatement>();
         stmt->or_replace = or_replace;
+        stmt->is_live = is_live;
         stmt->view_name = ExpectIdentifier("for view name").value;
         Expect(TokenType::KW_AS, "after view name");
         auto inner = ParseSelectStatement();

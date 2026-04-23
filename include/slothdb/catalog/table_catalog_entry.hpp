@@ -47,6 +47,20 @@ public:
     void SetViewQuery(const std::string &sql) { view_query_ = sql; is_view_ = true; }
     const std::string &GetViewQuery() const { return view_query_; }
 
+    // Live view support: view's storage is cached; expansion in
+    // Connection::Query checks the watched file's mtime and only re-executes
+    // when it changes. Cheaper than re-executing on every SELECT, and still
+    // reflects file mutations.
+    bool IsLiveView() const { return is_live_view_; }
+    void MarkLiveView() { is_live_view_ = true; }
+    void SetWatchedFile(const std::string &path) { watched_file_path_ = path; }
+    const std::string &GetWatchedFile() const { return watched_file_path_; }
+    int64_t GetCachedMTime() const { return cached_mtime_; }
+    void SetCachedMTime(int64_t v) { cached_mtime_ = v; }
+    bool HasCache() const { return cache_valid_; }
+    void MarkCacheValid() { cache_valid_ = true; }
+    void InvalidateCache() { cache_valid_ = false; }
+
     // File scan support: stores file path for streaming reads.
     bool IsFileScan() const { return !file_path_.empty(); }
     void SetFilePath(const std::string &path, char delim = ',') { file_path_ = path; file_delimiter_ = delim; file_format_ = "csv"; }
@@ -78,7 +92,11 @@ private:
     std::vector<ColumnDefinition> columns_;
     std::shared_ptr<DataTable> storage_;
     bool is_view_ = false;
+    bool is_live_view_ = false;
+    bool cache_valid_ = false;
     std::string view_query_;
+    std::string watched_file_path_;
+    int64_t cached_mtime_ = 0;
     std::string file_path_;
     char file_delimiter_ = ',';
     std::string file_format_ = "csv";

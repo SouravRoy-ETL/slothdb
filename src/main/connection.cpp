@@ -250,6 +250,32 @@ QueryResult Connection::Query(const std::string &sql) {
                 }
             }
 
+            // For LIVE views, extract the single file path from the parsed
+            // SELECT's FROM clause. Supports `FROM 'path'` (parser emits
+            // __FILE__ + ConstantExpression) and `read_csv/parquet/json/
+            // avro/arrow/xlsx('path')`. Complex FROM shapes (JOINs, set
+            // operations, multi-file globs) are rejected for the MVP.
+            std::string live_file_path;
+            if (cv.is_live) {
+                auto extract_path = [](TableRef *ref) -> std::string {
+                    if (!ref || !ref->is_table_function) return {};
+                    if (ref->function_args.empty()) return {};
+                    if (ref->function_args[0]->GetExpressionType() != ExpressionType::CONSTANT) return {};
+                    auto up = StringUtil::Upper(ref->table_name);
+                    if (up != "__FILE__" && up != "READ_CSV" && up != "READ_PARQUET" &&
+                        up != "READ_JSON" && up != "READ_AVRO" && up != "READ_ARROW" &&
+                        up != "READ_XLSX") return {};
+                    return static_cast<ConstantExpression &>(*ref->function_args[0]).value;
+                };
+                if (cv.query && cv.query->from_table) {
+                    live_file_path = extract_path(cv.query->from_table.get());
+                }
+                if (live_file_path.empty()) {
+                    throw BinderException("CREATE LIVE VIEW requires a single "
+                        "file source (e.g. FROM 'app.log' or read_csv('data.csv'))");
+                }
+            }
+
             // Execute the view query once to determine column names and types.
             auto view_result = Query(view_sql);
 
@@ -262,8 +288,21 @@ QueryResult Connection::Query(const std::string &sql) {
 
             auto &entry = db_.GetCatalog().CreateTable(cv.view_name, std::move(cols));
             auto storage = std::make_shared<DataTable>(view_result.column_types);
+            BulkLoadRows(*storage, view_result.column_types, view_result.rows);
             entry.SetStorage(storage);
             entry.SetViewQuery(view_sql);
+            if (cv.is_live) {
+                entry.MarkLiveView();
+                entry.SetWatchedFile(live_file_path);
+                std::error_code ec;
+                auto t = std::filesystem::last_write_time(live_file_path, ec);
+                if (!ec) {
+                    entry.SetCachedMTime(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            t.time_since_epoch()).count());
+                }
+                entry.MarkCacheValid();
+            }
             continue;
         }
 
@@ -745,11 +784,30 @@ QueryResult Connection::Query(const std::string &sql) {
                 if (ref.is_table_function) return;
                 auto *entry = db_.GetCatalog().GetTable(ref.table_name);
                 if (entry && entry->IsView()) {
+                    // Live views cache their result; skip re-execution when
+                    // the watched file's mtime is unchanged. That's the whole
+                    // point — analytical queries over a file that rarely
+                    // changes no longer pay the parse cost on every SELECT.
+                    if (entry->IsLiveView()) {
+                        std::error_code ec;
+                        auto t = std::filesystem::last_write_time(
+                            entry->GetWatchedFile(), ec);
+                        if (!ec) {
+                            int64_t m = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                t.time_since_epoch()).count();
+                            if (entry->HasCache() && m == entry->GetCachedMTime()) {
+                                return; // cache hit
+                            }
+                            entry->SetCachedMTime(m);
+                        }
+                        // Fall through to re-execute and refresh the cache.
+                    }
                     // Re-execute the view's stored query to get fresh data.
                     auto view_result = Query(entry->GetViewQuery());
                     auto storage = std::make_shared<DataTable>(view_result.column_types);
                     BulkLoadRows(*storage, view_result.column_types, view_result.rows);
                     entry->SetStorage(storage);
+                    if (entry->IsLiveView()) entry->MarkCacheValid();
                 }
             };
 

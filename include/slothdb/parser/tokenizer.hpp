@@ -125,6 +125,7 @@ enum class TokenType : uint8_t {
     KW_EXPLAIN,
     KW_DESCRIBE,
     KW_PRAGMA,
+    KW_LIVE,
     KW_COPY,
     KW_TO,
     KW_NULLS,
