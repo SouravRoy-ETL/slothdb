@@ -12,6 +12,7 @@ file(GLOB_RECURSE SLOTHDB_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/optimizer/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/api/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/extension/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ask/*.cpp"
 )
 
 # Edge build drops the readers Cloudflare Workers / browser widgets don't

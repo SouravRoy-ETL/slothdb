@@ -7,6 +7,7 @@
  */
 
 #include "slothdb/api/slothdb.h"
+#include "slothdb/ask/nl_to_sql.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -62,6 +63,7 @@ static void print_help() {
     printf("  .tables [PATTERN]           List tables (LIKE pattern optional)\n");
     printf("  .schema [TABLE]             Show CREATE statements for tables\n");
     printf("  .open <path>                Close current DB and open a new one\n");
+    printf("  .ask <question>             Translate NL question to SQL and run it\n");
     printf("  .version                    Print SlothDB version\n");
     printf("  .clear                      Clear the screen\n");
     printf("\n");
@@ -111,6 +113,73 @@ static bool run_query(slothdb_connection *conn, const std::string &sql) {
     fprintf(stderr, "Error: %s\n", slothdb_result_error(result));
     slothdb_free_result(result);
     return false;
+}
+
+// Build a NL-to-SQL schema snapshot using the catalog-introspection C API.
+// Straight ports the catalog contents into the engine's Schema struct;
+// each string is copied immediately since the API's returned pointers
+// only live until the next call to the same function.
+static slothdb::ask::Schema build_ask_schema(slothdb_connection *conn) {
+    slothdb::ask::Schema schema;
+    uint64_t n_tables = slothdb_table_count(conn);
+    for (uint64_t i = 0; i < n_tables; i++) {
+        std::string tname = slothdb_table_name(conn, i);
+        slothdb::ask::Table t;
+        t.name = tname;
+        uint64_t n_cols = slothdb_table_column_count(conn, i);
+        for (uint64_t j = 0; j < n_cols; j++) {
+            slothdb::ask::Column c;
+            c.name = slothdb_table_column_name(conn, i, j);
+            c.type = slothdb_table_column_type(conn, i, j);
+            t.columns.push_back(std::move(c));
+        }
+        schema.tables.push_back(std::move(t));
+    }
+    return schema;
+}
+
+static void handle_ask(slothdb_connection *conn, const std::string &question) {
+    if (question.empty()) {
+        printf("Usage: .ask <natural-language question>\n");
+        printf("Examples:\n");
+        printf("  .ask how many sales in 2024\n");
+        printf("  .ask total amount per region\n");
+        printf("  .ask top 5 customers by spend\n");
+        return;
+    }
+    auto schema = build_ask_schema(conn);
+    if (schema.tables.empty()) {
+        printf("No tables found. Load data first (e.g. create a table or "
+               "query a file) before using .ask.\n");
+        return;
+    }
+    auto r = slothdb::ask::Translate(question, schema);
+    if (r.status != slothdb::ask::Status::OK) {
+        printf("Could not translate: %s\n", r.message.c_str());
+        if (!r.unresolved.empty()) {
+            printf("  Unresolved token: '%s'\n", r.unresolved.c_str());
+        }
+        printf("  Try .schema to see available columns.\n");
+        return;
+    }
+    printf("-- %s\n", r.sql.c_str());
+    printf("Run? [Y/n] ");
+    fflush(stdout);
+    char buf[16];
+    if (!fgets(buf, sizeof(buf), stdin)) { printf("\n"); return; }
+    char ch = buf[0];
+    if (ch == 'n' || ch == 'N') { printf("Skipped.\n"); return; }
+
+    // Execute. Use slothdb_query directly rather than our run_query helper
+    // so ".ask" doesn't append to the multi-line buffer.
+    slothdb_result *exec_result = nullptr;
+    auto status = slothdb_query(conn, r.sql.c_str(), &exec_result);
+    if (status == SLOTHDB_OK) {
+        print_result(exec_result);
+    } else {
+        fprintf(stderr, "Error: %s\n", slothdb_result_error(exec_result));
+    }
+    slothdb_free_result(exec_result);
 }
 
 static void handle_tables(slothdb_connection *conn, const std::string &arg) {
@@ -163,7 +232,7 @@ static const char *kSqlKeywords[] = {
     "WITH", "QUALIFY", "OVER", "PARTITION BY",
     "read_csv(", "read_parquet(", "read_json(", "read_xlsx(", "read_avro(",
     "sqlite_scan(",
-    ".help", ".quit", ".tables", ".schema", ".version", ".open", ".clear",
+    ".help", ".quit", ".tables", ".schema", ".version", ".open", ".clear", ".ask",
     nullptr,
 };
 
@@ -287,6 +356,7 @@ int main(int argc, char *argv[]) {
             if (cmd == ".version") { printf("%s\n", slothdb_version()); continue; }
             if (cmd == ".tables") { handle_tables(conn, arg); continue; }
             if (cmd == ".schema") { handle_schema(conn, arg); continue; }
+            if (cmd == ".ask")    { handle_ask(conn, arg); continue; }
             if (cmd == ".clear") { printf("\033[2J\033[H"); fflush(stdout); continue; }
             if (cmd == ".open") {
                 if (arg.empty()) { printf("Usage: .open <path>\n"); continue; }

@@ -104,6 +104,36 @@ const char *slothdb_value_varchar(slothdb_result *result, uint64_t row, uint64_t
 void slothdb_free_result(slothdb_result *result);
 
 /* ========================================================================
+ * Catalog introspection
+ *
+ * Lets a host iterate tables and their columns without running
+ * information_schema SQL. Used by the shell's `.ask` command to build
+ * a schema snapshot for natural-language-to-SQL translation, but it's
+ * a first-class C API — any binding can call it.
+ *
+ * Returned pointers are valid only until the next call TO THE SAME
+ * FUNCTION on the same thread. Copy the string if you need to keep it
+ * across calls. Do not free them.
+ * ======================================================================== */
+
+/* Number of tables in the default schema. */
+uint64_t slothdb_table_count(slothdb_connection *conn);
+
+/* Table name at index `i` (0 <= i < slothdb_table_count). */
+const char *slothdb_table_name(slothdb_connection *conn, uint64_t i);
+
+/* Number of columns in table `i`. */
+uint64_t slothdb_table_column_count(slothdb_connection *conn, uint64_t table_index);
+
+/* Column name at (table_index, col_index). */
+const char *slothdb_table_column_name(slothdb_connection *conn,
+                                       uint64_t table_index, uint64_t col_index);
+
+/* Column type name (e.g. "INTEGER", "VARCHAR") at (table_index, col_index). */
+const char *slothdb_table_column_type(slothdb_connection *conn,
+                                       uint64_t table_index, uint64_t col_index);
+
+/* ========================================================================
  * Version info
  * ======================================================================== */
 

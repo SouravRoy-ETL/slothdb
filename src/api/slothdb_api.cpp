@@ -1,7 +1,11 @@
 #include "slothdb/api/slothdb.h"
 #include "slothdb/main/database.hpp"
 #include "slothdb/main/connection.hpp"
+#include "slothdb/catalog/catalog.hpp"
+#include "slothdb/catalog/schema_catalog_entry.hpp"
+#include "slothdb/catalog/table_catalog_entry.hpp"
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -146,6 +150,81 @@ const char *slothdb_value_varchar(slothdb_result *result, uint64_t row, uint64_t
 
 void slothdb_free_result(slothdb_result *result) {
     delete result;
+}
+
+// Thread-local cache for the catalog-introspection C API's returned
+// strings. The C API contract is "pointer valid until next catalog
+// mutation on this connection". We store names in a thread-local arena
+// so the pointer outlives the GetTable()/GetColumns() call without
+// requiring the caller to free anything. Simple and good enough —
+// `.ask` etc. pull a few dozen names at a time.
+namespace {
+std::string &introspection_slot(size_t idx) {
+    static thread_local std::vector<std::string> arena;
+    if (idx >= arena.size()) arena.resize(idx + 16);
+    return arena[idx];
+}
+}
+
+uint64_t slothdb_table_count(slothdb_connection *conn) {
+    if (!conn || !conn->conn) return 0;
+    try {
+        auto &schema = conn->conn->GetCatalog().GetSchema();
+        return static_cast<uint64_t>(schema.GetTableNames().size());
+    } catch (...) { return 0; }
+}
+
+const char *slothdb_table_name(slothdb_connection *conn, uint64_t i) {
+    if (!conn || !conn->conn) return "";
+    try {
+        auto &schema = conn->conn->GetCatalog().GetSchema();
+        auto names = schema.GetTableNames();
+        if (i >= names.size()) return "";
+        auto &slot = introspection_slot(0);
+        slot = names[static_cast<size_t>(i)];
+        return slot.c_str();
+    } catch (...) { return ""; }
+}
+
+uint64_t slothdb_table_column_count(slothdb_connection *conn, uint64_t ti) {
+    if (!conn || !conn->conn) return 0;
+    try {
+        auto &schema = conn->conn->GetCatalog().GetSchema();
+        auto names = schema.GetTableNames();
+        if (ti >= names.size()) return 0;
+        auto *tbl = schema.GetTable(names[static_cast<size_t>(ti)]);
+        return tbl ? tbl->ColumnCount() : 0;
+    } catch (...) { return 0; }
+}
+
+const char *slothdb_table_column_name(slothdb_connection *conn,
+                                       uint64_t ti, uint64_t ci) {
+    if (!conn || !conn->conn) return "";
+    try {
+        auto &schema = conn->conn->GetCatalog().GetSchema();
+        auto names = schema.GetTableNames();
+        if (ti >= names.size()) return "";
+        auto *tbl = schema.GetTable(names[static_cast<size_t>(ti)]);
+        if (!tbl || ci >= tbl->ColumnCount()) return "";
+        auto &slot = introspection_slot(1);
+        slot = tbl->GetColumns()[static_cast<size_t>(ci)].name;
+        return slot.c_str();
+    } catch (...) { return ""; }
+}
+
+const char *slothdb_table_column_type(slothdb_connection *conn,
+                                       uint64_t ti, uint64_t ci) {
+    if (!conn || !conn->conn) return "";
+    try {
+        auto &schema = conn->conn->GetCatalog().GetSchema();
+        auto names = schema.GetTableNames();
+        if (ti >= names.size()) return "";
+        auto *tbl = schema.GetTable(names[static_cast<size_t>(ti)]);
+        if (!tbl || ci >= tbl->ColumnCount()) return "";
+        auto &slot = introspection_slot(2);
+        slot = tbl->GetColumns()[static_cast<size_t>(ci)].type.ToString();
+        return slot.c_str();
+    } catch (...) { return ""; }
 }
 
 const char *slothdb_version(void) {
