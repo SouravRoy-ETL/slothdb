@@ -143,6 +143,45 @@ TEST_CASE("PRAGMA table_info - missing table errors") {
 }
 
 // ============================================================================
+// VARCHAR(n) length enforcement
+// ============================================================================
+
+TEST_CASE("VARCHAR(n) - accepts strings within limit") {
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE t (code VARCHAR(3))");
+    conn.Query("INSERT INTO t VALUES ('a'), ('ab'), ('abc')");
+    auto r = conn.Query("SELECT * FROM t");
+    CHECK(r.RowCount() == 3);
+}
+
+TEST_CASE("VARCHAR(n) - rejects over-long strings") {
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE t (code VARCHAR(3))");
+    CHECK_THROWS(conn.Query("INSERT INTO t VALUES ('too_long')"));
+}
+
+TEST_CASE("VARCHAR(n) - preserved through DESCRIBE") {
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE t (code VARCHAR(5))");
+    auto r = conn.Query("DESCRIBE t");
+    CHECK(r.GetValue(0, 1).GetValue<std::string>() == "VARCHAR(5)");
+}
+
+TEST_CASE("VARCHAR without length stays unbounded") {
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE t (v VARCHAR)");
+    // A long string is accepted because no length was declared.
+    conn.Query("INSERT INTO t VALUES ('"
+               "abcdefghijklmnopqrstuvwxyz0123456789')");
+    auto r = conn.Query("SELECT * FROM t");
+    CHECK(r.RowCount() == 1);
+}
+
+// ============================================================================
 // CREATE VIEW
 // ============================================================================
 

@@ -790,8 +790,18 @@ LogicalType Binder::ResolveTypeName(const std::string &name) {
     if (base == "FLOAT" || base == "REAL" || base == "FLOAT4") return LogicalType::FLOAT();
     if (base == "DOUBLE" || base == "FLOAT8") return LogicalType::DOUBLE();
     if (base == "BOOLEAN" || base == "BOOL") return LogicalType::BOOLEAN();
-    if (base == "VARCHAR" || base == "TEXT" || base == "STRING" || base == "CHAR")
+    if (base == "VARCHAR" || base == "TEXT" || base == "STRING" || base == "CHAR") {
+        // Preserve VARCHAR(n) length so PhysicalInsert can reject over-long
+        // strings. TEXT / STRING are unbounded in standard SQL, so only
+        // attach the length when the user actually wrote it.
+        auto paren = upper.find('(');
+        if (paren != std::string::npos) {
+            auto inner = upper.substr(paren + 1, upper.size() - paren - 2);
+            idx_t n = static_cast<idx_t>(std::stoull(inner));
+            return LogicalType::VARCHAR_N(n);
+        }
         return LogicalType::VARCHAR();
+    }
     if (base == "BLOB" || base == "BYTEA") return LogicalType::BLOB();
     if (base == "DATE") return LogicalType::DATE();
     if (base == "TIME") return LogicalType::TIME();

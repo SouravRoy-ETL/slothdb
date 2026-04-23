@@ -10,6 +10,11 @@ bool DecimalTypeInfo::Equals(const ExtraTypeInfo &other) const {
     return o && width_ == o->width_ && scale_ == o->scale_;
 }
 
+bool VarcharTypeInfo::Equals(const ExtraTypeInfo &other) const {
+    auto *o = dynamic_cast<const VarcharTypeInfo *>(&other);
+    return o && max_length_ == o->max_length_;
+}
+
 ListTypeInfo::ListTypeInfo(LogicalTypeId child_type)
     : child_type_id_(child_type) {}
 
@@ -107,6 +112,13 @@ std::string LogicalType::ToString() const {
         }
         return "DECIMAL";
     }
+    case LogicalTypeId::VARCHAR: {
+        auto *info = dynamic_cast<const VarcharTypeInfo *>(info_.get());
+        if (info) {
+            return "VARCHAR(" + std::to_string(info->MaxLength()) + ")";
+        }
+        return "VARCHAR";
+    }
     default:
         return LogicalTypeIdToString(id_);
     }
@@ -120,6 +132,10 @@ bool LogicalType::operator==(const LogicalType &other) const {
 
 LogicalType LogicalType::DECIMAL(uint8_t width, uint8_t scale) {
     return LogicalType(LogicalTypeId::DECIMAL, std::make_shared<DecimalTypeInfo>(width, scale));
+}
+
+LogicalType LogicalType::VARCHAR_N(idx_t max_length) {
+    return LogicalType(LogicalTypeId::VARCHAR, std::make_shared<VarcharTypeInfo>(max_length));
 }
 
 LogicalType LogicalType::LIST(const LogicalType &child) {

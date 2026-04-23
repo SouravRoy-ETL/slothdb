@@ -1109,10 +1109,31 @@ public:
         DataChunk chunk;
         chunk.Initialize(types);
 
+        // Pre-resolve VARCHAR(n) max lengths per column once, outside the
+        // row loop. Cheaper than dynamic_cast per cell.
+        std::vector<idx_t> max_lengths(types.size(), 0);
+        for (idx_t c = 0; c < types.size(); c++) {
+            if (types[c].id() == LogicalTypeId::VARCHAR) {
+                auto *info = dynamic_cast<const VarcharTypeInfo *>(types[c].GetExtraInfo());
+                if (info) max_lengths[c] = info->MaxLength();
+            }
+        }
+
         for (auto &row : values_) {
             idx_t row_idx = chunk.size();
             for (idx_t col = 0; col < row.size(); col++) {
                 auto val = ExpressionExecutor::ExecuteScalar(*row[col]);
+                if (max_lengths[col] > 0 && !val.IsNull() &&
+                    val.type().id() == LogicalTypeId::VARCHAR) {
+                    const auto &s = val.GetValue<std::string>();
+                    if (s.size() > max_lengths[col]) {
+                        throw OutOfRangeException(
+                            "Value too long for column " +
+                            std::to_string(col) + " (VARCHAR(" +
+                            std::to_string(max_lengths[col]) + "): got " +
+                            std::to_string(s.size()) + " chars)");
+                    }
+                }
                 chunk.SetValue(col, row_idx, val);
             }
         }
