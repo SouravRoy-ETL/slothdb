@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SlothDB · embedded SQL OLAP with live views that follow your files</title>
-<meta name="description" content="SlothDB is a fast in-process SQL OLAP database with live views that follow your files. Portable C++20 engine — runs in Python, Node, the browser, or as a single binary. 3.9× faster than DuckDB on a 5-query warm JOIN batch. MIT licensed.">
+<title>SlothDB · Live SQL views that follow your files</title>
+<meta name="description" content="SlothDB is an embedded SQL OLAP engine with live views that re-parse only the bytes your CSVs grew by. 8 MB binary, runs in Python, Node, the browser. 3.9× DuckDB on a 5-query warm JOIN batch. MIT.">
 <meta name="keywords" content="DuckDB alternative, in-process SQL database, embedded analytical database, Parquet query, CSV SQL, DuckDB replacement, SQLite OLAP, analytical database C++, fast Parquet reader, query Parquet with SQL">
 <meta name="author" content="Sourav Roy">
 <meta name="robots" content="index, follow">
@@ -12,8 +12,8 @@
 
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://slothdb.org/">
-<meta property="og:title" content="SlothDB 0.1.6 · Embedded SQL OLAP with live views that follow your files">
-<meta property="og:description" content="Cached views that auto-refresh on file change, with incremental CSV append. 3.9× faster than DuckDB on a 5-query JOIN batch. Built-in Parquet/CSV/JSON/Avro/Arrow/SQLite readers. 8 MB binary, MIT.">
+<meta property="og:title" content="SlothDB 0.1.6 — Live SQL views that follow your files">
+<meta property="og:description" content="Cached views that re-parse only the bytes a CSV grew by — something DuckDB, being snapshot-only, can't match. 3.9× faster than DuckDB on a 5-query warm JOIN batch. 8 MB binary. Sub-1 MB edge WASM. MIT.">
 <meta property="og:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 <meta property="og:image:width" content="1000">
 <meta property="og:image:height" content="520">
@@ -21,8 +21,8 @@
 
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://slothdb.org/">
-<meta name="twitter:title" content="SlothDB 0.1.6 · Embedded SQL OLAP with live views that follow your files">
-<meta name="twitter:description" content="Cached views that auto-refresh on file change, with incremental CSV append. 3.9× faster than DuckDB on a 5-query JOIN batch. 8 MB binary, MIT.">
+<meta name="twitter:title" content="SlothDB 0.1.6 — Live SQL views that follow your files">
+<meta name="twitter:description" content="Embedded SQL OLAP with views that re-parse only the bytes your CSV grew by. 3.9× DuckDB on a 5-query JOIN batch. 8 MB binary. Sub-1 MB edge WASM. MIT.">
 <meta name="twitter:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 
 <link rel="canonical" href="https://slothdb.org/">
@@ -103,12 +103,12 @@
     <span class="sql-6">COPY TO 'out.parquet'</span>
   </div>
   <div class="inner">
-    <h1>Embedded SQL OLAP.<br>With <span class="accent">live views</span> that follow your files.</h1>
-    <p class="lede">Portable C++20 analytical engine. Runs in Python, Node, the browser, or as a single binary. Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel natively. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms — 3.9× faster</b>.</p>
+    <h1><span class="accent">Live SQL views</span><br>that follow your files.</h1>
+    <p class="lede">SlothDB is an embedded analytical database in C++20. Cached views re-parse only the bytes your CSV grew by. Runs in Python, Node, the browser, or an 8 MB binary. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms — 3.9× faster</b>.</p>
     <div class="ctas">
-      <a class="btn primary" href="#install">Get SlothDB →</a>
-      <a class="btn ghost" href="playground/">Try in browser →</a>
-      <a class="btn ghost" href="docs.html">Read the docs →</a>
+      <a class="btn primary" href="playground/">Run a query in the browser →</a>
+      <a class="btn ghost" href="#install">pip install slothdb</a>
+      <a class="btn ghost" href="#benchmarks">See benchmarks →</a>
     </div>
     <div class="used-by">MIT licensed · 381 tests · v0.1.6 out now — <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.1.6">release notes</a></div>
 
@@ -162,20 +162,20 @@
 
     <div class="card">
       <div class="icon-box">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </div>
-      <h3>Simple</h3>
-      <p>Install with <code>pip install slothdb</code> and you're running. Point SQL at a file: no <code>CREATE TABLE</code>, no <code>COPY FROM</code>, no extension to load first.</p>
-      <a class="card-link" href="docs.html#first-query">Read more</a>
+      <h3>Live</h3>
+      <p><code>CREATE LIVE VIEW</code> caches the result and re-parses only the new bytes when a CSV grows. Logs, event streams, append-only exports — query them the same way twice, the second time is incremental.</p>
+      <a class="card-link" href="docs.html#live-views">Read more</a>
     </div>
 
     <div class="card">
       <div class="icon-box">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
       </div>
-      <h3>Feature-rich</h3>
-      <p>130+ SQL features: joins, CTEs, recursive queries, window functions, QUALIFY, MERGE, aggregates, set operations, <code>DESCRIBE</code>, <code>PRAGMA table_info</code>, <code>VARCHAR(n)</code> enforcement, <code>CREATE LIVE VIEW</code> with incremental CSV append. Seven file formats built in, no extensions needed.</p>
-      <a class="card-link" href="docs.html#sql">Read more</a>
+      <h3>Simple</h3>
+      <p>Point SQL at a file: no <code>CREATE TABLE</code>, no <code>COPY FROM</code>, no extension to load first. Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel all work out of the box.</p>
+      <a class="card-link" href="docs.html#first-query">Read more</a>
     </div>
 
     <div class="card">
@@ -183,26 +183,17 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
       </div>
       <h3>Fast</h3>
-      <p>Vectorized columnar engine, morsel-driven parallelism, typed streaming scans, typed int64 JOIN hash path. On a 5-query warm JOIN batch: 138 ms vs DuckDB's 540 ms — 3.9× faster.</p>
+      <p>Morsel-driven parallelism, typed int64 JOIN hashes, SIMD CSV scanning, <code>COUNT(*)</code> over JOIN fused into the aggregate. 5-query warm JOIN batch: 138 ms vs DuckDB's 540 ms.</p>
       <a class="card-link" href="#benchmarks">Read more</a>
-    </div>
-
-    <div class="card">
-      <div class="icon-box">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-      </div>
-      <h3>Free</h3>
-      <p>Released under the MIT license. Use in commercial products, embed in desktop apps, redistribute freely. Source on GitHub, developed in the open.</p>
-      <a class="card-link" href="https://github.com/SouravRoy-ETL/slothdb/blob/main/LICENSE">Read more</a>
     </div>
 
     <div class="card">
       <div class="icon-box">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       </div>
-      <h3>Portable</h3>
-      <p>A single ~8 MB binary. Runs on Windows, Linux, macOS, across x86_64 and arm64. Links into Python, C, C++. An <code>-DSLOTHDB_EDGE=ON</code> build option strips the engine to CSV / JSON / Parquet for sub-megabyte WASM bundles that fit under Cloudflare Workers' 1 MB cap.</p>
-      <a class="card-link" href="#install">Read more</a>
+      <h3>Edge-ready</h3>
+      <p>One self-contained 8 MB binary on Windows, Linux, macOS, x86_64, and arm64. <code>-DSLOTHDB_EDGE=ON</code> strips the engine to CSV / JSON / Parquet so the WASM fits under Cloudflare Workers' 1 MB script cap.</p>
+      <a class="card-link" href="docs.html#edge-build">Read more</a>
     </div>
 
     <div class="card">
@@ -210,8 +201,17 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
       </div>
       <h3>Extensible</h3>
-      <p>Stable C ABI for third-party extensions. Numeric error codes that never change. Extensions built for v0.1 keep working on v1.0, v2.0, and beyond. Unlike DuckDB's internal C++ API.</p>
+      <p>Extensions versioned against a frozen C ABI with numeric error codes. An extension built for v0.1 still links on v1.0. DuckDB exposes its internal C++ API, which churns between releases.</p>
       <a class="card-link" href="docs.html#extensions">Read more</a>
+    </div>
+
+    <div class="card">
+      <div class="icon-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+      </div>
+      <h3>Free</h3>
+      <p>Released under the MIT license. Embed it in commercial products, ship it in a desktop app, redistribute the binary. Source on GitHub, developed in the open.</p>
+      <a class="card-link" href="https://github.com/SouravRoy-ETL/slothdb/blob/main/LICENSE">Read more</a>
     </div>
 
   </div>
@@ -403,28 +403,61 @@
 </section>
 
 <section class="page" id="benchmarks">
-  <h2>Faster on every query</h2>
-  <p class="section-lede">1M-row dataset · warm cache · 5-run median · same machine · same queries.</p>
-  <div style="max-width: 980px; margin: 0 auto;">
-    <table class="data">
+  <h2>Three proof points, not sixteen</h2>
+  <p class="section-lede">1M-row datasets · warm cache · 5-run median · <a href="https://github.com/SouravRoy-ETL/slothdb#performance--three-stories-not-sixteen">reproducible locally</a> via <code>pip install slothdb &amp;&amp; python -c "import slothdb; slothdb.demo()"</code>.</p>
+
+  <div class="grid cols-3" style="max-width: 1080px; margin: 0 auto;">
+    <div class="card">
+      <h3>JOIN — CPU-bound</h3>
+      <p style="font-size:0.9em; opacity:0.75; margin-bottom:12px;"><code>COUNT(*) FROM big JOIN sm ON b.k=s.k</code> · 1 M × 1 K rows</p>
+      <p style="font-size:1.6em; font-weight:600; margin:0;">85 ms <span style="opacity:0.5; font-weight:400; font-size:0.7em;">vs</span> 212 ms</p>
+      <p style="color:var(--accent); font-weight:600; margin-top:6px;">2.5× faster</p>
+    </div>
+    <div class="card">
+      <h3>5-query batch</h3>
+      <p style="font-size:0.9em; opacity:0.75; margin-bottom:12px;">scan + aggregate + GROUP BY + filter + JOIN · single shell invocation</p>
+      <p style="font-size:1.6em; font-weight:600; margin:0;">138 ms <span style="opacity:0.5; font-weight:400; font-size:0.7em;">vs</span> 540 ms</p>
+      <p style="color:var(--accent); font-weight:600; margin-top:6px;">3.9× faster end-to-end</p>
+    </div>
+    <div class="card">
+      <h3>Avro — native decode</h3>
+      <p style="font-size:0.9em; opacity:0.75; margin-bottom:12px;"><code>SUM(revenue)</code> on 1 M-row <code>.avro</code> · DuckDB uses an extension</p>
+      <p style="font-size:1.6em; font-weight:600; margin:0;">140 ms <span style="opacity:0.5; font-weight:400; font-size:0.7em;">vs</span> 760 ms</p>
+      <p style="color:var(--accent); font-weight:600; margin-top:6px;">5.43× faster</p>
+    </div>
+  </div>
+
+  <details style="max-width: 980px; margin: 40px auto 0;">
+    <summary style="cursor:pointer; font-weight:600;">Full 16-query suite across CSV / Parquet / JSON / Avro / Excel</summary>
+    <table class="data" style="margin-top: 20px;">
       <thead>
         <tr><th>Format</th><th>Query</th><th style="text-align:right">SlothDB</th><th style="text-align:right">DuckDB</th><th style="text-align:right">Speedup</th></tr>
       </thead>
       <tbody>
-        <tr><td>CSV</td><td>COUNT(*)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
+        <tr><td>CSV</td><td>COUNT(*) (parser throughput)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
+        <tr><td>CSV</td><td>SUM(revenue)</td><td class="num">106 ms</td><td class="num">177 ms</td><td class="win">1.67×</td></tr>
         <tr><td>CSV</td><td>GROUP BY region</td><td class="num">100 ms</td><td class="num">191 ms</td><td class="win">1.91×</td></tr>
+        <tr><td>CSV</td><td>GROUP BY product, year</td><td class="num">117 ms</td><td class="num">198 ms</td><td class="win">1.70×</td></tr>
         <tr><td>CSV</td><td>WHERE + GROUP BY</td><td class="num">107 ms</td><td class="num">194 ms</td><td class="win">1.81×</td></tr>
         <tr><td>CSV</td><td>big &times; small JOIN + COUNT(*)</td><td class="num">85 ms</td><td class="num">212 ms</td><td class="win">2.49×</td></tr>
         <tr><td>Parquet</td><td>COUNT(*)</td><td class="num">12 ms</td><td class="num">34 ms</td><td class="win">2.83×</td></tr>
-        <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td class="win">1.04×</td></tr>
+        <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td style="opacity:0.6">1.04× (tie)</td></tr>
         <tr><td>Parquet</td><td>GROUP BY region</td><td class="num">76 ms</td><td class="num">88 ms</td><td class="win">1.16×</td></tr>
+        <tr><td>Parquet</td><td>GROUP BY product, year</td><td class="num">146 ms</td><td class="num">173 ms</td><td class="win">1.18×</td></tr>
+        <tr><td>Parquet</td><td>WHERE + GROUP BY</td><td class="num">157 ms</td><td class="num">198 ms</td><td class="win">1.26×</td></tr>
         <tr><td>JSON</td><td>SUM(revenue)</td><td class="num">242 ms</td><td class="num">314 ms</td><td class="win">1.30×</td></tr>
+        <tr><td>JSON</td><td>GROUP BY region</td><td class="num">284 ms</td><td class="num">324 ms</td><td class="win">1.14×</td></tr>
         <tr><td>Avro</td><td>SUM(revenue)</td><td class="num">140 ms</td><td class="num">760 ms</td><td class="win">5.43×</td></tr>
         <tr><td>Avro</td><td>GROUP BY region</td><td class="num">170 ms</td><td class="num">800 ms</td><td class="win">4.71×</td></tr>
         <tr><td>Excel</td><td>GROUP BY region</td><td class="num">2.5 s</td><td class="num">3.56 s</td><td class="win">1.41×</td></tr>
       </tbody>
     </table>
-  </div>
+    <p style="font-size:0.9em; opacity:0.75; margin-top:12px;">Median speedup: 1.70×. Range: 1.04× – 5.43×.</p>
+  </details>
+
+  <p style="max-width:740px; margin:28px auto 0; font-size:0.9em; opacity:0.75;">
+    Tested on 1 M-row datasets on a single workstation. Parquet aggregates are within ~20% of DuckDB on most queries — both engines saturate the columnar fast path there. The big gaps (Avro, CSV <code>COUNT(*)</code>, the JOIN batch) come from SlothDB's native decoders and the 0.1.6 JOIN hot path. We haven't submitted to ClickBench yet — on the roadmap.
+  </p>
 </section>
 
 <section class="page" id="install">

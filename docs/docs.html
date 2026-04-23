@@ -108,7 +108,7 @@
   <main class="docs-content">
 
     <h1 id="overview">SlothDB Documentation</h1>
-    <p class="doc-lede">SlothDB is a fast in-process SQL database for your local data files. It runs inside your application or as a standalone shell, reads seven file formats natively, and is 1.1×–8.6× faster than DuckDB on every benchmark query.</p>
+    <p class="doc-lede">SlothDB is a fast in-process SQL database for your local data files. It runs inside your application or as a standalone shell, reads seven file formats natively, and runs a 5-query warm-cache analytical batch in 138 ms vs DuckDB's 540 ms — 3.9× faster end-to-end.</p>
 
     <p>This page is the short reference. For long-form guides, see the <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/DOCUMENTATION.md">full documentation on GitHub</a>. For the SQL cheat sheet, see the <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/SQL_REFERENCE.md">SQL reference</a>.</p>
 
@@ -351,7 +351,7 @@ cmake --build build-wasm-edge</pre>
     <h2 id="faq">FAQ</h2>
 
     <h3>How is this different from DuckDB?</h3>
-    <p>Same embedded model, different defaults. SlothDB ships Avro, Excel, and SQLite in core (DuckDB needs extensions), has a stable C ABI for extensions, uses numeric error codes, and is 1.1×–8.6× faster on the shipped benchmark suite.</p>
+    <p>Same embedded model, different defaults. SlothDB ships Avro, Excel, and SQLite in core (DuckDB needs extensions), has a stable C ABI for extensions, uses numeric error codes, and has <code>CREATE LIVE VIEW</code> with incremental CSV append — a capability DuckDB's snapshot model structurally can't match. On a 5-query warm JOIN batch: 138 ms vs DuckDB's 540 ms (3.9×).</p>
 
     <h3>Can I use it with pandas?</h3>
     <p>Yes. <code>db.sql("...").fetchdf()</code> returns a pandas DataFrame.</p>

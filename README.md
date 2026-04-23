@@ -4,7 +4,7 @@
 
 <h3>SlothDB is a fast in-process SQL OLAP database.</h3>
 
-<p>Portable C++20 analytical engine. Runs in Python, Node, the browser, or as a single binary. Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel natively. On a 5-query warm-cache JOIN batch: <b>138 ms vs DuckDB's 540 ms (3.9×)</b> — plus live views that follow your files.</p>
+<p>Embedded SQL OLAP in C++20. Views can follow your files: <code>CREATE LIVE VIEW</code> caches results and re-parses only the bytes a CSV grew by. Runs in Python, Node, the browser, or an 8 MB binary. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms (3.9×)</b>.</p>
 
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
 [![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm&label=npm)](https://www.npmjs.com/package/@slothdb/wasm)
@@ -92,20 +92,30 @@ SELECT region, SUM(revenue) FROM 'https://host/data.csv' GROUP BY region;
 SELECT * FROM 's3://public-bucket/events.parquet';
 ```
 
-### If you're using DuckDB today
+### If you're already using DuckDB
 
-Same embedded model. SlothDB is a near-drop-in swap for local file analytics. The differences:
+Keep using it. SlothDB is worth a look when you hit one of these specific walls:
+
+- **Your dashboard tails a growing log file.** DuckDB re-reads the whole CSV on every query. `CREATE LIVE VIEW` in SlothDB caches the result and parses only the new bytes at the tail — a `COUNT(*)` over a 500 MB log that keeps growing stays cheap instead of getting worse every hour.
+- **You're deploying to Cloudflare Workers, Deno Deploy, or Vercel Edge.** duckdb-wasm is ~18 MB and blocked by Workers' 1 MB script cap. The SlothDB edge build (`-DSLOTHDB_EDGE=ON`) strips to CSV / JSON / Parquet and fits under the cap.
+- **Extension installs are failing.** Corporate proxy blocks the extension CDN. `httpfs` broke on a minor upgrade. SlothDB ships with HTTP(S), S3, Avro, Excel, and SQLite in the core binary — nothing to download, nothing to load, nothing to break on the next release.
+- **Your integration breaks every time DuckDB releases.** SlothDB's C ABI is stable and errors are numeric codes (`ErrorCode::TABLE_NOT_FOUND = 2000`) that don't change. An extension built against 0.1.6 keeps compiling against 1.0.
+
+What's the same: embedded, columnar, vectorized, query-files-directly SQL. What's different: the four papercuts above, and this head-to-head:
 
 | | SlothDB | DuckDB |
 |---|---|---|
-| 1 M-row benchmark (15 queries) | **1.04× – 8.6× faster on every single one** | baseline |
-| Built-in file formats | **7** — CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite | 3 built in (Excel, Avro, SQLite need extensions) |
-| Remote file reading | **Built in** — HTTP(S) and public-bucket S3 work from SQL out of the box | Needs `httpfs` extension |
-| Extension stability | **Stable C ABI** — extensions keep working across releases | Internal C++ API, often breaks on upgrade |
-| Error handling | **Numeric error codes** (`ErrorCode::TABLE_NOT_FOUND = 2000`) | Free-form error strings |
-| Binary size | **~8 MB** self-contained | ~50 MB |
+| 5-query warm JOIN batch (1 M × 1 K) | **138 ms** | 540 ms (3.9× faster) |
+| Live-refresh views on growing files | `CREATE LIVE VIEW` — incremental append on CSV tails | Snapshot-only; full re-parse every query |
+| Built-in file format readers | **7** — CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite | 3 built in (Avro, Excel, SQLite need extensions) |
+| Remote file reading | **Built in** — HTTP(S) and public S3 from SQL | Needs `httpfs` extension |
+| WASM bundle size | 1.3 MB full / sub-1 MB edge build | ~18 MB (blocked by Cloudflare Workers' 1 MB cap) |
+| Extension ABI stability | **Stable C ABI**, numeric error codes | Internal C++ API, extensions rebuild per release |
+| `VARCHAR(n)` length enforcement | Enforced at INSERT; rejects over-length | Silently accepts |
+| Binary size | ~8 MB self-contained | ~50 MB |
+| License | MIT | MIT |
 
-The Avro reader alone is 5.4× faster than DuckDB's because SlothDB parses Avro natively instead of through an extension. If Excel or Avro matters in your pipeline, this is a real quality-of-life difference.
+The Avro reader alone is 5.43× faster than DuckDB's because SlothDB parses Avro natively instead of through an extension. If Excel or Avro matters in your pipeline, that's a real quality-of-life difference.
 
 ### If you're using ClickHouse today
 
@@ -175,52 +185,76 @@ df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
 
 | Platform | Command |
 |----------|---------|
-| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.4_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
-| Fedora / RHEL | `sudo rpm -i slothdb-0.1.4.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
+| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.6_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
+| Fedora / RHEL | `sudo rpm -i slothdb-0.1.6.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
 | Arch Linux | `makepkg -si` ([PKGBUILD](packaging/arch/PKGBUILD)) |
 | macOS (Homebrew) | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
 | Build from source | See [below](#build-from-source) |
 
 </details>
 
-## Performance — 1.1× – 8.6× faster than DuckDB, every format, every query
+## Performance — three stories, not sixteen
 
-> 1 M-row dataset · warm cache · 5-run median · same machine · same queries.
+> 1 M-row datasets · warm cache · 5-run median · single workstation · DuckDB latest stable. Reproduce with `pip install slothdb && python -c "import slothdb; slothdb.demo()"` — it runs the 5-query batch side-by-side with DuckDB if you have it installed.
 
-<p align="center">
-  <img src="assets/benchmarks/speedup.png" alt="SlothDB speedup vs DuckDB bar chart" width="100%">
-</p>
+### 1. JOIN — CPU-bound, new in 0.1.6
 
-### Head-to-head (query time, lower is better)
+```
+SELECT COUNT(*) FROM big JOIN sm ON b.k = s.k   -- 1 M × 1 K
 
-<p align="center">
-  <img src="assets/benchmarks/head-to-head.png" alt="SlothDB vs DuckDB side-by-side ms comparison" width="100%">
-</p>
+SlothDB  85 ms        DuckDB  212 ms        2.5× faster
+```
 
-### Full numbers
+Pure hash-join hot path, no I/O ambiguity. Typed int64 hash path, parallel CSV pre-parse, build-side projection pushdown, `COUNT(*)`-over-JOIN fused into the aggregate. Landed in this release.
+
+### 2. End-to-end batch — five queries in one shell invocation
+
+```
+scan + aggregate + GROUP BY + filter + JOIN
+
+SlothDB total  138 ms        DuckDB total  540 ms        3.9× faster
+```
+
+Mixed workload. Startup cost is part of the denominator — that's honest: it's what someone running `slothdb -c "..."` actually pays. Not a microbench.
+
+### 3. Avro — native decode beats an extension path
+
+```
+SUM(revenue) on 1 M-row .avro           SlothDB  140 ms   DuckDB  760 ms   5.43×
+GROUP BY region on 1 M-row .avro        SlothDB  170 ms   DuckDB  800 ms   4.71×
+```
+
+DuckDB reads Avro through a loaded extension; SlothDB has a native typed decoder in core. Architectural difference, not a micro-optimization.
+
+<details>
+<summary><b>Full 16-query suite across CSV / Parquet / JSON / Avro / Excel</b></summary>
 
 | Format | Query | SlothDB | DuckDB | Speedup |
 |---|---|--:|--:|:-:|
-| **CSV** | `COUNT(*)` | **33 ms** | 170 ms | **5.08×** |
-| **CSV** | `SUM(revenue)` | **106 ms** | 177 ms | **1.67×** |
-| **CSV** | `GROUP BY region` | **100 ms** | 191 ms | **1.91×** |
-| **CSV** | `GROUP BY product, year` | **117 ms** | 198 ms | **1.70×** |
-| **CSV** | `WHERE year>=2023 AND qty>100 GROUP BY region` | **107 ms** | 194 ms | **1.81×** |
-| **CSV** | `big × small JOIN COUNT(*)` (1 M × 1 K) | **85 ms** | 212 ms | **2.49×** |
-| **Parquet** | `COUNT(*)` | **12 ms** | 34 ms | **2.83×** |
-| **Parquet** | `SUM(revenue)` | **46 ms** | 48 ms | **1.04×** |
-| **Parquet** | `GROUP BY region` | **76 ms** | 88 ms | **1.16×** |
-| **Parquet** | `GROUP BY product, year` | **146 ms** | 173 ms | **1.18×** |
-| **Parquet** | `WHERE year>=2023 AND qty>100 GROUP BY region` | **157 ms** | 198 ms | **1.26×** |
-| **JSON** | `SUM(revenue)` | **242 ms** | 314 ms | **1.30×** |
-| **JSON** | `GROUP BY region` | **284 ms** | 324 ms | **1.14×** |
-| **Avro** | `SUM(revenue)` | **140 ms** | 760 ms | **5.43×** |
-| **Avro** | `GROUP BY region` | **170 ms** | 800 ms | **4.71×** |
-| **Excel** | `GROUP BY region` (1 M rows) | **2.5 s** | 3.56 s | **1.41×** |
+| CSV | `COUNT(*)` (parser throughput) | 33 ms | 170 ms | 5.08× |
+| CSV | `SUM(revenue)` | 106 ms | 177 ms | 1.67× |
+| CSV | `GROUP BY region` | 100 ms | 191 ms | 1.91× |
+| CSV | `GROUP BY product, year` | 117 ms | 198 ms | 1.70× |
+| CSV | `WHERE year>=2023 AND qty>100 GROUP BY region` | 107 ms | 194 ms | 1.81× |
+| CSV | `big × small JOIN COUNT(*)` (1 M × 1 K) | 85 ms | 212 ms | 2.49× |
+| Parquet | `COUNT(*)` | 12 ms | 34 ms | 2.83× |
+| Parquet | `SUM(revenue)` | 46 ms | 48 ms | 1.04× (tie, within noise) |
+| Parquet | `GROUP BY region` | 76 ms | 88 ms | 1.16× |
+| Parquet | `GROUP BY product, year` | 146 ms | 173 ms | 1.18× |
+| Parquet | `WHERE + GROUP BY` | 157 ms | 198 ms | 1.26× |
+| JSON | `SUM(revenue)` | 242 ms | 314 ms | 1.30× |
+| JSON | `GROUP BY region` | 284 ms | 324 ms | 1.14× |
+| Avro | `SUM(revenue)` | 140 ms | 760 ms | 5.43× |
+| Avro | `GROUP BY region` | 170 ms | 800 ms | 4.71× |
+| Excel | `GROUP BY region` | 2500 ms | 3560 ms | 1.41× |
 
-> **Biggest wins:** Avro `SUM` **5.43×** · CSV `COUNT(*)` **5.08×** · Avro `GROUP BY` **4.71×** · Parquet `COUNT(*)` **2.83×** · CSV `GROUP BY` **1.91×**
+Median speedup: 1.70×. Range: 1.04× – 5.43×.
 
-The architectural decisions behind the numbers (typed columnar decode, per-worker buffer reuse, fused scan+aggregate, zero-copy VARCHAR append, vectorized filter, parallel CSV aggregate, `PhysicalXXXScan` operators that skip the bulk-load roundtrip) are in [CHANGELOG.md](CHANGELOG.md) with a commit per optimization.
+</details>
+
+Caveats worth knowing: Parquet aggregates are within ~20 % of DuckDB on most queries — both engines saturate the columnar fast path there, so don't expect 3× on Parquet. The big gaps come from SlothDB's native decoders (Avro, CSV `COUNT(*)`) and the 0.1.6 JOIN hot path. We have not submitted to ClickBench yet — on the roadmap.
+
+The architectural decisions behind the numbers (typed columnar decode, per-worker buffer reuse, fused scan+aggregate, zero-copy VARCHAR, vectorized filter, parallel CSV aggregate, typed int64 JOIN hash path) are in [CHANGELOG.md](CHANGELOG.md) with a commit per optimization.
 
 ## Query Any File with SQL
 
