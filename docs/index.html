@@ -402,6 +402,15 @@
   </div>
 </section>
 
+<section class="page left" id="ask">
+  <h2>Ask questions in English. Get real SQL back.</h2>
+  <p class="section-lede">The <code>.ask</code> shell command translates plain English into SQL against your current catalog, shows the generated SQL, and prompts before running. Pure rules, ~50 KB in the binary — no model weights, no network, no lazy download. Already on <code>main</code>, ships in 0.1.7.</p>
+  <div class="demo-wrap">
+    <img src="assets/ask-demo.svg" alt="slothdb .ask demo — natural-language queries translated to SQL">
+  </div>
+  <p class="section-lede" style="margin-top: 24px;">Supported today: <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code>, <code>GROUP BY</code>, year filters, <code>TOP N</code>. Open-ended questions fail cleanly — the engine refuses rather than hallucinates SQL. Full phrasings list: <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md">docs/ASK.md</a>.</p>
+</section>
+
 <section class="page" id="benchmarks">
   <h2>Three proof points, not sixteen</h2>
   <p class="section-lede">1M-row datasets · warm cache · 5-run median · <a href="https://github.com/SouravRoy-ETL/slothdb#performance--three-stories-not-sixteen">reproducible locally</a> via <code>pip install slothdb &amp;&amp; python -c "import slothdb; slothdb.demo()"</code>.</p>

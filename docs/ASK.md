@@ -1,5 +1,9 @@
 # `.ask` — Natural-language queries in the SlothDB shell
 
+<p align="center">
+  <img src="../assets/ask-demo.svg" alt="slothdb .ask demo — natural-language queries translated to SQL" width="100%">
+</p>
+
 `.ask` translates a plain-English question into SQL, shows you the generated SQL, and prompts before running it. It's **pure rules** — no model weights, no network, no telemetry, no surprise downloads. Total cost: ~50 KB of C++ inside the regular SlothDB binary.
 
 The goal is the 80% case that rules can do well and fast: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `GROUP BY`, year filters, top-N. Anything more open-ended fails explicitly and asks you to rephrase — because a half-working "AI SQL" that silently gets it wrong is worse than no feature at all.

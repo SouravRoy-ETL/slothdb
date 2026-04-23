@@ -45,6 +45,24 @@
 
 ---
 
+## Coming next: `.ask` — natural-language SQL in the shell
+
+*Already on `main`, ships in 0.1.7.* Type a question, SlothDB translates it to SQL, shows you the SQL, and prompts before running. Pure C++ rules — no model weights, no network, no surprise downloads. 50 KB added to the binary.
+
+<div align="center">
+  <img src="assets/ask-demo.svg" alt="slothdb .ask demo — natural-language queries translated to SQL" width="100%">
+</div>
+
+```
+slothdb> .ask total amount per region
+-- SELECT "region", SUM("amount") FROM "sales" GROUP BY "region"
+Run? [Y/n] y
+```
+
+See [docs/ASK.md](docs/ASK.md) for the supported-phrasings list. An opt-in AI-assisted `.ask --model` is planned for 0.1.8 as a lazy download — the default `.ask` stays local, offline, and deterministic.
+
+---
+
 ## Try it in 60 seconds
 
 **In your browser** — no install, no account: **[slothdb.org/playground](https://slothdb.org/playground/)**. Full SlothDB compiled to WebAssembly, with a pre-loaded 1,000-row demo CSV + matching Parquet to compare format performance. Files you add stay on your machine.
@@ -365,6 +383,7 @@ slothdb_close(db);
 |----------|---------|
 | **SQL** | 130+ features — JOINs, CTEs (recursive), window functions, QUALIFY, MERGE, subqueries, set operations |
 | **Live file views** | `CREATE LIVE VIEW` caches the result and auto-refreshes on file change. Incremental CSV append path parses only new bytes on log-tail workloads |
+| **Shell `.ask`** | Natural-language → SQL in the CLI (rules-based, ~50 KB, no model weights, no network). COUNT / SUM / AVG / GROUP BY / TOP-N / year filters. Refuses open-ended questions cleanly. |
 | **Metadata** | `DESCRIBE <query>`, `DESCRIBE <table>`, `PRAGMA table_info('t')`, `PRAGMA database_list` — BI-tool introspection out of the box |
 | **Type constraints** | `VARCHAR(n)` length enforced on INSERT (stricter than DuckDB — no silent truncation) |
 | **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in with auto-detection, glob patterns, virtual views |
