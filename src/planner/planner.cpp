@@ -153,27 +153,41 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
             stmt.result_types);
         window->children.push_back(std::move(plan));
         plan = std::move(window);
-    } else {
-        // Plain projection.
-        auto proj = std::make_unique<LogicalProjection>(
+    }
+    // For plain-projection queries we DEFER the projection until after
+    // ORDER BY. The ORDER BY expressions bind against source-schema column
+    // indices (the binder rewrites aliases back to their select-list
+    // expression but keeps source col_idx), so sorting on the projected
+    // output would read the wrong column — or crash when the projected
+    // width is narrower than the bound col_idx.
+    std::unique_ptr<LogicalProjection> deferred_projection;
+    if (!stmt.has_aggregation && !stmt.has_window) {
+        deferred_projection = std::make_unique<LogicalProjection>(
             std::move(mutable_stmt.select_list), stmt.result_types);
-        proj->children.push_back(std::move(plan));
-        plan = std::move(proj);
     }
 
-    // 3b. DISTINCT.
-    if (stmt.is_distinct) {
-        auto distinct = std::make_unique<LogicalDistinct>(plan->GetTypes());
-        distinct->children.push_back(std::move(plan));
-        plan = std::move(distinct);
-    }
-
-    // 4. ORDER BY.
+    // 4. ORDER BY — placed before the deferred projection so col_idx
+    // refers to source schema.
     if (!stmt.order_by.empty()) {
         auto order = std::make_unique<LogicalOrderBy>(
             std::move(mutable_stmt.order_by), plan->GetTypes());
         order->children.push_back(std::move(plan));
         plan = std::move(order);
+    }
+
+    // Apply the deferred projection now. PhysicalDistinct preserves
+    // first-occurrence order, so placing DISTINCT after projection still
+    // yields the ORDER BY sort in the final output.
+    if (deferred_projection) {
+        deferred_projection->children.push_back(std::move(plan));
+        plan = std::move(deferred_projection);
+    }
+
+    // 3b. DISTINCT — operates on projected output.
+    if (stmt.is_distinct) {
+        auto distinct = std::make_unique<LogicalDistinct>(plan->GetTypes());
+        distinct->children.push_back(std::move(plan));
+        plan = std::move(distinct);
     }
 
     // 5. LIMIT.
