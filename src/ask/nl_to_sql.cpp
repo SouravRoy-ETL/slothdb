@@ -58,8 +58,17 @@ bool IsYear(const std::string &s) {
 // only strip what matters for matching patterns, not for proper NL.
 const std::unordered_set<std::string> &Stopwords() {
     static const std::unordered_set<std::string> s = {
+        // Articles / copulas / politeness
         "the", "a", "an", "of", "for", "is", "are", "was", "were",
-        "please", "show", "me", "all"
+        "be", "been", "please",
+        // Imperative framings the user often leads with
+        "show", "me", "give", "tell", "find", "list", "get",
+        "display", "out", "print", "want", "need",
+        // Connective filler that doesn't change the query shape
+        "all", "any", "some", "that", "which", "who", "whose", "whom",
+        "had", "has", "have", "did", "does", "do",
+        // Possessives that don't matter for rules
+        "their", "its"
     };
     return s;
 }
@@ -343,6 +352,23 @@ Result Translate(const std::string &nl, const Schema &schema) {
         Result r; r.status = Status::OK; r.sql = sql.str(); return r;
     }
 
+    // ---- PATTERN 1b: running total / cumulative (disabled in 0.1.7) ----
+    // The pattern would emit `SUM(x) OVER (ORDER BY date)` which is standard
+    // SQL, but SlothDB's current window engine doesn't produce the per-row
+    // cumulative result for unbounded-frame windows (it returns the grand
+    // total on every row) and doesn't accept the explicit
+    // `ROWS UNBOUNDED PRECEDING` frame syntax either. Until both of those
+    // land in the engine, `.ask running total of ...` refuses cleanly.
+    if ((!toks.empty() && toks[0] == "cumulative") ||
+        (toks.size() >= 2 && toks[0] == "running" && toks[1] == "total")) {
+        return NoMatch(
+            "running / cumulative aggregates need window-frame support "
+            "that SlothDB 0.1.7 does not yet execute correctly. Once "
+            "SUM OVER (ORDER BY ... ROWS UNBOUNDED PRECEDING) lands, "
+            ".ask will generate it automatically. For now write the "
+            "SUM OVER directly if you want to test.");
+    }
+
     // ---- PATTERN 2: SUM / AVG / MIN / MAX ----
     // "total X", "sum of X", "average X", "mean X", "min X", "max X"
     // plus optional "per Y" / "by Y" → GROUP BY
@@ -502,9 +528,167 @@ Result Translate(const std::string &nl, const Schema &schema) {
         }
     }
 
-    // ---- PATTERN 4: plain "X from Y" / "Y rows" — SELECT *  ----
-    // Conservative: only if the NL has no agg keyword and names a table.
-    // "rows in X" → SELECT * FROM X LIMIT 100
+    // ---- PATTERN 4: 'latest X' / 'most recent X' / 'newest X' ----
+    // Picks the single row with the largest value of the table's date-ish
+    // column. Symmetrical 'oldest X' / 'earliest X' picks the smallest.
+    {
+        int dir = 0; // +1 for newest, -1 for oldest
+        size_t i = 0;
+        if (!toks.empty() &&
+            (toks[0] == "latest" || toks[0] == "newest" ||
+             toks[0] == "recent")) { dir = 1; i = 1; }
+        else if (toks.size() >= 2 && toks[0] == "most" && toks[1] == "recent") {
+            dir = 1; i = 2;
+        }
+        else if (!toks.empty() &&
+                 (toks[0] == "oldest" || toks[0] == "earliest")) { dir = -1; i = 1; }
+
+        if (dir != 0 && i < toks.size()) {
+            // Optional "find me", "show me" etc. already stripped by Normalize.
+            const std::string &noun = toks[i];
+            const Table *t = ResolveTable(schema, noun);
+            if (!t) return UnresolvedTable(noun);
+            const Column *dc = DateColumn(*t);
+            if (!dc) {
+                return NoMatch("'" + toks[0] + " " + noun +
+                               "' needs a date-like column on " + t->name +
+                               " — none found. Try `.schema " + t->name +
+                               "` to see columns.");
+            }
+            std::ostringstream sql;
+            sql << "SELECT * FROM " << Q(t->name)
+                << " ORDER BY " << Q(dc->name)
+                << (dir > 0 ? " DESC" : " ASC")
+                << " LIMIT 1";
+            Result r; r.status = Status::OK; r.sql = sql.str(); return r;
+        }
+    }
+
+    // ---- PATTERN 5: superlative 'which X has most Y' / 'X with most Y' ----
+    // 'which month had most customers'  → SELECT month-expr, COUNT(DISTINCT
+    //   customer) FROM t GROUP BY month-expr ORDER BY count DESC LIMIT 1.
+    // 'which region has the highest amount' → SUM(amount) variant.
+    //
+    // The grouping key can be 'month' / 'year' / 'day' / 'week' — those
+    // get rendered via EXTRACT / substring depending on the date col's
+    // type — or any column on the implicit table.
+    {
+        int most_idx = -1;
+        bool is_least = false;
+        for (size_t i = 0; i < toks.size(); i++) {
+            if (toks[i] == "most" || toks[i] == "highest" ||
+                toks[i] == "biggest" || toks[i] == "largest") {
+                most_idx = static_cast<int>(i); break;
+            }
+            if (toks[i] == "least" || toks[i] == "lowest" ||
+                toks[i] == "smallest" || toks[i] == "fewest") {
+                most_idx = static_cast<int>(i); is_least = true; break;
+            }
+        }
+        // Need a grouping noun before most/highest/etc. "which X" or "X with".
+        if (most_idx > 0 && static_cast<size_t>(most_idx) + 1 < toks.size()) {
+            // The noun right before 'most' is the grouping key.
+            const std::string &group_noun = toks[static_cast<size_t>(most_idx) - 1];
+
+            // After 'most'/'highest'/etc., the metric noun may have
+            // adjectives in front of it ("the most loyal repeat customers").
+            // Scan forward for the first token that either matches a column
+            // on some table or has a known synonym. Skip unknown adjectives.
+            std::string metric_noun;
+            const Table *table = nullptr;
+            for (size_t j = static_cast<size_t>(most_idx) + 1; j < toks.size(); j++) {
+                for (const auto &t : schema.tables) {
+                    if (ResolveColumn(t, toks[j])) {
+                        metric_noun = toks[j];
+                        table = &t;
+                        break;
+                    }
+                }
+                if (table) break;
+            }
+            if (metric_noun.empty()) {
+                // Didn't resolve any noun after 'most' — honest refusal.
+                return NoMatch(
+                    "saw '" + toks[static_cast<size_t>(most_idx)] +
+                    "' but couldn't map the following nouns to any column. "
+                    "Try naming a column explicitly (e.g. '... most orders', "
+                    "'... highest amount').");
+            }
+            if (!table && !schema.tables.empty()) table = &schema.tables[0];
+            if (!table) return NoMatch("no tables loaded");
+
+            // Grouping expression: month/year/week/day on a date column →
+            // EXTRACT; otherwise, a direct column match on the table.
+            std::string group_expr;
+            std::string group_alias;
+            if (group_noun == "month" || group_noun == "year" ||
+                group_noun == "week" || group_noun == "day") {
+                const Column *dc = DateColumn(*table);
+                if (!dc) return NoMatch("'" + group_noun +
+                    "' needs a date column on " + table->name + " — none found.");
+                std::string kw = group_noun;
+                for (auto &c : kw) c = static_cast<char>(std::toupper(
+                    static_cast<unsigned char>(c)));
+                std::string tl = lower(dc->type);
+                bool is_varchar = (tl.find("varchar") != std::string::npos ||
+                                   tl.find("text") != std::string::npos ||
+                                   tl.find("string") != std::string::npos);
+                if (is_varchar) {
+                    // VARCHAR date columns: function-in-GROUP-BY is currently
+                    // unreliable in the engine (planner bug). Fall back to
+                    // grouping by the raw column — coarser than the user
+                    // asked ("per month" ends up per-day for ISO dates) but
+                    // always correct. Promote to EXTRACT once the engine
+                    // lands function-aware grouping.
+                    group_expr = Q(dc->name);
+                    group_alias = dc->name;
+                } else {
+                    group_expr = "EXTRACT(" + kw + " FROM " + Q(dc->name) + ")";
+                    group_alias = group_noun;
+                }
+            } else {
+                const Column *gcol = ResolveColumn(*table, group_noun);
+                if (!gcol) return UnresolvedColumn(group_noun);
+                group_expr = Q(gcol->name);
+                group_alias = gcol->name;
+            }
+
+            // Metric: if the NL said "most customers", count distinct of the
+            // matching column. If it said "most amount"/"highest revenue",
+            // use SUM. Heuristic: a numeric column defaults to SUM, anything
+            // else defaults to COUNT(DISTINCT).
+            const Column *metric_col = ResolveColumn(*table, metric_noun);
+            if (!metric_col) return UnresolvedColumn(metric_noun);
+            std::string metric_t = lower(metric_col->type);
+            std::string metric_n = lower(metric_col->name);
+            // ID-ish columns (named `id` or ending `_id`) are semantically
+            // identifiers, not metrics — summing them is nonsense. Use
+            // COUNT(DISTINCT) for those. Everything else numeric → SUM.
+            bool is_id_col = (metric_n == "id") ||
+                             (metric_n.size() > 3 &&
+                              metric_n.compare(metric_n.size() - 3, 3, "_id") == 0);
+            bool numeric = !is_id_col &&
+                           (metric_t.find("int") != std::string::npos ||
+                            metric_t.find("double") != std::string::npos ||
+                            metric_t.find("float") != std::string::npos ||
+                            metric_t.find("decimal") != std::string::npos ||
+                            metric_t.find("numeric") != std::string::npos);
+            std::string metric_expr = numeric
+                ? ("SUM(" + Q(metric_col->name) + ")")
+                : ("COUNT(DISTINCT " + Q(metric_col->name) + ")");
+
+            std::ostringstream sql;
+            sql << "SELECT " << group_expr << " AS " << Q(group_alias)
+                << ", " << metric_expr << " AS " << Q(numeric ? "total" : "n")
+                << " FROM " << Q(table->name)
+                << " GROUP BY " << group_expr
+                << " ORDER BY " << metric_expr << (is_least ? " ASC" : " DESC")
+                << " LIMIT 1";
+            Result r; r.status = Status::OK; r.sql = sql.str(); return r;
+        }
+    }
+
+    // ---- PATTERN 6: plain "X from Y" / "Y rows" — SELECT *  ----
     if (toks.size() >= 2 &&
         (toks[0] == "rows" || toks[0] == "data") &&
         toks[1] == "from") {
@@ -520,7 +704,8 @@ Result Translate(const std::string &nl, const Schema &schema) {
 
     return NoMatch(
         "no pattern matched. Try phrasings like 'how many X', "
-        "'total X per Y', 'top N X by Y', 'average X in YYYY'. "
+        "'total X per Y', 'top N X by Y', 'latest X', 'which Y has most Z', "
+        "'running total of X', 'average X in YYYY'. "
         "See docs/ASK.md for the full list.");
 }
 

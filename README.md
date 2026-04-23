@@ -43,9 +43,8 @@ See [docs/ASK.md](docs/ASK.md) for the supported-phrasings list. An opt-in AI-as
 
 Also in 0.1.7:
 
-- **Catalog-introspection C API** — `slothdb_table_count` / `_name` / `_column_count` / `_column_name` / `_column_type`. Lets any binding (Python, Node, WASM) enumerate tables + columns without running `information_schema` SQL.
-- **Marketing credibility pass** — killed a ghost "1.1× – 8.6× faster, every format, every query" claim. Real range is 1.04× – 5.43×, median 1.70×. Headline number is the 3.9× 5-query warm batch; full table is in `<details>` with honest "(tie)" labels on the 1.04× row.
-- **Hero + landing-page reframe** — moat-first (*"Live SQL views that follow your files"*), feature cards reordered to lead with Live. README's "If you're using DuckDB today" opens with "keep using it" and names the four concrete papercuts that would actually motivate a switch.
+- **Catalog-introspection C API** — five new functions (`slothdb_table_count`, `_name`, `_column_count`, `_column_name`, `_column_type`) to enumerate tables + columns from any binding. `.ask` is the first consumer; `list_tables()` / `describe_table()` in the Python wheel come next.
+- **Benchmark numbers cleaned up.** The previous README claimed "1.1× – 8.6× faster, every format, every query"; the actual suite tops out at 5.43×. That's fixed. Lead number is now 3.9× on a 5-query warm batch (real, reproducible). The 1.04× Parquet SUM row is labeled as a tie instead of hidden.
 
 403 tests, 131 513 assertions, green on Windows / Linux / macOS.
 

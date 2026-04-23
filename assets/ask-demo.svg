@@ -1,53 +1,45 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 580" width="900" height="580" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace">
   <style>
-    .bg { fill: #0f1117; }
-    .chrome { fill: #1a1d25; }
-    .stroke { stroke: #2a2d35; stroke-width: 1; }
-    .title { fill: #8b8f9a; font-size: 12px; }
-    .prompt { fill: #a78bfa; font-size: 14px; font-weight: 600; }
-    .cmd { fill: #e6e8eb; font-size: 14px; }
-    .ask { fill: #60a5fa; font-size: 14px; font-weight: 600; }
-    .muted { fill: #6b7280; font-size: 14px; }
-    .comment { fill: #7c7f8a; font-size: 14px; font-style: italic; }
-    .sql-kw { fill: #f472b6; font-size: 14px; font-weight: 600; }
-    .sql-id { fill: #fcd34d; font-size: 14px; }
-    .ok { fill: #34d399; font-size: 14px; }
-    .value { fill: #e6e8eb; font-size: 14px; }
-    .rule { fill: #3a3d45; font-size: 14px; }
-    .warn { fill: #fb923c; font-size: 14px; }
-    .cta { fill: #f59e0b; font-size: 14px; font-weight: 600; }
-    .cursor { fill: #a78bfa; font-size: 14px; }
-    .line { opacity: 0; }
+    .bg       { fill: #0f1117; }
+    .chrome   { fill: #1a1d25; }
+    .stroke   { stroke: #2a2d35; stroke-width: 1; }
+    .title    { fill: #8b8f9a; font-size: 12px; }
+    text      { font-size: 14px; fill: #e6e8eb; white-space: pre; }
+    .prompt   { fill: #a78bfa; font-weight: 600; }
+    .ask      { fill: #60a5fa; font-weight: 600; }
+    .muted    { fill: #6b7280; }
+    .comment  { fill: #7c7f8a; font-style: italic; }
+    .kw       { fill: #f472b6; font-weight: 600; }
+    .id       { fill: #fcd34d; }
+    .ok       { fill: #34d399; }
+    .warn     { fill: #fb923c; }
+    .rule     { fill: #3a3d45; }
+    .cta      { fill: #f59e0b; font-weight: 600; }
+    .cursor   { fill: #a78bfa; }
+    .line     { opacity: 0; }
   </style>
 
-  <rect class="bg" x="0" y="0" width="900" height="580" rx="8"/>
+  <rect class="bg" x="0" y="0" width="900" height="600" rx="8"/>
   <rect class="chrome stroke" x="0" y="0" width="900" height="32" rx="8"/>
   <circle cx="18" cy="16" r="6" fill="#ff5f56"/>
   <circle cx="38" cy="16" r="6" fill="#ffbd2e"/>
   <circle cx="58" cy="16" r="6" fill="#27c93f"/>
   <text class="title" x="450" y="20" text-anchor="middle">slothdb — .ask (natural language → SQL)</text>
 
-  <g transform="translate(24, 60)">
+  <g transform="translate(24, 62)">
 
-    <!-- Line 1: prompt + .ask command -->
+    <!-- Interaction 1 -->
     <g class="line">
-      <text class="prompt" x="0" y="0">slothdb&gt;</text>
-      <text class="ask" x="80" y="0">.ask</text>
-      <text class="cmd" x="118" y="0">how many sales</text>
+      <text x="0" y="0"><tspan class="prompt">slothdb&gt; </tspan><tspan class="ask">.ask</tspan> how many sales</text>
       <animate attributeName="opacity" from="0" to="1" begin="0.2s" dur="0.2s" fill="freeze"/>
     </g>
-
     <g class="line">
-      <text class="comment" x="0" y="22">-- generated:</text>
-      <text class="sql-kw" x="100" y="22">SELECT COUNT</text>
-      <text class="value" x="208" y="22">(*)</text>
-      <text class="sql-kw" x="230" y="22">FROM</text>
-      <text class="sql-id" x="275" y="22">"sales"</text>
+      <text x="0" y="22"><tspan class="comment">-- generated: </tspan><tspan class="kw">SELECT COUNT</tspan>(*) <tspan class="kw">FROM </tspan><tspan class="id">"sales"</tspan></text>
       <animate attributeName="opacity" from="0" to="1" begin="0.8s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="muted" x="0" y="44">Run? [Y/n] y</text>
+      <text x="0" y="44"><tspan class="muted">Run? [Y/n] </tspan>y</text>
       <animate attributeName="opacity" from="0" to="1" begin="1.3s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
@@ -55,109 +47,75 @@
       <animate attributeName="opacity" from="0" to="1" begin="1.6s" dur="0.2s" fill="freeze"/>
     </g>
 
-    <!-- Line 2: total amount per region -->
+    <!-- Interaction 2 -->
     <g class="line">
-      <text class="prompt" x="0" y="104">slothdb&gt;</text>
-      <text class="ask" x="80" y="104">.ask</text>
-      <text class="cmd" x="118" y="104">total amount per region</text>
+      <text x="0" y="106"><tspan class="prompt">slothdb&gt; </tspan><tspan class="ask">.ask</tspan> total amount per region</text>
       <animate attributeName="opacity" from="0" to="1" begin="2.2s" dur="0.2s" fill="freeze"/>
     </g>
-
     <g class="line">
-      <text class="comment" x="0" y="126">-- generated:</text>
-      <text class="sql-kw" x="100" y="126">SELECT</text>
-      <text class="sql-id" x="158" y="126">"region"</text>
-      <text class="value" x="215" y="126">,</text>
-      <text class="sql-kw" x="225" y="126">SUM</text>
-      <text class="value" x="257" y="126">(</text>
-      <text class="sql-id" x="262" y="126">"amount"</text>
-      <text class="value" x="320" y="126">)</text>
-      <text class="sql-kw" x="332" y="126">FROM</text>
-      <text class="sql-id" x="377" y="126">"sales"</text>
-      <text class="sql-kw" x="435" y="126">GROUP BY</text>
-      <text class="sql-id" x="508" y="126">"region"</text>
+      <text x="0" y="128"><tspan class="comment">-- generated: </tspan><tspan class="kw">SELECT </tspan><tspan class="id">"region"</tspan>, <tspan class="kw">SUM</tspan>(<tspan class="id">"amount"</tspan>) <tspan class="kw">FROM </tspan><tspan class="id">"sales" </tspan><tspan class="kw">GROUP BY </tspan><tspan class="id">"region"</tspan></text>
       <animate attributeName="opacity" from="0" to="1" begin="2.8s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="muted" x="0" y="148">Run? [Y/n] y</text>
+      <text x="0" y="150"><tspan class="muted">Run? [Y/n] </tspan>y</text>
       <animate attributeName="opacity" from="0" to="1" begin="3.3s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="value" x="0" y="170">EMEA   1000.00</text>
-      <text class="value" x="0" y="188">APAC    425.00</text>
-      <text class="value" x="0" y="206">AMER    450.00</text>
+      <text x="0" y="172">EMEA   1000.00</text>
+      <text x="0" y="190">APAC    425.00</text>
+      <text x="0" y="208">AMER    450.00</text>
       <animate attributeName="opacity" from="0" to="1" begin="3.6s" dur="0.25s" fill="freeze"/>
     </g>
 
-    <!-- Line 3: average amount in 2024 -->
+    <!-- Interaction 3 — year filter -->
     <g class="line">
-      <text class="prompt" x="0" y="244">slothdb&gt;</text>
-      <text class="ask" x="80" y="244">.ask</text>
-      <text class="cmd" x="118" y="244">average amount in 2024</text>
+      <text x="0" y="248"><tspan class="prompt">slothdb&gt; </tspan><tspan class="ask">.ask</tspan> average amount in 2024</text>
       <animate attributeName="opacity" from="0" to="1" begin="4.2s" dur="0.2s" fill="freeze"/>
     </g>
-
     <g class="line">
-      <text class="comment" x="0" y="266">-- generated:</text>
-      <text class="sql-kw" x="100" y="266">SELECT AVG</text>
-      <text class="value" x="189" y="266">(</text>
-      <text class="sql-id" x="195" y="266">"amount"</text>
-      <text class="value" x="252" y="266">)</text>
-      <text class="sql-kw" x="264" y="266">FROM</text>
-      <text class="sql-id" x="309" y="266">"sales"</text>
-      <text class="sql-kw" x="367" y="266">WHERE</text>
-      <text class="sql-id" x="420" y="266">"order_date"</text>
-      <text class="sql-kw" x="510" y="266">LIKE</text>
-      <text class="value" x="552" y="266">'2024%'</text>
+      <text x="0" y="270"><tspan class="comment">-- generated: </tspan><tspan class="kw">SELECT AVG</tspan>(<tspan class="id">"amount"</tspan>) <tspan class="kw">FROM </tspan><tspan class="id">"sales" </tspan><tspan class="kw">WHERE </tspan><tspan class="id">"order_date" </tspan><tspan class="kw">LIKE </tspan>'2024%'</text>
       <animate attributeName="opacity" from="0" to="1" begin="4.8s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="muted" x="0" y="288">Run? [Y/n] y</text>
+      <text x="0" y="292"><tspan class="muted">Run? [Y/n] </tspan>y</text>
       <animate attributeName="opacity" from="0" to="1" begin="5.3s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="ok" x="0" y="310">285.00</text>
+      <text class="ok" x="0" y="314">285.00</text>
       <animate attributeName="opacity" from="0" to="1" begin="5.6s" dur="0.2s" fill="freeze"/>
     </g>
 
-    <!-- Line 4: refusal -->
+    <!-- Interaction 4 — refusal -->
     <g class="line">
-      <text class="prompt" x="0" y="348">slothdb&gt;</text>
-      <text class="ask" x="80" y="348">.ask</text>
-      <text class="cmd" x="118" y="348">which month had the most loyal repeat buyers</text>
+      <text x="0" y="354"><tspan class="prompt">slothdb&gt; </tspan><tspan class="ask">.ask</tspan> which month had the most loyal repeat buyers</text>
       <animate attributeName="opacity" from="0" to="1" begin="6.2s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="warn" x="0" y="370">Could not translate: no pattern matched.</text>
+      <text class="warn" x="0" y="376">Could not translate: no pattern matched.</text>
       <animate attributeName="opacity" from="0" to="1" begin="6.7s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="muted" x="0" y="392">Try: 'how many X', 'total X per Y', 'top N X by Y', 'average X in YYYY'.</text>
+      <text class="muted" x="0" y="398">Try: 'how many X', 'total X per Y', 'top N X by Y', 'latest X', 'average X in YYYY'.</text>
       <animate attributeName="opacity" from="0" to="1" begin="6.9s" dur="0.2s" fill="freeze"/>
     </g>
 
     <!-- Footer -->
     <g class="line">
-      <text class="rule" x="0" y="430">============================================================</text>
+      <text class="rule" x="0" y="438">============================================================</text>
       <animate attributeName="opacity" from="0" to="1" begin="7.4s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="cta" x="0" y="452">No model weights.</text>
-      <text class="cmd" x="150" y="452">No network.</text>
-      <text class="cmd" x="250" y="452">Pure C++ rules.</text>
-      <text class="ok" x="380" y="452">50 KB.</text>
+      <text x="0" y="460"><tspan class="cta">No model weights.  </tspan>No network.  Pure C++ rules.  <tspan class="ok">50 KB.</tspan></text>
       <animate attributeName="opacity" from="0" to="1" begin="7.6s" dur="0.3s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="cta" x="0" y="474">Liked it?</text>
-      <text class="cmd" x="85" y="474">Star the repo: github.com/SouravRoy-ETL/slothdb</text>
+      <text x="0" y="482"><tspan class="cta">Liked it? </tspan>Star the repo: github.com/SouravRoy-ETL/slothdb</text>
       <animate attributeName="opacity" from="0" to="1" begin="7.9s" dur="0.3s" fill="freeze"/>
     </g>
 
     <!-- Cursor -->
     <g>
-      <text class="prompt" x="0" y="510">slothdb&gt;</text>
-      <text class="cursor" x="80" y="510">▋<animate attributeName="opacity" values="1;0;1" dur="1s" begin="8.4s" repeatCount="indefinite"/></text>
+      <text x="0" y="520"><tspan class="prompt">slothdb&gt; </tspan><tspan class="cursor">▋<animate attributeName="opacity" values="1;0;1" dur="1s" begin="8.4s" repeatCount="indefinite"/></tspan></text>
     </g>
 
   </g>

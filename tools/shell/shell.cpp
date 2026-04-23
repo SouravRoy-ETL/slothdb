@@ -138,20 +138,15 @@ static slothdb::ask::Schema build_ask_schema(slothdb_connection *conn) {
     return schema;
 }
 
-static void handle_ask(slothdb_connection *conn, const std::string &question) {
-    if (question.empty()) {
-        printf("Usage: .ask <natural-language question>\n");
-        printf("Examples:\n");
-        printf("  .ask how many sales in 2024\n");
-        printf("  .ask total amount per region\n");
-        printf("  .ask top 5 customers by spend\n");
-        return;
-    }
+// Run one NL question against .ask. Returns true if a query ran (or a
+// non-ambiguous refusal happened); false on hard error the caller may
+// want to react to.
+static bool ask_once(slothdb_connection *conn, const std::string &question) {
     auto schema = build_ask_schema(conn);
     if (schema.tables.empty()) {
-        printf("No tables found. Load data first (e.g. create a table or "
+        printf("No tables found. Load data first (create a table or "
                "query a file) before using .ask.\n");
-        return;
+        return true;
     }
     auto r = slothdb::ask::Translate(question, schema);
     if (r.status != slothdb::ask::Status::OK) {
@@ -159,19 +154,17 @@ static void handle_ask(slothdb_connection *conn, const std::string &question) {
         if (!r.unresolved.empty()) {
             printf("  Unresolved token: '%s'\n", r.unresolved.c_str());
         }
-        printf("  Try .schema to see available columns.\n");
-        return;
+        printf("  Try .schema to see available columns, or rephrase.\n");
+        return true;
     }
     printf("-- %s\n", r.sql.c_str());
     printf("Run? [Y/n] ");
     fflush(stdout);
     char buf[16];
-    if (!fgets(buf, sizeof(buf), stdin)) { printf("\n"); return; }
+    if (!fgets(buf, sizeof(buf), stdin)) { printf("\n"); return false; }
     char ch = buf[0];
-    if (ch == 'n' || ch == 'N') { printf("Skipped.\n"); return; }
+    if (ch == 'n' || ch == 'N') { printf("Skipped.\n"); return true; }
 
-    // Execute. Use slothdb_query directly rather than our run_query helper
-    // so ".ask" doesn't append to the multi-line buffer.
     slothdb_result *exec_result = nullptr;
     auto status = slothdb_query(conn, r.sql.c_str(), &exec_result);
     if (status == SLOTHDB_OK) {
@@ -180,6 +173,43 @@ static void handle_ask(slothdb_connection *conn, const std::string &question) {
         fprintf(stderr, "Error: %s\n", slothdb_result_error(exec_result));
     }
     slothdb_free_result(exec_result);
+    return true;
+}
+
+static void handle_ask(slothdb_connection *conn, const std::string &question) {
+    // With an argument: single-shot. Translate → confirm → run → return
+    // to the main SQL prompt.
+    if (!question.empty()) {
+        ask_once(conn, question);
+        return;
+    }
+
+    // No argument: enter interactive ask-mode. Keeps reading NL lines
+    // (no ".ask" prefix required) until the user types exit / quit /
+    // ":q" / ":quit", hits an empty line, or sends EOF. Each non-empty
+    // line runs through the NL→SQL pipeline, shows the generated SQL,
+    // and prompts [Y/n] before executing.
+    printf("ask mode — type a question in English.\n");
+    printf("  Commands: `exit` / `quit` / blank line / Ctrl+D to leave.\n\n");
+    while (true) {
+        printf("ask> ");
+        fflush(stdout);
+        char buf[1024];
+        if (!fgets(buf, sizeof(buf), stdin)) { printf("\n"); break; }
+        // Strip trailing newline and whitespace.
+        std::string line(buf);
+        while (!line.empty() &&
+               (line.back() == '\n' || line.back() == '\r' ||
+                line.back() == ' '  || line.back() == '\t')) {
+            line.pop_back();
+        }
+        if (line.empty()) break;
+        if (line == "exit" || line == "quit" || line == ":q" ||
+            line == ":quit" || line == ":exit") break;
+        if (!ask_once(conn, line)) break;
+        printf("\n");
+    }
+    printf("Back to SQL mode.\n");
 }
 
 static void handle_tables(slothdb_connection *conn, const std::string &arg) {
