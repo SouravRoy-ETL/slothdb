@@ -2,9 +2,11 @@
 #include "slothdb/execution/expression_executor.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/string_util.hpp"
+#ifndef SLOTHDB_EDGE
 #include "slothdb/storage/arrow_ipc.hpp"
 #include "slothdb/storage/avro_reader.hpp"
 #include "slothdb/storage/sqlite_scanner.hpp"
+#endif
 #include "slothdb/storage/data_table.hpp"
 #include "slothdb/storage/fast_csv_reader.hpp"
 #include "slothdb/storage/json_reader.hpp"
@@ -625,6 +627,7 @@ private:
     idx_t chunks_in_current_ = 0;
 };
 
+#ifndef SLOTHDB_EDGE
 // Streaming Avro scan — mirrors PhysicalJSONScan. Init() parses the Avro
 // container into typed DataChunks via AvroReader::ReadIntoChunks, skipping
 // the rows_/BulkLoadRows roundtrip; GetData() emits them sequentially.
@@ -722,6 +725,7 @@ private:
     std::vector<DataChunk> chunks_;
     idx_t emit_pos_ = 0;
 };
+#endif // SLOTHDB_EDGE
 
 // Streaming JSON scan — parses the file in Init() (mmap + parallel worker
 // threads under the hood via JSONReader::ReadIntoChunks) into a vector of
@@ -6145,6 +6149,7 @@ PhysicalOpPtr PhysicalPlanner::PlanGet(const LogicalGet &op) {
             return std::make_unique<PhysicalJSONScan>(
                 op.table->GetFilePath(), op.table->GetTypes());
         }
+#ifndef SLOTHDB_EDGE
         if (op.table->GetFileFormat() == "avro") {
             return std::make_unique<PhysicalAvroScan>(
                 op.table->GetFilePath(), op.table->GetTypes());
@@ -6158,6 +6163,7 @@ PhysicalOpPtr PhysicalPlanner::PlanGet(const LogicalGet &op) {
                 op.table->GetFilePath(), op.table->GetFileSubname(),
                 op.table->GetTypes());
         }
+#endif
         return std::make_unique<PhysicalFileScan>(
             op.table->GetFilePath(), op.table->GetFileDelimiter(),
             op.table->GetTypes());

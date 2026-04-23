@@ -10,11 +10,13 @@
 #include "slothdb/storage/fast_csv_reader.hpp"
 #include "slothdb/storage/json_reader.hpp"
 #include "slothdb/storage/parquet.hpp"
+#ifndef SLOTHDB_EDGE
 #include "slothdb/storage/arrow_ipc.hpp"
 #include "slothdb/storage/avro_reader.hpp"
 #include "slothdb/storage/excel_reader.hpp"
-#include "slothdb/storage/http_client.hpp"
 #include "slothdb/storage/sqlite_scanner.hpp"
+#endif
+#include "slothdb/storage/http_client.hpp"
 #include "slothdb/storage/hive_partition.hpp"
 #include "slothdb/common/string_util.hpp"
 #include "slothdb/common/file_glob.hpp"
@@ -982,6 +984,14 @@ QueryResult Connection::Query(const std::string &sql) {
             }
 
             // Handle read_arrow table function.
+#ifdef SLOTHDB_EDGE
+            if (sel.from_table && sel.from_table->is_table_function &&
+                StringUtil::Upper(sel.from_table->table_name) == "READ_ARROW") {
+                throw BinderException("read_arrow is unavailable in SlothDB "
+                    "edge build — use the full build (@slothdb/wasm) for "
+                    "Arrow IPC support");
+            }
+#else
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "READ_ARROW") {
                 auto &args = sel.from_table->function_args;
@@ -1010,8 +1020,17 @@ QueryResult Connection::Query(const std::string &sql) {
                     temp_tables.push_back(tbl_name);
                 }
             }
+#endif // SLOTHDB_EDGE
 
             // Handle read_avro table function.
+#ifdef SLOTHDB_EDGE
+            if (sel.from_table && sel.from_table->is_table_function &&
+                StringUtil::Upper(sel.from_table->table_name) == "READ_AVRO") {
+                throw BinderException("read_avro is unavailable in SlothDB "
+                    "edge build — use the full build (@slothdb/wasm) for "
+                    "Avro support");
+            }
+#else
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "READ_AVRO") {
                 auto &args = sel.from_table->function_args;
@@ -1039,8 +1058,17 @@ QueryResult Connection::Query(const std::string &sql) {
                     temp_tables.push_back(tbl_name);
                 }
             }
+#endif // SLOTHDB_EDGE
 
             // Handle read_xlsx table function.
+#ifdef SLOTHDB_EDGE
+            if (sel.from_table && sel.from_table->is_table_function &&
+                StringUtil::Upper(sel.from_table->table_name) == "READ_XLSX") {
+                throw BinderException("read_xlsx is unavailable in SlothDB "
+                    "edge build — use the full build (@slothdb/wasm) for "
+                    "Excel support");
+            }
+#else
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "READ_XLSX") {
                 auto &args = sel.from_table->function_args;
@@ -1069,8 +1097,17 @@ QueryResult Connection::Query(const std::string &sql) {
                     temp_tables.push_back(tbl_name);
                 }
             }
+#endif // SLOTHDB_EDGE
 
             // Handle sqlite_scan table function.
+#ifdef SLOTHDB_EDGE
+            if (sel.from_table && sel.from_table->is_table_function &&
+                StringUtil::Upper(sel.from_table->table_name) == "SQLITE_SCAN") {
+                throw BinderException("sqlite_scan is unavailable in SlothDB "
+                    "edge build — use the full build (@slothdb/wasm) for "
+                    "SQLite support");
+            }
+#else
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "SQLITE_SCAN") {
                 auto &args = sel.from_table->function_args;
@@ -1105,6 +1142,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     temp_tables.push_back(tbl_name);
                 }
             }
+#endif // SLOTHDB_EDGE
 
             // Handle auto-detect: SELECT * FROM 'file.ext'
             if (sel.from_table && sel.from_table->is_table_function &&
@@ -1123,6 +1161,7 @@ QueryResult Connection::Query(const std::string &sql) {
                         sel.from_table->table_name = "READ_JSON";
                     } else if (ext == "parquet") {
                         sel.from_table->table_name = "READ_PARQUET";
+#ifndef SLOTHDB_EDGE
                     } else if (ext == "arrow" || ext == "feather" || ext == "ipc") {
                         sel.from_table->table_name = "READ_ARROW";
                     } else if (ext == "avro") {
@@ -1131,8 +1170,13 @@ QueryResult Connection::Query(const std::string &sql) {
                         sel.from_table->table_name = "READ_XLSX";
                     } else if (ext == "db" || ext == "sqlite" || ext == "sqlite3") {
                         sel.from_table->table_name = "SQLITE_SCAN";
+#endif
                     } else {
-                        throw IOException("Unknown file format: ." + ext);
+                        throw IOException("Unknown file format: ." + ext
+#ifdef SLOTHDB_EDGE
+                            + " (edge build supports CSV / JSON / Parquet only)"
+#endif
+                        );
                     }
                     // Re-process with the detected table function name.
                     // (The loop will pick it up on the next iteration — but we're
