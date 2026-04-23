@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SlothDB · run SQL queries where your files live</title>
-<meta name="description" content="SlothDB is a fast in-process SQL OLAP database. Portable C++20 engine — runs in Python, Node, the browser, or as a single binary. 1.1×–8.6× faster than DuckDB. MIT licensed.">
+<title>SlothDB · embedded SQL OLAP with live views that follow your files</title>
+<meta name="description" content="SlothDB is a fast in-process SQL OLAP database with live views that follow your files. Portable C++20 engine — runs in Python, Node, the browser, or as a single binary. 3.9× faster than DuckDB on a 5-query warm JOIN batch. MIT licensed.">
 <meta name="keywords" content="DuckDB alternative, in-process SQL database, embedded analytical database, Parquet query, CSV SQL, DuckDB replacement, SQLite OLAP, analytical database C++, fast Parquet reader, query Parquet with SQL">
 <meta name="author" content="Sourav Roy">
 <meta name="robots" content="index, follow">
@@ -12,8 +12,8 @@
 
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://slothdb.org/">
-<meta property="og:title" content="SlothDB · fast in-process SQL database, 1.1×-8.6× faster than DuckDB">
-<meta property="og:description" content="Drop-in DuckDB alternative with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite. 1.1×-8.6× faster on every benchmark. 8 MB binary, MIT.">
+<meta property="og:title" content="SlothDB 0.1.6 · Embedded SQL OLAP with live views that follow your files">
+<meta property="og:description" content="Cached views that auto-refresh on file change, with incremental CSV append. 3.9× faster than DuckDB on a 5-query JOIN batch. Built-in Parquet/CSV/JSON/Avro/Arrow/SQLite readers. 8 MB binary, MIT.">
 <meta property="og:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 <meta property="og:image:width" content="1000">
 <meta property="og:image:height" content="520">
@@ -21,8 +21,8 @@
 
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://slothdb.org/">
-<meta name="twitter:title" content="SlothDB · fast in-process SQL database, 1.1×-8.6× faster than DuckDB">
-<meta name="twitter:description" content="Drop-in DuckDB alternative. Parquet / CSV / JSON / Avro / Arrow / SQLite built in. 8 MB binary, MIT.">
+<meta name="twitter:title" content="SlothDB 0.1.6 · Embedded SQL OLAP with live views that follow your files">
+<meta name="twitter:description" content="Cached views that auto-refresh on file change, with incremental CSV append. 3.9× faster than DuckDB on a 5-query JOIN batch. 8 MB binary, MIT.">
 <meta name="twitter:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 
 <link rel="canonical" href="https://slothdb.org/">
@@ -43,7 +43,7 @@
       "@type": "SoftwareApplication",
       "name": "SlothDB",
       "alternateName": ["slothdb"],
-      "description": "Fast in-process SQL OLAP database. Portable C++20 engine runs in Python, Node, the browser, or as a single binary. Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel natively. 1.1x-8.6x faster than DuckDB.",
+      "description": "Fast in-process SQL OLAP database with live views that follow your files. Portable C++20 engine runs in Python, Node, the browser, or as a single binary. Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel natively. 3.9x faster than DuckDB on a 5-query JOIN batch.",
       "applicationCategory": "DatabaseApplication",
       "operatingSystem": "Windows, macOS, Linux",
       "url": "https://slothdb.org/",
@@ -103,14 +103,14 @@
     <span class="sql-6">COPY TO 'out.parquet'</span>
   </div>
   <div class="inner">
-    <h1>Run SQL queries<br>where your <span class="accent">files live</span></h1>
-    <p class="lede">SlothDB is a fast in-process SQL OLAP database. A portable C++20 engine — Python wheel, npm package, browser WASM, or a single binary. Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel without a server, an import step, or an extension.</p>
+    <h1>Embedded SQL OLAP.<br>With <span class="accent">live views</span> that follow your files.</h1>
+    <p class="lede">Portable C++20 analytical engine. Runs in Python, Node, the browser, or as a single binary. Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel natively. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms — 3.9× faster</b>.</p>
     <div class="ctas">
       <a class="btn primary" href="#install">Get SlothDB →</a>
       <a class="btn ghost" href="playground/">Try in browser →</a>
       <a class="btn ghost" href="docs.html">Read the docs →</a>
     </div>
-    <div class="used-by">MIT licensed · 381 tests · 1.1×–8.6× faster than DuckDB on 15 benchmarks</div>
+    <div class="used-by">MIT licensed · 381 tests · v0.1.6 out now — <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.1.6">release notes</a></div>
 
     <div class="hero-chips">
       <div class="chip-group">
@@ -183,7 +183,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
       </div>
       <h3>Fast</h3>
-      <p>Vectorized columnar engine, morsel-driven parallelism, typed streaming scans that decode directly into DataChunks. 1.1×–8.6× faster than DuckDB on every query.</p>
+      <p>Vectorized columnar engine, morsel-driven parallelism, typed streaming scans, typed int64 JOIN hash path. On a 5-query warm JOIN batch: 138 ms vs DuckDB's 540 ms — 3.9× faster.</p>
       <a class="card-link" href="#benchmarks">Read more</a>
     </div>
 

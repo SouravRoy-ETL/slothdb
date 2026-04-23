@@ -1,8 +1,12 @@
 # Build directories
 build/
+build-edge/
 build-wasm/
 cmake-build-*/
 out/
+
+# Local release artifacts
+dist/
 
 # IDE files
 .vs/

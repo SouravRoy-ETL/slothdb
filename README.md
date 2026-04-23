@@ -4,7 +4,7 @@
 
 <h3>SlothDB is a fast in-process SQL OLAP database.</h3>
 
-<p>Portable C++20 analytical engine. Runs in Python, Node, the browser, or as a single binary. Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel natively — <b>1.1×–8.6× faster than DuckDB</b> on every benchmarked format.</p>
+<p>Portable C++20 analytical engine. Runs in Python, Node, the browser, or as a single binary. Reads Parquet, CSV, JSON, Avro, Arrow, SQLite, and Excel natively. On a 5-query warm-cache JOIN batch: <b>138 ms vs DuckDB's 540 ms (3.9×)</b> — plus live views that follow your files.</p>
 
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
 [![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm&label=npm)](https://www.npmjs.com/package/@slothdb/wasm)
@@ -27,20 +27,19 @@
 
 ## What's new in 0.1.6
 
-- **`CREATE LIVE VIEW`** — first piece of the live-views moat. Views over files auto-refresh on mtime change, with an **incremental append path** for growing CSV logs that parses only the new tail instead of the full file. DuckDB is snapshot-only and structurally can't match this.
+- **`CREATE LIVE VIEW`** — a cached view that auto-refreshes when the source file changes, with an **incremental append path** for growing CSV logs that parses only the new bytes on the tail. DuckDB is snapshot-based and structurally can't match this.
   ```sql
-  CREATE LIVE VIEW app AS SELECT * FROM 'app.log';
+  CREATE LIVE VIEW app AS SELECT * FROM 'app.log.csv';
   SELECT level, COUNT(*) FROM app GROUP BY level;   -- parses file once
-  -- append 50 rows to app.log externally...
-  SELECT level, COUNT(*) FROM app GROUP BY level;   -- parses only the 50 new rows
+  -- logs keep appending externally...
+  SELECT level, COUNT(*) FROM app GROUP BY level;   -- only the new rows parsed
   ```
-- **Edge build (`-DSLOTHDB_EDGE=ON`)** — CSV / JSON / Parquet only. Strips Excel / Avro / Arrow IPC / SQLite so the WASM bundle fits under Cloudflare Workers' 1 MB cap. See [docs/EDGE_BUILD.md](docs/EDGE_BUILD.md).
-- **JOIN hot path now ~2.5× faster than DuckDB** on big × small integer-key joins (288 ms → 85 ms; DuckDB 212 ms). Typed int64 hash path, parallel CSV pre-parse, file-size-based build-side selection, build-side projection pushdown, SIMD unquoted-field scan, and COUNT(*)-over-JOIN fused into the aggregate. See [CHANGELOG.md](CHANGELOG.md) for the commit-by-commit breakdown.
-- **DESCRIBE** — `DESCRIBE <query>` and `DESCRIBE <table>` return the result schema as rows, DuckDB-format byte-for-byte.
+- **JOIN hot path — 3.9× faster than DuckDB on a 5-query warm-cache batch** (138 ms vs 540 ms). The single-query number on `SELECT COUNT(*) FROM big JOIN sm ON b.k = s.k` (1 M × 1 K): 85 ms vs 212 ms. Typed int64 hash path, parallel CSV pre-parse, file-size-based build-side selection, build-side projection pushdown, SIMD unquoted-field scan, `COUNT(*)`-over-JOIN fused into the aggregate. See [CHANGELOG.md](CHANGELOG.md) for the commit-by-commit breakdown.
+- **Edge build (`-DSLOTHDB_EDGE=ON`)** — CSV / JSON / Parquet only. Strips Excel / Avro / Arrow IPC / SQLite so the WASM bundle fits under Cloudflare Workers' 1 MB script cap. duckdb-wasm is ~18 MB, a hard block on Workers. See [docs/EDGE_BUILD.md](docs/EDGE_BUILD.md).
+- **DESCRIBE** — `DESCRIBE <query>` and `DESCRIBE <table>` return the result schema as rows, DuckDB-byte-identical.
 - **PRAGMA** — `PRAGMA table_info('t')` and `PRAGMA database_list`, so BI tools (DBT, Metabase, SQLAlchemy, DBeaver) can introspect through their JDBC/ODBC drivers.
-- **VARCHAR(n) length enforcement** — the declared max length is now enforced at INSERT time. Prevents silent truncation bugs that DuckDB ignores.
-- **ORDER BY on narrowed projections** — fixed a crash when `SELECT <col> ... ORDER BY <col>` projected away source columns whose indices the sort still referenced.
-- **JOIN reverse-order** — `FROM a JOIN b ON b.k = a.k` (right-table column first) no longer returns 0 rows.
+- **`VARCHAR(n)` length enforcement** — declared max length is enforced at INSERT. Prevents silent truncation that DuckDB ignores.
+- **Bug fixes** — `ORDER BY` on narrowed projections no longer crashes; JOIN with reverse-order ON (`b.k = a.k` when `a` is LEFT) no longer returns 0 rows; aggregate output projects back to SELECT-list order.
 
 381 tests, 131 464 assertions, green on Windows / Linux / macOS.
 
