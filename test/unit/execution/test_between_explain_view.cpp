@@ -104,6 +104,45 @@ TEST_CASE("DESCRIBE - aggregate output") {
 }
 
 // ============================================================================
+// PRAGMA
+// ============================================================================
+
+TEST_CASE("PRAGMA table_info - returns columns") {
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE t (id INTEGER, name VARCHAR)");
+
+    auto r = conn.Query("PRAGMA table_info('t')");
+    CHECK(r.RowCount() == 2);
+    CHECK(r.column_names.size() == 6);
+    CHECK(r.column_names[0] == "cid");
+    CHECK(r.column_names[1] == "name");
+    CHECK(r.column_names[2] == "type");
+    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 0);
+    CHECK(r.GetValue(0, 1).GetValue<std::string>() == "id");
+    CHECK(r.GetValue(0, 2).GetValue<std::string>() == "INTEGER");
+    CHECK(r.GetValue(1, 0).GetValue<int32_t>() == 1);
+    CHECK(r.GetValue(1, 1).GetValue<std::string>() == "name");
+    CHECK(r.GetValue(1, 2).GetValue<std::string>() == "VARCHAR");
+}
+
+TEST_CASE("PRAGMA database_list - returns memory") {
+    Database db;
+    Connection conn(db);
+
+    auto r = conn.Query("PRAGMA database_list");
+    CHECK(r.RowCount() == 1);
+    CHECK(r.column_names[1] == "name");
+    CHECK(r.GetValue(0, 1).GetValue<std::string>() == "memory");
+}
+
+TEST_CASE("PRAGMA table_info - missing table errors") {
+    Database db;
+    Connection conn(db);
+    CHECK_THROWS(conn.Query("PRAGMA table_info('does_not_exist')"));
+}
+
+// ============================================================================
 // CREATE VIEW
 // ============================================================================
 

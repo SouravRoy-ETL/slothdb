@@ -109,6 +109,56 @@ QueryResult Connection::Query(const std::string &sql) {
             continue;
         }
 
+        // Handle PRAGMA: read-only catalog introspection for BI tool drivers.
+        if (stmt->GetType() == StatementType::PRAGMA) {
+            auto &pr = static_cast<PragmaStatement &>(*stmt);
+            auto name = StringUtil::Upper(pr.name);
+            // Accept both `PRAGMA table_info` and the `PRAGMA pragma_table_info`
+            // alias DuckDB exposes for table-valued function use.
+            if (name == "PRAGMA_TABLE_INFO") name = "TABLE_INFO";
+            if (name == "PRAGMA_DATABASE_LIST") name = "DATABASE_LIST";
+
+            if (name == "TABLE_INFO") {
+                if (pr.arg.empty()) {
+                    throw BinderException("PRAGMA table_info requires a table name");
+                }
+                auto *tbl = db_.GetCatalog().GetTable(pr.arg);
+                if (!tbl) {
+                    throw CatalogException("Table '" + pr.arg + "' not found");
+                }
+                final_result.column_names = {"cid", "name", "type", "notnull",
+                                             "dflt_value", "pk"};
+                final_result.column_types = {
+                    LogicalType::INTEGER(), LogicalType::VARCHAR(),
+                    LogicalType::VARCHAR(), LogicalType::BOOLEAN(),
+                    LogicalType::VARCHAR(), LogicalType::BOOLEAN()};
+                auto &cols = tbl->GetColumns();
+                for (idx_t i = 0; i < cols.size(); i++) {
+                    final_result.rows.push_back({
+                        Value::INTEGER(static_cast<int32_t>(i)),
+                        Value::VARCHAR(cols[i].name),
+                        Value::VARCHAR(cols[i].type.ToString()),
+                        Value::BOOLEAN(false),
+                        Value(),
+                        Value::BOOLEAN(false)});
+                }
+                continue;
+            }
+            if (name == "DATABASE_LIST") {
+                final_result.column_names = {"seq", "name", "file"};
+                final_result.column_types = {
+                    LogicalType::BIGINT(), LogicalType::VARCHAR(),
+                    LogicalType::VARCHAR()};
+                // No ATTACH support yet; always the single in-memory database.
+                final_result.rows.push_back({
+                    Value::BIGINT(0),
+                    Value::VARCHAR("memory"),
+                    Value()});
+                continue;
+            }
+            throw BinderException("Unknown PRAGMA: " + pr.name);
+        }
+
         // Handle DESCRIBE: bind the inner statement and emit its result schema.
         if (stmt->GetType() == StatementType::DESCRIBE) {
             auto &desc = static_cast<DescribeStatement &>(*stmt);

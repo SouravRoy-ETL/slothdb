@@ -53,6 +53,7 @@ static const std::unordered_map<std::string, TokenType> KEYWORDS = {
     {"UNION", TokenType::KW_UNION}, {"EXCEPT", TokenType::KW_EXCEPT},
     {"INTERSECT", TokenType::KW_INTERSECT},
     {"EXPLAIN", TokenType::KW_EXPLAIN}, {"DESCRIBE", TokenType::KW_DESCRIBE},
+    {"PRAGMA", TokenType::KW_PRAGMA},
     {"COPY", TokenType::KW_COPY},
     {"TO", TokenType::KW_TO},
     {"NULLS", TokenType::KW_NULLS}, {"FIRST", TokenType::KW_FIRST},

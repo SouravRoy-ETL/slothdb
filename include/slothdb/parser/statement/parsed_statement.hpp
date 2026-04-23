@@ -17,6 +17,7 @@ enum class StatementType : uint8_t {
     DELETE_STMT,
     EXPLAIN,
     DESCRIBE,
+    PRAGMA,
     CREATE_VIEW,
     TRUNCATE,
     ALTER_TABLE,
@@ -166,6 +167,16 @@ class DescribeStatement : public ParsedStatement {
 public:
     DescribeStatement() : ParsedStatement(StatementType::DESCRIBE) {}
     ParsedStmtPtr inner;
+};
+
+// PRAGMA statement: `PRAGMA <name>` or `PRAGMA <name>('arg')`.
+// Returns catalog-introspection rows so BI tools (DBT, Metabase, DBeaver…)
+// can plug into SlothDB via JDBC/ODBC drivers that issue PRAGMAs.
+class PragmaStatement : public ParsedStatement {
+public:
+    PragmaStatement() : ParsedStatement(StatementType::PRAGMA) {}
+    std::string name;
+    std::string arg; // empty when pragma takes no argument
 };
 
 // CREATE VIEW statement.

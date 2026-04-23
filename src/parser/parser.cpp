@@ -197,6 +197,7 @@ ParsedStmtPtr Parser::ParseStatement() {
     if (CheckKeyword(TokenType::KW_DELETE)) return ParseDeleteStatement();
     if (CheckKeyword(TokenType::KW_EXPLAIN)) return ParseExplainStatement();
     if (CheckKeyword(TokenType::KW_DESCRIBE)) return ParseDescribeStatement();
+    if (CheckKeyword(TokenType::KW_PRAGMA)) return ParsePragmaStatement();
     if (CheckKeyword(TokenType::KW_MERGE)) return ParseMergeStatement();
     // COPY table TO/FROM 'file.csv' [WITH (options)]
     // COPY (SELECT ...) TO 'file' [WITH (options)]
@@ -1205,6 +1206,27 @@ ParsedStmtPtr Parser::ParseExplainStatement() {
     Expect(TokenType::KW_EXPLAIN, "");
     auto stmt = std::make_unique<ExplainStatement>();
     stmt->inner = ParseStatement();
+    return stmt;
+}
+
+// PRAGMA statement. Syntax:
+//   PRAGMA <name>              -- e.g. PRAGMA database_list
+//   PRAGMA <name>('<arg>')     -- e.g. PRAGMA table_info('t')
+ParsedStmtPtr Parser::ParsePragmaStatement() {
+    Expect(TokenType::KW_PRAGMA, "");
+    auto stmt = std::make_unique<PragmaStatement>();
+    stmt->name = ExpectIdentifier("for PRAGMA name").value;
+    if (Match(TokenType::LPAREN)) {
+        if (!Check(TokenType::RPAREN)) {
+            // Single string (or bare identifier) argument is all we support.
+            if (Check(TokenType::STRING_LITERAL)) {
+                stmt->arg = Advance().value;
+            } else {
+                stmt->arg = ExpectIdentifier("for PRAGMA argument").value;
+            }
+        }
+        Expect(TokenType::RPAREN, "after PRAGMA argument");
+    }
     return stmt;
 }
 
