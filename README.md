@@ -25,6 +25,19 @@
 
 ---
 
+## What's new in 0.1.6
+
+- **JOIN hot path now ~2.5× faster than DuckDB** on big × small integer-key joins (288 ms → 85 ms; DuckDB 212 ms). Typed int64 hash path, parallel CSV pre-parse, file-size-based build-side selection, build-side projection pushdown, SIMD unquoted-field scan, and COUNT(*)-over-JOIN fused into the aggregate. See [CHANGELOG.md](CHANGELOG.md) for the commit-by-commit breakdown.
+- **DESCRIBE** — `DESCRIBE <query>` and `DESCRIBE <table>` return the result schema as rows, DuckDB-format byte-for-byte.
+- **PRAGMA** — `PRAGMA table_info('t')` and `PRAGMA database_list`, so BI tools (DBT, Metabase, SQLAlchemy, DBeaver) can introspect through their JDBC/ODBC drivers.
+- **VARCHAR(n) length enforcement** — the declared max length is now enforced at INSERT time. Prevents silent truncation bugs that DuckDB ignores.
+- **ORDER BY on narrowed projections** — fixed a crash when `SELECT <col> ... ORDER BY <col>` projected away source columns whose indices the sort still referenced.
+- **JOIN reverse-order** — `FROM a JOIN b ON b.k = a.k` (right-table column first) no longer returns 0 rows.
+
+373 tests, 131 446 assertions, green on Windows / Linux / macOS.
+
+---
+
 ## Try it in 60 seconds
 
 **In your browser** — no install, no account: **[slothdb.org/playground](https://slothdb.org/playground/)**. Full SlothDB compiled to WebAssembly, with a pre-loaded 1,000-row demo CSV + matching Parquet to compare format performance. Files you add stay on your machine.
@@ -109,7 +122,7 @@ SQLite is row-oriented and tuned for transactional workloads. Aggregate queries 
 
 - **No distributed query execution.** One-node embedded engine. Use ClickHouse if you outgrow one machine.
 - **No MVCC / multi-writer transactions.** Single-writer, crash-safe checkpoint. OLTP workloads are a poor fit.
-- **Younger codebase.** 359 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
+- **Younger codebase.** 373 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
 
 ---
 
@@ -186,6 +199,7 @@ df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
 | **CSV** | `GROUP BY region` | **100 ms** | 191 ms | **1.91×** |
 | **CSV** | `GROUP BY product, year` | **117 ms** | 198 ms | **1.70×** |
 | **CSV** | `WHERE year>=2023 AND qty>100 GROUP BY region` | **107 ms** | 194 ms | **1.81×** |
+| **CSV** | `big × small JOIN COUNT(*)` (1 M × 1 K) | **85 ms** | 212 ms | **2.49×** |
 | **Parquet** | `COUNT(*)` | **12 ms** | 34 ms | **2.83×** |
 | **Parquet** | `SUM(revenue)` | **46 ms** | 48 ms | **1.04×** |
 | **Parquet** | `GROUP BY region` | **76 ms** | 88 ms | **1.16×** |
@@ -309,14 +323,16 @@ slothdb_close(db);
 | Category | Details |
 |----------|---------|
 | **SQL** | 130+ features — JOINs, CTEs (recursive), window functions, QUALIFY, MERGE, subqueries, set operations |
+| **Metadata** | `DESCRIBE <query>`, `DESCRIBE <table>`, `PRAGMA table_info('t')`, `PRAGMA database_list` — BI-tool introspection out of the box |
+| **Type constraints** | `VARCHAR(n)` length enforced on INSERT (stricter than DuckDB — no silent truncation) |
 | **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in with auto-detection, glob patterns, virtual views |
 | **Remote files** | `https://` and public-bucket `s3://` URLs work directly in any SQL path |
 | **Functions** | 70+ functions — string, math, date/time (including `DATE_TRUNC` with WEEK/QUARTER/DECADE + `MONTHNAME` / `DAYNAME` / `LAST_DAY` / `MAKE_DATE`), aggregate, regex, trigonometric |
-| **Performance** | Vectorized columnar engine (2,048 values/batch), morsel-driven parallelism, fused scan+aggregate, zero-copy VARCHAR |
+| **Performance** | Vectorized columnar engine (2,048 values/batch), morsel-driven parallelism, fused scan+aggregate, typed int64 JOIN hash path, parallel CSV pre-parse, zero-copy VARCHAR |
 | **Storage** | Single-file `.slothdb` persistence, RLE/dictionary/bitpacking compression, zone maps |
 | **Optimizer** | Constant folding, filter pushdown, TopN optimization |
 | **APIs** | CLI shell, Python (with pandas), C/C++ (stable ABI) |
-| **Reliability** | 359 tests, 131,382 assertions, bounds-checked parsing, DoS limits |
+| **Reliability** | 373 tests, 131,446 assertions, bounds-checked parsing, DoS limits |
 
 ## Documentation
 
@@ -348,7 +364,7 @@ build\src\Release\slothdb.exe  # Windows
 ```bash
 cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=ON
 cmake --build build --config Release
-ctest --test-dir build -C Release    # 359 tests
+ctest --test-dir build -C Release    # 373 tests
 ```
 
 | Build Option | Description |

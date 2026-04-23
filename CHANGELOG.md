@@ -2,6 +2,80 @@
 
 All notable changes to SlothDB are documented here.
 
+## 0.1.6 — JOIN perf overhaul, ORDER BY correctness, DuckDB-parity metadata
+
+The JOIN hot path goes from ~1.3× slower than DuckDB to ~2.5× faster on the big×small join benchmark, two latent ORDER BY / aggregate correctness bugs get closed, and three roadmap-driven metadata features land: DESCRIBE, PRAGMA, and VARCHAR(n) enforcement. **373 tests / 131 446 assertions** green on Windows, Linux, macOS.
+
+### JOIN: from slower than DuckDB to faster
+
+The 1 M-row big × 1 K-row small join benchmark (`SELECT COUNT(*) FROM big JOIN sm ON b.k = s.k`) went from **288 ms → 85 ms** on SlothDB while DuckDB stays at ~212 ms — a 3.4× improvement that flipped the scoreboard from 1.3× slower to 2.5× faster. Five commits stacked:
+
+- **Typed int64 hash path.** Build-side and probe-side integer keys go through `std::unordered_map<int64_t, …>` — no `Value::ToString()` per lookup, no `std::string` allocation per probe row.
+- **Build-side projection pushdown.** The join now tells its child scan which columns actually feed downstream consumers before materialising; wide build tables no longer parse every column.
+- **SIMD unquoted-field scan in FastCSVReader.** `NextField` uses SSE2 three-way `find` to skip to the next delimiter / newline / quote, 16 bytes at a time. Tight loop, no branch mis-prediction.
+- **Parallel CSV pre-parse for ≥ 2 MB files.** `PhysicalFileScan::GetData` decides once (via `use_parallel_`) whether to stream chunks serially or hand the whole file to `FastCSVReader::ReadIntoChunks`, which splits line-aligned byte ranges across the available hardware threads.
+- **File-size-based build-side selection.** When both children are `PhysicalFileScan`, the join sides the build table by comparing `std::filesystem::file_size` instead of materialising both sides and counting rows. Avoids double-parse on big × small.
+
+### JOIN: reverse-order equi-joins returned 0 rows
+
+`FROM sm s JOIN big b ON b.k = s.k` matched nothing while the identical-semantics `ON s.k = b.k` returned 1 M rows. The join classified `cmp.left` as the LEFT-table side unconditionally, but a user-written condition can put the RIGHT-table column first. Fixed by classifying each operand by its combined column index (`< left_col_count_` → LEFT; ≥ → RIGHT) and assigning build / probe columns accordingly. Pre-existing bug uncovered during perf benchmarking.
+
+### JOIN + aggregate fusion: COUNT(*) and int64 keys
+
+`TryComputeFusedJoinAggregate` skipped queries with no GROUP BY (like `SELECT COUNT(*) FROM A JOIN B …`) and silently only wired the string-keyed hash table. Two fixes:
+
+1. Drop the no-group guard and pre-seed a single accumulator so `COUNT = 0` on empty joins is preserved.
+2. Add an int64 lookup branch in both the parallel and sequential fused probes, mirroring the typed probe path `PhysicalHashJoin` already uses.
+
+The q3 benchmark jump above is almost entirely this change — without it, the plan falls back to `PhysicalHashJoin::GetData`, which does one `Value`-boxed round-trip per probe-row column across 1 M matches.
+
+### Planner: aggregate output projected back to SELECT-list order
+
+`PhysicalHashAggregate` emits rows as `[groups…, aggregates…]` internally regardless of how the user wrote the SELECT list, so `SELECT COUNT(*), k FROM t GROUP BY k` came back as `[k, count]`. Fixed by building a `LogicalProjection` on top of every `LogicalAggregate` that picks columns out of the aggregate's internal schema in user-SELECT order. For `GROUP BY k`, the projection emits col 0 = count, col 1 = k as the user wrote. Pre-existing; also surfaced as a `GetValue for type INVALID` error in some shapes before the reorder.
+
+### Planner: ORDER BY below the plain projection
+
+`SELECT label FROM t ORDER BY label LIMIT 3` segfaulted when the projection narrowed the schema: the ORDER BY's `column_index` stayed in source-schema (from the binder) while `PhysicalOrderBy` read from projection-output rows. When the projected width was less than the bound `col_idx`, access went out of bounds on a release build. The symptoms varied — crash on `SELECT label ORDER BY label`, silent mis-sort on `SELECT label, k ORDER BY label` (sorts by k at index 1).
+
+Fixed by deferring the plain projection until after ORDER BY in the planner. `PhysicalDistinct` preserves first-occurrence order, so DISTINCT after the deferred projection still yields a sorted final output. Aggregate / window placement is unchanged — their ORDER BY has separate, lower-priority issues (tracked but not this release).
+
+### DESCRIBE: `DESCRIBE <query>` and `DESCRIBE <table>`
+
+Roadmap #1 for 0.1.6. DuckDB's first-query-on-a-new-file move now works in SlothDB: bind the inner SELECT, emit its `result_names` / `result_types` as six columns (`column_name, column_type, null, key, default, extra`). Output matches DuckDB byte-for-byte. `DESCRIBE <table>` desugars to `DESCRIBE SELECT * FROM <table>` so bare table names work the same way.
+
+```sql
+DESCRIBE SELECT * FROM employees;
+DESCRIBE employees;
+DESCRIBE SELECT region, SUM(revenue) AS total FROM sales GROUP BY region;
+```
+
+### PRAGMA introspection: `table_info` and `database_list`
+
+Roadmap #2. DBT, Metabase, SQLAlchemy, DBeaver all introspect via PRAGMAs through their JDBC/ODBC drivers — without these, SlothDB can't plug into a BI tool. New `PRAGMA` keyword, `PragmaStatement` AST, and dispatch in `Connection::Query`:
+
+- `PRAGMA table_info('t')` → `(cid, name, type, notnull, dflt_value, pk)` rows per column, DuckDB-format. `notnull` / `pk` hardcoded to false because the catalog does not yet track them.
+- `PRAGMA database_list` → single in-memory database until `ATTACH` lands.
+- `pragma_table_info` and `pragma_database_list` aliases are also accepted.
+
+### VARCHAR(n): length enforcement on INSERT
+
+Roadmap #4. Parser already read the `(n)`; the binder was throwing it away. Now `VarcharTypeInfo` carries the max length, and `PhysicalInsert` rejects rows whose string value exceeds it — no more silent truncation where you discover a VARCHAR(5) silently held 200 chars in production. Stricter than DuckDB, which ignores the length.
+
+```sql
+CREATE TABLE t (code VARCHAR(3));
+INSERT INTO t VALUES ('abc');    -- OK
+INSERT INTO t VALUES ('toolong'); -- Error: Value too long for column 0 (VARCHAR(3): got 7 chars)
+```
+
+Bare `VARCHAR` / `TEXT` / `STRING` stay unbounded, so existing tables behave identically. `DESCRIBE` and `PRAGMA table_info` both render the declared length (e.g. `VARCHAR(3)`).
+
+### Platform
+
+- CMake project version bumped to 0.1.6. Engine `slothdb_version()` returns `"0.1.6"`.
+- Test suite: 363 → 373 (10 new tests covering DESCRIBE, PRAGMA, VARCHAR(n)).
+
+---
+
 ## 0.1.5 — WASM playground, npm package, engine fixes
 
 Browser-runnable build plus a wave of binder/planner fixes shaken out by the playground and community feedback. **363 tests / 131 408 assertions** green on Windows, Linux, macOS.

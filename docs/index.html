@@ -48,7 +48,7 @@
       "operatingSystem": "Windows, macOS, Linux",
       "url": "https://slothdb.org/",
       "downloadUrl": "https://github.com/SouravRoy-ETL/slothdb/releases/latest",
-      "softwareVersion": "0.1.4",
+      "softwareVersion": "0.1.6",
       "license": "https://opensource.org/licenses/MIT",
       "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
       "author": { "@type": "Person", "name": "Sourav Roy", "url": "https://github.com/SouravRoy-ETL" },
@@ -110,7 +110,7 @@
       <a class="btn ghost" href="playground/">Try in browser →</a>
       <a class="btn ghost" href="docs.html">Read the docs →</a>
     </div>
-    <div class="used-by">MIT licensed · 359 tests · 1.1×–8.6× faster than DuckDB on 15 benchmarks</div>
+    <div class="used-by">MIT licensed · 373 tests · 1.1×–8.6× faster than DuckDB on 15 benchmarks</div>
 
     <div class="hero-chips">
       <div class="chip-group">
@@ -174,7 +174,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </div>
       <h3>Feature-rich</h3>
-      <p>130+ SQL features: joins, CTEs, recursive queries, window functions, QUALIFY, MERGE, aggregates, set operations. Seven file formats built in, no extensions needed.</p>
+      <p>130+ SQL features: joins, CTEs, recursive queries, window functions, QUALIFY, MERGE, aggregates, set operations, <code>DESCRIBE</code>, <code>PRAGMA table_info</code>, <code>VARCHAR(n)</code> enforcement. Seven file formats built in, no extensions needed.</p>
       <a class="card-link" href="docs.html#sql">Read more</a>
     </div>
 
@@ -414,6 +414,7 @@
         <tr><td>CSV</td><td>COUNT(*)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
         <tr><td>CSV</td><td>GROUP BY region</td><td class="num">100 ms</td><td class="num">191 ms</td><td class="win">1.91×</td></tr>
         <tr><td>CSV</td><td>WHERE + GROUP BY</td><td class="num">107 ms</td><td class="num">194 ms</td><td class="win">1.81×</td></tr>
+        <tr><td>CSV</td><td>big &times; small JOIN + COUNT(*)</td><td class="num">85 ms</td><td class="num">212 ms</td><td class="win">2.49×</td></tr>
         <tr><td>Parquet</td><td>COUNT(*)</td><td class="num">12 ms</td><td class="num">34 ms</td><td class="win">2.83×</td></tr>
         <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td class="win">1.04×</td></tr>
         <tr><td>Parquet</td><td>GROUP BY region</td><td class="num">76 ms</td><td class="num">88 ms</td><td class="win">1.16×</td></tr>
@@ -505,7 +506,7 @@ cmake --build build --config Release</pre>
     </div>
   </div>
   <div class="meta">
-    SlothDB v0.1.4 · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
+    SlothDB v0.1.6 · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
   </div>
 </footer>
 
