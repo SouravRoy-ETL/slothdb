@@ -5054,6 +5054,9 @@ public:
     PhysicalOperator *FuseProbeChild() { return probe_child_; }
     const std::vector<std::vector<Value>> &FuseBuildRows() const { return build_rows_; }
     const std::unordered_map<std::string, std::vector<idx_t>> &FuseHashTable() const { return hash_table_; }
+    bool FuseUseI64Hash() const { return use_i64_hash_; }
+    const std::unordered_map<int64_t, std::vector<idx_t>> &FuseHashTableI64() const { return hash_table_i64_; }
+    const std::vector<int64_t> &FuseBuildKeyCacheI64() const { return build_key_cache_i64_; }
     bool FuseUseLinearCache() const { return use_linear_cache_; }
     const std::vector<std::string> &FuseBuildKeyCache() const { return build_key_cache_; }
     const std::vector<std::vector<idx_t>*> &FuseBuildMatchCache() const { return build_match_cache_; }
@@ -5411,7 +5414,7 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
     PhysicalHashJoin *hj,
     const std::vector<AggInfo> &agg_infos,
     const std::vector<idx_t> &group_col_indices) {
-    if (!hj->FuseIsInner() || group_col_indices.empty()) return false;
+    if (!hj->FuseIsInner()) return false;
     idx_t num_aggs = agg_infos.size();
     for (auto &info : agg_infos) {
         if (info.name == "COUNT" && info.is_count_star) continue;
@@ -5425,12 +5428,15 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
     auto *probe = hj->FuseProbeChild();
     const auto &build_rows = hj->FuseBuildRows();
     const auto &hash_tab = hj->FuseHashTable();
+    const auto &hash_tab_i64 = hj->FuseHashTableI64();
+    bool use_i64 = hj->FuseUseI64Hash();
     bool build_is_right = hj->FuseBuildIsRight();
     idx_t probe_join_col = hj->FuseProbeJoinCol();
     idx_t left_cols = hj->FuseLeftColCount();
     idx_t probe_cols = probe->GetTypes().size();
     bool linear = hj->FuseUseLinearCache();
     const auto &key_cache = hj->FuseBuildKeyCache();
+    const auto &key_cache_i64 = hj->FuseBuildKeyCacheI64();
     const auto &match_cache = hj->FuseBuildMatchCache();
 
     auto map_col = [&](idx_t combined) -> std::pair<bool, idx_t> {
@@ -5496,6 +5502,15 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
     if (all_build_gkeys) {
         std::unordered_map<std::string, idx_t> gkey_to_gidx;
         build_to_gidx.assign(build_rows.size(), INVALID_INDEX);
+        // No-GROUP-BY queries (e.g. `SELECT COUNT(*) ... JOIN ...`) need the
+        // aggregate to emit exactly one row even with zero matches. Pre-
+        // seed a single group so COUNT-of-empty-join returns 0 rather than
+        // no rows.
+        if (gkeys.empty()) {
+            group_vals_by_gidx.push_back({});
+            states_by_gidx.emplace_back(num_aggs);
+            gkey_to_gidx.emplace(std::string(), static_cast<idx_t>(0));
+        }
         for (idx_t i = 0; i < build_rows.size(); i++) {
             std::string gkey;
             std::vector<Value> gvals(gkeys.size());
@@ -5575,7 +5590,29 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
                         auto ktid = kvec.GetType().id();
                         for (idx_t i = 0; i < cnt; i++) {
                             const std::vector<idx_t> *ml = nullptr;
-                            if (linear && ktid == LogicalTypeId::VARCHAR) {
+                            if (use_i64) {
+                                if (!kvec.GetValidity().RowIsValid(i)) {
+                                    // NULL probe key never matches.
+                                } else {
+                                    int64_t k = 0;
+                                    switch (ktid) {
+                                    case LogicalTypeId::TINYINT:  k = reinterpret_cast<const int8_t *>(kvec.GetData())[i]; break;
+                                    case LogicalTypeId::SMALLINT: k = reinterpret_cast<const int16_t *>(kvec.GetData())[i]; break;
+                                    case LogicalTypeId::INTEGER:  k = reinterpret_cast<const int32_t *>(kvec.GetData())[i]; break;
+                                    case LogicalTypeId::BIGINT:
+                                    case LogicalTypeId::HUGEINT:  k = reinterpret_cast<const int64_t *>(kvec.GetData())[i]; break;
+                                    default: k = chunk.GetValue(probe_join_col, i).GetValue<int64_t>();
+                                    }
+                                    if (linear) {
+                                        for (idx_t ki = 0; ki < key_cache_i64.size(); ki++) {
+                                            if (key_cache_i64[ki] == k) { ml = match_cache[ki]; break; }
+                                        }
+                                    } else {
+                                        auto it = hash_tab_i64.find(k);
+                                        if (it != hash_tab_i64.end()) ml = &it->second;
+                                    }
+                                }
+                            } else if (linear && ktid == LogicalTypeId::VARCHAR) {
                                 auto &s = reinterpret_cast<const string_t *>(kvec.GetData())[i];
                                 const char *d = s.GetData(); uint32_t l = s.GetSize();
                                 for (idx_t ki = 0; ki < key_cache.size(); ki++) {
@@ -5664,7 +5701,29 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
         auto key_tid = key_vec.GetType().id();
         for (idx_t i = 0; i < cnt; i++) {
             const std::vector<idx_t> *match_list = nullptr;
-            if (linear && key_tid == LogicalTypeId::VARCHAR) {
+            if (use_i64) {
+                if (!key_vec.GetValidity().RowIsValid(i)) {
+                    // NULL probe key never matches.
+                } else {
+                    int64_t k = 0;
+                    switch (key_tid) {
+                    case LogicalTypeId::TINYINT:  k = reinterpret_cast<const int8_t *>(key_vec.GetData())[i]; break;
+                    case LogicalTypeId::SMALLINT: k = reinterpret_cast<const int16_t *>(key_vec.GetData())[i]; break;
+                    case LogicalTypeId::INTEGER:  k = reinterpret_cast<const int32_t *>(key_vec.GetData())[i]; break;
+                    case LogicalTypeId::BIGINT:
+                    case LogicalTypeId::HUGEINT:  k = reinterpret_cast<const int64_t *>(key_vec.GetData())[i]; break;
+                    default: k = pchunk.GetValue(probe_join_col, i).GetValue<int64_t>();
+                    }
+                    if (linear) {
+                        for (idx_t ki = 0; ki < key_cache_i64.size(); ki++) {
+                            if (key_cache_i64[ki] == k) { match_list = match_cache[ki]; break; }
+                        }
+                    } else {
+                        auto it = hash_tab_i64.find(k);
+                        if (it != hash_tab_i64.end()) match_list = &it->second;
+                    }
+                }
+            } else if (linear && key_tid == LogicalTypeId::VARCHAR) {
                 auto &s = reinterpret_cast<const string_t *>(key_vec.GetData())[i];
                 const char *d = s.GetData();
                 uint32_t l = s.GetSize();
