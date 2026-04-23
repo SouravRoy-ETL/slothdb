@@ -8,6 +8,10 @@ out/
 # Local release artifacts
 dist/
 
+# Marketing / distribution drafts — kept locally for reference but not
+# published to the repo (they're prep material, not product).
+docs/marketing/
+
 # IDE files
 .vs/
 .vscode/
