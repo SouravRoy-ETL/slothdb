@@ -109,6 +109,36 @@ QueryResult Connection::Query(const std::string &sql) {
             continue;
         }
 
+        // Handle DESCRIBE: bind the inner statement and emit its result schema.
+        if (stmt->GetType() == StatementType::DESCRIBE) {
+            auto &desc = static_cast<DescribeStatement &>(*stmt);
+            Binder binder(db_.GetCatalog());
+            auto bound = binder.Bind(*desc.inner);
+            std::vector<std::string> names;
+            std::vector<LogicalType> types;
+            if (bound->GetType() == BoundStatementType::SELECT) {
+                auto &sel = static_cast<BoundSelectStatement &>(*bound);
+                names = sel.result_names;
+                types = sel.result_types;
+            } else {
+                throw BinderException("DESCRIBE is only supported for SELECT queries");
+            }
+            final_result.column_names = {"column_name", "column_type", "null",
+                                         "key", "default", "extra"};
+            final_result.column_types = {
+                LogicalType::VARCHAR(), LogicalType::VARCHAR(),
+                LogicalType::VARCHAR(), LogicalType::VARCHAR(),
+                LogicalType::VARCHAR(), LogicalType::VARCHAR()};
+            for (idx_t i = 0; i < names.size(); i++) {
+                final_result.rows.push_back({
+                    Value::VARCHAR(names[i]),
+                    Value::VARCHAR(types[i].ToString()),
+                    Value::VARCHAR("YES"),
+                    Value(), Value(), Value()});
+            }
+            continue;
+        }
+
         // Handle EXPLAIN: bind and plan the inner statement, return plan as text.
         if (stmt->GetType() == StatementType::EXPLAIN) {
             auto &explain = static_cast<ExplainStatement &>(*stmt);

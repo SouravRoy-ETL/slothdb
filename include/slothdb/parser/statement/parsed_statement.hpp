@@ -16,6 +16,7 @@ enum class StatementType : uint8_t {
     UPDATE,
     DELETE_STMT,
     EXPLAIN,
+    DESCRIBE,
     CREATE_VIEW,
     TRUNCATE,
     ALTER_TABLE,
@@ -157,6 +158,13 @@ public:
 class ExplainStatement : public ParsedStatement {
 public:
     ExplainStatement() : ParsedStatement(StatementType::EXPLAIN) {}
+    ParsedStmtPtr inner;
+};
+
+// DESCRIBE statement: DESCRIBE <query> returns the result schema as rows.
+class DescribeStatement : public ParsedStatement {
+public:
+    DescribeStatement() : ParsedStatement(StatementType::DESCRIBE) {}
     ParsedStmtPtr inner;
 };
 

@@ -196,6 +196,7 @@ ParsedStmtPtr Parser::ParseStatement() {
     if (CheckKeyword(TokenType::KW_UPDATE)) return ParseUpdateStatement();
     if (CheckKeyword(TokenType::KW_DELETE)) return ParseDeleteStatement();
     if (CheckKeyword(TokenType::KW_EXPLAIN)) return ParseExplainStatement();
+    if (CheckKeyword(TokenType::KW_DESCRIBE)) return ParseDescribeStatement();
     if (CheckKeyword(TokenType::KW_MERGE)) return ParseMergeStatement();
     // COPY table TO/FROM 'file.csv' [WITH (options)]
     // COPY (SELECT ...) TO 'file' [WITH (options)]
@@ -1204,6 +1205,29 @@ ParsedStmtPtr Parser::ParseExplainStatement() {
     Expect(TokenType::KW_EXPLAIN, "");
     auto stmt = std::make_unique<ExplainStatement>();
     stmt->inner = ParseStatement();
+    return stmt;
+}
+
+// DESCRIBE statement. Returns the result schema of the inner query as rows.
+// Syntax: DESCRIBE <select-or-table-name>
+ParsedStmtPtr Parser::ParseDescribeStatement() {
+    Expect(TokenType::KW_DESCRIBE, "");
+    auto stmt = std::make_unique<DescribeStatement>();
+    // DESCRIBE <table_name>  →  desugars to SELECT * FROM <table_name>
+    // DESCRIBE SELECT ...    →  inner = SELECT
+    // DESCRIBE WITH ...      →  inner = CTE-SELECT
+    if (CheckKeyword(TokenType::KW_SELECT) || CheckKeyword(TokenType::KW_WITH)) {
+        stmt->inner = ParseSelectStatement();
+    } else {
+        // Treat bare identifier as `SELECT * FROM <identifier>`.
+        auto select = std::make_unique<SelectStatement>();
+        auto star = std::make_unique<StarExpression>();
+        select->select_list.push_back(std::move(star));
+        auto tref = std::make_unique<TableRef>();
+        tref->table_name = ExpectIdentifier("for DESCRIBE target").value;
+        select->from_table = std::move(tref);
+        stmt->inner = std::move(select);
+    }
     return stmt;
 }
 

@@ -123,6 +123,7 @@ enum class TokenType : uint8_t {
     KW_EXCEPT,
     KW_INTERSECT,
     KW_EXPLAIN,
+    KW_DESCRIBE,
     KW_COPY,
     KW_TO,
     KW_NULLS,

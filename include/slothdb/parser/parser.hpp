@@ -26,6 +26,7 @@ private:
     ParsedStmtPtr ParseUpdateStatement();
     ParsedStmtPtr ParseDeleteStatement();
     ParsedStmtPtr ParseExplainStatement();
+    ParsedStmtPtr ParseDescribeStatement();
     ParsedStmtPtr ParseMergeStatement();
 
     // Expression parser (precedence climbing).

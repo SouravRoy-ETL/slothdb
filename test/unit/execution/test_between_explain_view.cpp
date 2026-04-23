@@ -57,6 +57,53 @@ TEST_CASE("EXPLAIN - aggregate plan") {
 }
 
 // ============================================================================
+// DESCRIBE
+// ============================================================================
+
+TEST_CASE("DESCRIBE - table name") {
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE t (id INTEGER, name VARCHAR, price DOUBLE)");
+
+    auto r = conn.Query("DESCRIBE t");
+    CHECK(r.RowCount() == 3);
+    CHECK(r.column_names.size() == 6);
+    CHECK(r.column_names[0] == "column_name");
+    CHECK(r.column_names[1] == "column_type");
+    CHECK(r.GetValue(0, 0).GetValue<std::string>() == "id");
+    CHECK(r.GetValue(0, 1).GetValue<std::string>() == "INTEGER");
+    CHECK(r.GetValue(1, 0).GetValue<std::string>() == "name");
+    CHECK(r.GetValue(1, 1).GetValue<std::string>() == "VARCHAR");
+    CHECK(r.GetValue(2, 0).GetValue<std::string>() == "price");
+    CHECK(r.GetValue(2, 1).GetValue<std::string>() == "DOUBLE");
+}
+
+TEST_CASE("DESCRIBE - SELECT subquery") {
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE t (x INTEGER, y VARCHAR)");
+
+    auto r = conn.Query("DESCRIBE SELECT x, UPPER(y) AS upper_y FROM t");
+    CHECK(r.RowCount() == 2);
+    CHECK(r.GetValue(0, 0).GetValue<std::string>() == "x");
+    CHECK(r.GetValue(0, 1).GetValue<std::string>() == "INTEGER");
+    CHECK(r.GetValue(1, 0).GetValue<std::string>() == "upper_y");
+    CHECK(r.GetValue(1, 1).GetValue<std::string>() == "VARCHAR");
+}
+
+TEST_CASE("DESCRIBE - aggregate output") {
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE TABLE t (x INTEGER, y VARCHAR)");
+
+    auto r = conn.Query("DESCRIBE SELECT y, COUNT(*) AS cnt FROM t GROUP BY y");
+    CHECK(r.RowCount() == 2);
+    CHECK(r.GetValue(0, 0).GetValue<std::string>() == "y");
+    CHECK(r.GetValue(1, 0).GetValue<std::string>() == "cnt");
+    CHECK(r.GetValue(1, 1).GetValue<std::string>() == "BIGINT");
+}
+
+// ============================================================================
 // CREATE VIEW
 // ============================================================================
 
