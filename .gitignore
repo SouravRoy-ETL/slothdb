@@ -11,6 +11,7 @@ dist/
 # Marketing / distribution drafts — kept locally for reference but not
 # published to the repo (they're prep material, not product).
 docs/marketing/
+.marketing-drafts/
 
 # IDE files
 .vs/
