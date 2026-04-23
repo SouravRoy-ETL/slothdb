@@ -100,20 +100,21 @@ ctest --test-dir build -C Release</pre>
     </div>
     <div class="card">
       <h3>Testing</h3>
-      <p>381 tests, 131 000+ assertions via doctest. Every new feature needs a test. Benchmarks live in <code>real-life-testing/</code> (run before and after perf changes).</p>
+      <p>403 tests, 131 000+ assertions via doctest. Every new feature needs a test. Benchmarks live in <code>real-life-testing/</code> (run before and after perf changes).</p>
     </div>
   </div>
 </section>
 
 <section class="page narrow">
   <h2>Project status</h2>
-  <p>SlothDB is v0.1.6. About seven months old, one primary author, CI-green on Windows, Linux and macOS. Use it in real workflows, expect to file bugs. It's not production-critical yet.</p>
+  <p>SlothDB is v0.1.7. About seven months old, one primary author, CI-green on Windows, Linux and macOS. Use it in real workflows, expect to file bugs. It's not production-critical yet.</p>
   <p>The project is developed in the open. Every optimization, every benchmark change, every extension is one commit in the <a href="https://github.com/SouravRoy-ETL/slothdb/commits/main">git log</a>.</p>
 </section>
 
 <section class="page narrow">
   <h2>Release history</h2>
   <ul>
+    <li><b>v0.1.7</b>: <code>.ask</code> natural-language-to-SQL in the CLI shell (pure rules, ~50 KB, no model weights), catalog-introspection C API for Python / Node / WASM bindings, marketing credibility pass (killed the ghost "1.1× – 8.6×" claim — real range is 1.04× – 5.43×, median 1.70×)</li>
     <li><b>v0.1.6</b>: JOIN hot-path overhaul (288 ms → 85 ms on big × small, now 2.5× faster than DuckDB), <code>CREATE LIVE VIEW</code> with incremental CSV-append path (the first moat-track feature — DuckDB is snapshot-only), <code>SLOTHDB_EDGE</code> build for sub-MB WASM bundles (Cloudflare Workers target), <code>DESCRIBE</code>, <code>PRAGMA table_info</code> / <code>database_list</code>, <code>VARCHAR(n)</code> length enforcement, ORDER BY on narrowed projections, JOIN reverse-order equi-join fix</li>
     <li><b>v0.1.5</b>: WASM playground at <a href="playground/">slothdb.org/playground</a>, <code>@slothdb/wasm</code> npm package, binder / planner fixes (non-reserved keywords as identifiers, SELECT * ORDER BY, UNION + JOIN file-literal preprocessing, COPY with bare file literal)</li>
     <li><b>v0.1.4</b>: remote file reading (<code>https://</code> and public <code>s3://</code> URLs), extended <code>DATE_TRUNC</code> (week/quarter/decade/etc.), new scalars <code>MONTHNAME</code> / <code>DAYNAME</code> / <code>LAST_DAY</code> / <code>MAKE_DATE</code></li>
@@ -169,7 +170,7 @@ ctest --test-dir build -C Release</pre>
     </div>
   </div>
   <div class="meta">
-    SlothDB v0.1.6 · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
+    SlothDB v0.1.7 · built by <a href="https://github.com/SouravRoy-ETL">Sourav Roy</a>
   </div>
 </footer>
 

@@ -2,6 +2,69 @@
 
 All notable changes to SlothDB are documented here.
 
+## 0.1.7 — `.ask` natural-language SQL, catalog introspection C API, marketing credibility pass
+
+The shell gains a `.ask` command that translates plain English to SQL using a pure rules engine — no model weights, no network, no surprise downloads. 50 KB added to the binary. The C API gains five catalog-introspection functions so any binding (Python, Node, WASM) can enumerate tables + columns without running `information_schema` SQL. **403 tests / 131 513 assertions** green on Windows, Linux, macOS.
+
+### `.ask` — rules-based natural-language → SQL
+
+New shell dot-command that turns English questions into SQL, shows the generated SQL, and prompts `[Y/n]` before running.
+
+```
+slothdb> .ask total amount per region
+-- SELECT "region", SUM("amount") FROM "sales" GROUP BY "region"
+Run? [Y/n] y
+```
+
+Pattern coverage in 0.1.7:
+
+- **COUNT** — `how many X`, `count of X`, `count rows in X`, `number of X`, with optional `in YYYY` year filter via auto-detected date column.
+- **Aggregates** — `total/sum/average/mean/min/max X` with optional `per/by Y` (`GROUP BY`) and `in YYYY` (`WHERE`).
+- **Top-N** — `top N X by Y` / `bottom N X by Y` renders `ORDER BY` + `LIMIT`, direction from the keyword.
+- **Select-all** — `rows from X` → `SELECT * FROM X LIMIT 100`.
+
+Schema awareness: singular↔plural table resolution (`sale` → `sales`), exact-column-name matches preferred over synonym routing so `total price` on a two-table schema routes to the table with a column actually named `price` (not the one synonyms would route `price` → `amount` into). Synonym table for the common naming mismatches: `revenue`, `amount`, `total`, `value`, `price`, `cost`, `customer`, `product`, `date`, `region`.
+
+Failure modes are explicit: `UNRESOLVED_TABLE` / `UNRESOLVED_COLUMN` / `NO_MATCH` each with a human message and the offending token. A half-working NL→SQL that silently invents wrong SQL is worse than a rule engine that refuses clearly — we prefer the latter.
+
+Binary-size impact: **+50 KB** on the full build (~1.04 MB → 1.05 MB), **+50 KB** on the edge WASM build (974 KB → 1.00 MB). Zero model weights. Zero new dependencies. An opt-in `.ask --model` mode using Prem-1B-SQL (MIT-licensed, 873 MB lazy download) is planned for 0.1.8 — the default `.ask` stays local, offline, and deterministic.
+
+See [docs/ASK.md](docs/ASK.md) for the full supported-phrasings list and design rationale.
+
+### Catalog introspection C API
+
+Five new functions in `include/slothdb/api/slothdb.h`:
+
+- `slothdb_table_count(conn)` → number of tables
+- `slothdb_table_name(conn, i)` → table name
+- `slothdb_table_column_count(conn, i)` → columns in table i
+- `slothdb_table_column_name(conn, i, j)` → column name
+- `slothdb_table_column_type(conn, i, j)` → column type string
+
+The `.ask` shell command is the first consumer; Python / Node / WASM bindings can use the same surface to implement `list_tables()` / `describe_table()` without going through the SQL parser. Thread-local scratch storage means pointers stay valid across cross-function calls (e.g. reading a table name then its columns) but are invalidated on the next call to the same function — documented on the functions.
+
+### Marketing credibility pass
+
+A three-agent copy-review pass (marketing voice, sales conversion, data-analyst credibility) found a ghost claim in the README and landing page: *"1.1× – 8.6× faster than DuckDB, every format, every query"* — but the 0.1.6 benchmark table tops out at **5.43×** (Avro SUM). The 8.6× endpoint didn't exist; any reader who spot-checked found nothing, which collapses trust in the other numbers.
+
+Fixed in three places (README lines 101, 186; docs/docs.html lead + FAQ). Replaced with specific claims: *"3.9× on a 5-query warm JOIN batch"* as the headline, full range stated honestly as *"1.04× – 5.43×, median 1.70×"* in the full-table appendix.
+
+Other marketing changes rolled into this release:
+
+- **Hero reframed** moat-first: *"Live SQL views that follow your files."* (headline) + 3.9× as the proof point.
+- **Feature cards reordered** to lead with Live (was Feature-rich). Previous ordering mirrored DuckDB's six cards verbatim, which ceded the moat — `CREATE LIVE VIEW` was hiding inside a generic "feature-rich" card.
+- **"If you're using DuckDB today" rewrite** in README. Opens with *"keep using it"* to disarm defensiveness, then names four concrete papercuts (tailing log files, Cloudflare Workers, extension install failures, DuckDB-release ABI breakage).
+- **Benchmarks section** on README + landing replaced the 16-row flat wall with three framed stories (JOIN / batch / Avro). Full table demoted to `<details>`. Parquet `SUM(revenue)` 1.04× labeled as tie.
+- **CTAs** on landing page now playground-first (`Run a query in the browser →`) with `pip install slothdb` as secondary. Removed the `Read the docs →` graveyard CTA from the hero.
+- **Stale `slothdb_0.1.4_amd64.deb` filenames** in README install table → 0.1.7.
+
+### Platform
+
+- CMake project version bumped to 0.1.7. Engine `slothdb_version()` returns `"0.1.7"`.
+- Test suite: 381 → 403 (22 new tests for `.ask` pattern coverage, synonyms, refusal modes, determinism).
+
+---
+
 ## 0.1.6 — JOIN perf overhaul, ORDER BY correctness, DuckDB-parity metadata, `CREATE LIVE VIEW`, edge build
 
 The JOIN hot path goes from ~1.3× slower than DuckDB to ~2.5× faster on the big × small join benchmark. Two latent ORDER BY / aggregate correctness bugs get closed. Three roadmap-driven metadata features land — `DESCRIBE`, `PRAGMA`, and `VARCHAR(n)` enforcement. And two moat-track features ship for the first time: a file-mtime-cached `CREATE LIVE VIEW` with incremental CSV append, and an `SLOTHDB_EDGE` build that strips to CSV / JSON / Parquet for sub-megabyte WASM bundles. **381 tests / 131 464 assertions** green on Windows, Linux, macOS.

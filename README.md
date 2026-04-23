@@ -25,29 +25,9 @@
 
 ---
 
-## What's new in 0.1.6
+## What's new in 0.1.7
 
-- **`CREATE LIVE VIEW`** — a cached view that auto-refreshes when the source file changes, with an **incremental append path** for growing CSV logs that parses only the new bytes on the tail. DuckDB is snapshot-based and structurally can't match this.
-  ```sql
-  CREATE LIVE VIEW app AS SELECT * FROM 'app.log.csv';
-  SELECT level, COUNT(*) FROM app GROUP BY level;   -- parses file once
-  -- logs keep appending externally...
-  SELECT level, COUNT(*) FROM app GROUP BY level;   -- only the new rows parsed
-  ```
-- **JOIN hot path — 3.9× faster than DuckDB on a 5-query warm-cache batch** (138 ms vs 540 ms). The single-query number on `SELECT COUNT(*) FROM big JOIN sm ON b.k = s.k` (1 M × 1 K): 85 ms vs 212 ms. Typed int64 hash path, parallel CSV pre-parse, file-size-based build-side selection, build-side projection pushdown, SIMD unquoted-field scan, `COUNT(*)`-over-JOIN fused into the aggregate. See [CHANGELOG.md](CHANGELOG.md) for the commit-by-commit breakdown.
-- **Edge build (`-DSLOTHDB_EDGE=ON`)** — CSV / JSON / Parquet only. Strips Excel / Avro / Arrow IPC / SQLite so the WASM bundle fits under Cloudflare Workers' 1 MB script cap. duckdb-wasm is ~18 MB, a hard block on Workers. See [docs/EDGE_BUILD.md](docs/EDGE_BUILD.md).
-- **DESCRIBE** — `DESCRIBE <query>` and `DESCRIBE <table>` return the result schema as rows, DuckDB-byte-identical.
-- **PRAGMA** — `PRAGMA table_info('t')` and `PRAGMA database_list`, so BI tools (DBT, Metabase, SQLAlchemy, DBeaver) can introspect through their JDBC/ODBC drivers.
-- **`VARCHAR(n)` length enforcement** — declared max length is enforced at INSERT. Prevents silent truncation that DuckDB ignores.
-- **Bug fixes** — `ORDER BY` on narrowed projections no longer crashes; JOIN with reverse-order ON (`b.k = a.k` when `a` is LEFT) no longer returns 0 rows; aggregate output projects back to SELECT-list order.
-
-381 tests, 131 464 assertions, green on Windows / Linux / macOS.
-
----
-
-## Coming next: `.ask` — natural-language SQL in the shell
-
-*Already on `main`, ships in 0.1.7.* Type a question, SlothDB translates it to SQL, shows you the SQL, and prompts before running. Pure C++ rules — no model weights, no network, no surprise downloads. 50 KB added to the binary.
+**`.ask` — natural-language → SQL in the shell.** Type a question, SlothDB translates it to SQL, shows you the SQL, and prompts before running. Pure C++ rules — no model weights, no network, no surprise downloads. 50 KB added to the binary.
 
 <div align="center">
   <img src="assets/ask-demo.svg" alt="slothdb .ask demo — natural-language queries translated to SQL" width="100%">
@@ -60,6 +40,18 @@ Run? [Y/n] y
 ```
 
 See [docs/ASK.md](docs/ASK.md) for the supported-phrasings list. An opt-in AI-assisted `.ask --model` is planned for 0.1.8 as a lazy download — the default `.ask` stays local, offline, and deterministic.
+
+Also in 0.1.7:
+
+- **Catalog-introspection C API** — `slothdb_table_count` / `_name` / `_column_count` / `_column_name` / `_column_type`. Lets any binding (Python, Node, WASM) enumerate tables + columns without running `information_schema` SQL.
+- **Marketing credibility pass** — killed a ghost "1.1× – 8.6× faster, every format, every query" claim. Real range is 1.04× – 5.43×, median 1.70×. Headline number is the 3.9× 5-query warm batch; full table is in `<details>` with honest "(tie)" labels on the 1.04× row.
+- **Hero + landing-page reframe** — moat-first (*"Live SQL views that follow your files"*), feature cards reordered to lead with Live. README's "If you're using DuckDB today" opens with "keep using it" and names the four concrete papercuts that would actually motivate a switch.
+
+403 tests, 131 513 assertions, green on Windows / Linux / macOS.
+
+### Previously in 0.1.6
+
+JOIN hot path 3.9× faster than DuckDB on the 5-query warm batch (138 ms vs 540 ms). `CREATE LIVE VIEW` with incremental CSV append — DuckDB is snapshot-based and can't match this. Edge build (`-DSLOTHDB_EDGE=ON`) for sub-MB WASM bundles under Cloudflare Workers' 1 MB cap. `DESCRIBE`, `PRAGMA table_info`, `VARCHAR(n)` enforcement. Full notes in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -157,7 +149,7 @@ SQLite is row-oriented and tuned for transactional workloads. Aggregate queries 
 
 - **No distributed query execution.** One-node embedded engine. Use ClickHouse if you outgrow one machine.
 - **No MVCC / multi-writer transactions.** Single-writer, crash-safe checkpoint. OLTP workloads are a poor fit.
-- **Younger codebase.** 381 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
+- **Younger codebase.** 403 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
 
 ---
 
@@ -203,8 +195,8 @@ df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
 
 | Platform | Command |
 |----------|---------|
-| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.6_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
-| Fedora / RHEL | `sudo rpm -i slothdb-0.1.6.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
+| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.7_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
+| Fedora / RHEL | `sudo rpm -i slothdb-0.1.7.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
 | Arch Linux | `makepkg -si` ([PKGBUILD](packaging/arch/PKGBUILD)) |
 | macOS (Homebrew) | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
 | Build from source | See [below](#build-from-source) |
@@ -394,7 +386,7 @@ slothdb_close(db);
 | **Storage** | Single-file `.slothdb` persistence, RLE/dictionary/bitpacking compression, zone maps |
 | **Optimizer** | Constant folding, filter pushdown, TopN optimization |
 | **APIs** | CLI shell, Python (with pandas), C/C++ (stable ABI) |
-| **Reliability** | 381 tests, 131,464 assertions, bounds-checked parsing, DoS limits |
+| **Reliability** | 403 tests, 131,513 assertions, bounds-checked parsing, DoS limits |
 
 ## Documentation
 
@@ -426,7 +418,7 @@ build\src\Release\slothdb.exe  # Windows
 ```bash
 cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=ON
 cmake --build build --config Release
-ctest --test-dir build -C Release    # 381 tests
+ctest --test-dir build -C Release    # 403 tests
 ```
 
 | Build Option | Description |

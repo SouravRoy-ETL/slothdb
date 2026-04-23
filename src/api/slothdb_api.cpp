@@ -228,7 +228,7 @@ const char *slothdb_table_column_type(slothdb_connection *conn,
 }
 
 const char *slothdb_version(void) {
-    return "0.1.6";
+    return "0.1.7";
 }
 
 } /* extern "C" */
