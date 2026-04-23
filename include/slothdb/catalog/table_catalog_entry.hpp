@@ -61,6 +61,21 @@ public:
     void MarkCacheValid() { cache_valid_ = true; }
     void InvalidateCache() { cache_valid_ = false; }
 
+    // v2: incremental append. When the live view is a simple
+    // `SELECT * FROM '<csv>'` and the file grows without the leading
+    // bytes changing, parse only the new tail and append to storage
+    // instead of re-parsing the whole file.
+    bool IsIncrementalEligible() const { return incremental_eligible_; }
+    void MarkIncrementalEligible(char delim) {
+        incremental_eligible_ = true;
+        incremental_delim_ = delim;
+    }
+    char GetIncrementalDelim() const { return incremental_delim_; }
+    int64_t GetLastSize() const { return last_size_; }
+    void SetLastSize(int64_t s) { last_size_ = s; }
+    const std::string &GetFirstBytes() const { return first_bytes_; }
+    void SetFirstBytes(std::string b) { first_bytes_ = std::move(b); }
+
     // File scan support: stores file path for streaming reads.
     bool IsFileScan() const { return !file_path_.empty(); }
     void SetFilePath(const std::string &path, char delim = ',') { file_path_ = path; file_delimiter_ = delim; file_format_ = "csv"; }
@@ -94,9 +109,13 @@ private:
     bool is_view_ = false;
     bool is_live_view_ = false;
     bool cache_valid_ = false;
+    bool incremental_eligible_ = false;
+    char incremental_delim_ = ',';
     std::string view_query_;
     std::string watched_file_path_;
     int64_t cached_mtime_ = 0;
+    int64_t last_size_ = 0;
+    std::string first_bytes_;
     std::string file_path_;
     char file_delimiter_ = ',';
     std::string file_format_ = "csv";

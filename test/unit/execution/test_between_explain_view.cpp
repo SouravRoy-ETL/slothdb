@@ -267,6 +267,106 @@ TEST_CASE("Non-live VIEW still re-executes unconditionally") {
     CHECK(r2.GetValue(0, 0).GetValue<int64_t>() == 3);
 }
 
+TEST_CASE("LIVE VIEW v2 - incremental append on tail-appended CSV") {
+    auto dir = std::filesystem::temp_directory_path() / "slothdb_live_view_incr";
+    std::filesystem::create_directories(dir);
+    auto path = dir / "log.csv";
+    // Header plus 3 rows.
+    WriteFile(path.string(), "ts,level\n1,info\n2,warn\n3,error\n");
+
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE LIVE VIEW app AS SELECT * FROM '" + path.string() + "'");
+    CHECK(conn.Query("SELECT COUNT(*) FROM app").GetValue(0, 0).GetValue<int64_t>() == 3);
+
+    // Append (not overwrite) 2 new rows. The append path in expand_view
+    // should pick up only the tail, leaving the cached 3 untouched.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    {
+        std::ofstream f(path.string(), std::ios::binary | std::ios::app);
+        f << "4,info\n5,error\n";
+    }
+    CHECK(conn.Query("SELECT COUNT(*) FROM app").GetValue(0, 0).GetValue<int64_t>() == 5);
+
+    // Values preserved across the append — both old and new rows present.
+    auto r = conn.Query("SELECT ts FROM app ORDER BY ts");
+    CHECK(r.RowCount() == 5);
+    CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 1);
+    CHECK(r.GetValue(4, 0).GetValue<int64_t>() == 5);
+
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("LIVE VIEW v2 - rewrite-in-place triggers full rescan") {
+    // If the first 64 bytes change, it's not an append — the file was
+    // rewritten. Fall back to full rescan even if the new size >= old.
+    auto dir = std::filesystem::temp_directory_path() / "slothdb_live_view_rewrite";
+    std::filesystem::create_directories(dir);
+    auto path = dir / "data.csv";
+    WriteFile(path.string(), "k\n1\n2\n3\n");
+
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE LIVE VIEW v AS SELECT * FROM '" + path.string() + "'");
+    CHECK(conn.Query("SELECT COUNT(*) FROM v").GetValue(0, 0).GetValue<int64_t>() == 3);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    // Different header — entirely rewritten file with same column count.
+    WriteFile(path.string(), "kk\n10\n20\n30\n40\n50\n");
+
+    // Result should be exactly the 5 new rows — no accidental append of
+    // old rows on top.
+    auto r = conn.Query("SELECT COUNT(*) FROM v");
+    CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 5);
+
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("LIVE VIEW v2 - truncated file triggers full rescan") {
+    auto dir = std::filesystem::temp_directory_path() / "slothdb_live_view_trunc";
+    std::filesystem::create_directories(dir);
+    auto path = dir / "data.csv";
+    WriteFile(path.string(), "k\n1\n2\n3\n4\n5\n");
+
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE LIVE VIEW v AS SELECT * FROM '" + path.string() + "'");
+    CHECK(conn.Query("SELECT COUNT(*) FROM v").GetValue(0, 0).GetValue<int64_t>() == 5);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    WriteFile(path.string(), "k\n1\n2\n"); // truncated
+    CHECK(conn.Query("SELECT COUNT(*) FROM v").GetValue(0, 0).GetValue<int64_t>() == 2);
+
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("LIVE VIEW v2 - view with WHERE falls back to full rescan") {
+    // WHERE makes the view non-incremental — the cache is filtered rows
+    // and appending parse-new-bytes would skip the filter. Confirm the
+    // whole pipeline still produces correct output (via the full-rescan
+    // branch) when the file grows.
+    auto dir = std::filesystem::temp_directory_path() / "slothdb_live_view_where";
+    std::filesystem::create_directories(dir);
+    auto path = dir / "data.csv";
+    WriteFile(path.string(), "k,lvl\n1,info\n2,error\n3,info\n");
+
+    Database db;
+    Connection conn(db);
+    conn.Query("CREATE LIVE VIEW errors AS SELECT * FROM '"
+               + path.string() + "' WHERE lvl = 'error'");
+    CHECK(conn.Query("SELECT COUNT(*) FROM errors").GetValue(0, 0).GetValue<int64_t>() == 1);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    {
+        std::ofstream f(path.string(), std::ios::binary | std::ios::app);
+        f << "4,error\n5,info\n6,error\n";
+    }
+    // 3 errors total after append; WHERE is applied via full rescan.
+    CHECK(conn.Query("SELECT COUNT(*) FROM errors").GetValue(0, 0).GetValue<int64_t>() == 3);
+
+    std::filesystem::remove(path);
+}
+
 // ============================================================================
 // CREATE VIEW
 // ============================================================================

@@ -258,6 +258,8 @@ QueryResult Connection::Query(const std::string &sql) {
             // avro/arrow/xlsx('path')`. Complex FROM shapes (JOINs, set
             // operations, multi-file globs) are rejected for the MVP.
             std::string live_file_path;
+            bool live_incremental = false;
+            char live_incremental_delim = ',';
             if (cv.is_live) {
                 auto extract_path = [](TableRef *ref) -> std::string {
                     if (!ref || !ref->is_table_function) return {};
@@ -275,6 +277,30 @@ QueryResult Connection::Query(const std::string &sql) {
                 if (live_file_path.empty()) {
                     throw BinderException("CREATE LIVE VIEW requires a single "
                         "file source (e.g. FROM 'app.log' or read_csv('data.csv'))");
+                }
+                // v2 incremental-append eligibility. The view must be a
+                // trivial pass-through (`SELECT * FROM 'file'`) over a
+                // CSV-shaped source — WHERE / GROUP BY / ORDER BY / JOIN /
+                // projection would make "parse the tail and append" wrong.
+                // Other shapes fall back to the v1 full-rescan path.
+                if (cv.query) {
+                    auto &q = *cv.query;
+                    bool shape_ok =
+                        q.select_list.size() == 1 &&
+                        q.select_list[0] &&
+                        q.select_list[0]->GetExpressionType() == ExpressionType::STAR &&
+                        !q.where_clause && q.group_by.empty() &&
+                        q.order_by.empty() && !q.set_right &&
+                        !q.having_clause && !q.is_distinct &&
+                        !q.limit;
+                    auto dot = live_file_path.find_last_of('.');
+                    std::string ext = (dot == std::string::npos)
+                        ? "" : live_file_path.substr(dot + 1);
+                    for (auto &c : ext) c = static_cast<char>(std::tolower(c));
+                    if (shape_ok && (ext == "csv" || ext == "tsv")) {
+                        live_incremental = true;
+                        live_incremental_delim = (ext == "tsv") ? '\t' : ',';
+                    }
                 }
             }
 
@@ -302,6 +328,21 @@ QueryResult Connection::Query(const std::string &sql) {
                     entry.SetCachedMTime(
                         std::chrono::duration_cast<std::chrono::nanoseconds>(
                             t.time_since_epoch()).count());
+                }
+                // Capture size + header sentinel for the incremental path.
+                // The sentinel (first 64 bytes) protects against mistaking a
+                // rewrite-in-place for an append when sizes happen to line up.
+                std::error_code ec2;
+                auto sz = std::filesystem::file_size(live_file_path, ec2);
+                if (!ec2) {
+                    entry.SetLastSize(static_cast<int64_t>(sz));
+                    std::ifstream in(live_file_path, std::ios::binary);
+                    char head[64] = {0};
+                    in.read(head, sizeof(head));
+                    entry.SetFirstBytes(std::string(head, in.gcount()));
+                }
+                if (live_incremental) {
+                    entry.MarkIncrementalEligible(live_incremental_delim);
                 }
                 entry.MarkCacheValid();
             }
@@ -785,32 +826,81 @@ QueryResult Connection::Query(const std::string &sql) {
             auto expand_view = [&](TableRef &ref) {
                 if (ref.is_table_function) return;
                 auto *entry = db_.GetCatalog().GetTable(ref.table_name);
-                if (entry && entry->IsView()) {
-                    // Live views cache their result; skip re-execution when
-                    // the watched file's mtime is unchanged. That's the whole
-                    // point — analytical queries over a file that rarely
-                    // changes no longer pay the parse cost on every SELECT.
-                    if (entry->IsLiveView()) {
-                        std::error_code ec;
-                        auto t = std::filesystem::last_write_time(
-                            entry->GetWatchedFile(), ec);
-                        if (!ec) {
-                            int64_t m = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                t.time_since_epoch()).count();
-                            if (entry->HasCache() && m == entry->GetCachedMTime()) {
-                                return; // cache hit
-                            }
-                            entry->SetCachedMTime(m);
+                if (!entry || !entry->IsView()) return;
+
+                // Live views cache their result; decide below between cache
+                // hit, incremental append, and full rescan based on the
+                // watched file's size / leading bytes / mtime.
+                if (entry->IsLiveView()) {
+                    const auto &path = entry->GetWatchedFile();
+                    std::error_code ec1, ec2;
+                    auto t = std::filesystem::last_write_time(path, ec1);
+                    auto sz = std::filesystem::file_size(path, ec2);
+                    if (!ec1 && !ec2) {
+                        int64_t m = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            t.time_since_epoch()).count();
+                        int64_t cur_size = static_cast<int64_t>(sz);
+
+                        // Read the first 64 bytes as a "beginning unchanged"
+                        // sentinel. Cheap; protects against rewrite-in-place
+                        // where the size happens to be ≥ the previous size.
+                        std::string current_head;
+                        {
+                            std::ifstream in(path, std::ios::binary);
+                            char head[64] = {0};
+                            in.read(head, sizeof(head));
+                            current_head.assign(head, in.gcount());
                         }
-                        // Fall through to re-execute and refresh the cache.
+                        bool header_changed = current_head != entry->GetFirstBytes();
+                        int64_t last_size = entry->GetLastSize();
+
+                        if (entry->HasCache() && !header_changed &&
+                            cur_size == last_size) {
+                            return; // cache hit
+                        }
+
+                        // v2 incremental-append path: CSV file grew, leading
+                        // bytes unchanged, and the view is the pass-through
+                        // shape marked at CREATE time.
+                        if (entry->HasCache() && !header_changed &&
+                            cur_size > last_size &&
+                            entry->IsIncrementalEligible()) {
+                            auto types = entry->GetTypes();
+                            char delim = entry->GetIncrementalDelim();
+                            // Mmap the file via FastCSVReader, then reposition
+                            // past any partial tail line at the append seam.
+                            FastCSVReader reader(path, delim,
+                                /*has_header=*/false);
+                            size_t seek = FastCSVReader::FindLineStart(
+                                reader.GetBuffer(), reader.GetSize(),
+                                static_cast<size_t>(last_size));
+                            reader.SetPos(seek);
+                            DataChunk chunk;
+                            chunk.Initialize(types);
+                            while (true) {
+                                chunk.Reset();
+                                idx_t n = reader.ReadChunk(chunk, types);
+                                if (n == 0) break;
+                                entry->GetStorage().Append(chunk);
+                            }
+                            entry->SetLastSize(cur_size);
+                            entry->SetCachedMTime(m);
+                            return;
+                        }
+
+                        // Fall through to full rescan. Update all cached
+                        // fields after re-execution below.
+                        entry->SetCachedMTime(m);
+                        entry->SetLastSize(cur_size);
+                        entry->SetFirstBytes(current_head);
                     }
-                    // Re-execute the view's stored query to get fresh data.
-                    auto view_result = Query(entry->GetViewQuery());
-                    auto storage = std::make_shared<DataTable>(view_result.column_types);
-                    BulkLoadRows(*storage, view_result.column_types, view_result.rows);
-                    entry->SetStorage(storage);
-                    if (entry->IsLiveView()) entry->MarkCacheValid();
                 }
+                // Re-execute the view's stored query to get fresh data.
+                auto view_result = Query(entry->GetViewQuery());
+                auto storage = std::make_shared<DataTable>(view_result.column_types);
+                BulkLoadRows(*storage, view_result.column_types, view_result.rows);
+                entry->SetStorage(storage);
+                if (entry->IsLiveView()) entry->MarkCacheValid();
             };
 
             if (sel.from_table && !sel.from_table->is_table_function) {
