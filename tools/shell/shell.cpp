@@ -8,6 +8,7 @@
 
 #include "slothdb/api/slothdb.h"
 #include "slothdb/ask/nl_to_sql.hpp"
+#include "slothdb/ask/llm_provider.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -138,26 +139,12 @@ static slothdb::ask::Schema build_ask_schema(slothdb_connection *conn) {
     return schema;
 }
 
-// Run one NL question against .ask. Returns true if a query ran (or a
-// non-ambiguous refusal happened); false on hard error the caller may
-// want to react to.
-static bool ask_once(slothdb_connection *conn, const std::string &question) {
-    auto schema = build_ask_schema(conn);
-    if (schema.tables.empty()) {
-        printf("No tables found. Load data first (create a table or "
-               "query a file) before using .ask.\n");
-        return true;
-    }
-    auto r = slothdb::ask::Translate(question, schema);
-    if (r.status != slothdb::ask::Status::OK) {
-        printf("Could not translate: %s\n", r.message.c_str());
-        if (!r.unresolved.empty()) {
-            printf("  Unresolved token: '%s'\n", r.unresolved.c_str());
-        }
-        printf("  Try .schema to see available columns, or rephrase.\n");
-        return true;
-    }
-    printf("-- %s\n", r.sql.c_str());
+// Execute a generated SQL string with the usual [Y/n] confirm prompt.
+// Shared between the rules path and the LLM fallback so the safety rail
+// is identical: user sees the SQL, types y/n, nothing runs without
+// confirmation.
+static bool confirm_and_run(slothdb_connection *conn, const std::string &sql) {
+    printf("-- %s\n", sql.c_str());
     printf("Run? [Y/n] ");
     fflush(stdout);
     char buf[16];
@@ -166,7 +153,7 @@ static bool ask_once(slothdb_connection *conn, const std::string &question) {
     if (ch == 'n' || ch == 'N') { printf("Skipped.\n"); return true; }
 
     slothdb_result *exec_result = nullptr;
-    auto status = slothdb_query(conn, r.sql.c_str(), &exec_result);
+    auto status = slothdb_query(conn, sql.c_str(), &exec_result);
     if (status == SLOTHDB_OK) {
         print_result(exec_result);
     } else {
@@ -176,11 +163,85 @@ static bool ask_once(slothdb_connection *conn, const std::string &question) {
     return true;
 }
 
-static void handle_ask(slothdb_connection *conn, const std::string &question) {
+// Run one NL question against .ask. `force_ai` skips the rules path and
+// goes straight to the LLM (the `--ai` flag). Otherwise tries rules
+// first; on refusal, offers the LLM fallback if a provider is configured.
+static bool ask_once(slothdb_connection *conn, const std::string &question,
+                     bool force_ai = false) {
+    auto schema = build_ask_schema(conn);
+    if (schema.tables.empty()) {
+        printf("No tables found. Load data first (create a table or "
+               "query a file) before using .ask.\n");
+        return true;
+    }
+
+    if (!force_ai) {
+        auto r = slothdb::ask::Translate(question, schema);
+        if (r.status == slothdb::ask::Status::OK) {
+            return confirm_and_run(conn, r.sql);
+        }
+        // Rule refusal — print, then try LLM if available.
+        printf("Rules didn't match: %s\n", r.message.c_str());
+        if (!r.unresolved.empty()) {
+            printf("  Unresolved token: '%s'\n", r.unresolved.c_str());
+        }
+    }
+
+    auto cfg = slothdb::ask::ConfigFromEnvironment();
+    if (cfg.provider == slothdb::ask::Provider::None) {
+        printf("  No LLM provider configured. Set SLOTHDB_ASK_PROVIDER=ollama "
+               "(or openai/anthropic) to enable AI fallback. .ask stays offline "
+               "by default.\n");
+        return true;
+    }
+
+    const char *prov_name = "unknown";
+    switch (cfg.provider) {
+        case slothdb::ask::Provider::Ollama:    prov_name = "ollama";    break;
+        case slothdb::ask::Provider::OpenAI:    prov_name = "openai";    break;
+        case slothdb::ask::Provider::Anthropic: prov_name = "anthropic"; break;
+        default: break;
+    }
+    printf("-- trying %s (%s)...\n", prov_name, cfg.model.c_str());
+    fflush(stdout);
+
+    auto lr = slothdb::ask::GenerateSQL(cfg, schema, question);
+    if (!lr.ok) {
+        printf("  LLM error: %s\n", lr.message.c_str());
+        printf("  Try .schema to see available columns, or rephrase.\n");
+        return true;
+    }
+    return confirm_and_run(conn, lr.sql);
+}
+
+// Extract `--ai` from a question string. Returns true if present and
+// strips the flag out of `q` in-place. Supports `--ai` anywhere.
+static bool strip_ai_flag(std::string &q) {
+    size_t p = q.find("--ai");
+    if (p == std::string::npos) return false;
+    // Must be a whole token (preceded by start/space, followed by end/space).
+    bool left_ok = (p == 0 || q[p - 1] == ' ' || q[p - 1] == '\t');
+    bool right_ok = (p + 4 == q.size() || q[p + 4] == ' ' || q[p + 4] == '\t');
+    if (!left_ok || !right_ok) return false;
+    // Remove the flag + the space before or after it.
+    size_t end = p + 4;
+    if (p > 0 && q[p - 1] == ' ') p--;
+    else if (end < q.size() && q[end] == ' ') end++;
+    q.erase(p, end - p);
+    // Trim any new leading/trailing space.
+    while (!q.empty() && (q.front() == ' ' || q.front() == '\t')) q.erase(q.begin());
+    while (!q.empty() && (q.back()  == ' ' || q.back()  == '\t')) q.pop_back();
+    return true;
+}
+
+static void handle_ask(slothdb_connection *conn, const std::string &arg) {
+    std::string question = arg;
+    bool force_ai = strip_ai_flag(question);
+
     // With an argument: single-shot. Translate → confirm → run → return
     // to the main SQL prompt.
     if (!question.empty()) {
-        ask_once(conn, question);
+        ask_once(conn, question, force_ai);
         return;
     }
 
@@ -189,14 +250,35 @@ static void handle_ask(slothdb_connection *conn, const std::string &question) {
     // ":q" / ":quit", hits an empty line, or sends EOF. Each non-empty
     // line runs through the NL→SQL pipeline, shows the generated SQL,
     // and prompts [Y/n] before executing.
+    //
+    // Inside ask-mode, a line can still include `--ai` to force the
+    // LLM path, or the user can set it globally with `:ai` / `:rules`.
     printf("ask mode — type a question in English.\n");
-    printf("  Commands: `exit` / `quit` / blank line / Ctrl+D to leave.\n\n");
+    printf("  Commands: `:ai` force-LLM / `:rules` force-rules / "
+           "`exit` / `quit` / blank line / Ctrl+D to leave.\n");
+    {
+        auto cfg = slothdb::ask::ConfigFromEnvironment();
+        if (cfg.provider == slothdb::ask::Provider::None) {
+            printf("  (rules-only mode — set SLOTHDB_ASK_PROVIDER for AI fallback)\n");
+        } else {
+            const char *prov_name = "?";
+            switch (cfg.provider) {
+                case slothdb::ask::Provider::Ollama:    prov_name = "ollama";    break;
+                case slothdb::ask::Provider::OpenAI:    prov_name = "openai";    break;
+                case slothdb::ask::Provider::Anthropic: prov_name = "anthropic"; break;
+                default: break;
+            }
+            printf("  (AI fallback: %s / %s)\n", prov_name, cfg.model.c_str());
+        }
+    }
+    printf("\n");
+
+    bool mode_force_ai = force_ai; // sticky across interactive lines
     while (true) {
         printf("ask> ");
         fflush(stdout);
         char buf[1024];
         if (!fgets(buf, sizeof(buf), stdin)) { printf("\n"); break; }
-        // Strip trailing newline and whitespace.
         std::string line(buf);
         while (!line.empty() &&
                (line.back() == '\n' || line.back() == '\r' ||
@@ -206,7 +288,12 @@ static void handle_ask(slothdb_connection *conn, const std::string &question) {
         if (line.empty()) break;
         if (line == "exit" || line == "quit" || line == ":q" ||
             line == ":quit" || line == ":exit") break;
-        if (!ask_once(conn, line)) break;
+        if (line == ":ai")    { mode_force_ai = true;  printf("  (AI mode on)\n"); continue; }
+        if (line == ":rules") { mode_force_ai = false; printf("  (rules mode — AI is fallback only)\n"); continue; }
+
+        bool line_force_ai = mode_force_ai;
+        if (strip_ai_flag(line)) line_force_ai = true;
+        if (!ask_once(conn, line, line_force_ai)) break;
         printf("\n");
     }
     printf("Back to SQL mode.\n");

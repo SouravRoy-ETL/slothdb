@@ -21,6 +21,15 @@ public:
     // Download a URL to memory.
     static HTTPResponse Get(const std::string &url);
 
+    // POST a body with a given content-type. Used by `.ask --ai` to call
+    // a local Ollama server (or any HTTP-speaking LLM endpoint). HTTPS
+    // is supported on Windows via WinHTTP; POSIX currently supports HTTP
+    // only — sufficient for the default (localhost Ollama) use case.
+    static HTTPResponse Post(const std::string &url,
+                             const std::string &body,
+                             const std::string &content_type = "application/json",
+                             const std::vector<std::string> &extra_headers = {});
+
     // Download a URL to a local file.
     static bool DownloadToFile(const std::string &url, const std::string &local_path);
 
