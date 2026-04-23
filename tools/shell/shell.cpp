@@ -9,6 +9,7 @@
 #include "slothdb/api/slothdb.h"
 #include "slothdb/ask/nl_to_sql.hpp"
 #include "slothdb/ask/llm_provider.hpp"
+#include "slothdb/ask/embedded_llm.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -64,7 +65,8 @@ static void print_help() {
     printf("  .tables [PATTERN]           List tables (LIKE pattern optional)\n");
     printf("  .schema [TABLE]             Show CREATE statements for tables\n");
     printf("  .open <path>                Close current DB and open a new one\n");
-    printf("  .ask <question>             Translate NL question to SQL and run it\n");
+    printf("  .ask <question>             NL → SQL (rules). Add --ai for cloud LLM, --model for local GGUF.\n");
+    printf("                              `.ask` alone opens an interactive sub-REPL.\n");
     printf("  .version                    Print SlothDB version\n");
     printf("  .clear                      Clear the screen\n");
     printf("\n");
@@ -163,11 +165,14 @@ static bool confirm_and_run(slothdb_connection *conn, const std::string &sql) {
     return true;
 }
 
-// Run one NL question against .ask. `force_ai` skips the rules path and
-// goes straight to the LLM (the `--ai` flag). Otherwise tries rules
-// first; on refusal, offers the LLM fallback if a provider is configured.
+enum class AskMode { Rules, Cloud, Embedded };
+
+// Run one NL question against .ask. `mode` picks the path:
+//   Rules    = rules-first; on refusal, fall through to configured backend
+//   Cloud    = skip rules, go straight to cloud provider (.ask --ai)
+//   Embedded = skip rules, go straight to local GGUF (.ask --model)
 static bool ask_once(slothdb_connection *conn, const std::string &question,
-                     bool force_ai = false) {
+                     AskMode mode = AskMode::Rules) {
     auto schema = build_ask_schema(conn);
     if (schema.tables.empty()) {
         printf("No tables found. Load data first (create a table or "
@@ -175,26 +180,49 @@ static bool ask_once(slothdb_connection *conn, const std::string &question,
         return true;
     }
 
-    if (!force_ai) {
+    if (mode == AskMode::Rules) {
         auto r = slothdb::ask::Translate(question, schema);
         if (r.status == slothdb::ask::Status::OK) {
             return confirm_and_run(conn, r.sql);
         }
-        // Rule refusal — print, then try LLM if available.
         printf("Rules didn't match: %s\n", r.message.c_str());
         if (!r.unresolved.empty()) {
             printf("  Unresolved token: '%s'\n", r.unresolved.c_str());
         }
-    }
-
-    auto cfg = slothdb::ask::ConfigFromEnvironment();
-    if (cfg.provider == slothdb::ask::Provider::None) {
-        printf("  No LLM provider configured. Set SLOTHDB_ASK_PROVIDER=ollama "
-               "(or openai/anthropic) to enable AI fallback. .ask stays offline "
-               "by default.\n");
+        // Rule refusal — no automatic fallback to AI; the user must opt
+        // in via --ai or --model. Auto-falling-through to the cloud
+        // silently is a privacy surprise (user's question leaves the
+        // machine without consent). Explicit opt-in matters here.
+        printf("  Run with `.ask --ai <question>` to try a cloud LLM, or "
+               "`.ask --model <question>` for a local model.\n");
         return true;
     }
 
+    if (mode == AskMode::Embedded) {
+        if (!slothdb::ask::EmbeddedAvailable()) {
+            printf("  Embedded model not compiled in. Rebuild with "
+                   "-DSLOTHDB_ASK_MODEL=ON (see docs/ASK.md#embedded-model).\n");
+            return true;
+        }
+        printf("-- running local %s...\n",
+               slothdb::ask::DefaultModel().name);
+        fflush(stdout);
+        auto er = slothdb::ask::GenerateSQLLocal(schema, question);
+        if (!er.ok) {
+            printf("  Embedded error: %s\n", er.message.c_str());
+            return true;
+        }
+        return confirm_and_run(conn, er.sql);
+    }
+
+    // mode == AskMode::Cloud
+    auto cfg = slothdb::ask::ConfigFromEnvironment();
+    if (cfg.provider == slothdb::ask::Provider::None) {
+        printf("  No LLM provider configured. Set SLOTHDB_ASK_PROVIDER=ollama "
+               "(or openai/anthropic) to enable --ai, or use --model for the "
+               "embedded local path.\n");
+        return true;
+    }
     const char *prov_name = "unknown";
     switch (cfg.provider) {
         case slothdb::ask::Provider::Ollama:    prov_name = "ollama";    break;
@@ -204,44 +232,50 @@ static bool ask_once(slothdb_connection *conn, const std::string &question,
     }
     printf("-- trying %s (%s)...\n", prov_name, cfg.model.c_str());
     fflush(stdout);
-
     auto lr = slothdb::ask::GenerateSQL(cfg, schema, question);
     if (!lr.ok) {
         printf("  LLM error: %s\n", lr.message.c_str());
-        printf("  Try .schema to see available columns, or rephrase.\n");
         return true;
     }
     return confirm_and_run(conn, lr.sql);
 }
 
-// Extract `--ai` from a question string. Returns true if present and
-// strips the flag out of `q` in-place. Supports `--ai` anywhere.
-static bool strip_ai_flag(std::string &q) {
-    size_t p = q.find("--ai");
-    if (p == std::string::npos) return false;
-    // Must be a whole token (preceded by start/space, followed by end/space).
-    bool left_ok = (p == 0 || q[p - 1] == ' ' || q[p - 1] == '\t');
-    bool right_ok = (p + 4 == q.size() || q[p + 4] == ' ' || q[p + 4] == '\t');
-    if (!left_ok || !right_ok) return false;
-    // Remove the flag + the space before or after it.
-    size_t end = p + 4;
-    if (p > 0 && q[p - 1] == ' ') p--;
-    else if (end < q.size() && q[end] == ' ') end++;
-    q.erase(p, end - p);
-    // Trim any new leading/trailing space.
-    while (!q.empty() && (q.front() == ' ' || q.front() == '\t')) q.erase(q.begin());
-    while (!q.empty() && (q.back()  == ' ' || q.back()  == '\t')) q.pop_back();
-    return true;
+// Extract a named `--flag` from a question string. Returns true if
+// found (as a whole token, not a substring) and strips it from `q`.
+static bool strip_named_flag(std::string &q, const std::string &flag) {
+    size_t p = q.find(flag);
+    while (p != std::string::npos) {
+        bool left_ok  = (p == 0 || q[p - 1] == ' ' || q[p - 1] == '\t');
+        size_t end = p + flag.size();
+        bool right_ok = (end == q.size() || q[end] == ' ' || q[end] == '\t');
+        if (left_ok && right_ok) {
+            if (p > 0 && q[p - 1] == ' ') p--;
+            else if (end < q.size() && q[end] == ' ') end++;
+            q.erase(p, end - p);
+            while (!q.empty() && (q.front() == ' ' || q.front() == '\t')) q.erase(q.begin());
+            while (!q.empty() && (q.back()  == ' ' || q.back()  == '\t')) q.pop_back();
+            return true;
+        }
+        p = q.find(flag, p + 1);
+    }
+    return false;
 }
+
+static bool strip_ai_flag(std::string &q)    { return strip_named_flag(q, "--ai"); }
+static bool strip_model_flag(std::string &q) { return strip_named_flag(q, "--model"); }
 
 static void handle_ask(slothdb_connection *conn, const std::string &arg) {
     std::string question = arg;
     bool force_ai = strip_ai_flag(question);
+    bool force_model = strip_model_flag(question);
+    AskMode mode = AskMode::Rules;
+    if (force_model) mode = AskMode::Embedded;
+    else if (force_ai) mode = AskMode::Cloud;
 
     // With an argument: single-shot. Translate → confirm → run → return
     // to the main SQL prompt.
     if (!question.empty()) {
-        ask_once(conn, question, force_ai);
+        ask_once(conn, question, mode);
         return;
     }
 
@@ -251,16 +285,18 @@ static void handle_ask(slothdb_connection *conn, const std::string &arg) {
     // line runs through the NL→SQL pipeline, shows the generated SQL,
     // and prompts [Y/n] before executing.
     //
-    // Inside ask-mode, a line can still include `--ai` to force the
-    // LLM path, or the user can set it globally with `:ai` / `:rules`.
+    // Inside ask-mode: type a question per line. Override the mode
+    // per-line with --ai / --model, or set it sticky with :ai / :model /
+    // :rules commands.
     printf("ask mode — type a question in English.\n");
-    printf("  Commands: `:ai` force-LLM / `:rules` force-rules / "
-           "`exit` / `quit` / blank line / Ctrl+D to leave.\n");
+    printf("  Commands: `:ai` / `:model` / `:rules` set default backend; "
+           "per-line `--ai` / `--model` override. `exit` / blank line / Ctrl+D to leave.\n");
     {
         auto cfg = slothdb::ask::ConfigFromEnvironment();
-        if (cfg.provider == slothdb::ask::Provider::None) {
-            printf("  (rules-only mode — set SLOTHDB_ASK_PROVIDER for AI fallback)\n");
-        } else {
+        bool cloud_ok = (cfg.provider != slothdb::ask::Provider::None);
+        bool model_ok = slothdb::ask::EmbeddedAvailable();
+        printf("  backends: rules [always on]");
+        if (cloud_ok) {
             const char *prov_name = "?";
             switch (cfg.provider) {
                 case slothdb::ask::Provider::Ollama:    prov_name = "ollama";    break;
@@ -268,12 +304,19 @@ static void handle_ask(slothdb_connection *conn, const std::string &arg) {
                 case slothdb::ask::Provider::Anthropic: prov_name = "anthropic"; break;
                 default: break;
             }
-            printf("  (AI fallback: %s / %s)\n", prov_name, cfg.model.c_str());
+            printf(" · cloud [%s/%s]", prov_name, cfg.model.c_str());
+        } else {
+            printf(" · cloud [not configured]");
         }
+        if (model_ok) {
+            printf(" · model [%s]", slothdb::ask::DefaultModel().name);
+        } else {
+            printf(" · model [not compiled in]");
+        }
+        printf("\n\n");
     }
-    printf("\n");
 
-    bool mode_force_ai = force_ai; // sticky across interactive lines
+    AskMode sticky = mode; // honor the flag given alongside `.ask`
     while (true) {
         printf("ask> ");
         fflush(stdout);
@@ -288,12 +331,14 @@ static void handle_ask(slothdb_connection *conn, const std::string &arg) {
         if (line.empty()) break;
         if (line == "exit" || line == "quit" || line == ":q" ||
             line == ":quit" || line == ":exit") break;
-        if (line == ":ai")    { mode_force_ai = true;  printf("  (AI mode on)\n"); continue; }
-        if (line == ":rules") { mode_force_ai = false; printf("  (rules mode — AI is fallback only)\n"); continue; }
+        if (line == ":ai")    { sticky = AskMode::Cloud;    printf("  (cloud mode on)\n");    continue; }
+        if (line == ":model") { sticky = AskMode::Embedded; printf("  (embedded mode on)\n"); continue; }
+        if (line == ":rules") { sticky = AskMode::Rules;    printf("  (rules mode on — no AI fallback)\n"); continue; }
 
-        bool line_force_ai = mode_force_ai;
-        if (strip_ai_flag(line)) line_force_ai = true;
-        if (!ask_once(conn, line, line_force_ai)) break;
+        AskMode line_mode = sticky;
+        if (strip_model_flag(line)) line_mode = AskMode::Embedded;
+        else if (strip_ai_flag(line)) line_mode = AskMode::Cloud;
+        if (!ask_once(conn, line, line_mode)) break;
         printf("\n");
     }
     printf("Back to SQL mode.\n");

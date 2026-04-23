@@ -87,7 +87,77 @@ The rule engine is narrow by design — it refuses rather than hallucinate SQL i
 - **Running totals / cumulative sums** — the window-function SQL is standard, but SlothDB's current engine doesn't execute unbounded-frame windows correctly. `.ask` refuses with a pointer to that gap rather than generate misleading output.
 - **Full-text search / fuzzy matching on values** — no `LIKE '%foo%'` on arbitrary text unless you name the column and value explicitly (which is just SQL anyway).
 
-An opt-in **`.ask --model`** mode using [Prem-1B-SQL](https://huggingface.co/premai-io/prem-1B-SQL) (MIT-licensed, 873 MB lazy download, ~51% on BirdBench) is planned for 0.1.8. That will handle the open-ended tail. The default `.ask` stays local, offline, deterministic — those are the properties that justify `.ask` being on by default.
+Two AI fallbacks exist for the open-ended tail. Both are opt-in; **default `.ask` stays rules-only, local, deterministic**.
+
+### `--ai` — cloud LLM (Ollama / OpenAI / Anthropic)
+
+Works today if you already run one of these. Zero bytes added to SlothDB; the LLM is whatever you're running.
+
+```bash
+# Local Ollama (default)
+ollama pull llama3:8b-instruct
+SLOTHDB_ASK_PROVIDER=ollama slothdb
+
+# OpenAI
+export OPENAI_API_KEY=sk-...
+SLOTHDB_ASK_PROVIDER=openai slothdb
+
+# Anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+SLOTHDB_ASK_PROVIDER=anthropic slothdb
+```
+
+```
+slothdb> .ask --ai most loyal repeat customers
+-- trying ollama (llama3:8b-instruct)...
+-- SELECT customer_id, COUNT(*) AS orders FROM sales GROUP BY customer_id HAVING COUNT(*) > 1 ORDER BY orders DESC LIMIT 10
+Run? [Y/n]
+```
+
+Env vars:
+- `SLOTHDB_ASK_PROVIDER` — `ollama` (default) / `openai` / `anthropic` / `none`
+- `SLOTHDB_ASK_MODEL` — model name (e.g. `llama3:8b`, `gpt-4o-mini`, `claude-3-5-haiku-20241022`)
+- `SLOTHDB_ASK_HOST` — for Ollama (e.g. `127.0.0.1:11434`)
+- `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` — for the respective providers
+
+The core SlothDB engine stays offline — only `.ask --ai` ever makes an outbound call, and only with an explicit flag or `:ai` toggle.
+
+### <a id="embedded-model"></a>`--model` — embedded local GGUF (opt-in build)
+
+Fully local, no network, no API keys. Enabled at build time; the model file is lazy-downloaded to `~/.slothdb/models/` on first use.
+
+```bash
+# One-time setup:
+git submodule update --init --depth 1 third_party/llama.cpp
+cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_ASK_MODEL=ON
+cmake --build build --config Release
+./build/src/slothdb
+
+# In the shell — first call downloads ~310 MB; subsequent calls are offline:
+slothdb> .ask --model most loyal repeat customers
+-- running local Qwen2.5-Coder-0.5B-Instruct-Q4_K_M...
+  Downloading Qwen2.5-Coder-0.5B-Instruct-Q4_K_M (~310 MB) from HuggingFace...
+  (one-time; lives in ~/.slothdb/models/)
+-- SELECT "customer_id", COUNT(*) AS orders FROM "sales" GROUP BY "customer_id" HAVING COUNT(*) > 1 ORDER BY orders DESC LIMIT 10
+Run? [Y/n]
+```
+
+**Model choice.** Pinned to [Qwen2.5-Coder-0.5B-Instruct at Q4_K_M](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) — Apache 2.0, ~310 MB on disk, coding-tuned (better than the generic Instruct variant on SQL tasks for the same size). A future release may swap to a SlothDB-specific fine-tune at smaller size.
+
+**Binary impact.** Default build stays at 8 MB — the `SLOTHDB_ASK_MODEL` option is off by default and `llama.cpp` is only compiled when the flag is on. The model weights themselves are never bundled in the binary; they live in `~/.slothdb/models/` and the user controls when they download.
+
+**Status (0.1.7):** Scaffolding landed. Full inference path is wired but marked experimental — the llama.cpp API changes across releases and we haven't stress-tested against every Windows/Linux/macOS toolchain. Contributions welcome. If the build fails for you, report with the CMake error and the llama.cpp commit hash from `git -C third_party/llama.cpp log -1`.
+
+### Interactive mode flags
+
+Inside the `ask>` sub-REPL you can switch backend per-line or stickily:
+
+```
+ask> .ai                     # sticky: route all future lines via --ai
+ask> .model                  # sticky: route via --model
+ask> .rules                  # sticky: rules-only (default; refuses on miss)
+ask> most loyal customers --ai     # one-off override on this line
+```
 
 ## Extending the synonyms
 

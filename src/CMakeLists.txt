@@ -34,6 +34,15 @@ if(SLOTHDB_EDGE)
     target_compile_definitions(slothdb_lib PUBLIC SLOTHDB_EDGE=1)
 endif()
 
+if(SLOTHDB_ASK_MODEL)
+    target_compile_definitions(slothdb_lib PUBLIC SLOTHDB_ASK_MODEL=1)
+    target_link_libraries(slothdb_lib PRIVATE llama)
+    # llama.cpp public headers live at third_party/llama.cpp/include
+    target_include_directories(slothdb_lib PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include
+        ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include)
+endif()
+
 # miniz is third-party C; suppress warnings-as-errors for it only.
 if(MSVC)
     set_source_files_properties(
