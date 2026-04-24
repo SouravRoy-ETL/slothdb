@@ -43,6 +43,11 @@
   --border-soft:   #1f1f1f;
   --border-active: #7ed07a;
 
+  /* Panel surface used by floating elements (tour cards, tooltips) that
+     must stay fully opaque so page text behind them doesn't bleed
+     through. Slightly lighter than --bg-side for visual separation. */
+  --panel:         #2d2d30;
+
   /* Fonts */
   --mono:          "JetBrains Mono","Cascadia Code","SF Mono","Fira Code",Consolas,"Liberation Mono",monospace;
   --sans:          -apple-system,BlinkMacSystemFont,"Segoe WPC","Segoe UI",system-ui,sans-serif;
@@ -334,12 +339,15 @@ kbd {
   z-index: 9002;
   width: 320px;
   max-width: calc(100vw - 24px);
-  background: var(--panel);
+  /* Solid fallback first, then the variable. Either way, the card must
+     be fully opaque so background text can't bleed through. */
+  background: #2d2d30;
+  background: var(--panel, #2d2d30);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 16px 18px 14px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75);
   font-family: var(--sans);
   opacity: 0;
   transform: translateY(6px);

@@ -622,6 +622,22 @@ const TOUR_STEPS = [
         body: 'Click Run or press <kbd>Ctrl</kbd>+<kbd>Enter</kbd>. Results appear in the grid below. Column headers sort; the Export button saves as CSV.',
         placement: 'bottom',
     },
+    {
+        // Switch the sidebar to the .ask view so the user actually sees the
+        // panel contents (SVG + docs link) while the spotlight rings the
+        // activity-bar button. Without onEnter the explorer pane stays
+        // active and the user only sees an icon light up.
+        selector: '.act[data-view="ask"]',
+        title: 'Natural language in the shell (.ask)',
+        body: 'The CLI shell has a natural-language sub-REPL. At the <code>slothdb&gt;</code> prompt type <code>.ask</code> (no argument) to enter it. Every English question becomes SQL, shown to you, gated by <code>[Y/n]</code> before running. Rules-first; builds compiled with <code>-DSLOTHDB_ASK_MODEL=ON</code> fall back to a local Qwen model. Click the icon in this tour to see the demo, or open <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md" target="_blank" rel="noopener">docs/ASK.md</a>.',
+        placement: 'right',
+        onEnter: () => {
+            // Click the .ask activity-bar button so the sidebar view
+            // changes to the .ask panel while the tour highlights it.
+            const btn = document.querySelector('.act[data-view="ask"]');
+            if (btn) btn.click();
+        },
+    },
 ];
 
 function maybeStartTour() {
@@ -653,6 +669,9 @@ function startTour() {
 
     function render() {
         const step = TOUR_STEPS[idx];
+        // Let the step mutate the UI (e.g. switch sidebar view) before we
+        // measure the target so the spotlight lands on the right position.
+        if (typeof step.onEnter === 'function') step.onEnter();
         const target = document.querySelector(step.selector);
         const r = target.getBoundingClientRect();
 
