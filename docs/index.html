@@ -95,15 +95,20 @@
 
 <section class="hero">
   <div class="inner">
-    <h1><span class="accent">A DuckDB competitor, built from scratch.</span><br>Up to 5× faster where it counts.</h1>
-    <p class="lede">SlothDB is an embedded columnar SQL OLAP engine in C++20. Not a fork. Not a wrapper. A separate engine with its own columnar storage, its own file-format readers, and its own vectorized executor - designed from day one to beat DuckDB on real workloads. On our bench: <b>138 ms vs DuckDB 1.1.3's 540 ms (3.9×)</b> on a 5-query warm JOIN batch; <b>5.43×</b> on 1 M-row Avro <code>SUM</code>. Seven file-format readers in the core binary (no <code>INSTALL</code>/<code>LOAD</code> step). Sub-1 MB edge-WASM build. <code>CREATE LIVE VIEW</code> with incremental append on growing CSVs. Stable C ABI.</p>
+    <h1>SlothDB is a fast embedded analytical database.</h1>
+    <p class="lede">Built from scratch as a DuckDB competitor &mdash; <b>up to 5&times; faster</b> on real workloads.</p>
+
+    <pre class="hero-code"><span class="cm">-- Query files directly. No import step.</span>
+<span class="kw">SELECT</span> region, <span class="fn">SUM</span>(revenue)
+<span class="kw">FROM</span> <span class="str">'sales.parquet'</span>
+<span class="kw">GROUP BY</span> region;</pre>
+
     <div class="ctas">
       <a class="btn primary" href="#install">pip install slothdb</a>
-      <a class="btn ghost" href="playground/">Try in browser</a>
+      <a class="btn ghost" href="#benchmarks">Benchmarks</a>
       <a class="btn ghost" href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
     </div>
-    <div class="used-by">MIT · 403 tests · 131,513 assertions · 3.9× end-to-end · 5.43× peak · v0.1.7 · <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.1.7">release notes</a></div>
-    <p class="lede" style="margin-top: 24px; font-size: 15px;"><b>Familiar if you've used DuckDB:</b> <code>db.sql(...).fetchdf()</code> in Python, ANSI SQL with QUALIFY / MERGE / recursive CTEs. But the engine underneath is a separate codebase, built from scratch, with its own benchmark numbers. Also included: <a href="#ask"><code>.ask</code></a>, an optional natural-language sub-REPL - off by default.</p>
+    <div class="used-by">MIT &middot; 138 ms vs DuckDB 1.1.3's 540 ms (3.9&times;) &middot; 5.43&times; on Avro &middot; v0.1.7 &middot; <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.1.7">release notes</a></div>
   </div>
 </section>
 

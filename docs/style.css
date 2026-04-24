@@ -299,6 +299,28 @@ section.hero .used-by {
   margin-top: 28px; color: var(--accent);
   font-size: 14px; font-weight: 500;
 }
+/* DuckDB-style hero code block - monospace, centered, understated.
+   Sits between the lede and the CTAs to give the "here's what SQL
+   looks like here" moment without prose. */
+section.hero pre.hero-code {
+  max-width: 560px;
+  margin: 0 auto 36px;
+  padding: 22px 28px;
+  text-align: left;
+  background: var(--bg-code);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre;
+  overflow-x: auto;
+}
+section.hero pre.hero-code .cm { color: var(--text-muted); }
+section.hero pre.hero-code .kw { color: var(--accent); font-weight: 500; }
+section.hero pre.hero-code .fn { color: #60A5FA; }
+section.hero pre.hero-code .str { color: var(--win); }
 section.hero .hero-chips {
   display: flex; gap: 32px; justify-content: center; flex-wrap: wrap;
   margin-top: 80px;
