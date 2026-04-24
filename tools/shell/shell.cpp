@@ -166,6 +166,157 @@ static slothdb::ask::Schema build_ask_schema(slothdb_connection *conn) {
     return schema;
 }
 
+// Recognized file extensions we can auto-peek. Mirror of the list in
+// nl_to_sql.cpp. Kept here as a local copy so the shell isn't coupled
+// to the rules parser's internals.
+static const std::vector<std::string> &ShellFileExts() {
+    static const std::vector<std::string> v = {
+        ".parquet", ".sqlite", ".slothdb", ".arrow", ".xlsx",
+        ".avro", ".json", ".csv", ".tsv", ".db"
+    };
+    return v;
+}
+
+// Find every filename-looking token in a question. Quoted ('x.csv') and
+// bare (x.csv) paths both count. Used to auto-peek schemas the model
+// needs for questions like "average revenue in events.parquet by region".
+static std::vector<std::string> extract_file_paths(const std::string &raw) {
+    std::vector<std::string> out;
+    std::string lo;
+    lo.reserve(raw.size());
+    for (char c : raw) lo.push_back(static_cast<char>(std::tolower(
+        static_cast<unsigned char>(c))));
+
+    // Quoted paths: ' ... .ext ' / " ... .ext ".
+    for (char q : {'\'', '"'}) {
+        size_t i = 0;
+        while ((i = raw.find(q, i)) != std::string::npos) {
+            size_t j = raw.find(q, i + 1);
+            if (j == std::string::npos) break;
+            std::string inside = raw.substr(i + 1, j - i - 1);
+            std::string inside_lo;
+            for (char c : inside) inside_lo.push_back(static_cast<char>(
+                std::tolower(static_cast<unsigned char>(c))));
+            for (const auto &ext : ShellFileExts()) {
+                if (inside_lo.size() >= ext.size() &&
+                    inside_lo.compare(inside_lo.size() - ext.size(),
+                                      ext.size(), ext) == 0) {
+                    out.push_back(inside);
+                    break;
+                }
+            }
+            i = j + 1;
+        }
+    }
+
+    // Bare paths: walk to each extension occurrence, expand backwards to
+    // a word-boundary.
+    for (const auto &ext : ShellFileExts()) {
+        size_t pos = 0;
+        while ((pos = lo.find(ext, pos)) != std::string::npos) {
+            size_t end = pos + ext.size();
+            if (end < raw.size()) {
+                char c = lo[end];
+                if (std::isalnum(static_cast<unsigned char>(c))) {
+                    pos = end; continue;
+                }
+            }
+            size_t start = pos;
+            while (start > 0) {
+                char c = lo[start - 1];
+                if (c == ' ' || c == '\t' || c == '\'' || c == '"' ||
+                    c == '(' || c == ')' || c == ',') break;
+                start--;
+            }
+            out.push_back(raw.substr(start, end - start));
+            pos = end;
+        }
+    }
+
+    // Dedup preserving order.
+    std::vector<std::string> unique_out;
+    for (const auto &p : out) {
+        bool dup = false;
+        for (const auto &u : unique_out) if (u == p) { dup = true; break; }
+        if (!dup) unique_out.push_back(p);
+    }
+    return unique_out;
+}
+
+// Peek the schema of a single file via `SELECT * FROM '<path>' LIMIT 0`.
+// Returns a synthetic Table with the column names/types the engine's
+// file auto-detection picks; empty-columned Table on failure (which the
+// caller skips). The table name is a safe alias derived from the basename
+// (file_<stem>) so Qwen can reference it as a normal identifier; the
+// original path is stashed in source_file so the prompt tells Qwen to
+// use `FROM '<source_file>'` and a post-processor rewrites any bare
+// alias reference back to the quoted file literal.
+static std::string safe_alias_for_path(const std::string &path) {
+    size_t s = path.find_last_of("/\\");
+    std::string name = (s == std::string::npos) ? path : path.substr(s + 1);
+    size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos) name = name.substr(0, dot);
+    std::string out;
+    out.reserve(name.size() + 5);
+    out += "file_";
+    for (char c : name) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') out += c;
+        else out += '_';
+    }
+    if (out == "file_") out += "src";
+    return out;
+}
+
+static slothdb::ask::Table peek_file_schema(slothdb_connection *conn,
+                                             const std::string &path) {
+    slothdb::ask::Table t;
+    t.name = safe_alias_for_path(path);
+    t.source_file = path;
+    std::string peek_sql = "SELECT * FROM '" + path + "' LIMIT 0";
+    slothdb_result *res = nullptr;
+    auto status = slothdb_query(conn, peek_sql.c_str(), &res);
+    if (status == SLOTHDB_OK && res) {
+        uint64_t n_cols = slothdb_column_count(res);
+        for (uint64_t i = 0; i < n_cols; i++) {
+            slothdb::ask::Column c;
+            c.name = slothdb_column_name(res, i);
+            // No column-type getter on slothdb_result; fall back to
+            // VARCHAR as the lowest-common-denominator hint. Qwen
+            // primarily needs names; types matter less than quoting.
+            c.type = "VARCHAR";
+            t.columns.push_back(std::move(c));
+        }
+    }
+    slothdb_free_result(res);
+    return t;
+}
+
+// Walk the question for referenced files, peek each schema that isn't
+// already in the catalog, and splice the results into `schema`. Keeps
+// the Qwen prompt self-contained so questions like
+//   "average revenue in events.parquet by region"
+// have the right column names in view.
+static void augment_schema_with_referenced_files(
+        slothdb_connection *conn, slothdb::ask::Schema &schema,
+        const std::string &question) {
+    auto paths = extract_file_paths(question);
+    if (paths.empty()) return;
+    // Skip files already represented in the catalog (either by table name
+    // or by file-path tracker inside auto-file tables). Conservative: if
+    // any existing table's name matches the path, skip.
+    for (const auto &p : paths) {
+        bool already = false;
+        for (const auto &t : schema.tables) {
+            if (t.name == p) { already = true; break; }
+        }
+        if (already) continue;
+        auto t = peek_file_schema(conn, p);
+        if (!t.columns.empty()) {
+            schema.tables.push_back(std::move(t));
+        }
+    }
+}
+
 // Execute a generated SQL string with the usual [Y/n] confirm prompt.
 // Shared between the rules path and the LLM fallback so the safety rail
 // is identical: user sees the SQL, types y/n, nothing runs without
@@ -310,6 +461,17 @@ static bool ask_once(slothdb_connection *conn, const std::string &question) {
     if (handle_catalog_intent(conn, question)) return true;
 
     auto schema = build_ask_schema(conn);
+
+    // Peek schemas of any files referenced in the question (e.g.
+    // "events.parquet", 'sales.csv') that are not yet in the catalog, so
+    // the rules parser and Qwen both have column names to work with.
+    // Uses `SELECT * FROM '<path>' LIMIT 0` via the public C API, so all
+    // of SlothDB's format auto-detection (CSV / Parquet / JSON / Avro /
+    // Excel / Arrow / SQLite, plus HTTP/S3) runs the same here as
+    // everywhere else. Large files: `LIMIT 0` means we read only the
+    // header / footer needed for schema discovery, not the data - O(1)
+    // regardless of row count.
+    augment_schema_with_referenced_files(conn, schema, question);
 
     // File-source intents ("load sales.csv", "query events.parquet") work
     // on an empty catalog. Only fall back to the empty-schema message

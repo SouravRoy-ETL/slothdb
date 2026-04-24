@@ -56,12 +56,19 @@ std::string QuoteIdentIfNeeded(const std::string &name) {
 // user has an enormous catalog attached. Identifiers containing spaces
 // or other non-word characters are rendered with surrounding double
 // quotes so the model learns by example that multi-word column names
-// MUST be quoted in the generated SQL.
+// MUST be quoted in the generated SQL. File-source tables (produced by
+// the shell's schema-peek for un-loaded files) are tagged with a
+// comment that tells the model to use `FROM '<path>'` instead of
+// treating the alias as a regular table name.
 std::string RenderDDL(const Schema &schema) {
     std::ostringstream ss;
     size_t limit = schema.tables.size() < 20 ? schema.tables.size() : 20;
     for (size_t i = 0; i < limit; i++) {
         const auto &t = schema.tables[i];
+        if (!t.source_file.empty()) {
+            ss << "-- File source: query via FROM '" << t.source_file
+               << "' (single quotes). Schema below shows its columns:\n";
+        }
         ss << "CREATE TABLE " << QuoteIdentIfNeeded(t.name) << " (";
         for (size_t j = 0; j < t.columns.size(); j++) {
             if (j > 0) ss << ", ";
@@ -122,6 +129,77 @@ std::string ExtractSQL(const std::string &text) {
     while (!s.empty() && is_ws(s.back())) s.pop_back();
     while (!s.empty() && s.back() == ';') s.pop_back();
     return s;
+}
+
+// Rewrite FROM/JOIN references to a file-source alias back to the real
+// path as a single-quoted file literal. Qwen reads the "-- File source"
+// hint in the DDL but still sometimes emits `FROM file_stem` or
+// `FROM "C:\...\file.csv"` instead of `FROM 'C:\...\file.csv'`.
+// This pass corrects both, so questions over files that were peeked
+// into the schema actually execute.
+std::string RewriteFileAliases(const std::string &sql, const Schema &schema) {
+    // Collect (alias, path) pairs for file-source tables.
+    std::vector<std::pair<std::string, std::string>> pairs;
+    for (const auto &t : schema.tables) {
+        if (!t.source_file.empty()) pairs.emplace_back(t.name, t.source_file);
+    }
+    if (pairs.empty()) return sql;
+
+    // Longest alias first.
+    std::sort(pairs.begin(), pairs.end(),
+              [](const auto &a, const auto &b) { return a.first.size() > b.first.size(); });
+
+    std::string out;
+    out.reserve(sql.size() + 32);
+    bool in_str = false, in_dq = false;
+    size_t i = 0;
+    while (i < sql.size()) {
+        char c = sql[i];
+        if (in_str) {
+            out.push_back(c);
+            if (c == '\'' && (i + 1 >= sql.size() || sql[i + 1] != '\'')) in_str = false;
+            i++; continue;
+        }
+        if (in_dq) {
+            out.push_back(c);
+            if (c == '"') in_dq = false;
+            i++; continue;
+        }
+        if (c == '\'') { in_str = true; out.push_back(c); i++; continue; }
+        if (c == '"')  { in_dq  = true; out.push_back(c); i++; continue; }
+
+        bool matched = false;
+        for (const auto &[alias, path] : pairs) {
+            if (i + alias.size() > sql.size()) continue;
+            bool eq = true;
+            for (size_t k = 0; k < alias.size(); k++) {
+                char a = std::tolower(static_cast<unsigned char>(sql[i + k]));
+                char b = std::tolower(static_cast<unsigned char>(alias[k]));
+                if (a != b) { eq = false; break; }
+            }
+            if (!eq) continue;
+            if (i > 0) {
+                char p = sql[i - 1];
+                if (std::isalnum(static_cast<unsigned char>(p)) || p == '_' || p == '"' || p == '\'') continue;
+            }
+            size_t after = i + alias.size();
+            if (after < sql.size()) {
+                char n = sql[after];
+                if (std::isalnum(static_cast<unsigned char>(n)) || n == '_' || n == '"' || n == '\'') continue;
+            }
+            out.push_back('\'');
+            out.append(path);
+            out.push_back('\'');
+            i = after;
+            matched = true;
+            break;
+        }
+        if (!matched) {
+            out.push_back(c);
+            i++;
+        }
+    }
+    return out;
 }
 
 // Post-process the model's SQL: wrap any schema identifier that contains
@@ -408,7 +486,7 @@ EmbeddedResult GenerateSQLLocal(const Schema &schema,
     auto end_marker = out.find("<|im_end|>");
     if (end_marker != std::string::npos) out = out.substr(0, end_marker);
 
-    r.sql = QuoteSchemaIdents(ExtractSQL(out), schema);
+    r.sql = RewriteFileAliases(QuoteSchemaIdents(ExtractSQL(out), schema), schema);
     if (r.sql.empty()) {
         r.message = "model returned empty SQL";
         return r;

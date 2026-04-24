@@ -462,10 +462,27 @@ Result MatchFileSource(const std::string &raw) {
         Result r; r.status = Status::OK; r.sql = sql.str(); return r;
     }
 
-    // Fallback: `show sales.csv` / `query events.parquet` / `read x.json` /
-    // bare `'sales.csv'` - plain SELECT. Cap at 100 rows when the user
-    // didn't ask for aggregation; this is a quick-look pattern, not an
-    // analytic query.
+    // Fallback for "peek the file" intents only: `show sales.csv` /
+    // `query events.parquet` / `read x.json` / bare `'sales.csv'`.
+    // Refuse to handle analytic questions here so they fall through to
+    // Qwen (which has the peeked schema and can write the real query).
+    // Heuristic: any aggregation / grouping / ranking verb disqualifies
+    // the quick-look path.
+    static const char *analytic_markers[] = {
+        "total ", "sum ", "sum(", "average ", "avg ", "avg(",
+        "mean ", "median ", "min ", "max ", "minimum ", "maximum ",
+        "group by", " per ", " by ", " top ", " least ", " most ",
+        "biggest", "smallest", "largest", " highest", " lowest",
+        "appears most", "appears least", " order by", " sort by",
+        " rank ", " percentile", "distinct ", nullptr
+    };
+    for (int i = 0; analytic_markers[i]; i++) {
+        if (contains(analytic_markers[i])) {
+            return NoMatch("file reference inside an analytic question - "
+                           "let the model handle it with the peeked schema");
+        }
+    }
+    // Peek intent: show first 100 rows.
     sql << "SELECT * FROM '" << fm.path << "' LIMIT 100";
     Result r; r.status = Status::OK; r.sql = sql.str(); return r;
 }

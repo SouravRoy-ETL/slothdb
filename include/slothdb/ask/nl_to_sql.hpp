@@ -17,6 +17,12 @@ struct Column {
 struct Table {
     std::string name;
     std::vector<Column> columns;
+    // Non-empty when this "table" is actually a file the shell peeked
+    // the schema of (e.g. DESCRIBE 'C:\path\file.csv'). The LLM prompt
+    // will tell the model to query the file via `FROM '<source_file>'`
+    // and the post-processor rewrites any FROM <alias> back to the
+    // quoted file literal.
+    std::string source_file;
 };
 
 struct Schema {
