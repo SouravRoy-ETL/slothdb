@@ -480,6 +480,14 @@ static bool ask_once(slothdb_connection *conn, const std::string &question) {
     if (r.status == slothdb::ask::Status::OK) {
         return confirm_and_run(conn, r.sql);
     }
+    // Explicit refusal from the rules parser: the shape is understood
+    // but the engine can't execute it correctly (running totals, top-N
+    // per group, etc.). Print the message and stop - do NOT fall back
+    // to the LLM, which would produce broken SQL the user might run.
+    if (r.status == slothdb::ask::Status::REFUSE) {
+        printf("  %s\n", r.message.c_str());
+        return true;
+    }
     if (schema.tables.empty()) {
         printf("No tables loaded yet. Try: `.ask load sales.csv` or "
                "`.ask query events.parquet`, or run a CREATE/SELECT in "
@@ -493,6 +501,17 @@ static bool ask_once(slothdb_connection *conn, const std::string &question) {
         fflush(stdout);
         auto er = slothdb::ask::GenerateSQLLocal(schema, question);
         if (er.ok && !er.sql.empty()) {
+            // Model's in-prompt safety valve: when asked for a cumulative
+            // / running aggregate (engine can't execute those correctly),
+            // we instruct it to emit REFUSE_RUNNING_TOTAL so the shell
+            // prints a clean refusal instead of running wrong SQL.
+            if (er.sql.find("REFUSE_RUNNING_TOTAL") != std::string::npos) {
+                printf("  Cumulative / running / moving aggregates are not "
+                       "yet supported - SlothDB's window-frame executor\n"
+                       "  returns wrong numbers for unbounded-preceding "
+                       "frames. Refusing rather than giving you bad data.\n");
+                return true;
+            }
             return confirm_and_run(conn, er.sql);
         }
         printf("  Model couldn't answer: %s\n", er.message.c_str());

@@ -550,21 +550,74 @@ Result Translate(const std::string &nl, const Schema &schema) {
         Result r; r.status = Status::OK; r.sql = sql.str(); return r;
     }
 
-    // ---- PATTERN 1b: running total / cumulative (disabled in 0.1.7) ----
-    // The pattern would emit `SUM(x) OVER (ORDER BY date)` which is standard
-    // SQL, but SlothDB's current window engine doesn't produce the per-row
-    // cumulative result for unbounded-frame windows (it returns the grand
-    // total on every row) and doesn't accept the explicit
-    // `ROWS UNBOUNDED PRECEDING` frame syntax either. Until both of those
-    // land in the engine, `.ask running total of ...` refuses cleanly.
-    if ((!toks.empty() && toks[0] == "cumulative") ||
-        (toks.size() >= 2 && toks[0] == "running" && toks[1] == "total")) {
-        return NoMatch(
-            "running / cumulative aggregates need window-frame support "
-            "that SlothDB 0.1.7 does not yet execute correctly. Once "
-            "SUM OVER (ORDER BY ... ROWS UNBOUNDED PRECEDING) lands, "
-            ".ask will generate it automatically. For now write the "
-            "SUM OVER directly if you want to test.");
+    // ---- PATTERN 1b: analytic shapes the engine can't execute correctly.
+    // These map to window-frame SQL (cumulative / running / moving /
+    // rolling aggregates) or top-N-per-group (ROW_NUMBER() OVER PARTITION
+    // BY). SlothDB's window engine today returns wrong numbers for
+    // unbounded-preceding frames (grand total on every row) and cannot
+    // parse explicit ROWS BETWEEN; and the rules parser doesn't have a
+    // top-N-per-group emitter yet. Refuse cleanly so the shell prints a
+    // user-facing message instead of (a) silently running wrong SQL or
+    // (b) falling back to Qwen which will write window SQL the engine
+    // then rejects or mis-evaluates.
+    {
+        auto q_lo = lower(nl);
+        auto contains = [&](const char *s) {
+            return q_lo.find(s) != std::string::npos;
+        };
+        static const char *running_markers[] = {
+            "running total", "running sum", "running count",
+            "cumulative total", "cumulative sum", "cumulative count",
+            "cumulative",
+            "moving average", "moving avg", "moving sum",
+            "rolling average", "rolling avg", "rolling sum",
+            "year to date", "ytd ", "running ",
+            nullptr
+        };
+        for (int i = 0; running_markers[i]; i++) {
+            if (contains(running_markers[i])) {
+                Result r;
+                r.status = Status::REFUSE;
+                r.message =
+                    "cumulative / running / moving / rolling aggregates need "
+                    "window-frame execution (SUM OVER (ORDER BY ... ROWS "
+                    "UNBOUNDED PRECEDING) or ROWS BETWEEN N PRECEDING AND "
+                    "CURRENT ROW) that SlothDB does not yet compute correctly. "
+                    "Rather than return wrong numbers, .ask refuses. Re-run "
+                    "once this lands, or write the window SQL by hand if you "
+                    "want to inspect the current behavior.";
+                return r;
+            }
+        }
+
+        // Top-N-per-group: "top 3 X per Y", "top 5 X in each Y",
+        // "rank X within each Y" all require ROW_NUMBER() OVER
+        // (PARTITION BY ...). The small Qwen hallucinates a plain
+        // GROUP BY here; the 1.5B model does better. Either way the
+        // rules parser has no emitter, so refuse with a hint that
+        // SLOTHDB_ASK_MODEL_LARGE may produce the correct SQL.
+        bool has_top = contains(" top ") || q_lo.rfind("top ", 0) == 0 ||
+                       contains("top-") || contains("top_") ||
+                       contains(" highest ") || contains(" largest ") ||
+                       contains(" biggest ");
+        bool per_group = contains(" per ") || contains(" within each ") ||
+                         contains(" in each ") || contains(" for each ") ||
+                         contains(" by each ");
+        bool rank_verb = contains(" rank ") || q_lo.rfind("rank ", 0) == 0;
+        if ((has_top && per_group) || (rank_verb && per_group)) {
+            Result r;
+            r.status = Status::REFUSE;
+            r.message =
+                "top-N per group / ranking within groups needs "
+                "ROW_NUMBER() OVER (PARTITION BY ...) which the rules "
+                "parser doesn't emit. The 0.5B model often produces a "
+                "plain GROUP BY instead (wrong shape). Set "
+                "SLOTHDB_ASK_MODEL_LARGE=1 to opt into Qwen2.5-Coder-1.5B "
+                "which handles window functions much better, or write the "
+                "query with `ROW_NUMBER() OVER (PARTITION BY ...)` "
+                "directly.";
+            return r;
+        }
     }
 
     // ---- PATTERN 2: SUM / AVG / MIN / MAX ----

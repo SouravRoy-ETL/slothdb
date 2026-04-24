@@ -101,6 +101,24 @@ std::string RenderPromptQwen(const std::string &ddl, const std::string &question
        << "(e.g. `\"Customer Id\"`, `\"Subscription Date\"`).\n"
        << "  4. String literals use single quotes. Identifiers use double "
        << "quotes. Never confuse the two.\n"
+       << "  5. When an alias contains a space, quote it with double "
+       << "quotes too: `COUNT(*) AS \"Total Customers\"`.\n"
+       << "\nAnalytic patterns:\n"
+       << "  - \"top N per group\" / \"rank within each group\" -> use\n"
+       << "    ROW_NUMBER() OVER (PARTITION BY grp ORDER BY metric DESC) AS rn\n"
+       << "    wrap in a subquery and filter WHERE rn <= N.\n"
+       << "    Example: top 3 customers by revenue per region:\n"
+       << "      SELECT * FROM (\n"
+       << "        SELECT region, customer_id, revenue,\n"
+       << "               ROW_NUMBER() OVER (PARTITION BY region ORDER BY revenue DESC) AS rn\n"
+       << "        FROM sales\n"
+       << "      ) WHERE rn <= 3;\n"
+       << "  - \"compare to previous / next row\" -> use LAG() / LEAD()\n"
+       << "    OVER (PARTITION BY ... ORDER BY ...).\n"
+       << "  - \"running total / cumulative sum\" -> NOT SUPPORTED by\n"
+       << "    SlothDB's executor yet. Respond with REFUSE_RUNNING_TOTAL\n"
+       << "    so the shell can tell the user cleanly instead of running\n"
+       << "    a query that returns wrong numbers.\n"
        << "\nSchema:\n"
        << ddl
        << "<|im_end|>\n"
@@ -129,6 +147,115 @@ std::string ExtractSQL(const std::string &text) {
     while (!s.empty() && is_ws(s.back())) s.pop_back();
     while (!s.empty() && s.back() == ';') s.pop_back();
     return s;
+}
+
+// Wrap multi-word AS aliases in double quotes. Qwen sometimes emits
+// `COUNT(*) AS Total Customers` which the parser rejects because
+// `Customers` starts a new statement. Scan for `AS <ident> <ident>...`
+// at the top level (not inside strings or already-quoted idents) and
+// merge the run of bare identifier-like tokens into a single quoted
+// alias. Stops at a non-identifier character (comma, FROM, WHERE, ...).
+std::string QuoteMultiWordAliases(const std::string &sql) {
+    std::string out;
+    out.reserve(sql.size() + 8);
+    bool in_str = false, in_dq = false;
+    size_t i = 0;
+
+    auto is_id_char = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    };
+    auto is_space = [](char c) { return c == ' ' || c == '\t'; };
+
+    // Reserved words we should not swallow into an alias.
+    static const char *boundary_words[] = {
+        "FROM", "WHERE", "GROUP", "ORDER", "LIMIT", "HAVING", "QUALIFY",
+        "UNION", "INTERSECT", "EXCEPT", "JOIN", "ON", "INNER", "LEFT",
+        "RIGHT", "FULL", "CROSS", "USING", "AS", "WITH", "SELECT",
+        "AND", "OR", "NOT", "ASC", "DESC", nullptr
+    };
+    auto is_boundary = [&](const std::string &w) {
+        std::string up;
+        for (char c : w) up.push_back(static_cast<char>(std::toupper(
+            static_cast<unsigned char>(c))));
+        for (int k = 0; boundary_words[k]; k++)
+            if (up == boundary_words[k]) return true;
+        return false;
+    };
+
+    while (i < sql.size()) {
+        char c = sql[i];
+        if (in_str) {
+            out.push_back(c);
+            if (c == '\'' && (i + 1 >= sql.size() || sql[i + 1] != '\'')) in_str = false;
+            i++; continue;
+        }
+        if (in_dq) {
+            out.push_back(c);
+            if (c == '"') in_dq = false;
+            i++; continue;
+        }
+        if (c == '\'') { in_str = true; out.push_back(c); i++; continue; }
+        if (c == '"')  { in_dq  = true; out.push_back(c); i++; continue; }
+
+        // Look for "AS" (case-insensitive) at a word boundary.
+        bool as_match = false;
+        if (i + 2 <= sql.size()) {
+            char a = std::tolower(static_cast<unsigned char>(sql[i]));
+            char b = std::tolower(static_cast<unsigned char>(sql[i + 1]));
+            if (a == 'a' && b == 's') {
+                bool left_ok = (i == 0) || !is_id_char(sql[i - 1]);
+                bool right_ok = (i + 2 >= sql.size()) || !is_id_char(sql[i + 2]);
+                if (left_ok && right_ok) as_match = true;
+            }
+        }
+        if (!as_match) { out.push_back(c); i++; continue; }
+
+        // Consume `AS`.
+        size_t p = i + 2;
+        // Skip spaces after AS.
+        while (p < sql.size() && is_space(sql[p])) p++;
+        // If the next char is a double quote (already-quoted alias),
+        // leave everything alone.
+        if (p < sql.size() && sql[p] == '"') {
+            out.append(sql, i, p - i);
+            i = p; continue;
+        }
+        // Collect first identifier token.
+        size_t t1_start = p;
+        while (p < sql.size() && is_id_char(sql[p])) p++;
+        if (p == t1_start) { out.push_back(c); i++; continue; }
+        std::string first = sql.substr(t1_start, p - t1_start);
+
+        // Try to append more identifier tokens separated by single spaces,
+        // stopping at any boundary word, punctuation, or line break.
+        std::vector<std::string> tokens = {first};
+        size_t try_p = p;
+        while (try_p < sql.size() && sql[try_p] == ' ') {
+            size_t probe = try_p + 1;
+            if (probe >= sql.size() || !is_id_char(sql[probe])) break;
+            size_t tok_start = probe;
+            while (probe < sql.size() && is_id_char(sql[probe])) probe++;
+            std::string tok = sql.substr(tok_start, probe - tok_start);
+            if (is_boundary(tok)) break;
+            tokens.push_back(tok);
+            try_p = probe;
+        }
+        if (tokens.size() <= 1) {
+            // Single-word alias - leave as-is.
+            out.append(sql, i, p - i);
+            i = p; continue;
+        }
+
+        // Emit `AS "<multi word alias>"`.
+        out += "AS \"";
+        for (size_t k = 0; k < tokens.size(); k++) {
+            if (k) out += ' ';
+            out += tokens[k];
+        }
+        out += "\"";
+        i = try_p;
+    }
+    return out;
 }
 
 // Rewrite FROM/JOIN references to a file-source alias back to the real
@@ -299,15 +426,16 @@ std::string ModelDir() {
 }
 
 const ModelSpec &DefaultModel() {
-    // Pinned GGUF. Qwen2.5-Coder-0.5B-Instruct, Q4_K_M quantization,
-    // ~310 MB on disk. Apache 2.0. Coding-tuned - better SQL quality
-    // at this size than the generic Instruct variant.
-    //
-    // The SHA256 below is left empty for now; on first release land the
-    // actual hash of the file we ship against so users get verified
-    // downloads. The CLI will warn rather than fail if sha256 is empty,
-    // to make the first release easy.
-    static const ModelSpec spec = {
+    // Two tiers, env-var switched:
+    //   unset / default: Qwen2.5-Coder-0.5B-Instruct Q4_K_M (~310 MB).
+    //     Small enough that lazy-download is tolerable, strong enough for
+    //     COUNT / GROUP BY / filter / TOP-N style questions. Mis-writes
+    //     window functions on analytic queries - that is why the 1.5B
+    //     tier exists.
+    //   SLOTHDB_ASK_MODEL_LARGE=1 (or any truthy value): switch to the
+    //     1.5B tier. Same quantization, same pipeline, ~986 MB on disk.
+    //     Better at window functions, ranking, LAG/LEAD, joins.
+    static const ModelSpec small_spec = {
         /*name=*/          "Qwen2.5-Coder-0.5B-Instruct-Q4_K_M",
         /*url=*/           "https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF/"
                            "resolve/main/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
@@ -316,7 +444,26 @@ const ModelSpec &DefaultModel() {
         /*chat_template=*/ "qwen",
         /*expected_bytes=*/ 310ULL * 1024ULL * 1024ULL
     };
-    return spec;
+    static const ModelSpec large_spec = {
+        /*name=*/          "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M",
+        /*url=*/           "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/"
+                           "resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+        /*sha256=*/        "", // TODO: pin on first release
+        /*local_file=*/    "qwen2.5-coder-1.5b-instruct.Q4_K_M.gguf",
+        /*chat_template=*/ "qwen",
+        /*expected_bytes=*/ 986ULL * 1024ULL * 1024ULL
+    };
+    std::string val;
+#ifdef _MSC_VER
+    char *buf = nullptr; size_t sz = 0;
+    if (_dupenv_s(&buf, &sz, "SLOTHDB_ASK_MODEL_LARGE") == 0 && buf) {
+        val = buf; free(buf);
+    }
+#else
+    if (const char *e = std::getenv("SLOTHDB_ASK_MODEL_LARGE")) val = e;
+#endif
+    bool want_large = !val.empty() && val != "0" && val != "false" && val != "FALSE";
+    return want_large ? large_spec : small_spec;
 }
 
 std::string DefaultModelPath() {
@@ -486,7 +633,9 @@ EmbeddedResult GenerateSQLLocal(const Schema &schema,
     auto end_marker = out.find("<|im_end|>");
     if (end_marker != std::string::npos) out = out.substr(0, end_marker);
 
-    r.sql = RewriteFileAliases(QuoteSchemaIdents(ExtractSQL(out), schema), schema);
+    r.sql = RewriteFileAliases(
+        QuoteMultiWordAliases(QuoteSchemaIdents(ExtractSQL(out), schema)),
+        schema);
     if (r.sql.empty()) {
         r.message = "model returned empty SQL";
         return r;

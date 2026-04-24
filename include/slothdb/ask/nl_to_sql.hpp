@@ -35,6 +35,11 @@ enum class Status {
     UNRESOLVED_TABLE,    // couldn't map noun to a table in the schema
     UNRESOLVED_COLUMN,   // couldn't map noun to a column
     AMBIGUOUS,           // phrasing matched more than one table/column
+    REFUSE,              // shape understood but deliberately refused
+                         //   (engine can't execute it correctly today).
+                         //   `message` explains to the user. Do NOT
+                         //   fall back to the LLM - the executor would
+                         //   just return wrong numbers for these shapes.
 };
 
 struct Result {
