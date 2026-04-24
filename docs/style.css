@@ -62,6 +62,15 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-code); 
 pre { font-family: var(--mono); }
 pre code { background: transparent; padding: 0; border: none; }
 
+/* Inside buttons, chips, and the .used-by line, inline <code> should
+   inherit the surrounding background and border rather than render its
+   own dark pill. Without this, .btn.primary (violet accent) shows a
+   dark rectangle around <code>.ask</code> - looks broken. */
+.btn code,
+.chip code,
+.used-by code,
+.ctas code { background: transparent; border: none; padding: 0; color: inherit; font-size: 1em; font-weight: inherit; }
+
 /* Top nav (shared across all pages) */
 nav.top {
   position: sticky; top: 0; z-index: 50;

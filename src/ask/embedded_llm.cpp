@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifdef SLOTHDB_ASK_MODEL
@@ -329,6 +330,94 @@ std::string RewriteFileAliases(const std::string &sql, const Schema &schema) {
             out.push_back(c);
             i++;
         }
+    }
+    return out;
+}
+
+// Normalize an identifier for fuzzy matching: lowercase + map `_`, ` `,
+// and `-` to a single separator. This lets us recognise `customer_id`
+// as referring to a schema column named `Customer Id` or `CustomerID`
+// or `customer-id` regardless of what case/delimiter convention the
+// model happened to pick.
+static std::string IdentKey(const std::string &s) {
+    std::string k;
+    k.reserve(s.size());
+    for (char c : s) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc)) k.push_back(static_cast<char>(std::tolower(uc)));
+        else if (c == ' ' || c == '_' || c == '-') {
+            if (!k.empty() && k.back() != ' ') k.push_back(' ');
+        }
+    }
+    while (!k.empty() && k.back() == ' ') k.pop_back();
+    return k;
+}
+
+// Rewrite bare identifiers in the SQL that fuzzily match a schema name
+// but aren't the canonical form. Catches Qwen's common mistakes:
+// `customer_id` -> `"Customer Id"`, `country` -> `"Country"`,
+// `SUBSCRIPTION_DATE` -> `"Subscription Date"`. Respects string literals
+// and already-quoted identifiers. Only rewrites when the target needs
+// quoting (contains a space / non-word char) OR when the model's bare
+// form differs from the schema's canonical casing. Never rewrites
+// single-word all-lowercase matches (too many false positives against
+// SQL keywords like `date`, `count`, `sum`).
+std::string NormalizeIdentifiers(const std::string &sql, const Schema &schema) {
+    // Build: normalized_key -> canonical_schema_name. Skip very short
+    // names (<3 chars) to avoid rewriting common words.
+    std::unordered_map<std::string, std::string> canonical;
+    auto add = [&](const std::string &s) {
+        if (s.size() < 3) return;
+        auto k = IdentKey(s);
+        if (k.empty() || k == s) return;        // key same as name: nothing to gain
+        if (canonical.count(k)) return;          // first wins
+        canonical[k] = s;
+    };
+    for (const auto &t : schema.tables) {
+        add(t.name);
+        for (const auto &c : t.columns) add(c.name);
+    }
+    if (canonical.empty()) return sql;
+
+    auto is_id_char = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    };
+
+    std::string out;
+    out.reserve(sql.size() + 16);
+    bool in_str = false, in_dq = false;
+    size_t i = 0;
+    while (i < sql.size()) {
+        char c = sql[i];
+        if (in_str) {
+            out.push_back(c);
+            if (c == '\'' && (i + 1 >= sql.size() || sql[i + 1] != '\'')) in_str = false;
+            i++; continue;
+        }
+        if (in_dq) {
+            out.push_back(c);
+            if (c == '"') in_dq = false;
+            i++; continue;
+        }
+        if (c == '\'') { in_str = true; out.push_back(c); i++; continue; }
+        if (c == '"')  { in_dq  = true; out.push_back(c); i++; continue; }
+
+        if (!is_id_char(c)) { out.push_back(c); i++; continue; }
+
+        // Scan a bare identifier token.
+        size_t start = i;
+        while (i < sql.size() && is_id_char(sql[i])) i++;
+        std::string tok = sql.substr(start, i - start);
+        auto k = IdentKey(tok);
+        auto it = canonical.find(k);
+        if (it == canonical.end()) {
+            out.append(tok);
+            continue;
+        }
+        // Emit canonical form wrapped in double quotes.
+        out.push_back('"');
+        out.append(it->second);
+        out.push_back('"');
     }
     return out;
 }
@@ -748,8 +837,18 @@ EmbeddedResult GenerateSQLLocal(const Schema &schema,
     auto end_marker = out.find("<|im_end|>");
     if (end_marker != std::string::npos) out = out.substr(0, end_marker);
 
+    // Pipeline (applied in this order):
+    //   1. ExtractSQL        - strip markdown fences, trim, drop semicolons
+    //   2. NormalizeIdentifiers - fuzzy-match bare idents to schema
+    //      (customer_id -> "Customer Id", country -> "Country")
+    //   3. QuoteSchemaIdents - safety net for multi-word schema names
+    //   4. QuoteMultiWordAliases - `AS Total Count` -> `AS "Total Count"`
+    //   5. RewriteFileAliases - file_alias -> 'real/path.csv'
     r.sql = RewriteFileAliases(
-        QuoteMultiWordAliases(QuoteSchemaIdents(ExtractSQL(out), schema)),
+        QuoteMultiWordAliases(
+            QuoteSchemaIdents(
+                NormalizeIdentifiers(ExtractSQL(out), schema),
+                schema)),
         schema);
     if (r.sql.empty()) {
         r.message = "model returned empty SQL";

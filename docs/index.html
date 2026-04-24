@@ -104,14 +104,13 @@
   </div>
   <div class="inner">
     <h1><span class="accent">Natural-language SQL</span><br>that never leaves the laptop.</h1>
-    <p class="lede">SlothDB is an embedded SQL OLAP engine in C++20. <b><code>.ask</code></b> is the only NL-to-SQL pipeline that runs fully locally: a rules-first parser handles simple shapes instantly, a deterministic two-tier router sends analytic questions to a local 1.5B Qwen and simple ones to a local 0.5B (both lazy-downloaded in parallel on first use), and every generated SQL is <code>[Y/n]</code>-gated before it runs. Zero egress, no API keys, no tokens on the wire. Cached views re-parse only the bytes your CSV grows by. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms</b>.</p>
+    <p class="lede">Embedded SQL OLAP in C++20, with the only NL-to-SQL pipeline that runs fully locally. Rules-first, two-tier Qwen router, every statement <code>[Y/n]</code>-gated. Zero egress. <b>138 ms vs DuckDB's 540 ms</b> on a 5-query warm JOIN batch.</p>
     <div class="ctas">
-      <a class="btn primary" href="#ask">See <code>.ask</code> (local AI) -></a>
-      <a class="btn ghost" href="playground/">Try in your browser -></a>
-      <a class="btn ghost" href="#install">pip install slothdb</a>
-      <a class="btn ghost" href="#benchmarks">Benchmarks -></a>
+      <a class="btn primary" href="#ask">See local AI -></a>
+      <a class="btn ghost" href="playground/">Try in browser</a>
+      <a class="btn ghost" href="#benchmarks">Benchmarks</a>
     </div>
-    <div class="used-by">MIT licensed · 403 tests · v0.1.7 out now with local-first <code>.ask</code> - <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.1.7">release notes</a></div>
+    <div class="used-by">MIT · 403 tests · v0.1.7 · <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.1.7">release notes</a></div>
 
     <div class="hero-chips">
       <div class="chip-group">
