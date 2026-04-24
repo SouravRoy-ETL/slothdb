@@ -16,7 +16,7 @@ You want analytical SQL over a CSV, JSON, or Parquet file fetched via HTTP, insi
 
 ## What it excludes
 
-- Excel (`read_xlsx`) — strips the miniz ZIP dependency
+- Excel (`read_xlsx`) - strips the miniz ZIP dependency
 - Avro (`read_avro`)
 - Arrow IPC (`read_arrow`)
 - SQLite scanner (`sqlite_scan`)
@@ -37,11 +37,11 @@ emcmake cmake -B build-wasm-edge -DSLOTHDB_EDGE=ON
 cmake --build build-wasm-edge
 ```
 
-The Emscripten path passes `-Oz` (size optimization), `-sMALLOC=emmalloc` (smaller heap allocator), `-sFILESYSTEM=0` (no bundled FS — use `fetch()` + `ArrayBuffer`), and `--closure=1` to minify the JS glue.
+The Emscripten path passes `-Oz` (size optimization), `-sMALLOC=emmalloc` (smaller heap allocator), `-sFILESYSTEM=0` (no bundled FS - use `fetch()` + `ArrayBuffer`), and `--closure=1` to minify the JS glue.
 
 ## Expected size
 
-On MSVC/Windows the native binary shrinks modestly (~6%), because the linker already strips dead code. On Emscripten with `-Oz` and closure minification, the win is larger — target is **under 1 MB gzipped** for the combined `.wasm` + JS glue. Validate with:
+On MSVC/Windows the native binary shrinks modestly (~6%), because the linker already strips dead code. On Emscripten with `-Oz` and closure minification, the win is larger - target is **under 1 MB gzipped** for the combined `.wasm` + JS glue. Validate with:
 
 ```bash
 ls -la build-wasm-edge/src/slothdb.wasm

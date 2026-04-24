@@ -121,7 +121,7 @@ ROLLBACK [TRANSACTION];
 ```
 
 ### Views (Virtual)
-Views re-execute on every query — views on files always return fresh data.
+Views re-execute on every query - views on files always return fresh data.
 ```sql
 CREATE VIEW name AS SELECT ...;
 CREATE VIEW sales AS SELECT * FROM read_csv('sales.csv');  -- re-reads file each query

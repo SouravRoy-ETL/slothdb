@@ -1,7 +1,7 @@
-// SlothDB playground — VS Code-style IDE for SQL against local files.
+// SlothDB playground - VS Code-style IDE for SQL against local files.
 // Boots slothdb.wasm, fetches demo CSV/Parquet, wires activity bar / editor / panel / status bar.
 //
-// BUILD_VERSION — bump on every rebuild/push so browsers refetch the
+// BUILD_VERSION - bump on every rebuild/push so browsers refetch the
 // wasm / js / css / cm bundle instead of serving the cached prior version.
 const BUILD_VERSION = '20260422-5';
 
@@ -74,8 +74,8 @@ function setStatus(text, state = 'ok') {
 }
 
 function setRowStats(rows, ms, err) {
-    $('#sb-rows').textContent = err ? 'error' : (rows != null ? `${rows} rows` : '—');
-    $('#sb-time').textContent = ms != null ? `${ms.toFixed(1)} ms` : '—';
+    $('#sb-rows').textContent = err ? 'error' : (rows != null ? `${rows} rows` : '-');
+    $('#sb-time').textContent = ms != null ? `${ms.toFixed(1)} ms` : '-';
 }
 
 function refreshFileCount() {
@@ -129,7 +129,7 @@ async function handleFiles(flist) {
 $('#file-input').addEventListener('change', (e) => handleFiles(e.target.files));
 
 // ────────────────────────────────────────────────────────────
-// Floating tooltip — rendered at <body> so it isn't clipped by any
+// Floating tooltip - rendered at <body> so it isn't clipped by any
 // ancestor overflow (e.g. the sidebar's overflow-y: auto). Any element
 // with `data-tooltip="..."` gets it for free.
 
@@ -276,7 +276,7 @@ function renderResult(res) {
         meta.innerHTML = `<span class="err">${escapeHtml(res.error)}</span>`;
         table.innerHTML = '';
         empty.style.display = '';
-        empty.textContent = '(query failed — see Messages)';
+        empty.textContent = '(query failed - see Messages)';
         dlBtn.disabled = true;
         setRowStats(null, res.ms, true);
         switchPanel('messages');
@@ -357,11 +357,11 @@ function switchPanel(name) {
 }
 $$('.ptab').forEach((btn) => btn.addEventListener('click', () => switchPanel(btn.dataset.tab)));
 
-// Run button click handler — the editor's own Mod-Enter keymap only fires
+// Run button click handler - the editor's own Mod-Enter keymap only fires
 // when CodeMirror has focus, so the button needs its own binding.
 $('#run').addEventListener('click', () => runQuery());
 
-// Global Ctrl/Cmd+Enter — works even when focus is outside the editor
+// Global Ctrl/Cmd+Enter - works even when focus is outside the editor
 // (e.g. a snippet button was just clicked, or the user is on the results pane).
 document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -558,7 +558,7 @@ async function boot() {
     setStatus('booting wasm…', 'boot');
     log('Booting SlothDB…');
 
-    // Cache-bust slothdb.wasm via locateFile — without this the JS gets
+    // Cache-bust slothdb.wasm via locateFile - without this the JS gets
     // the new hash via `?v=` but the wasm stays stuck on the old copy.
     mod = await createSlothDB({
         locateFile: (path) => path + '?v=' + BUILD_VERSION,
@@ -582,7 +582,7 @@ boot().catch((e) => {
     log(`Boot failed: ${e.message || e}`, 'err');
     console.error(e);
 }).then(() => {
-    // First-visit guided tour — runs once per browser, dismissable.
+    // First-visit guided tour - runs once per browser, dismissable.
     setTimeout(() => maybeStartTour(), 600);
 });
 
@@ -595,7 +595,7 @@ const TOUR_STEPS = [
     {
         selector: '#editor',
         title: 'SQL editor',
-        body: 'Write SQL here. A demo query is already loaded — press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> or click Run to execute.',
+        body: 'Write SQL here. A demo query is already loaded - press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> or click Run to execute.',
         placement: 'right',
     },
     {
@@ -607,13 +607,13 @@ const TOUR_STEPS = [
     {
         selector: '.tree-action[data-tooltip]',
         title: 'Add your own files',
-        body: 'Upload CSV, Parquet, JSON, Arrow, SQLite, or Excel. Files stay in your browser — nothing is uploaded to a server.',
+        body: 'Upload CSV, Parquet, JSON, Arrow, SQLite, or Excel. Files stay in your browser - nothing is uploaded to a server.',
         placement: 'bottom',
     },
     {
         selector: '.tree-group[data-group="snippets-mini"]',
         title: 'Snippet library',
-        body: 'Ready-made queries — COUNT, GROUP BY, format comparisons, date functions. Click any to load and run.',
+        body: 'Ready-made queries - COUNT, GROUP BY, format comparisons, date functions. Click any to load and run.',
         placement: 'right',
     },
     {
@@ -636,7 +636,7 @@ window.slothdbReplayTour = () => {
 };
 
 function startTour() {
-    // Bail if any target is missing (defensive — e.g. responsive hidden).
+    // Bail if any target is missing (defensive - e.g. responsive hidden).
     for (const s of TOUR_STEPS) {
         if (!document.querySelector(s.selector)) return;
     }
@@ -673,7 +673,7 @@ function startTour() {
                 <button class="tour-skip">Skip tour</button>
                 <div class="tour-nav">
                     ${idx > 0 ? '<button class="tour-prev">Back</button>' : ''}
-                    <button class="tour-next">${isLast ? 'Got it' : 'Next →'}</button>
+                    <button class="tour-next">${isLast ? 'Got it' : 'Next ->'}</button>
                 </div>
             </div>
         `;

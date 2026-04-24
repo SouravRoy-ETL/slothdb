@@ -1,5 +1,5 @@
 /* =====================================================================
-   SlothDB Playground — VS Code-inspired layout.
+   SlothDB Playground - VS Code-inspired layout.
    Palette borrows from VS Code dark+ / pgAdmin 4.
    ===================================================================== */
 
@@ -11,7 +11,7 @@
   --bg-side:       #252526;  /* sidebar */
   --bg-activity:   #333333;  /* activity bar */
   --bg-title:      #3c3c3c;  /* title bar */
-  --bg-status:     #007acc;  /* status bar (classic VS Code blue) — but we override to green */
+  --bg-status:     #007acc;  /* status bar (classic VS Code blue) - but we override to green */
   --bg-statusbar:  #7ed07a;
   --bg-tab-act:    #1e1e1e;
   --bg-tab-ina:    #2d2d2d;
@@ -240,7 +240,7 @@ kbd {
   position: absolute; inset: 0; opacity: 0; cursor: pointer;
 }
 
-/* Tooltip bubble (floating — rendered as a fixed element attached to
+/* Tooltip bubble (floating - rendered as a fixed element attached to
    <body> by app.js). Escapes the sidebar's overflow clipping that a
    pseudo-element tooltip can't. */
 .tt-bubble {

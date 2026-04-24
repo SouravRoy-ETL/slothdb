@@ -149,7 +149,7 @@ pre.code .str { color: var(--win); }
 pre.code .num { color: var(--warn); }
 pre.code .fn { color: #60A5FA; }
 
-/* Cards — DuckDB-style with icon container */
+/* Cards - DuckDB-style with icon container */
 .grid { display: grid; gap: 28px; margin-top: 20px; text-align: left; }
 .grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
 .grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
@@ -180,7 +180,7 @@ pre.code .fn { color: #60A5FA; }
   color: var(--accent);
 }
 .card a.card-link:hover { color: var(--accent-bright); text-decoration: none; }
-.card a.card-link::after { content: "→"; transition: transform 0.15s ease; }
+.card a.card-link::after { content: "->"; transition: transform 0.15s ease; }
 .card a.card-link:hover::after { transform: translateX(3px); }
 
 /* Bordered card variant (used in ecosystem + install grids) */
@@ -210,7 +210,7 @@ table.data td.num { text-align: right; font-family: var(--mono); }
 table.data td.win { color: var(--win); font-weight: 600; text-align: right; font-family: var(--mono); }
 table.data tr:last-child td { border-bottom: none; }
 
-/* Buttons — pill shaped, DuckDB-style */
+/* Buttons - pill shaped, DuckDB-style */
 .btn {
   display: inline-flex; align-items: center; gap: 10px;
   padding: 16px 32px; border-radius: 999px;
@@ -337,7 +337,7 @@ section.hero .hero-chips .chip {
 }
 .demo-wrap img { max-width: 100%; height: auto; }
 
-/* Ecosystem — DuckDB-style grid with right-angle connectors + subtle single pulse */
+/* Ecosystem - DuckDB-style grid with right-angle connectors + subtle single pulse */
 .ecosystem {
   position: relative;
   max-width: 1120px; margin: 40px auto 0;
@@ -361,12 +361,12 @@ section.hero .hero-chips .chip {
 }
 .eco-connectors .flow-layer { pointer-events: none; }
 
-/* SVG gradient stops — styled via CSS so CSS var() resolves. Still used
+/* SVG gradient stops - styled via CSS so CSS var() resolves. Still used
    by the radial anchor-glow; the flow paths no longer use a gradient. */
 #eco-anchor-glow .halo-inner { stop-color: var(--accent); stop-opacity: 0.25; }
 #eco-anchor-glow .halo-outer { stop-color: var(--accent); stop-opacity: 0;    }
 .eco-connectors .flow {
-  /* Full-path glowing pulse — each channel fades in bright, holds,
+  /* Full-path glowing pulse - each channel fades in bright, holds,
      fades out. The drop-shadow is what gives the "glow"; without it
      the flow just looks like a plain stroke. vector-effect on the
      paths keeps the stroke width from collapsing when preserve-
@@ -400,7 +400,7 @@ section.hero .hero-chips .chip {
 }
 
 /* Keep the glow pulse running even when the user has set
-   prefers-reduced-motion — it's a soft opacity fade that doesn't
+   prefers-reduced-motion - it's a soft opacity fade that doesn't
    trigger vestibular issues (what reduced-motion is actually for).
    If someone genuinely wants no animation at all, they can disable
    site animations at the browser level. */

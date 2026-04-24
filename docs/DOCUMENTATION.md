@@ -1,6 +1,6 @@
 # SlothDB Documentation
 
-The complete guide to SlothDB — query CSV, Parquet, JSON, and Excel files with SQL. No server, no setup, no dependencies.
+The complete guide to SlothDB - query CSV, Parquet, JSON, and Excel files with SQL. No server, no setup, no dependencies.
 
 ---
 
@@ -12,7 +12,7 @@ The complete guide to SlothDB — query CSV, Parquet, JSON, and Excel files with
 | [2. Query Your Files](#2-query-your-files) | Analyze CSV, Parquet, JSON, Excel, Avro, Arrow, and SQLite files |
 | [3. Working with Large Datasets](#3-working-with-large-datasets) | Import, persist, and optimize queries on millions of rows |
 | [4. SQL Guide](#4-sql-guide) | Tables, joins, window functions, CTEs, MERGE, and more |
-| [5. All Functions](#5-all-functions) | 70+ built-in functions — string, math, date, aggregate, regex |
+| [5. All Functions](#5-all-functions) | 70+ built-in functions - string, math, date, aggregate, regex |
 | [6. Python API](#6-python-api) | Use SlothDB from Python with pandas integration |
 | [7. C/C++ API](#7-cc-api) | Embed SlothDB in C/C++ applications |
 | [8. CLI Shell](#8-cli-shell) | Shell commands, flags, and tips |
@@ -46,7 +46,7 @@ greeting
 Hello, World!
 ```
 
-That's it. You have a full SQL engine running. Now let's do something useful — query a real file:
+That's it. You have a full SQL engine running. Now let's do something useful - query a real file:
 
 ```bash
 slothdb> SELECT * FROM 'sales.csv' LIMIT 5;
@@ -65,7 +65,7 @@ cmake --build build --config Release
 build\src\Release\slothdb.exe  # Windows
 ```
 
-**Edge build** (sub-MB WASM for Cloudflare Workers / Deno Deploy / Vercel Edge — strips Excel / Avro / Arrow IPC / SQLite readers, keeps CSV / JSON / Parquet):
+**Edge build** (sub-MB WASM for Cloudflare Workers / Deno Deploy / Vercel Edge - strips Excel / Avro / Arrow IPC / SQLite readers, keeps CSV / JSON / Parquet):
 
 ```bash
 cmake -B build-edge -DSLOTHDB_EDGE=ON -DCMAKE_BUILD_TYPE=Release
@@ -75,7 +75,7 @@ emcmake cmake -B build-wasm-edge -DSLOTHDB_EDGE=ON
 cmake --build build-wasm-edge
 ```
 
-See [EDGE_BUILD.md](EDGE_BUILD.md) for audience, included/excluded readers, and the runtime distinction (no emscripten FS — reads via `fetch()` + `ArrayBuffer`).
+See [EDGE_BUILD.md](EDGE_BUILD.md) for audience, included/excluded readers, and the runtime distinction (no emscripten FS - reads via `fetch()` + `ArrayBuffer`).
 
 ---
 
@@ -124,7 +124,7 @@ SELECT * FROM read_parquet('data/year=2024/*.parquet');
 | Read speed | Scans entire file | Reads only needed columns |
 | File size | Raw text | 5-10x smaller (compressed) |
 | Schema | Auto-detected (can be wrong) | Embedded in file (always correct) |
-| Filter pushdown | No | Yes — skips non-matching row groups |
+| Filter pushdown | No | Yes - skips non-matching row groups |
 
 **Convert CSV to Parquet** for faster future queries:
 
@@ -137,13 +137,13 @@ SELECT category, SUM(amount) FROM read_parquet('huge_data.parquet') GROUP BY cat
 
 ### JSON
 
-Supports both JSON arrays (`[{...}, {...}]`) and newline-delimited JSON (NDJSON — one object per line).
+Supports both JSON arrays (`[{...}, {...}]`) and newline-delimited JSON (NDJSON - one object per line).
 
 ```sql
 -- JSON array
 SELECT * FROM read_json('users.json');
 
--- NDJSON (one JSON object per line — common in logging)
+-- NDJSON (one JSON object per line - common in logging)
 SELECT * FROM read_json('server_logs.ndjson');
 
 -- Auto-detect
@@ -184,7 +184,7 @@ SELECT * FROM read_avro('events.avro');
 
 ### SQLite
 
-Read tables directly from SQLite database files. No libsqlite3 needed — SlothDB reads the B-tree pages directly.
+Read tables directly from SQLite database files. No libsqlite3 needed - SlothDB reads the B-tree pages directly.
 
 ```sql
 -- Read a table from a SQLite database
@@ -271,7 +271,7 @@ slothdb analytics.slothdb    # data persists across sessions
 CREATE TABLE sales AS SELECT * FROM read_csv('sales_2024.csv');
 CREATE TABLE events AS SELECT * FROM read_parquet('events.parquet');
 
--- Now queries are instant — no file parsing overhead
+-- Now queries are instant - no file parsing overhead
 SELECT region, SUM(revenue) FROM sales GROUP BY region;
 SELECT event_type, COUNT(*) FROM events GROUP BY event_type;
 ```
@@ -288,7 +288,7 @@ slothdb> SELECT COUNT(*) FROM sales;  -- data persisted from last session
 If you have a large CSV you'll query often, convert it to Parquet once:
 
 ```sql
--- One-time conversion (CSV → Parquet)
+-- One-time conversion (CSV -> Parquet)
 COPY (SELECT * FROM read_csv('huge.csv')) TO 'huge.parquet' WITH (FORMAT PARQUET);
 
 -- Every future query is 5-10x faster
@@ -300,7 +300,7 @@ SELECT category, COUNT(*) FROM read_parquet('huge.parquet') GROUP BY category;
 Don't import the entire dataset if you only need a subset:
 
 ```sql
--- Filter during import — only loads matching rows
+-- Filter during import - only loads matching rows
 CREATE TABLE recent AS
     SELECT * FROM read_csv('all_data.csv')
     WHERE year >= 2023 AND region = 'US';
@@ -392,14 +392,14 @@ DROP TABLE IF EXISTS employees;
 
 ### Views
 
-Views are **virtual** — they re-execute the underlying query every time you access them. This means views on files always return fresh data.
+Views are **virtual** - they re-execute the underlying query every time you access them. This means views on files always return fresh data.
 
 ```sql
 -- View on a table
 CREATE VIEW active_employees AS
     SELECT * FROM employees WHERE status = 'active';
 
--- View on a CSV file — always reads the latest data from disk
+-- View on a CSV file - always reads the latest data from disk
 CREATE VIEW sales AS SELECT * FROM read_csv('sales.csv');
 
 -- View on Parquet with filtering
@@ -412,7 +412,7 @@ CREATE VIEW quarterly AS SELECT * FROM read_xlsx('Q4_report.xlsx');
 -- View on SQLite
 CREATE VIEW legacy_users AS SELECT * FROM sqlite_scan('old_app.db', 'users');
 
--- Now query views like tables — data is always fresh
+-- Now query views like tables - data is always fresh
 SELECT region, SUM(revenue) FROM sales GROUP BY region;
 SELECT COUNT(*) FROM recent_events;
 
@@ -426,7 +426,7 @@ DROP VIEW IF EXISTS sales;
 
 ### Live Views (`CREATE LIVE VIEW`)
 
-A plain `CREATE VIEW` re-executes the underlying query on every SELECT. For large files that change rarely, that's wasteful — every SELECT re-parses megabytes. `CREATE LIVE VIEW` caches the result and only refreshes when the source file actually changes.
+A plain `CREATE VIEW` re-executes the underlying query on every SELECT. For large files that change rarely, that's wasteful - every SELECT re-parses megabytes. `CREATE LIVE VIEW` caches the result and only refreshes when the source file actually changes.
 
 ```sql
 CREATE LIVE VIEW app AS SELECT * FROM 'app.log';
@@ -445,15 +445,15 @@ SELECT level, COUNT(*) FROM app GROUP BY level;
 ```
 
 The incremental-append path triggers when:
-- the view is a pass-through (`SELECT * FROM 'file.csv'` — no `WHERE`, `GROUP BY`, `ORDER BY`, `JOIN`, `DISTINCT`, `LIMIT`), and
+- the view is a pass-through (`SELECT * FROM 'file.csv'` - no `WHERE`, `GROUP BY`, `ORDER BY`, `JOIN`, `DISTINCT`, `LIMIT`), and
 - the source is a `.csv` or `.tsv` file, and
 - the file only grew (first 64 bytes unchanged, size ≥ previous).
 
-Otherwise — view has `WHERE` / aggregation, or the file was rewritten / truncated — the view still refreshes correctly via full rescan. Only a single file source is supported (no JOINs, no multi-file globs) in the current release.
+Otherwise - view has `WHERE` / aggregation, or the file was rewritten / truncated - the view still refreshes correctly via full rescan. Only a single file source is supported (no JOINs, no multi-file globs) in the current release.
 
 **Why this matters:** Dashboards over a rotating log file, log-tail analytics, and "near-real-time" views over append-only CSVs all get per-SELECT cost proportional to *how much was added*, not total file size. DuckDB's execution model is snapshot-based and has no equivalent.
 
-### SELECT — Querying Data
+### SELECT - Querying Data
 
 ```sql
 -- All columns
@@ -527,33 +527,33 @@ WHEN NOT MATCHED THEN
 ### Joins
 
 ```sql
--- INNER JOIN — only matching rows
+-- INNER JOIN - only matching rows
 SELECT e.name, d.dept_name
 FROM employees e
 INNER JOIN departments d ON e.dept_id = d.id;
 
--- LEFT JOIN — all employees, even without a department
+-- LEFT JOIN - all employees, even without a department
 SELECT e.name, d.dept_name
 FROM employees e
 LEFT JOIN departments d ON e.dept_id = d.id;
 
--- RIGHT JOIN — all departments, even without employees
+-- RIGHT JOIN - all departments, even without employees
 SELECT e.name, d.dept_name
 FROM employees e
 RIGHT JOIN departments d ON e.dept_id = d.id;
 
--- FULL OUTER JOIN — all rows from both tables
+-- FULL OUTER JOIN - all rows from both tables
 SELECT e.name, d.dept_name
 FROM employees e
 FULL OUTER JOIN departments d ON e.dept_id = d.id;
 
--- CROSS JOIN — every combination
+-- CROSS JOIN - every combination
 SELECT * FROM colors CROSS JOIN sizes;
 
--- NATURAL JOIN — auto-matches on same-named columns
+-- NATURAL JOIN - auto-matches on same-named columns
 SELECT * FROM orders NATURAL JOIN customers;
 
--- JOIN USING — shorthand when column names match
+-- JOIN USING - shorthand when column names match
 SELECT * FROM orders JOIN customers USING (customer_id);
 
 -- Self join
@@ -618,7 +618,7 @@ WITH
     )
 SELECT * FROM top_depts ORDER BY avg_sal DESC;
 
--- Recursive CTE — org chart traversal
+-- Recursive CTE - org chart traversal
 WITH RECURSIVE org_chart(id, name, manager_id, level) AS (
     SELECT id, name, manager_id, 0 AS level
     FROM employees WHERE manager_id IS NULL
@@ -628,7 +628,7 @@ WITH RECURSIVE org_chart(id, name, manager_id, level) AS (
 )
 SELECT * FROM org_chart ORDER BY level, name;
 
--- Recursive CTE — generate a sequence
+-- Recursive CTE - generate a sequence
 WITH RECURSIVE nums(n) AS (
     SELECT 1
     UNION ALL
@@ -639,30 +639,30 @@ SELECT n FROM nums;
 
 ### Window Functions
 
-Compute values across related rows without collapsing them — essential for ranking, running totals, and comparisons.
+Compute values across related rows without collapsing them - essential for ranking, running totals, and comparisons.
 
 ```sql
--- ROW_NUMBER — unique rank per partition
+-- ROW_NUMBER - unique rank per partition
 SELECT name, department, salary,
     ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS dept_rank
 FROM employees;
 
--- RANK — same value = same rank, with gaps (1, 2, 2, 4)
+-- RANK - same value = same rank, with gaps (1, 2, 2, 4)
 SELECT name, salary,
     RANK() OVER (ORDER BY salary DESC) AS rank
 FROM employees;
 
--- DENSE_RANK — same value = same rank, no gaps (1, 2, 2, 3)
+-- DENSE_RANK - same value = same rank, no gaps (1, 2, 2, 3)
 SELECT name, salary,
     DENSE_RANK() OVER (ORDER BY salary DESC) AS dense_rank
 FROM employees;
 
--- NTILE — split into N equal buckets
+-- NTILE - split into N equal buckets
 SELECT name, salary,
     NTILE(4) OVER (ORDER BY salary DESC) AS quartile
 FROM employees;
 
--- LAG / LEAD — compare with previous/next row
+-- LAG / LEAD - compare with previous/next row
 SELECT date, revenue,
     revenue - LAG(revenue) OVER (ORDER BY date) AS daily_change,
     LEAD(revenue) OVER (ORDER BY date) AS tomorrow
@@ -684,12 +684,12 @@ SELECT date, revenue,
 FROM daily_sales;
 ```
 
-### QUALIFY — Filter on Window Results
+### QUALIFY - Filter on Window Results
 
 Snowflake-style filtering on window functions. No subquery needed.
 
 ```sql
--- Top earner per department — one line instead of a subquery
+-- Top earner per department - one line instead of a subquery
 SELECT name, department, salary
 FROM employees
 QUALIFY ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) = 1;
@@ -709,16 +709,16 @@ SELECT * FROM (
 ### Set Operations
 
 ```sql
--- UNION — combine and deduplicate
+-- UNION - combine and deduplicate
 SELECT name FROM employees_us UNION SELECT name FROM employees_eu;
 
--- UNION ALL — combine, keep duplicates (faster)
+-- UNION ALL - combine, keep duplicates (faster)
 SELECT name FROM employees_us UNION ALL SELECT name FROM employees_eu;
 
--- INTERSECT — rows in both
+-- INTERSECT - rows in both
 SELECT customer_id FROM orders_2024 INTERSECT SELECT customer_id FROM orders_2025;
 
--- EXCEPT — rows in first but not second
+-- EXCEPT - rows in first but not second
 SELECT customer_id FROM subscribers EXCEPT SELECT customer_id FROM unsubscribed;
 ```
 
@@ -745,7 +745,7 @@ EXPLAIN SELECT department, AVG(salary)
 FROM employees WHERE hire_date > '2020-01-01'
 GROUP BY department;
 
--- Shows: AGGREGATE → FILTER → SCAN employees
+-- Shows: AGGREGATE -> FILTER -> SCAN employees
 ```
 
 ### Conditional Expressions
@@ -805,54 +805,54 @@ FROM employees;
 
 ### String Functions
 
-| Function | What it does | Example → Result |
+| Function | What it does | Example -> Result |
 |----------|-------------|------------------|
-| `LENGTH(s)` | String length | `LENGTH('hello')` → `5` |
-| `UPPER(s)` | To uppercase | `UPPER('hello')` → `'HELLO'` |
-| `LOWER(s)` | To lowercase | `LOWER('HELLO')` → `'hello'` |
-| `CONCAT(s1, s2, ...)` | Join strings | `CONCAT('a', 'b')` → `'ab'` |
-| `s1 \|\| s2` | Join strings (operator) | `'hi' \|\| ' there'` → `'hi there'` |
-| `SUBSTRING(s, pos, len)` | Extract part | `SUBSTRING('hello', 2, 3)` → `'ell'` |
-| `REPLACE(s, from, to)` | Replace text | `REPLACE('foo', 'o', 'a')` → `'faa'` |
-| `TRIM(s)` | Remove whitespace | `TRIM('  hi  ')` → `'hi'` |
-| `LTRIM(s)` | Remove left whitespace | `LTRIM('  hi')` → `'hi'` |
-| `RTRIM(s)` | Remove right whitespace | `RTRIM('hi  ')` → `'hi'` |
-| `LEFT(s, n)` | First n characters | `LEFT('hello', 3)` → `'hel'` |
-| `RIGHT(s, n)` | Last n characters | `RIGHT('hello', 3)` → `'llo'` |
-| `LPAD(s, len, pad)` | Pad from left | `LPAD('42', 5, '0')` → `'00042'` |
-| `RPAD(s, len, pad)` | Pad from right | `RPAD('hi', 5, '.')` → `'hi...'` |
-| `REVERSE(s)` | Reverse | `REVERSE('hello')` → `'olleh'` |
-| `REPEAT(s, n)` | Repeat n times | `REPEAT('ha', 3)` → `'hahaha'` |
-| `POSITION(sub IN s)` | Find position | `POSITION('ll' IN 'hello')` → `3` |
-| `STARTS_WITH(s, pre)` | Starts with? | `STARTS_WITH('hello', 'he')` → `true` |
-| `ENDS_WITH(s, suf)` | Ends with? | `ENDS_WITH('hello', 'lo')` → `true` |
-| `CONTAINS(s, sub)` | Contains? | `CONTAINS('hello', 'ell')` → `true` |
-| `SPLIT_PART(s, d, i)` | Split and pick part | `SPLIT_PART('a-b-c', '-', 2)` → `'b'` |
-| `INITCAP(s)` | Capitalize words | `INITCAP('hello world')` → `'Hello World'` |
+| `LENGTH(s)` | String length | `LENGTH('hello')` -> `5` |
+| `UPPER(s)` | To uppercase | `UPPER('hello')` -> `'HELLO'` |
+| `LOWER(s)` | To lowercase | `LOWER('HELLO')` -> `'hello'` |
+| `CONCAT(s1, s2, ...)` | Join strings | `CONCAT('a', 'b')` -> `'ab'` |
+| `s1 \|\| s2` | Join strings (operator) | `'hi' \|\| ' there'` -> `'hi there'` |
+| `SUBSTRING(s, pos, len)` | Extract part | `SUBSTRING('hello', 2, 3)` -> `'ell'` |
+| `REPLACE(s, from, to)` | Replace text | `REPLACE('foo', 'o', 'a')` -> `'faa'` |
+| `TRIM(s)` | Remove whitespace | `TRIM('  hi  ')` -> `'hi'` |
+| `LTRIM(s)` | Remove left whitespace | `LTRIM('  hi')` -> `'hi'` |
+| `RTRIM(s)` | Remove right whitespace | `RTRIM('hi  ')` -> `'hi'` |
+| `LEFT(s, n)` | First n characters | `LEFT('hello', 3)` -> `'hel'` |
+| `RIGHT(s, n)` | Last n characters | `RIGHT('hello', 3)` -> `'llo'` |
+| `LPAD(s, len, pad)` | Pad from left | `LPAD('42', 5, '0')` -> `'00042'` |
+| `RPAD(s, len, pad)` | Pad from right | `RPAD('hi', 5, '.')` -> `'hi...'` |
+| `REVERSE(s)` | Reverse | `REVERSE('hello')` -> `'olleh'` |
+| `REPEAT(s, n)` | Repeat n times | `REPEAT('ha', 3)` -> `'hahaha'` |
+| `POSITION(sub IN s)` | Find position | `POSITION('ll' IN 'hello')` -> `3` |
+| `STARTS_WITH(s, pre)` | Starts with? | `STARTS_WITH('hello', 'he')` -> `true` |
+| `ENDS_WITH(s, suf)` | Ends with? | `ENDS_WITH('hello', 'lo')` -> `true` |
+| `CONTAINS(s, sub)` | Contains? | `CONTAINS('hello', 'ell')` -> `true` |
+| `SPLIT_PART(s, d, i)` | Split and pick part | `SPLIT_PART('a-b-c', '-', 2)` -> `'b'` |
+| `INITCAP(s)` | Capitalize words | `INITCAP('hello world')` -> `'Hello World'` |
 
 **Aliases:** `CHAR_LENGTH` = `LENGTH`. `SUBSTR` = `SUBSTRING`. `STRPOS` = `POSITION`. `PREFIX` = `STARTS_WITH`. `SUFFIX` = `ENDS_WITH`.
 
 ### Math Functions
 
-| Function | What it does | Example → Result |
+| Function | What it does | Example -> Result |
 |----------|-------------|------------------|
-| `ABS(x)` | Absolute value | `ABS(-5)` → `5` |
-| `CEIL(x)` | Round up | `CEIL(3.2)` → `4` |
-| `FLOOR(x)` | Round down | `FLOOR(3.8)` → `3` |
-| `ROUND(x)` | Round to nearest | `ROUND(3.5)` → `4` |
-| `TRUNC(x)` | Truncate decimal | `TRUNC(3.9)` → `3` |
-| `SQRT(x)` | Square root | `SQRT(16)` → `4` |
-| `POWER(x, y)` | x to the power y | `POWER(2, 10)` → `1024` |
-| `MOD(x, y)` | Remainder | `MOD(10, 3)` → `1` |
-| `LOG(x)` | Natural log (ln) | `LOG(2.718)` → `~1.0` |
-| `LOG2(x)` | Log base 2 | `LOG2(8)` → `3` |
-| `LOG10(x)` | Log base 10 | `LOG10(100)` → `2` |
-| `EXP(x)` | e^x | `EXP(1)` → `2.718...` |
-| `SIGN(x)` | Sign (-1, 0, 1) | `SIGN(-42)` → `-1` |
-| `PI()` | Pi constant | `PI()` → `3.14159...` |
-| `RANDOM()` | Random [0, 1) | `RANDOM()` → `0.7231...` |
-| `LEAST(a, b, ...)` | Smallest value | `LEAST(5, 3, 9)` → `3` |
-| `GREATEST(a, b, ...)` | Largest value | `GREATEST(5, 3, 9)` → `9` |
+| `ABS(x)` | Absolute value | `ABS(-5)` -> `5` |
+| `CEIL(x)` | Round up | `CEIL(3.2)` -> `4` |
+| `FLOOR(x)` | Round down | `FLOOR(3.8)` -> `3` |
+| `ROUND(x)` | Round to nearest | `ROUND(3.5)` -> `4` |
+| `TRUNC(x)` | Truncate decimal | `TRUNC(3.9)` -> `3` |
+| `SQRT(x)` | Square root | `SQRT(16)` -> `4` |
+| `POWER(x, y)` | x to the power y | `POWER(2, 10)` -> `1024` |
+| `MOD(x, y)` | Remainder | `MOD(10, 3)` -> `1` |
+| `LOG(x)` | Natural log (ln) | `LOG(2.718)` -> `~1.0` |
+| `LOG2(x)` | Log base 2 | `LOG2(8)` -> `3` |
+| `LOG10(x)` | Log base 10 | `LOG10(100)` -> `2` |
+| `EXP(x)` | e^x | `EXP(1)` -> `2.718...` |
+| `SIGN(x)` | Sign (-1, 0, 1) | `SIGN(-42)` -> `-1` |
+| `PI()` | Pi constant | `PI()` -> `3.14159...` |
+| `RANDOM()` | Random [0, 1) | `RANDOM()` -> `0.7231...` |
+| `LEAST(a, b, ...)` | Smallest value | `LEAST(5, 3, 9)` -> `3` |
+| `GREATEST(a, b, ...)` | Largest value | `GREATEST(5, 3, 9)` -> `9` |
 
 **Aliases:** `CEILING` = `CEIL`. `LN` = `LOG`. `TRUNCATE` = `TRUNC`. `RAND` = `RANDOM`.
 
@@ -863,8 +863,8 @@ FROM employees;
 | `SIN(x)`, `COS(x)`, `TAN(x)` | Trig functions (radians) |
 | `ASIN(x)`, `ACOS(x)`, `ATAN(x)` | Inverse trig |
 | `ATAN2(y, x)` | Two-argument arctangent |
-| `DEGREES(x)` | Radians → degrees |
-| `RADIANS(x)` | Degrees → radians |
+| `DEGREES(x)` | Radians -> degrees |
+| `RADIANS(x)` | Degrees -> radians |
 
 ### Date/Time Functions
 
@@ -879,8 +879,8 @@ FROM employees;
 | `DATE_DIFF(part, t1, t2)` | Time between two dates | `DATE_DIFF('day', start, end)` |
 | `DATE_TRUNC(part, ts)` | Truncate to unit | `DATE_TRUNC('month', ts)` |
 | `STRFTIME(fmt, ts)` | Format as string | `STRFTIME('%Y-%m-%d', ts)` |
-| `TO_TIMESTAMP(epoch)` | Epoch → timestamp | `TO_TIMESTAMP(1700000000)` |
-| `EPOCH_MS(ts)` | Timestamp → epoch ms | `EPOCH_MS(ts)` |
+| `TO_TIMESTAMP(epoch)` | Epoch -> timestamp | `TO_TIMESTAMP(1700000000)` |
+| `EPOCH_MS(ts)` | Timestamp -> epoch ms | `EPOCH_MS(ts)` |
 
 **EXTRACT parts:** `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `EPOCH`, `DOW`
 
@@ -893,7 +893,7 @@ FROM employees;
 | Function | What it does | Example |
 |----------|-------------|---------|
 | `COALESCE(a, b, ...)` | First non-NULL value | `COALESCE(phone, email, 'N/A')` |
-| `NULLIF(a, b)` | NULL if a = b | `NULLIF(divisor, 0)` — prevents division by zero |
+| `NULLIF(a, b)` | NULL if a = b | `NULLIF(divisor, 0)` - prevents division by zero |
 
 ### Regex Functions
 
@@ -908,11 +908,11 @@ FROM employees;
 ### Type Casting
 
 ```sql
--- CAST — errors on invalid input
+-- CAST - errors on invalid input
 SELECT CAST('42' AS INTEGER);
 SELECT CAST(3.14 AS VARCHAR);
 
--- TRY_CAST — returns NULL instead of error
+-- TRY_CAST - returns NULL instead of error
 SELECT TRY_CAST('not_a_number' AS INTEGER);  -- NULL
 SELECT TRY_CAST('42' AS INTEGER);            -- 42
 ```
@@ -935,7 +935,7 @@ import slothdb
 # Connect (in-memory)
 db = slothdb.connect()
 
-# Connect (persistent — saves to file)
+# Connect (persistent - saves to file)
 db = slothdb.connect("analytics.slothdb")
 ```
 
@@ -1066,7 +1066,7 @@ db.close()
 | `slothdb.connect(path="")` | `Connection` | Connect to a database. Empty = in-memory. |
 | `conn.sql(query)` | `QueryResult` | Execute query and return results |
 | `conn.execute(query)` | `QueryResult` | Execute statement (alias for sql) |
-| `conn.close()` | — | Close the connection |
+| `conn.close()` | - | Close the connection |
 | `result.column_names` | `list[str]` | Column names |
 | `result.column_count` | `int` | Number of columns |
 | `result.row_count` | `int` | Number of rows |
@@ -1396,11 +1396,11 @@ slothdb -c "COPY (SELECT * FROM 'big.csv') TO 'big.parquet' WITH (FORMAT PARQUET
 
 ## 9. GPU Acceleration
 
-SlothDB automatically uses your GPU when the dataset exceeds 100,000 rows. No code changes needed — the same SQL runs faster.
+SlothDB automatically uses your GPU when the dataset exceeds 100,000 rows. No code changes needed - the same SQL runs faster.
 
 **Supported GPUs:**
-- **NVIDIA** — via CUDA
-- **Apple Silicon** (M1/M2/M3/M4) — via Metal
+- **NVIDIA** - via CUDA
+- **Apple Silicon** (M1/M2/M3/M4) - via Metal
 - No GPU? Automatic CPU fallback.
 
 **What gets accelerated:**
