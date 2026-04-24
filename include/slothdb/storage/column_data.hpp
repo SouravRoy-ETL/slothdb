@@ -3,6 +3,7 @@
 #include "slothdb/common/types/logical_type.hpp"
 #include "slothdb/common/types/vector.hpp"
 #include "slothdb/common/constants.hpp"
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -40,8 +41,13 @@ private:
     std::unique_ptr<data_t[]> data_;
     ValidityMask validity_;
 
-    // For VARCHAR: owns the string data.
-    std::vector<std::string> string_heap_;
+    // For VARCHAR: owns the string data. std::deque is deliberate - its
+    // elements have stable addresses across growth, so the .c_str()
+    // pointers stored in `data_` stay valid no matter how many more
+    // strings we push_back. A std::vector here would invalidate every
+    // prior pointer on reallocation and segfault on Scan. Bug class that
+    // bit DuckDB pre-1.0.2 on wide-VARCHAR CTAS.
+    std::deque<std::string> string_heap_;
     // For zero-copy VARCHAR append - keeps source VectorStringBuffers alive so
     // string_t pointers in `data_` stay valid.
     std::vector<std::shared_ptr<VectorBuffer>> held_bufs_;

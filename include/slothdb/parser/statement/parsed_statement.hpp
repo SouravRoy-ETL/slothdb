@@ -26,6 +26,7 @@ enum class StatementType : uint8_t {
     BEGIN_TXN,
     COMMIT_TXN,
     ROLLBACK_TXN,
+    SHOW,
     INVALID
 };
 
@@ -265,6 +266,18 @@ public:
     bool has_insert = false;
     std::vector<std::string> insert_columns;
     std::vector<ParsedExprPtr> insert_values;
+};
+
+// SHOW {TABLES | DATABASES | COLUMNS FROM t} [LIKE 'pat']
+// Standardized across DuckDB / MySQL / ClickHouse. SlothDB parses it so
+// Python / Node / JDBC bindings get the same UX as the shell.
+class ShowStatement : public ParsedStatement {
+public:
+    enum class Kind { TABLES, DATABASES, COLUMNS };
+    ShowStatement() : ParsedStatement(StatementType::SHOW) {}
+    Kind kind = Kind::TABLES;
+    std::string like_pattern; // empty = no filter
+    std::string table_name;   // for SHOW COLUMNS FROM <table>
 };
 
 } // namespace slothdb

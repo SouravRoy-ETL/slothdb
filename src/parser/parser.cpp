@@ -197,8 +197,16 @@ ParsedStmtPtr Parser::ParseStatement() {
     if (CheckKeyword(TokenType::KW_DELETE)) return ParseDeleteStatement();
     if (CheckKeyword(TokenType::KW_EXPLAIN)) return ParseExplainStatement();
     if (CheckKeyword(TokenType::KW_DESCRIBE)) return ParseDescribeStatement();
+    if (CheckKeyword(TokenType::KW_DESC))     return ParseDescribeStatement(); // alias
     if (CheckKeyword(TokenType::KW_PRAGMA)) return ParsePragmaStatement();
     if (CheckKeyword(TokenType::KW_MERGE)) return ParseMergeStatement();
+
+    // SHOW {TABLES | DATABASES | SCHEMAS | COLUMNS FROM t} [LIKE 'pat'].
+    // "SHOW" is not a reserved keyword in the tokenizer, so match on the
+    // identifier's text. Same trick the CREATE parser uses for "OR REPLACE".
+    if (Check(TokenType::IDENTIFIER) && StringUtil::Upper(Current().value) == "SHOW") {
+        return ParseShowStatement();
+    }
     // COPY table TO/FROM 'file.csv' [WITH (options)]
     // COPY (SELECT ...) TO 'file' [WITH (options)]
     if (MatchKeyword(TokenType::KW_COPY)) {
@@ -1239,24 +1247,107 @@ ParsedStmtPtr Parser::ParsePragmaStatement() {
 }
 
 // DESCRIBE statement. Returns the result schema of the inner query as rows.
-// Syntax: DESCRIBE <select-or-table-name>
+// Syntax:
+//   DESCRIBE <select-or-with>        -- result schema of a query
+//   DESCRIBE <table_name>            -- desugars to SELECT * FROM <name>
+//   DESCRIBE '<file_path>'           -- ClickHouse-style file-schema peek
+//   DESCRIBE read_parquet('file')    -- table function form
+// `DESC` is accepted as an alias for `DESCRIBE` (MySQL compatibility).
 ParsedStmtPtr Parser::ParseDescribeStatement() {
-    Expect(TokenType::KW_DESCRIBE, "");
+    if (CheckKeyword(TokenType::KW_DESCRIBE) || CheckKeyword(TokenType::KW_DESC)) {
+        Advance();
+    }
     auto stmt = std::make_unique<DescribeStatement>();
-    // DESCRIBE <table_name>  ->  desugars to SELECT * FROM <table_name>
-    // DESCRIBE SELECT ...    ->  inner = SELECT
-    // DESCRIBE WITH ...      ->  inner = CTE-SELECT
+
+    // Query forms: DESCRIBE SELECT / WITH / ( subquery )
     if (CheckKeyword(TokenType::KW_SELECT) || CheckKeyword(TokenType::KW_WITH)) {
         stmt->inner = ParseSelectStatement();
+        return stmt;
+    }
+
+    // Everything else desugars to SELECT * FROM <source>. Build the TableRef
+    // to match the forms the normal FROM clause accepts: bare identifier,
+    // quoted string literal (file path), or table function like
+    // `read_parquet('x.parquet')`.
+    auto select = std::make_unique<SelectStatement>();
+    select->select_list.push_back(std::make_unique<StarExpression>());
+    auto tref = std::make_unique<TableRef>();
+
+    if (Check(TokenType::STRING_LITERAL)) {
+        // DESCRIBE 'data.csv' -> synthesize a __FILE__ table function
+        // matching what the FROM-clause parser emits for bare string literals.
+        auto lit = Advance();
+        tref->is_table_function = true;
+        tref->table_name = "__FILE__";
+        tref->function_args.push_back(
+            std::make_unique<ConstantExpression>(lit.value, TokenType::STRING_LITERAL));
+    } else if (Check(TokenType::IDENTIFIER)) {
+        auto name = Advance().value;
+        if (Match(TokenType::LPAREN)) {
+            // Table function: DESCRIBE read_parquet('x.parquet'[, ...])
+            tref->is_table_function = true;
+            tref->table_name = name;
+            if (!Check(TokenType::RPAREN)) {
+                do {
+                    tref->function_args.push_back(ParseExpression());
+                } while (Match(TokenType::COMMA));
+            }
+            Expect(TokenType::RPAREN, "after table function arguments");
+        } else {
+            // Bare identifier: DESCRIBE <table>
+            tref->table_name = name;
+        }
     } else {
-        // Treat bare identifier as `SELECT * FROM <identifier>`.
-        auto select = std::make_unique<SelectStatement>();
-        auto star = std::make_unique<StarExpression>();
-        select->select_list.push_back(std::move(star));
-        auto tref = std::make_unique<TableRef>();
-        tref->table_name = ExpectIdentifier("for DESCRIBE target").value;
-        select->from_table = std::move(tref);
-        stmt->inner = std::move(select);
+        ThrowError("DESCRIBE expects a table name, query, string literal, "
+                   "or table function");
+    }
+
+    select->from_table = std::move(tref);
+    stmt->inner = std::move(select);
+    return stmt;
+}
+
+// SHOW {TABLES | DATABASES | SCHEMAS | COLUMNS FROM t} [LIKE 'pat'].
+// Single-shot dispatcher; actual row production lives in connection.cpp.
+ParsedStmtPtr Parser::ParseShowStatement() {
+    // "SHOW" arrives as an IDENTIFIER (not a reserved keyword).
+    if (!(Check(TokenType::IDENTIFIER) && StringUtil::Upper(Current().value) == "SHOW")) {
+        ThrowError("expected SHOW");
+    }
+    Advance(); // consume SHOW
+
+    auto stmt = std::make_unique<ShowStatement>();
+
+    auto next_upper = [&]() -> std::string {
+        return Check(TokenType::IDENTIFIER) ? StringUtil::Upper(Current().value) : "";
+    };
+
+    std::string kw = next_upper();
+    if (kw == "TABLES") {
+        Advance();
+        stmt->kind = ShowStatement::Kind::TABLES;
+    } else if (kw == "DATABASES" || kw == "SCHEMAS") {
+        Advance();
+        stmt->kind = ShowStatement::Kind::DATABASES;
+    } else if (kw == "COLUMNS") {
+        Advance();
+        stmt->kind = ShowStatement::Kind::COLUMNS;
+        // SHOW COLUMNS FROM t  (also accepts IN as a synonym, MySQL style).
+        if (CheckKeyword(TokenType::KW_FROM) ||
+            (Check(TokenType::IDENTIFIER) && StringUtil::Upper(Current().value) == "IN")) {
+            Advance();
+        }
+        stmt->table_name = ExpectIdentifier("for SHOW COLUMNS target").value;
+    } else {
+        ThrowError("SHOW expects TABLES, DATABASES, SCHEMAS, or COLUMNS");
+    }
+
+    // Optional LIKE 'pat'.
+    if (MatchKeyword(TokenType::KW_LIKE)) {
+        if (!Check(TokenType::STRING_LITERAL)) {
+            ThrowError("LIKE expects a string literal");
+        }
+        stmt->like_pattern = Advance().value;
     }
     return stmt;
 }

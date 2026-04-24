@@ -161,20 +161,116 @@ QueryResult Connection::Query(const std::string &sql) {
             throw BinderException("Unknown PRAGMA: " + pr.name);
         }
 
+        // Handle SHOW TABLES / SHOW DATABASES / SHOW COLUMNS FROM t.
+        // Standardized across DuckDB / MySQL / ClickHouse; result shape matches
+        // DuckDB (1-col for TABLES/DATABASES, 6-col MySQL-compatible for
+        // COLUMNS) so bindings get the same UX as the native CLI.
+        if (stmt->GetType() == StatementType::SHOW) {
+            auto &sh = static_cast<ShowStatement &>(*stmt);
+
+            // Tiny SQL LIKE matcher: '%' = any run, '_' = one char. Enough
+            // for pattern filters on SHOW; reuse across all three kinds.
+            auto like_match = [](const std::string &name, const std::string &pat) {
+                if (pat.empty()) return true;
+                size_t ni = 0, pi = 0, star_n = std::string::npos, star_p = 0;
+                while (ni < name.size()) {
+                    if (pi < pat.size() && pat[pi] == '%') {
+                        star_p = ++pi; star_n = ni;
+                    } else if (pi < pat.size() &&
+                               (pat[pi] == '_' || pat[pi] == name[ni])) {
+                        pi++; ni++;
+                    } else if (star_n != std::string::npos) {
+                        pi = star_p; ni = ++star_n;
+                    } else {
+                        return false;
+                    }
+                }
+                while (pi < pat.size() && pat[pi] == '%') pi++;
+                return pi == pat.size();
+            };
+
+            if (sh.kind == ShowStatement::Kind::TABLES) {
+                final_result.column_names = {"name"};
+                final_result.column_types = {LogicalType::VARCHAR()};
+                auto &schema = db_.GetCatalog().GetSchema();
+                for (const auto &name : schema.GetTableNames()) {
+                    if (like_match(name, sh.like_pattern)) {
+                        final_result.rows.push_back({Value::VARCHAR(name)});
+                    }
+                }
+                continue;
+            }
+
+            if (sh.kind == ShowStatement::Kind::DATABASES) {
+                final_result.column_names = {"database_name"};
+                final_result.column_types = {LogicalType::VARCHAR()};
+                // No ATTACH yet; always the single in-memory database.
+                if (like_match("memory", sh.like_pattern)) {
+                    final_result.rows.push_back({Value::VARCHAR("memory")});
+                }
+                continue;
+            }
+
+            // SHOW COLUMNS FROM t: same 6-col shape as DESCRIBE.
+            auto *tbl = db_.GetCatalog().GetTable(sh.table_name);
+            if (!tbl) throw CatalogException("Table '" + sh.table_name + "' not found");
+            final_result.column_names = {"column_name", "column_type", "null",
+                                         "key", "default", "extra"};
+            final_result.column_types = {
+                LogicalType::VARCHAR(), LogicalType::VARCHAR(),
+                LogicalType::VARCHAR(), LogicalType::VARCHAR(),
+                LogicalType::VARCHAR(), LogicalType::VARCHAR()};
+            for (const auto &c : tbl->GetColumns()) {
+                if (!sh.like_pattern.empty() && !like_match(c.name, sh.like_pattern)) continue;
+                final_result.rows.push_back({
+                    Value::VARCHAR(c.name),
+                    Value::VARCHAR(c.type.ToString()),
+                    Value::VARCHAR("YES"),
+                    Value(), Value(), Value()});
+            }
+            continue;
+        }
+
         // Handle DESCRIBE: bind the inner statement and emit its result schema.
         if (stmt->GetType() == StatementType::DESCRIBE) {
             auto &desc = static_cast<DescribeStatement &>(*stmt);
-            Binder binder(db_.GetCatalog());
-            auto bound = binder.Bind(*desc.inner);
             std::vector<std::string> names;
             std::vector<LogicalType> types;
-            if (bound->GetType() == BoundStatementType::SELECT) {
+
+            // Fast path for DESCRIBE '<file>' (file literal). The binder
+            // doesn't know about the parser's synthetic __FILE__ table
+            // function, but the SELECT pipeline at the bottom of this loop
+            // does all the format auto-detection already. Just peek at
+            // column names/types via `SELECT * FROM '<path>' LIMIT 0` and
+            // reuse the existing rewrite path. ClickHouse parity: this is
+            // the "describe a file without importing" feature.
+            bool handled_via_peek = false;
+            if (desc.inner && desc.inner->GetType() == StatementType::SELECT) {
+                auto &sel = static_cast<SelectStatement &>(*desc.inner);
+                if (sel.from_table && sel.from_table->is_table_function &&
+                    sel.from_table->table_name == "__FILE__" &&
+                    !sel.from_table->function_args.empty() &&
+                    sel.from_table->function_args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
+                    auto path = static_cast<ConstantExpression &>(
+                        *sel.from_table->function_args[0]).value;
+                    auto peek = Query("SELECT * FROM '" + path + "' LIMIT 0");
+                    names = peek.column_names;
+                    types = peek.column_types;
+                    handled_via_peek = true;
+                }
+            }
+
+            if (!handled_via_peek) {
+                Binder binder(db_.GetCatalog());
+                auto bound = binder.Bind(*desc.inner);
+                if (bound->GetType() != BoundStatementType::SELECT) {
+                    throw BinderException("DESCRIBE is only supported for SELECT queries");
+                }
                 auto &sel = static_cast<BoundSelectStatement &>(*bound);
                 names = sel.result_names;
                 types = sel.result_types;
-            } else {
-                throw BinderException("DESCRIBE is only supported for SELECT queries");
             }
+
             final_result.column_names = {"column_name", "column_type", "null",
                                          "key", "default", "extra"};
             final_result.column_types = {

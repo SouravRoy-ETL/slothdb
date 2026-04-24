@@ -5,6 +5,7 @@
 #include "slothdb/common/types/validity_mask.hpp"
 #include "slothdb/common/types/string_type.hpp"
 #include "slothdb/common/types/value.hpp"
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -49,8 +50,13 @@ public:
     }
 
 private:
-    // Store strings so they stay alive.
-    std::vector<std::string> strings_;
+    // Store strings so they stay alive. std::deque, NOT std::vector, because
+    // AddString hands out .c_str() pointers that must stay valid across
+    // subsequent AddStrings. vector reallocation on push_back invalidates
+    // every prior pointer -> the string_t entries in the Vector's data_
+    // become dangling and Scan segfaults. Same bug class DuckDB hit
+    // pre-1.0.2 on wide-VARCHAR CTAS.
+    std::deque<std::string> strings_;
     // Externally-owned byte buffers kept alive for string_t pointer validity.
     std::vector<std::shared_ptr<std::vector<char>>> heaps_;
 };
