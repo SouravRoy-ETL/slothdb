@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SlothDB · Live SQL views that follow your files</title>
-<meta name="description" content="SlothDB is an embedded SQL OLAP engine in C++20. Cached views re-parse only the bytes your CSVs grow by. Runs in Python, Node, the browser, or a 1-2 MB native binary. 138 ms vs DuckDB's 540 ms on a 5-query warm JOIN batch. MIT.">
+<title>SlothDB · Natural-language SQL that never leaves the laptop</title>
+<meta name="description" content="SlothDB is an embedded SQL OLAP engine in C++20 with .ask - the only NL-to-SQL pipeline that runs fully locally. Rules-first parser, two-tier Qwen router (0.5B + 1.5B lazy-downloaded in parallel), every SQL [Y/n]-gated. Zero egress, no API keys, no tokens on the wire. 138 ms vs DuckDB's 540 ms on the 5-query batch. MIT.">
 <meta name="keywords" content="DuckDB alternative, in-process SQL database, embedded analytical database, Parquet query, CSV SQL, DuckDB replacement, SQLite OLAP, analytical database C++, fast Parquet reader, query Parquet with SQL">
 <meta name="author" content="Sourav Roy">
 <meta name="robots" content="index, follow">
@@ -12,8 +12,8 @@
 
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://slothdb.org/">
-<meta property="og:title" content="SlothDB 0.1.7 - Live SQL views that follow your files">
-<meta property="og:description" content="Cached views that re-parse only the bytes a CSV grew by. 138 ms vs DuckDB's 540 ms on a 5-query warm JOIN batch. 1-2 MB native binary. Sub-1 MB edge WASM. MIT.">
+<meta property="og:title" content="SlothDB 0.1.7 - Natural-language SQL that never leaves the laptop">
+<meta property="og:description" content="The only NL-to-SQL pipeline that runs fully locally. Rules-first parser, two-tier Qwen router (0.5B + 1.5B lazy-downloaded in parallel), every SQL [Y/n]-gated. Zero egress, MIT binary. 138 ms vs DuckDB's 540 ms on the 5-query batch.">
 <meta property="og:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 <meta property="og:image:width" content="1000">
 <meta property="og:image:height" content="520">
@@ -21,8 +21,8 @@
 
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://slothdb.org/">
-<meta name="twitter:title" content="SlothDB 0.1.7 - Live SQL views that follow your files">
-<meta name="twitter:description" content="Embedded SQL OLAP with views that re-parse only the bytes your CSV grows by. 138 ms vs DuckDB's 540 ms on a 5-query JOIN batch. 1-2 MB native binary. Sub-1 MB edge WASM. MIT.">
+<meta name="twitter:title" content="SlothDB 0.1.7 - Natural-language SQL that never leaves the laptop">
+<meta name="twitter:description" content="Local NL-to-SQL: rules-first parser, two-tier Qwen router (0.5B + 1.5B lazy-downloaded in parallel), every SQL [Y/n]-gated. Zero egress, MIT binary. 138 ms vs DuckDB's 540 ms.">
 <meta name="twitter:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 
 <link rel="canonical" href="https://slothdb.org/">
@@ -103,15 +103,15 @@
     <span class="sql-6">COPY TO 'out.parquet'</span>
   </div>
   <div class="inner">
-    <h1><span class="accent">Live SQL views</span><br>that follow your files.</h1>
-    <p class="lede">SlothDB is an embedded analytical database in C++20. Cached views re-parse only the bytes your CSV grows by. Runs in Python, Node, the browser, or a 1-2 MB native binary. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms</b>. New in 0.1.7: <b><code>.ask</code></b> - type English at the <code>slothdb&gt;</code> prompt, get SQL back, run it.</p>
+    <h1><span class="accent">Natural-language SQL</span><br>that never leaves the laptop.</h1>
+    <p class="lede">SlothDB is an embedded SQL OLAP engine in C++20. <b><code>.ask</code></b> is the only NL-to-SQL pipeline that runs fully locally: a rules-first parser handles simple shapes instantly, a deterministic two-tier router sends analytic questions to a local 1.5B Qwen and simple ones to a local 0.5B (both lazy-downloaded in parallel on first use), and every generated SQL is <code>[Y/n]</code>-gated before it runs. Zero egress, no API keys, no tokens on the wire. Cached views re-parse only the bytes your CSV grows by. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms</b>.</p>
     <div class="ctas">
-      <a class="btn primary" href="playground/">Run a query in the browser -></a>
-      <a class="btn ghost" href="#ask">Try <code>.ask</code> (NL to SQL) -></a>
+      <a class="btn primary" href="#ask">See <code>.ask</code> (local AI) -></a>
+      <a class="btn ghost" href="playground/">Try in your browser -></a>
       <a class="btn ghost" href="#install">pip install slothdb</a>
-      <a class="btn ghost" href="#benchmarks">See benchmarks -></a>
+      <a class="btn ghost" href="#benchmarks">Benchmarks -></a>
     </div>
-    <div class="used-by">MIT licensed · 403 tests · v0.1.7 out now with <code>.ask</code> - <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.1.7">release notes</a></div>
+    <div class="used-by">MIT licensed · 403 tests · v0.1.7 out now with local-first <code>.ask</code> - <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.1.7">release notes</a></div>
 
     <div class="hero-chips">
       <div class="chip-group">
@@ -155,14 +155,14 @@
       <div class="chip-group">
         <div class="chip-group-title">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
-          <code>.ask</code> NL to SQL
+          <code>.ask</code> local AI
         </div>
         <div class="chips">
-          <span class="chip">rules parser</span>
-          <span class="chip">load CSV</span>
-          <span class="chip">GROUP BY</span>
-          <span class="chip">local Qwen</span>
-          <span class="chip">Y/n gated</span>
+          <span class="chip">zero egress</span>
+          <span class="chip">rules-first</span>
+          <span class="chip">2 tiers parallel DL</span>
+          <span class="chip">router</span>
+          <span class="chip">[Y/n] gated</span>
         </div>
       </div>
     </div>
@@ -409,12 +409,18 @@
 </section>
 
 <section class="page left" id="ask">
-  <h2>Ask questions in English. Get real SQL back.</h2>
-  <p class="section-lede">Type <code>.ask</code> at the <code>slothdb&gt;</code> prompt to open an interactive NL sub-REPL. English in, SQL out, <code>[Y/n]</code> before anything runs. A pattern-based rules parser handles common shapes (COUNT, SUM, AVG, GROUP BY, TOP-N, year filters, file-source CREATEs). Builds compiled with <code>-DSLOTHDB_ASK_MODEL=ON</code> fall back to a local Qwen2.5-Coder GGUF (~310 MB, via llama.cpp, lazy-downloaded on first use) for open-ended NL. No cloud, no API keys, no network traffic at query time.</p>
+  <h2>Local AI, first class. The only NL-to-SQL surface a compliance team can approve in an afternoon.</h2>
+  <p class="section-lede">Every NL-to-SQL tool you've used sends your schema to someone else's GPU. <code>.ask</code> doesn't. Three layers, cheapest first:</p>
+  <ol class="section-lede" style="line-height:1.7; margin-top: 4px;">
+    <li><b>Rules parser</b> (always on, ~50 KB of C++, sub-10 ms). Catalog introspection, COUNT/SUM/AVG/GROUP BY/TOP-N, year filters, latest/superlative, file-source intents. No model touched.</li>
+    <li><b>Local Qwen2.5-Coder-0.5B</b> (~310 MB GGUF). For open-ended questions. ~200 ms on a laptop CPU.</li>
+    <li><b>Local Qwen2.5-Coder-1.5B</b> (~986 MB GGUF). For analytic shapes: window functions, ranking within groups, LAG/LEAD, joins.</li>
+  </ol>
+  <p class="section-lede">Both tiers <b>lazy-download in parallel</b> on first <code>.ask</code>; the router (a pure function of the question) picks a tier per query. Every generated SQL is <code>[Y/n]</code>-gated. Cumulative / running / moving aggregates <b>refuse cleanly</b> rather than return wrong numbers - the engine's window-frame executor has a known gap. Zero cloud, no API keys, no tokens on the wire.</p>
   <div class="demo-wrap">
-    <img src="assets/ask-demo.svg" alt="Interactive .ask sub-REPL: load files, aggregate, fall back to local Qwen for open-ended NL, all inside the shell">
+    <img src="assets/ask-demo.svg" alt="Interactive .ask sub-REPL: two-tier local Qwen, rules-first router, Y/n gate">
   </div>
-  <p class="section-lede" style="margin-top: 24px;">Supported today in the rules parser: <code>COUNT</code>, <code>SUM</code>, <code>AVG</code>, <code>MIN</code>, <code>MAX</code>, <code>GROUP BY</code>, year filters, <code>TOP N</code>, and file-source intents like <code>load sales.csv as sales</code> / <code>count rows in events.parquet</code> / <code>create view v from logs.json</code>. Anything else drops to the Qwen fallback when the model flag is on, otherwise refuses cleanly. Full phrasings list: <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md">docs/ASK.md</a>.</p>
+  <p class="section-lede" style="margin-top: 24px;">Full pipeline spec, phrasings, and refusal logic: <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md">docs/ASK.md</a>.</p>
 </section>
 
 <section class="page left" id="quickstart">

@@ -4,16 +4,25 @@
   <img src="../assets/ask-demo.svg" alt="slothdb .ask demo - natural-language queries translated to SQL" width="100%">
 </p>
 
-`.ask` turns plain English into SQL, shows you the SQL, and prompts before running. Nothing leaves the machine - inference runs locally.
+`.ask` turns plain English into SQL, shows you the SQL, and prompts `[Y/n]` before running. **Nothing leaves the machine.** No API keys, no tokens on the wire, no schema leakage - the whole pipeline is in the same MIT binary SlothDB already ships.
 
 ## How it works
 
-Two layers, tried in this order:
+Three layers, cheapest first. The router decides which one serves each question:
 
-1. **Embedded model** (when built with `-DSLOTHDB_ASK_MODEL=ON`). A ~310 MB [Qwen2.5-Coder-0.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) GGUF runs locally via llama.cpp. On the first query the model is downloaded to `~/.slothdb/models/`; subsequent queries are fully offline. Handles arbitrary NL.
-2. **Rules parser** (always on). A ~50 KB pure-C++ pattern engine covering the common shapes (COUNT / SUM / AVG / MIN / MAX / GROUP BY / TOP-N / latest / superlative / `show tables`). Used as a fallback when the model isn't compiled in, or when the model can't produce SQL.
+1. **Rules parser** (always on, instant, ~50 KB of C++). A pattern engine covering catalog introspection (`show tables`, `describe X`, `columns of X`), aggregates (COUNT / SUM / AVG / MIN / MAX), GROUP BY, TOP-N, year filters, latest/superlative, and file-source intents (`load sales.csv as sales`, `count rows in events.parquet`, `create view v from logs.json`). Sub-10 ms. No model touched.
 
-No cloud, no API keys, no telemetry. The only network activity is the one-time model download on first use, and only if `SLOTHDB_ASK_MODEL=ON` was set at build time.
+2. **Local Qwen2.5-Coder-0.5B-Instruct-Q4_K_M** ([~310 MB GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF), Apache 2.0). For open-ended questions the rules can't shape. ~200 ms on a laptop CPU via llama.cpp. Good at simple SELECT/GROUP BY/filter SQL.
+
+3. **Local Qwen2.5-Coder-1.5B-Instruct-Q4_K_M** ([~986 MB GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF), Apache 2.0). For analytic shapes: window functions, ranking within groups, LAG/LEAD, joins. Significantly better at `ROW_NUMBER() OVER (PARTITION BY ...)` style than the 0.5B.
+
+**Parallel lazy download.** On first `.ask` invocation both tiers start downloading in detached threads. The 310 MB arrives in seconds and serves the first simple question immediately; the 986 MB keeps streaming in the background so the first analytic question doesn't pay a cold-download wait. Subsequent runs skip download (idempotent).
+
+**Deterministic router.** `PickModelForQuestion(q)` scans the lowercase question for analytic signals - `per`, `within each`, `rank`, `most common`, `row_number`, `partition by`, `lag(`, `lead(`, `join `, `distinct`, `median`, `percentile`, `regression`, `top-`, `largest`, `highest`, etc. Match -> 1.5B. No match -> 0.5B. Pure function of the question; no LLM call involved in routing.
+
+**Honest refusals.** Shapes the engine can't execute correctly (cumulative / running / moving / rolling aggregates) get a clean refusal instead of wrong numbers. SlothDB's window-frame executor has known gaps on unbounded-preceding frames; the rules parser catches those phrasings up front and tells you rather than asking Qwen to write SQL that returns the grand total on every row.
+
+Zero cloud, zero API keys, zero telemetry. The only network activity is the one-time model download on first use.
 
 ## Two usage modes
 
@@ -31,15 +40,28 @@ Run? [Y/n] y
 
 ```
 slothdb> .ask
-ask mode - type a question in English. Model: Qwen2.5-Coder-0.5B-Instruct-Q4_K_M (loads on first query).
-  `exit` / blank line / Ctrl+D to leave.
+ask mode: natural language -> SQL, inside the shell.
+  Models (both lazy-downloaded in parallel on first use):
+    small : Qwen2.5-Coder-0.5B-Instruct-Q4_K_M (~310 MB) -> simple COUNT / GROUP BY / filter / TOP-N
+    large : Qwen2.5-Coder-1.5B-Instruct-Q4_K_M (~986 MB) -> window functions / joins / analytic
+  Router picks per question. Rules-first handles catalog / simple shapes instantly.
 
 ask> show tables
--- SELECT table_name FROM information_schema.tables ORDER BY table_name
-ask> most loyal repeat customers
--- SELECT "customer_id", COUNT(*) AS orders FROM "sales" GROUP BY "customer_id" HAVING COUNT(*) > 1 ORDER BY orders DESC LIMIT 10
+customers
+
+ask> top 3 customers per region by revenue
+-- Qwen2.5-Coder-1.5B-Instruct-Q4_K_M (rules did not match - asking the local model)
+-- SELECT * FROM (SELECT region, customer_id, revenue,
+--          ROW_NUMBER() OVER (PARTITION BY region ORDER BY revenue DESC) AS rn
+--        FROM sales) WHERE rn <= 3
 Run? [Y/n] y
-…
+...
+
+ask> running total of revenue
+  cumulative / running / moving / rolling aggregates need window-frame
+  execution that SlothDB does not yet compute correctly. Rather than
+  return wrong numbers, .ask refuses.
+
 ask> exit
 Back to SQL mode.
 slothdb>
@@ -56,7 +78,7 @@ cmake --build build --config Release
 ./build/src/Release/slothdb
 ```
 
-First `.ask` call downloads the GGUF (~310 MB) to `~/.slothdb/models/`. The model lives there permanently; move or delete the file to pick up a different model.
+First `.ask` call kicks off both-tier background downloads to `~/.slothdb/models/` (~310 MB + ~986 MB in parallel). The router blocks on whichever tier is needed for the current question; the other keeps streaming for next time. Subsequent runs are fully offline. Move or delete the files to pick up different models.
 
 **Binary impact.** Default build stays small. With `SLOTHDB_ASK_MODEL=ON` the slothdb binary grows by ~30 MB (statically-linked llama.cpp + ggml). Model weights themselves are never bundled - they live on disk under `~/.slothdb/`.
 
