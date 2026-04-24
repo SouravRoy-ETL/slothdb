@@ -2,10 +2,10 @@
   <img src="https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/assets/hero.svg" alt="SlothDB" width="100%">
 </p>
 
-<h3 align="center">SlothDB is a fast, in-process SQL database for your local data files.</h3>
+<h3 align="center">Run analytics faster.</h3>
 
 <p align="center">
-  A drop-in alternative to DuckDB with built-in readers for Parquet, CSV, JSON, Avro, Arrow and SQLite — <b>1.1×–8.6× faster</b> on every benchmark query.
+  SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch as a DuckDB alternative. <b>Up to 5x faster</b> on real workloads (138 ms vs 540 ms on a 5-query warm JOIN batch; 5.43x peak on Avro SUM; 16-query suite median 1.70x). Built-in readers for Parquet, CSV, JSON, Avro, Arrow, Excel, and SQLite.
 </p>
 
 <p align="center">

@@ -310,41 +310,47 @@ section.hero .sql-bg {
   font-weight: 400;
 }
 
-/* Backdrop: subtle routed paths in the hero corners plus a few faded
-   SQL-keyword watermarks. Mirrors DuckDB.org's aesthetic (circuit-board
-   lines + tiny mono watermarks) without copying the yellow palette.
-   Very low opacity so the hero content always leads. */
+/* Backdrop: routed paths in the hero corners plus a few mono-font
+   SQL-keyword watermarks. Mirrors DuckDB.org's circuit-board aesthetic
+   and sits behind the hero content (z-index 0, .inner is z-index 1). */
 section.hero .hero-backdrop {
   position: absolute; inset: 0; pointer-events: none; z-index: 0;
-  color: var(--text-dim);
+  color: var(--accent);
   overflow: hidden;
 }
 section.hero .hero-backdrop svg {
   position: absolute; inset: 0;
   width: 100%; height: 100%;
-  opacity: 0.12;
+  opacity: 0.32;
+  stroke-width: 1.4;
 }
 section.hero .hero-backdrop-text {
   position: absolute; inset: 0;
   font-family: var(--mono);
-  font-size: 14px;
-  color: var(--text-dim);
-  opacity: 0.18;
-  letter-spacing: 0.04em;
+  font-size: 16px;
+  color: var(--accent);
+  opacity: 0.35;
+  letter-spacing: 0.05em;
+  font-weight: 500;
 }
 section.hero .hero-backdrop-text span {
   position: absolute;
   white-space: nowrap;
 }
-/* Soft radial accent glow in the background so the centre of the hero
-   picks up a gentle purple ambient light. */
+/* Two radial accent gradients for hero depth: a warm purple core so
+   the centre of the hero picks up ambient glow, plus a broader outer
+   wash that fades to the page background. */
 section.hero::before {
   content: "";
   position: absolute; inset: 0;
   background:
-    radial-gradient(ellipse 60% 45% at 50% 35%, var(--accent-soft) 0%, transparent 70%);
+    radial-gradient(ellipse 55% 40% at 50% 32%, var(--accent-soft) 0%, transparent 65%),
+    radial-gradient(ellipse 90% 70% at 50% 50%, rgba(183,148,244,0.06) 0%, transparent 80%);
   pointer-events: none; z-index: 0;
 }
+[data-theme="light"] section.hero .hero-backdrop { color: var(--accent-dim); }
+[data-theme="light"] section.hero .hero-backdrop svg { opacity: 0.22; }
+[data-theme="light"] section.hero .hero-backdrop-text { opacity: 0.28; }
 section.hero .sql-bg span {
   position: absolute; white-space: nowrap;
   font-size: 15px; letter-spacing: 0.05em;
