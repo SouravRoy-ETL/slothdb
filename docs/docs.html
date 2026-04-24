@@ -74,6 +74,7 @@
         <li><a href="#python-api">Python</a></li>
         <li><a href="#installation">Node / Browser (WASM)</a></li>
         <li><a href="#cli">CLI shell</a></li>
+        <li><a href="#ask-mode">Ask mode (.ask)</a></li>
         <li><a href="#cpp-api">C / C++</a></li>
       </ul>
     </div>
@@ -211,6 +212,37 @@ $ slothdb -f queries.sql       <span class="cm"># run a SQL script</span>
 <span class="kw">slothdb&gt;</span> .schema sales   <span class="cm"># describe a table</span>
 <span class="kw">slothdb&gt;</span> .help           <span class="cm"># full command list</span>
 <span class="kw">slothdb&gt;</span> .quit</pre>
+
+    <h2 id="ask-mode">Ask mode (.ask)</h2>
+    <p>Type a question in plain English (or 28 other languages) inside the shell and SlothDB prints the SQL then runs it. No cloud round trip, no API keys, no telemetry.</p>
+<pre class="code">$ slothdb
+<span class="kw">slothdb&gt;</span> .ask
+<span class="kw">ask&gt;</span> how many customers per country
+<span class="cm">-- SELECT "Country", COUNT(*) FROM customers GROUP BY "Country"</span>
+Norway 51 / Andorra 54 / Nepal 50 / ...  (243 rows)
+<span class="kw">ask&gt;</span> top 3 customers per country by subscription date
+<span class="cm">-- SELECT * FROM (SELECT "Country", "Customer Id",</span>
+<span class="cm">--   ROW_NUMBER() OVER (PARTITION BY "Country" ORDER BY "Subscription Date" DESC) AS rn</span>
+<span class="cm">-- FROM customers) WHERE rn &lt;= 3</span>
+729 rows</pre>
+
+    <h3>How it works</h3>
+    <p>Three tiers, in this order:</p>
+    <ol>
+      <li><b>Rules-first</b>: catalog-intent shapes (<code>show tables</code>, <code>columns in X</code>, <code>count rows</code>) answer in under 10 ms with no model touched.</li>
+      <li><b>Qwen 2.5 0.5B</b>: simple aggregates and filters. First use downloads ~300 MB in the background.</li>
+      <li><b>Qwen 2.5 1.5B</b>: window functions, "per"/"top N" shapes, anything the router flags as analytic. Downloads ~1 GB in parallel with the 0.5B.</li>
+    </ol>
+    <p>Both models are lazy-downloaded on first <code>.ask</code> invocation and cached. The router picks based on question signals (analytic keywords, length, "per" patterns). A schema validator checks every generated column against the live catalog and refuses cleanly with a valid-column list if the model hallucinated one.</p>
+
+    <h3>Confirmation prompts</h3>
+    <p>SQL auto-runs by default after it is printed. If you want a <code>[Y/n]</code> prompt per statement:</p>
+<pre class="code">$ <span class="str">SLOTHDB_ASK_CONFIRM=1</span> slothdb</pre>
+
+    <h3>Build with embedded models</h3>
+    <p>The rules-first path ships in the default build. Local-model fallback is gated behind a CMake flag:</p>
+<pre class="code">cmake -B build -DSLOTHDB_ASK_MODEL=ON -DCMAKE_BUILD_TYPE=Release</pre>
+    <p>Full pipeline spec, router signals, and refusal policy: <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md">docs/ASK.md</a>.</p>
 
     <h2 id="cpp-api">C / C++ API</h2>
 <pre class="code"><span class="cm">#include &lt;slothdb/api/slothdb.h&gt;</span>
