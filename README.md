@@ -2,9 +2,11 @@
 
 <img src="assets/hero.svg" alt="SlothDB" width="100%">
 
-<h3>Embedded SQL OLAP in C++20. Ask in English. Nothing leaves your laptop.</h3>
+<h3>An embedded OLAP engine. DuckDB-compatible. Faster where it counts.</h3>
 
-<p><b><code>.ask</code></b> is a <b>pipeline</b>, not an LLM wrapper: <b>rules-first</b> (sub-10 ms, no model) → <b>router</b> → <b>two local Qwens</b> (0.5B + 1.5B, Q4_K_M, lazy-downloaded in parallel on first use under <code>-DSLOTHDB_ASK_MODEL=ON</code>) → <b>[Y/n] gate</b>. Any Qwen is replaceable; the pipeline is what makes it safe to run inside a VPC. On our 5-query warm JOIN batch: 138 ms vs DuckDB 1.1.3's 540 ms; 16-query suite median 1.70× (range 1.04×-5.43×, 15 wins + 1 tie).</p>
+<p>SlothDB is a DuckDB-compatible embedded columnar SQL engine in C++20. Same model — link it in, point SQL at files on disk — with four default choices that differ: <code>CREATE LIVE VIEW</code> with incremental append on growing CSVs, a sub-1 MB edge-WASM build that fits under Cloudflare Workers' 1 MB cap, seven file-format readers in the core binary (CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite — no extension install step), and a stable C ABI with numeric error codes so bindings built against 0.1.x keep compiling. On our bench: <b>138 ms vs DuckDB 1.1.3's 540 ms</b> on a 5-query warm JOIN batch; 16-query suite median 1.70× (range 1.04×-5.43×, 15 wins + 1 tie). Reproduce: <code>pip install slothdb &amp;&amp; python -c "import slothdb; slothdb.demo()"</code>.</p>
+
+<p><b>Coming from DuckDB?</b> Same <code>db.sql(...).fetchdf()</code> call pattern, same Parquet/CSV/JSON reads. You gain native Avro/Excel/SQLite (no <code>INSTALL</code>/<code>LOAD</code> step), a smaller binary, <code>CREATE LIVE VIEW</code>, and a stable C ABI. You give up MVCC, authenticated S3, and some window frames (<a href="#what-slothdb-does-not-do-honest-list">honest list</a>). Also included: <a href="docs/ASK.md"><code>.ask</code></a>, an optional natural-language sub-REPL in the shell — off by default, rules parser only unless you build with <code>-DSLOTHDB_ASK_MODEL=ON</code>.</p>
 
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
 [![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm&label=npm)](https://www.npmjs.com/package/@slothdb/wasm)
@@ -22,30 +24,6 @@
 <img src="assets/demo.svg" alt="SlothDB 60-second demo - side-by-side timing vs DuckDB" width="90%">
 
 </div>
-
----
-
-## `.ask` - the pipeline
-
-<div align="center">
-  <img src="assets/ask-demo.svg" alt=".ask: rules-first, router, two local Qwens, [Y/n] gate" width="100%">
-</div>
-
-Three layers, cheapest first. The router picks per question; you never choose.
-
-| tier | what | cost | covers |
-|---|---|--:|---|
-| 1 | **Rules parser** (always on) | sub-10 ms, no model | catalog introspection, COUNT/SUM/AVG/GROUP BY/TOP-N, year filters, file-source CREATE/view |
-| 2 | **Local Qwen 2.5-Coder 0.5B Q4_K_M** (~310 MB) | ~200 ms on laptop CPU | open-ended SELECT/GROUP BY/filter |
-| 3 | **Local Qwen 2.5-Coder 1.5B Q4_K_M** (~986 MB) | ~500 ms on laptop CPU | window functions, ranking within groups, LAG/LEAD, joins |
-
-**Both model tiers download lazily in parallel on first `.ask`.** Needs `-DSLOTHDB_ASK_MODEL=ON` at build time (adds ~30 MB to the binary and ~1.3 GB of weights). Default builds ship only the rules layer. Every generated statement is shown and `[Y/n]`-gated - there is no autorun.
-
-**What this buys you:** zero egress, no API keys, no tokens on the wire. Runs inside a VPC, on a plane, in an air-gapped lab. MIT binary.
-
-**What it does not:** GPT-4-class SQL. Qwen 0.5B/1.5B at Q4 quantization still hallucinates column names and misreads wide schemas - the `[Y/n]` gate is the correctness barrier, not the model. Cumulative / running / moving aggregates **refuse cleanly** because SlothDB's window-frame executor has a known gap. If you need top-tier accuracy on complex joins, a cloud model behind your own API key still beats us - we're the option for when that isn't allowed.
-
-Full pipeline spec, router signals, refusal policy: [docs/ASK.md](docs/ASK.md).
 
 ---
 
@@ -83,7 +61,7 @@ const { columns, rows } = db.query("SELECT 1 AS n");
 
 ## What's new in 0.1.7
 
-- **`.ask` in the shell.** Interactive natural-language sub-REPL described above; rules-first with optional local-Qwen fallback.
+- **`.ask` in the shell.** Optional natural-language sub-REPL. Rules parser in every build; on-device Qwen fallback under `-DSLOTHDB_ASK_MODEL=ON`. [docs/ASK.md](docs/ASK.md).
 
 - **CREATE TABLE AS SELECT.** `CREATE [OR REPLACE] TABLE t AS SELECT ...` works end-to-end, including from files (`CREATE TABLE sales AS SELECT * FROM 'sales.csv'`).
 - **Catalog-introspection C API** - five new functions (`slothdb_table_count`, `_name`, `_column_count`, `_column_name`, `_column_type`) enumerate tables + columns from any binding. `.ask` consumes it; `list_tables()` / `describe_table()` in the Python wheel come next.
@@ -281,6 +259,22 @@ Median speedup: 1.70×. Range: 1.04× - 5.43×.
 Caveats worth knowing: Parquet aggregates are within ~20 % of DuckDB on most queries - both engines saturate the columnar fast path there, so don't expect 3× on Parquet. The big gaps come from SlothDB's native decoders (Avro, CSV `COUNT(*)`) and the 0.1.6 JOIN hot path. We have not submitted to ClickBench yet - on the roadmap.
 
 The architectural decisions behind the numbers (typed columnar decode, per-worker buffer reuse, fused scan+aggregate, zero-copy VARCHAR, vectorized filter, parallel CSV aggregate, typed int64 JOIN hash path) are in [CHANGELOG.md](CHANGELOG.md) with a commit per optimization.
+
+## `.ask` - optional natural-language sub-REPL
+
+SlothDB also includes `.ask`, a natural-language sub-REPL in the shell. **Off by default.** The rules parser ships in every build (catalog introspection, COUNT / SUM / AVG / GROUP BY / TOP-N, file-source CREATE / view - sub-10 ms, no model). Building with `-DSLOTHDB_ASK_MODEL=ON` adds a local Qwen fallback for open-ended SQL; weights download lazily on first use, nothing leaves the machine, every statement is `[Y/n]`-gated. If you don't want it, don't build it.
+
+<div align="center">
+  <img src="assets/ask-demo.svg" alt=".ask: rules-first, router, two local Qwens, [Y/n] gate" width="100%">
+</div>
+
+| tier | what | cost | covers |
+|---|---|--:|---|
+| 1 | **Rules parser** (always on) | sub-10 ms, no model | catalog, COUNT/SUM/AVG/GROUP BY/TOP-N, file-source |
+| 2 | **Local Qwen 2.5-Coder 0.5B Q4_K_M** | ~200 ms, ~310 MB | open-ended SELECT/GROUP BY/filter |
+| 3 | **Local Qwen 2.5-Coder 1.5B Q4_K_M** | ~500 ms, ~986 MB | window functions, ranking within groups, LAG/LEAD, joins |
+
+Both model tiers download lazily in parallel on first `.ask` (total ~1.3 GB). Router is a pure function of the question - no LLM call involved in routing. Cumulative / running / moving aggregates refuse cleanly (engine gap, not model gap). Full spec, router signals, refusal policy: [docs/ASK.md](docs/ASK.md).
 
 ## Query Any File with SQL
 
