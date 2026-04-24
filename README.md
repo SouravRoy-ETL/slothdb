@@ -2,9 +2,9 @@
 
 <img src="assets/hero.svg" alt="SlothDB" width="100%">
 
-<h3>SlothDB is a fast embedded analytical database.</h3>
+<h3>Run analytics faster.</h3>
 
-<p>Built from scratch as a DuckDB competitor — <b>up to 5× faster</b> on real workloads.</p>
+<p>SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. <b>Up to 5x faster</b> where it counts.</p>
 
 ```sql
 -- Query files directly. No import step.

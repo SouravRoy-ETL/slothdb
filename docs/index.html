@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SlothDB · A DuckDB competitor, built from scratch. Up to 5x faster.</title>
-<meta name="description" content="SlothDB is an embedded columnar SQL OLAP engine in C++20, built from scratch as a faster alternative to DuckDB. 138 ms vs DuckDB 1.1.3's 540 ms on a 5-query warm JOIN batch (3.9x); 5.43x on Avro SUM; 16-query suite range 1.04x-5.43x, median 1.70x. CREATE LIVE VIEW, sub-1 MB edge WASM, 7 formats in core, stable C ABI. MIT.">
+<title>SlothDB · Run analytics faster.</title>
+<meta name="description" content="SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. Up to 5x faster where it counts. 138 ms vs 540 ms (3.9x) on the warm 5-query batch, 5.43x on Avro SUM. MIT.">
 <meta name="keywords" content="DuckDB alternative, in-process SQL database, embedded analytical database, Parquet query, CSV SQL, DuckDB replacement, SQLite OLAP, analytical database C++, fast Parquet reader, query Parquet with SQL">
 <meta name="author" content="Sourav Roy">
 <meta name="robots" content="index, follow">
@@ -12,8 +12,8 @@
 
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://slothdb.org/">
-<meta property="og:title" content="SlothDB 0.1.7 - A DuckDB competitor, built from scratch. Up to 5x faster.">
-<meta property="og:description" content="Embedded columnar SQL OLAP in C++20, built from scratch as a DuckDB alternative. 138 ms vs DuckDB 1.1.3's 540 ms (3.9x) on the 5-query warm batch; 5.43x on Avro SUM; 7 formats in core, sub-1 MB edge WASM, stable C ABI. MIT.">
+<meta property="og:title" content="SlothDB - Run analytics faster.">
+<meta property="og:description" content="An embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. Up to 5x faster where it counts. 138 ms vs DuckDB 1.1.3's 540 ms (3.9x) on the 5-query warm batch; 5.43x on Avro SUM. MIT.">
 <meta property="og:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 <meta property="og:image:width" content="1000">
 <meta property="og:image:height" content="520">
@@ -21,8 +21,8 @@
 
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://slothdb.org/">
-<meta name="twitter:title" content="SlothDB 0.1.7 - A DuckDB competitor, built from scratch. Up to 5x faster.">
-<meta name="twitter:description" content="Embedded columnar SQL OLAP in C++20, built from scratch as a DuckDB alternative. 138 ms vs 540 ms on the 5-query warm batch; 5.43x on Avro SUM. 7 formats in core, sub-1 MB edge WASM. MIT.">
+<meta name="twitter:title" content="SlothDB - Run analytics faster.">
+<meta name="twitter:description" content="An embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. Up to 5x faster. 138 ms vs 540 ms on the 5-query warm batch; 5.43x on Avro SUM. MIT.">
 <meta name="twitter:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 
 <link rel="canonical" href="https://slothdb.org/">
@@ -95,8 +95,8 @@
 
 <section class="hero">
   <div class="inner">
-    <h1>SlothDB is a fast embedded analytical database.</h1>
-    <p class="lede">Built from scratch as a DuckDB competitor &mdash; <b>up to 5&times; faster</b> on real workloads.</p>
+    <h1>Run analytics faster.</h1>
+    <p class="lede">SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. <b>Up to 5&times; faster</b> where it counts.</p>
 
     <pre class="hero-code"><span class="cm">-- Query files directly. No import step.</span>
 <span class="kw">SELECT</span> region, <span class="fn">SUM</span>(revenue)
