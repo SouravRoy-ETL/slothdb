@@ -4,7 +4,7 @@
   <img src="../assets/ask-demo.svg" alt="slothdb .ask demo - natural-language queries translated to SQL" width="100%">
 </p>
 
-`.ask` turns plain natural language into SQL, shows you the SQL, and prompts `[Y/n]` before running. The rules parser is English-only (hand-coded patterns); the local Qwen2.5-Coder fallback speaks 29 languages including English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, and Hindi. **Nothing leaves the machine.** No API keys, no tokens on the wire, no schema leakage - the whole pipeline is in the same MIT binary SlothDB already ships.
+`.ask` turns plain natural language into SQL, prints the SQL, and runs it. The rules parser is English-only (hand-coded patterns); the local Qwen2.5-Coder fallback speaks 29 languages including English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, and Hindi. **Nothing leaves the machine.** No API keys, no tokens on the wire, no schema leakage - the whole pipeline is in the same MIT binary SlothDB already ships. Set `SLOTHDB_ASK_CONFIRM=1` if you want a `[Y/n]` prompt before every run.
 
 ## How it works
 
@@ -130,4 +130,4 @@ Entries live in `src/ask/nl_to_sql.cpp`, function `ColumnSynonyms()`. Add via PR
 
 ## Safety
 
-Every generated SQL statement is shown with a `[Y/n]` prompt before execution. There's no autorun, no implicit writes - the pipeline is always *see the SQL -> press y -> run it*.
+Every generated SQL statement is printed before it runs, so you can catch wrong SQL by eye and `Ctrl-C` before results render. Default mode auto-runs - the session flow is *type question -> see SQL -> see result*. For a hard gate, set `SLOTHDB_ASK_CONFIRM=1` to restore the `[Y/n]` prompt between SQL and execution. The engine itself has no implicit-write path beyond the statement you just saw.

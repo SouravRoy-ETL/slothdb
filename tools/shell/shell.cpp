@@ -74,7 +74,8 @@ static void print_help() {
     printf("                              builds compiled with -DSLOTHDB_ASK_MODEL=ON fall\n");
     printf("                              back to a local Qwen model (~310 MB, auto-\n");
     printf("                              downloaded on first use).\n");
-    printf("                              Every generated SQL is shown and gated by [Y/n].\n");
+    printf("                              Every generated SQL is shown before it runs. Set\n");
+    printf("                              SLOTHDB_ASK_CONFIRM=1 for a [Y/n] prompt per statement.\n");
     printf("                              Docs: docs/ASK.md in the repo.\n");
     printf("\n");
     printf("  Query any file directly (no import step needed)\n");
@@ -317,18 +318,39 @@ static void augment_schema_with_referenced_files(
     }
 }
 
-// Execute a generated SQL string with the usual [Y/n] confirm prompt.
-// Shared between the rules path and the LLM fallback so the safety rail
-// is identical: user sees the SQL, types y/n, nothing runs without
-// confirmation.
+// Execute a generated SQL string. Default behavior: print the SQL, then
+// run it immediately. Opt-in confirmation: set SLOTHDB_ASK_CONFIRM=1 (or
+// any truthy value) to restore the [Y/n] prompt for every statement.
+// The transparency (SQL is always shown before it runs) is preserved in
+// both modes; only the extra keystroke is optional.
 static bool confirm_and_run(slothdb_connection *conn, const std::string &sql) {
     printf("-- %s\n", sql.c_str());
-    printf("Run? [Y/n] ");
-    fflush(stdout);
-    char buf[16];
-    if (!fgets(buf, sizeof(buf), stdin)) { printf("\n"); return false; }
-    char ch = buf[0];
-    if (ch == 'n' || ch == 'N') { printf("Skipped.\n"); return true; }
+
+    // Read SLOTHDB_ASK_CONFIRM once per call. Cheap; avoids a static flag
+    // getting stuck if the env changes mid-session.
+    bool confirm = false;
+    {
+        std::string val;
+#ifdef _MSC_VER
+        char *buf = nullptr; size_t sz = 0;
+        if (_dupenv_s(&buf, &sz, "SLOTHDB_ASK_CONFIRM") == 0 && buf) {
+            val = buf; free(buf);
+        }
+#else
+        if (const char *e = std::getenv("SLOTHDB_ASK_CONFIRM")) val = e;
+#endif
+        confirm = !val.empty() && val != "0" && val != "false" &&
+                  val != "FALSE" && val != "no";
+    }
+
+    if (confirm) {
+        printf("Run? [Y/n] ");
+        fflush(stdout);
+        char buf[16];
+        if (!fgets(buf, sizeof(buf), stdin)) { printf("\n"); return false; }
+        char ch = buf[0];
+        if (ch == 'n' || ch == 'N') { printf("Skipped.\n"); return true; }
+    }
 
     slothdb_result *exec_result = nullptr;
     auto status = slothdb_query(conn, sql.c_str(), &exec_result);

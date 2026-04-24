@@ -27,7 +27,7 @@
 
 ## Ask in any language. Get SQL.
 
-Type `.ask` at the `slothdb>` prompt. A rules parser handles catalog questions and common English shapes in under 10 ms with no model. Anything else falls through to a local Qwen2.5-Coder (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under `-DSLOTHDB_ASK_MODEL=ON`), which speaks 29 natural languages: English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, Hindi, and more. Every generated statement is `[Y/n]`-gated before it runs. Nothing leaves the machine.
+Type `.ask` at the `slothdb>` prompt. A rules parser handles catalog questions and common English shapes in under 10 ms with no model. Anything else falls through to a local Qwen2.5-Coder (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under `-DSLOTHDB_ASK_MODEL=ON`), which speaks 29 natural languages: English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, Hindi, and more. Every generated statement is shown before it runs. Nothing leaves the machine. Set `SLOTHDB_ASK_CONFIRM=1` to add a `[Y/n]` prompt before each run.
 
 <div align="center">
   <img src="assets/ask-demo.svg" alt=".ask: rules-first, router, two local Qwens, [Y/n] gate" width="100%">
@@ -383,7 +383,7 @@ slothdb_close(db);
 |----------|---------|
 | **SQL** | 130+ features - JOINs, CTEs (recursive), window functions, QUALIFY, MERGE, subqueries, set operations |
 | **Live file views** | `CREATE LIVE VIEW` caches the result and auto-refreshes on file change. Incremental CSV append path parses only new bytes on log-tail workloads |
-| **Shell `.ask`** | Natural-language -> SQL in the CLI. Rules parser (default, ~50 KB, no network) handles COUNT / SUM / AVG / GROUP BY / TOP-N / year filters / load-file / count-rows-in-file / create-view-from-file. Builds with `-DSLOTHDB_ASK_MODEL=ON` fall back to a local Qwen2.5-Coder GGUF (~310 MB, lazy-downloaded) for open-ended NL. Every generated SQL is shown and gated by `[Y/n]` before running. |
+| **Shell `.ask`** | Natural-language -> SQL in the CLI. Rules parser (default, ~50 KB, no network) handles COUNT / SUM / AVG / GROUP BY / TOP-N / year filters / load-file / count-rows-in-file / create-view-from-file. Builds with `-DSLOTHDB_ASK_MODEL=ON` fall back to a local Qwen2.5-Coder GGUF for open-ended NL. Every generated SQL is shown before it runs; set `SLOTHDB_ASK_CONFIRM=1` to require a `[Y/n]` keypress per statement. |
 | **Metadata** | `DESCRIBE <query>`, `DESCRIBE <table>`, `PRAGMA table_info('t')`, `PRAGMA database_list` - BI-tool introspection out of the box |
 | **Type constraints** | `VARCHAR(n)` length enforced on INSERT (no silent truncation) |
 | **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite - all built-in with auto-detection, glob patterns, virtual views |

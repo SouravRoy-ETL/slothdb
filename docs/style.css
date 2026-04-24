@@ -309,6 +309,42 @@ section.hero .sql-bg {
   font-family: var(--mono); color: var(--text-dim);
   font-weight: 400;
 }
+
+/* Backdrop: subtle routed paths in the hero corners plus a few faded
+   SQL-keyword watermarks. Mirrors DuckDB.org's aesthetic (circuit-board
+   lines + tiny mono watermarks) without copying the yellow palette.
+   Very low opacity so the hero content always leads. */
+section.hero .hero-backdrop {
+  position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  color: var(--text-dim);
+  overflow: hidden;
+}
+section.hero .hero-backdrop svg {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  opacity: 0.12;
+}
+section.hero .hero-backdrop-text {
+  position: absolute; inset: 0;
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--text-dim);
+  opacity: 0.18;
+  letter-spacing: 0.04em;
+}
+section.hero .hero-backdrop-text span {
+  position: absolute;
+  white-space: nowrap;
+}
+/* Soft radial accent glow in the background so the centre of the hero
+   picks up a gentle purple ambient light. */
+section.hero::before {
+  content: "";
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse 60% 45% at 50% 35%, var(--accent-soft) 0%, transparent 70%);
+  pointer-events: none; z-index: 0;
+}
 section.hero .sql-bg span {
   position: absolute; white-space: nowrap;
   font-size: 15px; letter-spacing: 0.05em;

@@ -27,7 +27,7 @@
 
 <link rel="canonical" href="https://slothdb.org/">
 <link rel="icon" type="image/svg+xml" href="assets/icon.svg">
-<link rel="stylesheet" href="style.css?v=20260424-glow2">
+<link rel="stylesheet" href="style.css?v=20260424-backdrop">
 <script>
   (function(){
     var t = localStorage.getItem('slothdb-theme') || 'dark';
@@ -94,6 +94,27 @@
 </nav>
 
 <section class="hero">
+  <div class="hero-backdrop" aria-hidden="true">
+    <svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Top-left curved path routing in -->
+      <path d="M 0,120 L 280,120 Q 320,120 320,160 L 320,280 Q 320,320 360,320 L 560,320"/>
+      <!-- Top-right curved path -->
+      <path d="M 1440,180 L 1120,180 Q 1080,180 1080,220 L 1080,340 Q 1080,380 1040,380 L 840,380"/>
+      <!-- Bottom-left -->
+      <path d="M 0,700 L 240,700 Q 280,700 280,660 L 280,560 Q 280,520 320,520 L 520,520"/>
+      <!-- Bottom-right -->
+      <path d="M 1440,760 L 1180,760 Q 1140,760 1140,720 L 1140,620 Q 1140,580 1100,580 L 880,580"/>
+      <!-- Center vertical accent -->
+      <path d="M 720,0 L 720,60 Q 720,100 760,100 L 820,100"/>
+      <path d="M 720,900 L 720,840 Q 720,800 680,800 L 620,800"/>
+    </svg>
+    <div class="hero-backdrop-text">
+      <span style="top: 18%; left: 8%;">SELECT</span>
+      <span style="top: 34%; right: 9%;">GROUP BY ALL</span>
+      <span style="bottom: 22%; left: 11%;">SUM(revenue)</span>
+      <span style="bottom: 12%; right: 14%;">read_parquet('*.pq')</span>
+    </div>
+  </div>
   <div class="inner">
     <h1>Run analytics faster.</h1>
     <p class="lede">SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. <b>Up to 5&times; faster</b> where it counts.</p>
@@ -371,7 +392,7 @@
 
 <section class="page left" id="ask">
   <h2>Ask in any language. Get SQL.</h2>
-  <p class="section-lede">Type <code>.ask</code> at the <code>slothdb&gt;</code> prompt. A rules parser handles catalog questions and common English shapes in under 10 ms with no model. Anything else falls through to a local Qwen2.5-Coder (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under <code>-DSLOTHDB_ASK_MODEL=ON</code>), which speaks 29 natural languages: English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, Hindi, and more. Every generated statement is <code>[Y/n]</code>-gated before it runs. Nothing leaves the machine.</p>
+  <p class="section-lede">Type <code>.ask</code> at the <code>slothdb&gt;</code> prompt. A rules parser handles catalog questions and common English shapes in under 10 ms with no model. Anything else falls through to a local Qwen2.5-Coder (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under <code>-DSLOTHDB_ASK_MODEL=ON</code>), which speaks 29 natural languages: English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, Hindi, and more. Every generated statement is shown before it runs. Nothing leaves the machine. Set <code>SLOTHDB_ASK_CONFIRM=1</code> to add a <code>[Y/n]</code> prompt before each run.</p>
   <div class="demo-wrap" style="margin-top: 24px;">
     <img src="assets/ask-demo.svg" alt=".ask pipeline: rules-first, router, two local Qwens, [Y/n] gate">
   </div>
@@ -405,7 +426,7 @@
       </tr>
     </tbody>
   </table>
-  <p class="section-lede"><b>What this does not buy you:</b> GPT-4-class SQL. Qwen at Q4 still hallucinates column names and misreads wide schemas; the <code>[Y/n]</code> gate is the correctness barrier, not the model. Cumulative / running / moving aggregates refuse cleanly (engine gap, not model gap). For top-tier accuracy on complex joins, a cloud model behind your own API key still beats us. This is the option for when that is not allowed.</p>
+  <p class="section-lede"><b>What this does not buy you:</b> GPT-4-class SQL. Qwen at Q4 still hallucinates column names and misreads wide schemas; the SQL is always shown before it runs so you can catch wrong answers (<code>SLOTHDB_ASK_CONFIRM=1</code> adds a keypress gate if you want a hard stop). Cumulative / running / moving aggregates refuse cleanly (engine gap, not model gap). For top-tier accuracy on complex joins, a cloud model behind your own API key still beats us. This is the option for when that is not allowed.</p>
   <p class="section-lede" style="margin-top: 20px;">Full pipeline spec, router signals, refusal policy: <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md">docs/ASK.md</a>.</p>
 </section>
 
