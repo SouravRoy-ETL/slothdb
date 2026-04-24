@@ -122,6 +122,7 @@
 
     <div class="ctas">
       <a class="btn glow" href="playground/">Try in browser</a>
+      <a class="btn ghost" href="#ask">Ask in English</a>
       <a class="btn ghost" href="#benchmarks">Benchmarks</a>
       <a class="btn ghost" href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
     </div>
@@ -368,6 +369,46 @@
   </div>
 </section>
 
+<section class="page left" id="ask">
+  <h2>Ask in English. Get SQL.</h2>
+  <p class="section-lede">Type <code>.ask</code> at the <code>slothdb&gt;</code> prompt. A rules parser handles catalog questions and common shapes in under 10 ms with no model. Open-ended questions fall through to a local Qwen (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under <code>-DSLOTHDB_ASK_MODEL=ON</code>). Every generated statement is <code>[Y/n]</code>-gated before it runs. Nothing leaves the machine.</p>
+  <div class="demo-wrap" style="margin-top: 24px;">
+    <img src="assets/ask-demo.svg" alt=".ask pipeline: rules-first, router, two local Qwens, [Y/n] gate">
+  </div>
+  <table class="ask-table" style="width:100%; max-width:900px; margin: 24px auto; border-collapse: collapse;">
+    <thead>
+      <tr style="text-align:left; border-bottom: 1px solid var(--border-card);">
+        <th style="padding:10px 14px; font-weight:600;">tier</th>
+        <th style="padding:10px 14px; font-weight:600;">what</th>
+        <th style="padding:10px 14px; font-weight:600;">cost</th>
+        <th style="padding:10px 14px; font-weight:600;">covers</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom: 1px solid var(--border-soft);">
+        <td style="padding:10px 14px;"><b>1</b></td>
+        <td style="padding:10px 14px;">Rules parser (default)</td>
+        <td style="padding:10px 14px;">&lt;10 ms, no model</td>
+        <td style="padding:10px 14px;">catalog, COUNT/SUM/AVG/GROUP BY/TOP-N, file-source intents</td>
+      </tr>
+      <tr style="border-bottom: 1px solid var(--border-soft);">
+        <td style="padding:10px 14px;"><b>2</b></td>
+        <td style="padding:10px 14px;">Qwen2.5-Coder 0.5B Q4_K_M</td>
+        <td style="padding:10px 14px;">~200 ms, ~310 MB</td>
+        <td style="padding:10px 14px;">open-ended SELECT / GROUP BY / filter</td>
+      </tr>
+      <tr>
+        <td style="padding:10px 14px;"><b>3</b></td>
+        <td style="padding:10px 14px;">Qwen2.5-Coder 1.5B Q4_K_M</td>
+        <td style="padding:10px 14px;">~500 ms, ~986 MB</td>
+        <td style="padding:10px 14px;">window functions, ranking within groups, LAG/LEAD, joins</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="section-lede"><b>What this does not buy you:</b> GPT-4-class SQL. Qwen at Q4 still hallucinates column names and misreads wide schemas; the <code>[Y/n]</code> gate is the correctness barrier, not the model. Cumulative / running / moving aggregates refuse cleanly (engine gap, not model gap). For top-tier accuracy on complex joins, a cloud model behind your own API key still beats us. This is the option for when that is not allowed.</p>
+  <p class="section-lede" style="margin-top: 20px;">Full pipeline spec, router signals, refusal policy: <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md">docs/ASK.md</a>.</p>
+</section>
+
 <section class="page left" id="quickstart">
   <h2>Try it in 60 seconds</h2>
   <p class="section-lede">No files to find. Demo generates a 100 000-row CSV, runs three queries, prints side-by-side timing against DuckDB on your own machine.</p>
@@ -434,45 +475,6 @@
   </p>
 </section>
 
-<section class="page left" id="ask">
-  <h2>Optional: <code>.ask</code></h2>
-  <p class="section-lede">SlothDB also includes <code>.ask</code>, a natural-language sub-REPL in the shell. <b>Off by default.</b> The rules parser ships in every build (catalog, COUNT/SUM/AVG/GROUP BY/TOP-N, file-source CREATE/view; sub-10 ms, no model). Building with <code>-DSLOTHDB_ASK_MODEL=ON</code> adds a local Qwen fallback for open-ended SQL; weights download lazily on first use, nothing leaves the machine, every statement is <code>[Y/n]</code>-gated. If you don't want it, don't build it.</p>
-  <div class="demo-wrap" style="margin-top: 24px;">
-    <img src="assets/ask-demo.svg" alt=".ask pipeline: rules-first, router, two local Qwens, [Y/n] gate">
-  </div>
-  <table class="ask-table" style="width:100%; max-width:900px; margin: 24px auto; border-collapse: collapse;">
-    <thead>
-      <tr style="text-align:left; border-bottom: 1px solid var(--border-card);">
-        <th style="padding:10px 14px; font-weight:600;">tier</th>
-        <th style="padding:10px 14px; font-weight:600;">what</th>
-        <th style="padding:10px 14px; font-weight:600;">cost</th>
-        <th style="padding:10px 14px; font-weight:600;">covers</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr style="border-bottom: 1px solid var(--border-soft);">
-        <td style="padding:10px 14px;"><b>1</b></td>
-        <td style="padding:10px 14px;">Rules parser (ships by default)</td>
-        <td style="padding:10px 14px;">&lt;10 ms, no model</td>
-        <td style="padding:10px 14px;">catalog, COUNT/SUM/AVG/GROUP BY/TOP-N, file-source intents</td>
-      </tr>
-      <tr style="border-bottom: 1px solid var(--border-soft);">
-        <td style="padding:10px 14px;"><b>2</b></td>
-        <td style="padding:10px 14px;">Qwen2.5-Coder 0.5B Q4_K_M <i>(opt-in)</i></td>
-        <td style="padding:10px 14px;">~200 ms, ~310 MB</td>
-        <td style="padding:10px 14px;">open-ended SELECT / GROUP BY / filter</td>
-      </tr>
-      <tr>
-        <td style="padding:10px 14px;"><b>3</b></td>
-        <td style="padding:10px 14px;">Qwen2.5-Coder 1.5B Q4_K_M <i>(opt-in)</i></td>
-        <td style="padding:10px 14px;">~500 ms, ~986 MB</td>
-        <td style="padding:10px 14px;">window functions, ranking within groups, LAG/LEAD, joins</td>
-      </tr>
-    </tbody>
-  </table>
-  <p class="section-lede"><b>What this does not buy you:</b> GPT-4-class SQL. Qwen at Q4 still hallucinates column names and misreads wide schemas - the <code>[Y/n]</code> gate is the correctness barrier, not the model. Cumulative / running / moving aggregates refuse cleanly (engine gap, not model gap). For top-tier accuracy on complex joins, a cloud model behind your own API key still beats us. This is the option for when that isn't allowed.</p>
-  <p class="section-lede" style="margin-top: 20px;">Full pipeline spec, router signals, refusal policy: <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md">docs/ASK.md</a>.</p>
-</section>
 
 <section class="page" id="install">
   <h2>Install SlothDB</h2>

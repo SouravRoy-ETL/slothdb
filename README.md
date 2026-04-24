@@ -32,6 +32,22 @@ SELECT region, SUM(revenue) FROM 'sales.parquet' GROUP BY region;
 
 ---
 
+## Ask in English. Get SQL.
+
+Type `.ask` at the `slothdb>` prompt. A rules parser handles catalog questions and common shapes in under 10 ms with no model. Open-ended questions fall through to a local Qwen (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under `-DSLOTHDB_ASK_MODEL=ON`). Every generated statement is `[Y/n]`-gated before it runs. Nothing leaves the machine.
+
+<div align="center">
+  <img src="assets/ask-demo.svg" alt=".ask: rules-first, router, two local Qwens, [Y/n] gate" width="100%">
+</div>
+
+| tier | what | cost | covers |
+|---|---|--:|---|
+| 1 | **Rules parser** (default) | sub-10 ms, no model | catalog, COUNT/SUM/AVG/GROUP BY/TOP-N, file-source |
+| 2 | **Local Qwen 2.5-Coder 0.5B Q4_K_M** | ~200 ms, ~310 MB | open-ended SELECT/GROUP BY/filter |
+| 3 | **Local Qwen 2.5-Coder 1.5B Q4_K_M** | ~500 ms, ~986 MB | window functions, ranking within groups, LAG/LEAD, joins |
+
+Both model tiers download lazily in parallel on first `.ask` (total ~1.3 GB). Router is a pure function of the question: no LLM call involved in routing. Cumulative / running / moving aggregates refuse cleanly (engine gap, not model gap). Full spec, router signals, refusal policy: [docs/ASK.md](docs/ASK.md).
+
 ## Try it in 60 seconds
 
 **In your browser** - no install, no account: **[slothdb.org/playground](https://slothdb.org/playground/)**. Full SlothDB compiled to WebAssembly, with a pre-loaded 1,000-row demo CSV + matching Parquet to compare format performance. Files you add stay on your machine.
@@ -264,22 +280,6 @@ Median speedup: 1.70×. Range: 1.04× - 5.43×.
 Caveats worth knowing: Parquet aggregates are within ~20 % of DuckDB on most queries - both engines saturate the columnar fast path there, so don't expect 3× on Parquet. The big gaps come from SlothDB's native decoders (Avro, CSV `COUNT(*)`) and the 0.1.6 JOIN hot path. We have not submitted to ClickBench yet - on the roadmap.
 
 The architectural decisions behind the numbers (typed columnar decode, per-worker buffer reuse, fused scan+aggregate, zero-copy VARCHAR, vectorized filter, parallel CSV aggregate, typed int64 JOIN hash path) are in [CHANGELOG.md](CHANGELOG.md) with a commit per optimization.
-
-## `.ask` - optional natural-language sub-REPL
-
-SlothDB also includes `.ask`, a natural-language sub-REPL in the shell. **Off by default.** The rules parser ships in every build (catalog introspection, COUNT / SUM / AVG / GROUP BY / TOP-N, file-source CREATE / view - sub-10 ms, no model). Building with `-DSLOTHDB_ASK_MODEL=ON` adds a local Qwen fallback for open-ended SQL; weights download lazily on first use, nothing leaves the machine, every statement is `[Y/n]`-gated. If you don't want it, don't build it.
-
-<div align="center">
-  <img src="assets/ask-demo.svg" alt=".ask: rules-first, router, two local Qwens, [Y/n] gate" width="100%">
-</div>
-
-| tier | what | cost | covers |
-|---|---|--:|---|
-| 1 | **Rules parser** (always on) | sub-10 ms, no model | catalog, COUNT/SUM/AVG/GROUP BY/TOP-N, file-source |
-| 2 | **Local Qwen 2.5-Coder 0.5B Q4_K_M** | ~200 ms, ~310 MB | open-ended SELECT/GROUP BY/filter |
-| 3 | **Local Qwen 2.5-Coder 1.5B Q4_K_M** | ~500 ms, ~986 MB | window functions, ranking within groups, LAG/LEAD, joins |
-
-Both model tiers download lazily in parallel on first `.ask` (total ~1.3 GB). Router is a pure function of the question - no LLM call involved in routing. Cumulative / running / moving aggregates refuse cleanly (engine gap, not model gap). Full spec, router signals, refusal policy: [docs/ASK.md](docs/ASK.md).
 
 ## Query Any File with SQL
 
