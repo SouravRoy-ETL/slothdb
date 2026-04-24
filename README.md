@@ -75,13 +75,14 @@ const { columns, rows } = db.query("SELECT 1 AS n");
 
 ## What's new in 0.1.7
 
-- **`.ask` in the shell.** Optional natural-language sub-REPL. Rules parser in every build; on-device Qwen fallback under `-DSLOTHDB_ASK_MODEL=ON`. [docs/ASK.md](docs/ASK.md).
+- **`.ask` pipeline.** Rules parser in every build (catalog intents, COUNT/SUM/AVG/GROUP BY/TOP-N, file-source CREATE/view; sub-10 ms, no model). Optional local Qwen2.5-Coder fallback under `-DSLOTHDB_ASK_MODEL=ON`: 0.5B (~310 MB) and 1.5B (~986 MB) tiers lazy-downloaded in parallel on first use. Deterministic keyword router picks the tier per question. Speaks 29 natural languages. Post-processor auto-quotes multi-word identifiers, normalizes snake_case to schema casing, and refuses SQL that references columns not in the schema. Auto-runs by default; `SLOTHDB_ASK_CONFIRM=1` restores the `[Y/n]` prompt. [docs/ASK.md](docs/ASK.md).
+- **CREATE TABLE AS SELECT**, including from files: `CREATE [OR REPLACE] TABLE sales AS SELECT * FROM 'sales.csv'`. Fixed a wide-VARCHAR heap-corruption bug in the materialization path (same bug class DuckDB hit pre-1.0.2).
+- **SHOW TABLES / DESCRIBE / SHOW DATABASES** in the SQL parser (DuckDB / MySQL / ClickHouse common shape). `DESCRIBE 'file.parquet'` peeks a file's schema without importing - ClickHouse-style.
+- **Catalog-introspection C API**: five new functions (`slothdb_table_count`, `_name`, `_column_count`, `_column_name`, `_column_type`) enumerate tables + columns from any binding.
+- **Shell polish**: ASCII-only output (no more cp437 `ΓåÆ` on Windows cmd), richer `.help`, interactive `.ask` sub-REPL with a tiered banner. Pasted paths with invisible BIDI marks (Windows "Copy as path") are silently stripped.
+- **Benchmark table** includes the 1.04× Parquet SUM tie instead of hiding it. Headline remains 3.9× on the 5-query warm batch; 16-query suite median 1.70× (range 1.04×-5.43×).
 
-- **CREATE TABLE AS SELECT.** `CREATE [OR REPLACE] TABLE t AS SELECT ...` works end-to-end, including from files (`CREATE TABLE sales AS SELECT * FROM 'sales.csv'`).
-- **Catalog-introspection C API** - five new functions (`slothdb_table_count`, `_name`, `_column_count`, `_column_name`, `_column_type`) enumerate tables + columns from any binding. `.ask` consumes it; `list_tables()` / `describe_table()` in the Python wheel come next.
-- **Benchmark table now includes the 1.04× Parquet SUM tie** instead of hiding it. Headline is 3.9× on the 5-query warm batch (reproducible via the demo).
-
-403 tests, 131 513 assertions, green on Windows / Linux / macOS.
+403 tests, 131,513 assertions, green on Windows / Linux / macOS.
 
 ### Previously in 0.1.6
 

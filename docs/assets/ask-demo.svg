@@ -30,7 +30,7 @@
   <circle cx="18" cy="16" r="6" fill="#ff5f56"/>
   <circle cx="38" cy="16" r="6" fill="#ffbd2e"/>
   <circle cx="58" cy="16" r="6" fill="#27c93f"/>
-  <text class="title" x="480" y="20" text-anchor="middle">slothdb  .ask  -  rules-first -&gt; router -&gt; local Qwen (0.5B + 1.5B) -&gt; [Y/n]</text>
+  <text class="title" x="480" y="20" text-anchor="middle">slothdb  .ask  -  rules-first -&gt; router -&gt; local Qwen (0.5B + 1.5B) -&gt; auto-run</text>
 
   <g transform="translate(24, 58)">
 
@@ -41,7 +41,7 @@
     </g>
     <g class="line">
       <text x="0" y="22" class="muted">ask mode. Rules-first (instant, no model). Local Qwen 0.5B + 1.5B lazy-downloaded in parallel.</text>
-      <text x="0" y="40" class="muted">Every generated SQL shown + [Y/n] gated. Blank line / Ctrl+D to leave.</text>
+      <text x="0" y="40" class="muted">SQL is printed, then runs. Set SLOTHDB_ASK_CONFIRM=1 for a [Y/n] prompt per statement.</text>
       <animate attributeName="opacity" from="0" to="1" begin="0.7s" dur="0.3s" fill="freeze"/>
     </g>
 
@@ -63,7 +63,7 @@
 
     <!-- Tier 2: small Qwen, simple aggregate -->
     <g class="line">
-      <text x="0" y="186"><tspan class="askprompt">ask&gt; </tspan>how many customers per country</text>
+      <text x="0" y="186"><tspan class="askprompt">ask&gt; </tspan>how many customers per country (also works in 29 languages)</text>
       <animate attributeName="opacity" from="0" to="1" begin="2.6s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
@@ -75,7 +75,7 @@
       <animate attributeName="opacity" from="0" to="1" begin="3.4s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="252"><tspan class="muted">Run? [Y/n] </tspan>y     <tspan class="ok">Norway 51 / Andorra 54 / Nepal 50 / ...  (243 rows)</tspan></text>
+      <text x="0" y="252" class="ok">Norway 51 / Andorra 54 / Nepal 50 / ...  (243 rows)</text>
       <animate attributeName="opacity" from="0" to="1" begin="3.8s" dur="0.2s" fill="freeze"/>
     </g>
 
@@ -95,7 +95,7 @@
       <animate attributeName="opacity" from="0" to="1" begin="5.4s" dur="0.3s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="392"><tspan class="muted">Run? [Y/n] </tspan>y     <tspan class="ok">729 rows</tspan></text>
+      <text x="0" y="392" class="ok">729 rows</text>
       <animate attributeName="opacity" from="0" to="1" begin="6.0s" dur="0.2s" fill="freeze"/>
     </g>
 
@@ -117,7 +117,7 @@
     </g>
     <g class="line">
       <text x="0" y="534"><tspan class="cta">Rules-first </tspan>answers most shapes in &lt;10 ms.  <tspan class="cta">Router </tspan>picks 0.5B or 1.5B for the rest.</text>
-      <text x="0" y="554"><tspan class="cta">[Y/n] gated. </tspan>Zero egress. Zero API keys. MIT binary.</text>
+      <text x="0" y="554"><tspan class="cta">Auto-run </tspan>by default (SQL printed first).  Zero egress. Zero API keys. MIT binary.</text>
       <animate attributeName="opacity" from="0" to="1" begin="7.9s" dur="0.3s" fill="freeze"/>
     </g>
     <g class="line">
