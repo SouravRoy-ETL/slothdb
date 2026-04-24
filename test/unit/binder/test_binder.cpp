@@ -40,7 +40,7 @@ TEST_CASE("Binder - SELECT *") {
 TEST_CASE("Binder - SELECT * with ORDER BY named column") {
     // Regression: 'SELECT * FROM t ORDER BY name' was throwing
     // "Internal Error: Unhandled expression type in binder" because
-    // the alias-resolution fast-path re-bound select_list[0] — which
+    // the alias-resolution fast-path re-bound select_list[0] - which
     // is an unbound STAR expression. Guard added: skip alias path if
     // select_list[i] is a STAR, fall through to generic name lookup.
     auto catalog = make_catalog();

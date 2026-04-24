@@ -109,7 +109,7 @@ void AvroReader::Parse() {
                         avro_type = schema_json.substr(type_start + 1,
                                                         type_end - type_start - 1);
                     } else {
-                        // Union: ["null", "int"] — pick the non-null type.
+                        // Union: ["null", "int"] - pick the non-null type.
                         auto union_end = schema_json.find(']', type_start);
                         auto union_str = schema_json.substr(type_start, union_end - type_start + 1);
                         // Find non-null type.
@@ -200,7 +200,7 @@ std::vector<std::vector<Value>> AvroReader::ReadAll() {
 }
 
 // ============================================================================
-// Lightweight schema detection — reads only the Avro header (magic + metadata
+// Lightweight schema detection - reads only the Avro header (magic + metadata
 // map + sync marker) to populate `column_names_` / `column_types_`, then
 // stops. Used by PhysicalAvroScan so catalog setup doesn't trigger a full
 // data-block parse.
@@ -212,7 +212,7 @@ void AvroReader::DetectSchemaLight() {
     if (!file.is_open())
         throw IOException(ErrorCode::FILE_NOT_FOUND, "Cannot open Avro file: " + path_);
 
-    // Avro headers are small — 64 KB is plenty for the metadata map.
+    // Avro headers are small - 64 KB is plenty for the metadata map.
     const size_t HEAD = 64 * 1024;
     std::vector<uint8_t> data(HEAD);
     file.read(reinterpret_cast<char *>(data.data()), HEAD);
@@ -233,7 +233,7 @@ void AvroReader::DetectSchemaLight() {
         }
     }
 
-    // Parse schema JSON to extract field names and types — same tiny extractor
+    // Parse schema JSON to extract field names and types - same tiny extractor
     // as Parse() but bailing before the data-block loop.
     auto find_fields = schema_json.find("\"fields\"");
     if (find_fields != std::string::npos) {
@@ -279,7 +279,7 @@ void AvroReader::DetectSchemaLight() {
 }
 
 // ============================================================================
-// Stream parse directly into typed DataChunks — no per-cell Value boxing,
+// Stream parse directly into typed DataChunks - no per-cell Value boxing,
 // no rows_ vector. Each block decode writes straight into the current
 // chunk's Vector buffers; when the chunk hits VECTOR_SIZE it's moved into
 // `chunks` and a fresh one begins.
@@ -301,7 +301,7 @@ void AvroReader::ReadIntoChunks(std::vector<DataChunk> &chunks,
 
     size_t pos = 4;
     // Re-scan the header map to find end-of-header (we don't need the schema
-    // JSON again — already have it via DetectSchemaLight).
+    // JSON again - already have it via DetectSchemaLight).
     while (pos < file_size) {
         int64_t count = ReadVarInt(data.data(), pos, file_size);
         if (count == 0) break;

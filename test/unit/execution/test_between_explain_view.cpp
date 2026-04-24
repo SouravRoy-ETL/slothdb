@@ -10,7 +10,7 @@ using namespace slothdb;
 
 namespace {
 // Write a full file replacing its previous contents. Used by LIVE VIEW
-// tests — the mtime change is what the cache check observes.
+// tests - the mtime change is what the cache check observes.
 void WriteFile(const std::string &path, const std::string &content) {
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     f << content;
@@ -235,7 +235,7 @@ TEST_CASE("LIVE VIEW - cache hit when file unchanged") {
     conn.Query("CREATE LIVE VIEW v AS SELECT * FROM '" + path.string() + "'");
 
     // Two back-to-back SELECTs with no file change should see identical
-    // row counts — the second one reads from the cache.
+    // row counts - the second one reads from the cache.
     auto r1 = conn.Query("SELECT COUNT(*) FROM v");
     auto r2 = conn.Query("SELECT COUNT(*) FROM v");
     CHECK(r1.GetValue(0, 0).GetValue<int64_t>() == 3);
@@ -247,7 +247,7 @@ TEST_CASE("LIVE VIEW - cache hit when file unchanged") {
 TEST_CASE("LIVE VIEW - rejects missing file source") {
     Database db;
     Connection conn(db);
-    // No FROM clause with a file literal — should error.
+    // No FROM clause with a file literal - should error.
     CHECK_THROWS(conn.Query(
         "CREATE LIVE VIEW bad AS SELECT 1 AS x"));
 }
@@ -288,7 +288,7 @@ TEST_CASE("LIVE VIEW v2 - incremental append on tail-appended CSV") {
     }
     CHECK(conn.Query("SELECT COUNT(*) FROM app").GetValue(0, 0).GetValue<int64_t>() == 5);
 
-    // Values preserved across the append — both old and new rows present.
+    // Values preserved across the append - both old and new rows present.
     auto r = conn.Query("SELECT ts FROM app ORDER BY ts");
     CHECK(r.RowCount() == 5);
     CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 1);
@@ -298,7 +298,7 @@ TEST_CASE("LIVE VIEW v2 - incremental append on tail-appended CSV") {
 }
 
 TEST_CASE("LIVE VIEW v2 - rewrite-in-place triggers full rescan") {
-    // If the first 64 bytes change, it's not an append — the file was
+    // If the first 64 bytes change, it's not an append - the file was
     // rewritten. Fall back to full rescan even if the new size >= old.
     auto dir = std::filesystem::temp_directory_path() / "slothdb_live_view_rewrite";
     std::filesystem::create_directories(dir);
@@ -311,10 +311,10 @@ TEST_CASE("LIVE VIEW v2 - rewrite-in-place triggers full rescan") {
     CHECK(conn.Query("SELECT COUNT(*) FROM v").GetValue(0, 0).GetValue<int64_t>() == 3);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-    // Different header — entirely rewritten file with same column count.
+    // Different header - entirely rewritten file with same column count.
     WriteFile(path.string(), "kk\n10\n20\n30\n40\n50\n");
 
-    // Result should be exactly the 5 new rows — no accidental append of
+    // Result should be exactly the 5 new rows - no accidental append of
     // old rows on top.
     auto r = conn.Query("SELECT COUNT(*) FROM v");
     CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 5);
@@ -341,7 +341,7 @@ TEST_CASE("LIVE VIEW v2 - truncated file triggers full rescan") {
 }
 
 TEST_CASE("LIVE VIEW v2 - view with WHERE falls back to full rescan") {
-    // WHERE makes the view non-incremental — the cache is filtered rows
+    // WHERE makes the view non-incremental - the cache is filtered rows
     // and appending parse-new-bytes would skip the filter. Confirm the
     // whole pipeline still produces correct output (via the full-rescan
     // branch) when the file grows.

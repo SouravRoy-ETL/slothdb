@@ -44,7 +44,7 @@ private:
 
 using BoundExprPtr = std::unique_ptr<BoundExpression>;
 
-// Bound column reference — resolved to table index + column index.
+// Bound column reference - resolved to table index + column index.
 class BoundColumnRef : public BoundExpression {
 public:
     BoundColumnRef(const std::string &column_name, idx_t column_index,

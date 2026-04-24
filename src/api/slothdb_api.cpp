@@ -156,7 +156,7 @@ void slothdb_free_result(slothdb_result *result) {
 // strings. The C API contract is "pointer valid until next catalog
 // mutation on this connection". We store names in a thread-local arena
 // so the pointer outlives the GetTable()/GetColumns() call without
-// requiring the caller to free anything. Simple and good enough —
+// requiring the caller to free anything. Simple and good enough -
 // `.ask` etc. pull a few dozen names at a time.
 namespace {
 std::string &introspection_slot(size_t idx) {

@@ -251,7 +251,7 @@ std::vector<Token> Tokenizer::Tokenize() {
         char c = Peek();
 
         // Identifiers and keywords. High-bit bytes (>= 0x80) start a UTF-8
-        // multi-byte sequence — treat them as identifier starts so Chinese /
+        // multi-byte sequence - treat them as identifier starts so Chinese /
         // Japanese / Korean column names work unquoted.
         auto uc = static_cast<unsigned char>(c);
         if (std::isalpha(uc) || c == '_' || uc >= 0x80) {

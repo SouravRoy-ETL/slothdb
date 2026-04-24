@@ -12,7 +12,7 @@ namespace slothdb {
 static constexpr uint32_t SLOTHDB_MAGIC = 0x534C4442; // "LTDB"
 static constexpr uint32_t SLOTHDB_VERSION = 1;
 
-// File header — stored in the first 64 bytes.
+// File header - stored in the first 64 bytes.
 struct FileHeader {
     uint32_t magic = SLOTHDB_MAGIC;
     uint32_t version = SLOTHDB_VERSION;

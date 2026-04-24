@@ -16,7 +16,7 @@ idx_t RowGroup::Append(DataChunk &chunk, idx_t offset) {
     idx_t rows_to_append = std::min(chunk.size() - offset, Remaining());
     if (rows_to_append == 0) return 0;
 
-    // Zero-copy path — the new AppendSlice takes the source vector+offset
+    // Zero-copy path - the new AppendSlice takes the source vector+offset
     // directly. For VARCHAR it memcpys the 16-byte string_t entries and
     // shares the source's string buffer via shared_ptr, avoiding the two
     // std::string allocations per cell that the old per-value path did.

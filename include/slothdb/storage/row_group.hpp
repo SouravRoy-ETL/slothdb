@@ -14,7 +14,7 @@ public:
 
     idx_t Count() const { return count_; }
     idx_t StartRow() const { return start_row_; }
-    // Reset start_row_ — used when splicing row groups built by parallel
+    // Reset start_row_ - used when splicing row groups built by parallel
     // workers into a DataTable; the worker builds with start_row_=0 and the
     // splice step rewrites to the correct global row offset.
     void SetStartRow(idx_t start) { start_row_ = start; }

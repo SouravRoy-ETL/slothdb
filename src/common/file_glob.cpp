@@ -109,7 +109,7 @@ std::vector<std::string> FileGlob::Glob(const std::string &pattern) {
                     pattern.find('?') != std::string::npos;
 
     if (!has_glob) {
-        // No glob — just return the path if it exists.
+        // No glob - just return the path if it exists.
         results.push_back(pattern);
         return results;
     }
@@ -121,7 +121,7 @@ std::vector<std::string> FileGlob::Glob(const std::string &pattern) {
     // Handle ** for recursive traversal.
     if (file_pattern == "**") {
         // Recursively list all files in subdirectories.
-        // This is a simplified version — match the rest of the pattern after **.
+        // This is a simplified version - match the rest of the pattern after **.
         // For now, handle "dir/**/*.ext" pattern.
         auto remaining = pattern.substr(pattern.find("**") + 2);
         if (!remaining.empty() && (remaining[0] == '/' || remaining[0] == '\\'))

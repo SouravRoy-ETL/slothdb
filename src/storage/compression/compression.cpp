@@ -126,7 +126,7 @@ private:
 };
 
 // ============================================================================
-// Constant Codec — all values are the same.
+// Constant Codec - all values are the same.
 // ============================================================================
 
 class ConstantCodec : public CompressionCodec {
@@ -199,7 +199,7 @@ public:
 };
 
 // ============================================================================
-// RLE Codec — run-length encoding.
+// RLE Codec - run-length encoding.
 // ============================================================================
 
 class RLECodec : public CompressionCodec {
@@ -282,7 +282,7 @@ public:
 };
 
 // ============================================================================
-// Dictionary Codec — for low-cardinality columns.
+// Dictionary Codec - for low-cardinality columns.
 // ============================================================================
 
 class DictionaryCodec : public CompressionCodec {
@@ -380,7 +380,7 @@ public:
 };
 
 // ============================================================================
-// Bitpacking Codec — pack small integers into minimum bits.
+// Bitpacking Codec - pack small integers into minimum bits.
 // ============================================================================
 
 class BitpackingCodec : public CompressionCodec {
@@ -492,7 +492,7 @@ public:
 };
 
 // ============================================================================
-// Compression Manager — auto-select best codec.
+// Compression Manager - auto-select best codec.
 // ============================================================================
 
 CompressedBuffer CompressionManager::Compress(const std::vector<Value> &values,

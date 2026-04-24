@@ -54,7 +54,7 @@ static void BulkLoadRows(DataTable &storage, const std::vector<LogicalType> &typ
 // If `path_or_url` starts with http://, https://, or s3://, fetch it to a
 // system temp file and return the temp path (with the original extension
 // preserved so format detection still works). Returns the input unchanged for
-// local paths. s3:// is rewritten to virtual-host HTTPS — anonymous read of
+// local paths. s3:// is rewritten to virtual-host HTTPS - anonymous read of
 // public buckets. No SigV4 / credentials yet.
 static std::string ResolveRemoteFile(const std::string &path_or_url) {
     bool is_http  = path_or_url.rfind("http://", 0)  == 0;
@@ -237,7 +237,7 @@ QueryResult Connection::Query(const std::string &sql) {
         // Handle CREATE TABLE AS SELECT (CTAS): execute the SELECT, materialize
         // the result into a new table. Schema is inferred from the query's
         // result types/names. Mirrors the CREATE VIEW materialization path but
-        // without SetViewQuery — this is a real table, not a virtual view.
+        // without SetViewQuery - this is a real table, not a virtual view.
         if (stmt->GetType() == StatementType::CREATE_TABLE) {
             auto &ct = static_cast<CreateTableStatement &>(*stmt);
             if (ct.query) {
@@ -332,7 +332,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 }
                 // v2 incremental-append eligibility. The view must be a
                 // trivial pass-through (`SELECT * FROM 'file'`) over a
-                // CSV-shaped source — WHERE / GROUP BY / ORDER BY / JOIN /
+                // CSV-shaped source - WHERE / GROUP BY / ORDER BY / JOIN /
                 // projection would make "parse the tail and append" wrong.
                 // Other shapes fall back to the v1 full-rescan path.
                 if (cv.query) {
@@ -570,7 +570,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 };
                 // Rewrite bare file-literal FROM clauses (__FILE__ from the
                 // parser) into read_xxx() form so the downstream expand_csv
-                // can pick them up. Currently supports CSV / TSV sources —
+                // can pick them up. Currently supports CSV / TSV sources -
                 // Parquet / JSON COPY-from will come with the full
                 // preprocessing refactor.
                 auto rewrite_file_ref = [&](TableRef &tref) {
@@ -642,7 +642,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto rows = reader.ReadAll();
                     BulkLoadRows(entry->GetStorage(), types, rows);
                 } else {
-                    // CSV (default) — fast stream.
+                    // CSV (default) - fast stream.
                     FastCSVReader reader(copy.file_path, copy.delimiter, copy.header);
                     if (copy.header) reader.ReadHeader();
                     reader.ReadIntoTable(entry->GetStorage(), types);
@@ -828,7 +828,7 @@ QueryResult Connection::Query(const std::string &sql) {
         std::vector<std::string> cte_tables;
         std::vector<std::string> _cte_temp_tables;
 
-        // RAII cleanup — drops any temp / CTE tables created during
+        // RAII cleanup - drops any temp / CTE tables created during
         // preprocessing even if binding / planning / execution throws.
         // Without this, a failing query leaves a zombie __auto_file__
         // in the catalog that collides on the next query.
@@ -857,8 +857,8 @@ QueryResult Connection::Query(const std::string &sql) {
             // in a UNION / INTERSECT / EXCEPT chain. Without this, a file
             // literal on the right-hand side reaches the binder as __FILE__
             // and fails with "Table '__FILE__' not found".
-            // Counter for auto-generated temp-table names — ensures left and
-            // right sides of a UNION (or repeated FROM '…' usages) don't
+            // Counter for auto-generated temp-table names - ensures left and
+            // right sides of a UNION (or repeated FROM '...' usages) don't
             // collide on the same __auto_file__ / __read_parquet__ entry.
             static thread_local int preproc_uid = 0;
             for (SelectStatement *cur_sel = &outer_sel; cur_sel;
@@ -1078,7 +1078,7 @@ QueryResult Connection::Query(const std::string &sql) {
 
                     if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                     auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
-                    // Placeholder storage (unused by PhysicalJSONScan) — keeps
+                    // Placeholder storage (unused by PhysicalJSONScan) - keeps
                     // catalog invariants for other code that calls GetStorage().
                     auto storage = std::make_shared<DataTable>(col_types);
                     entry.SetStorage(storage);
@@ -1089,7 +1089,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 }
             }
 
-            // Handle read_parquet table function — schema only; scan is streamed
+            // Handle read_parquet table function - schema only; scan is streamed
             // at execution time via PhysicalParquetScan.
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "READ_PARQUET") {
@@ -1100,7 +1100,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     // Open just to read the footer metadata (cheap). We stash
                     // the reader on the catalog entry so PhysicalParquetScan
                     // can reuse it instead of re-parsing the Thrift footer at
-                    // execution time — this path is hit once per query and
+                    // execution time - this path is hit once per query and
                     // saves ~10-20ms per query.
                     auto reader_sp = std::make_shared<ParquetReader>(file_path);
                     auto col_names = reader_sp->GetColumnNames();
@@ -1130,7 +1130,7 @@ QueryResult Connection::Query(const std::string &sql) {
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "READ_ARROW") {
                 throw BinderException("read_arrow is unavailable in SlothDB "
-                    "edge build — use the full build (@slothdb/wasm) for "
+                    "edge build - use the full build (@slothdb/wasm) for "
                     "Arrow IPC support");
             }
 #else
@@ -1139,7 +1139,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
                     auto fp = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
-                    // Schema-only parse — body gets streamed by
+                    // Schema-only parse - body gets streamed by
                     // PhysicalArrowScan at execution time.
                     ArrowIPCReader reader(fp);
                     reader.DetectSchemaLight();
@@ -1169,7 +1169,7 @@ QueryResult Connection::Query(const std::string &sql) {
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "READ_AVRO") {
                 throw BinderException("read_avro is unavailable in SlothDB "
-                    "edge build — use the full build (@slothdb/wasm) for "
+                    "edge build - use the full build (@slothdb/wasm) for "
                     "Avro support");
             }
 #else
@@ -1207,7 +1207,7 @@ QueryResult Connection::Query(const std::string &sql) {
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "READ_XLSX") {
                 throw BinderException("read_xlsx is unavailable in SlothDB "
-                    "edge build — use the full build (@slothdb/wasm) for "
+                    "edge build - use the full build (@slothdb/wasm) for "
                     "Excel support");
             }
 #else
@@ -1217,7 +1217,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
                     auto fp = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
                     ExcelReader reader(fp);
-                    // ReadAll must run first — it is what actually parses the
+                    // ReadAll must run first - it is what actually parses the
                     // xlsx and populates column_names_/column_types_.
                     auto rows = reader.ReadAll();
                     auto col_names = reader.GetColumnNames();
@@ -1246,7 +1246,7 @@ QueryResult Connection::Query(const std::string &sql) {
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "SQLITE_SCAN") {
                 throw BinderException("sqlite_scan is unavailable in SlothDB "
-                    "edge build — use the full build (@slothdb/wasm) for "
+                    "edge build - use the full build (@slothdb/wasm) for "
                     "SQLite support");
             }
 #else
@@ -1259,7 +1259,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     auto db_path = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
                     auto table_name = static_cast<ConstantExpression &>(*args[1]).value;
 
-                    // Schema-only probe — body gets streamed at execution
+                    // Schema-only probe - body gets streamed at execution
                     // time by PhysicalSQLiteScan.
                     SQLiteScanner scanner(db_path);
                     auto col_info = scanner.GetColumns(table_name);
@@ -1321,7 +1321,7 @@ QueryResult Connection::Query(const std::string &sql) {
                         );
                     }
                     // Re-process with the detected table function name.
-                    // (The loop will pick it up on the next iteration — but we're
+                    // (The loop will pick it up on the next iteration - but we're
                     //  in the same iteration. Let's handle inline.)
                     if (sel.from_table->table_name == "READ_CSV") {
                         char delim = (ext == "tsv") ? '\t' : ',';
@@ -1510,7 +1510,7 @@ QueryResult Connection::Query(const std::string &sql) {
                     }
                     cte_tables.push_back(cte.name);
                 } else {
-                    // Non-recursive CTE — pre-process read_csv in the inner SELECT.
+                    // Non-recursive CTE - pre-process read_csv in the inner SELECT.
                     auto cte_stmt = std::make_unique<SelectStatement>();
                     *cte_stmt = std::move(*cte.query);
 
@@ -1664,7 +1664,7 @@ QueryResult Connection::Query(const std::string &sql) {
         }
 
         // temp_tables / cte_tables / _cte_temp_tables are dropped by the
-        // TableCleanupGuard declared at the top of this loop iteration —
+        // TableCleanupGuard declared at the top of this loop iteration -
         // runs on both success and exception paths.
     }
 

@@ -30,7 +30,7 @@ public:
     // entry without loading a single row of data.
     void DetectSchemaLight();
 
-    // Stream parse directly into `chunks` — skips the per-cell Value boxing
+    // Stream parse directly into `chunks` - skips the per-cell Value boxing
     // that goes through `rows_`. Each field writes directly into its
     // column Vector (typed memcpy for numerics, string_t for VARCHAR).
     // Used by PhysicalAvroScan::Init().

@@ -39,7 +39,7 @@ struct Result {
 };
 
 // Translate an English question to SQL against the given schema. Pure
-// function, no allocations beyond the result. Rules-only — no model
+// function, no allocations beyond the result. Rules-only - no model
 // inference, no catalog dependencies, no I/O. Deterministic: same
 // inputs always produce the same output.
 Result Translate(const std::string &nl_query, const Schema &schema);

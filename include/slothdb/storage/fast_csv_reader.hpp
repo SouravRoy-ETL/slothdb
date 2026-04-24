@@ -24,11 +24,11 @@ class DataTable;
 // and parses directly into DataChunks without intermediate allocations.
 class FastCSVReader {
 public:
-    // Full load — reads entire file into memory.
+    // Full load - reads entire file into memory.
     FastCSVReader(const std::string &path, char delimiter = ',', bool has_header = true);
-    // Sample-only load — reads up to sample_bytes for schema detection.
+    // Sample-only load - reads up to sample_bytes for schema detection.
     FastCSVReader(const std::string &path, char delimiter, bool has_header, size_t sample_bytes);
-    // Borrowed buffer range — does not own the buffer.
+    // Borrowed buffer range - does not own the buffer.
     FastCSVReader(const char *buffer, size_t start, size_t end, char delimiter);
     ~FastCSVReader();
 

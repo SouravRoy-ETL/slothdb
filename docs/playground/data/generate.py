@@ -13,7 +13,7 @@ regions  = ["NA", "EU", "APAC", "LATAM"]
 products = ["Widget", "Gadget", "Sprocket", "Cog"]
 years    = [2022, 2023, 2024]
 
-# Numerical-recipes LCG — identical to the JS generator so data matches.
+# Numerical-recipes LCG - identical to the JS generator so data matches.
 def lcg():
     seed = 1
     while True:
@@ -33,13 +33,13 @@ for _ in range(N):
     rev     = (10 + int(rnd() * 990)) * qty
     rows.append((region, product, year, qty, rev))
 
-# CSV — plain, no quoting needed (no commas in any field).
+# CSV - plain, no quoting needed (no commas in any field).
 with open(os.path.join(HERE, "sales.csv"), "w", newline="\n") as f:
     f.write("region,product,year,qty,revenue\n")
     for r in rows:
         f.write(",".join(str(x) for x in r) + "\n")
 
-# Parquet — typed columns, SNAPPY compression.
+# Parquet - typed columns, SNAPPY compression.
 table = pa.table({
     "region":  pa.array([r[0] for r in rows], type=pa.string()),
     "product": pa.array([r[1] for r in rows], type=pa.string()),

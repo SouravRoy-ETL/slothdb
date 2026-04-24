@@ -84,7 +84,7 @@ TEST_CASE("Transaction - multiple connections") {
     conn1.Query("CREATE TABLE t (x INTEGER)");
     conn1.Query("INSERT INTO t VALUES (1)");
 
-    // conn2 can see the data (no isolation yet — auto-commit mode).
+    // conn2 can see the data (no isolation yet - auto-commit mode).
     auto r = conn2.Query("SELECT COUNT(*) FROM t");
     CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 1);
 }

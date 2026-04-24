@@ -1,6 +1,6 @@
 // PhysicalSQLiteScan + SQLiteScanner::ScanTableIntoChunks round-trip tests.
 //
-// Reads test/fixtures/simple.sqlite — a 5-row table `sales(id, region, revenue)`
+// Reads test/fixtures/simple.sqlite - a 5-row table `sales(id, region, revenue)`
 // generated once at dev time with Python's sqlite3 module (committed binary).
 
 #include "doctest.h"
@@ -26,7 +26,7 @@ static std::string fixture_path() {
     }) {
         if (fs::exists(rel)) return rel;
     }
-    // Final fallback — absolute path during local dev.
+    // Final fallback - absolute path during local dev.
     std::string abs = "C:/Users/soura/Documents/lightdb/test/fixtures/simple.sqlite";
     if (fs::exists(abs)) return abs;
     return {};
@@ -84,7 +84,7 @@ TEST_CASE("sqlite_scan() end-to-end: SQL aggregate through PhysicalSQLiteScan") 
                     "GROUP BY region";
     auto r = conn.Query(q);
     REQUIRE(r.RowCount() == 3);
-    // Collect counts into a map keyed by region — order-independent.
+    // Collect counts into a map keyed by region - order-independent.
     std::map<std::string, int64_t> counts;
     for (size_t i = 0; i < r.RowCount(); i++) {
         counts[r.GetValue(i, 0).GetValue<std::string>()] =

@@ -107,7 +107,7 @@ TEST_CASE("Parser - non-reserved keywords as aliases") {
     }
     {
         // Reserved keywords (WHERE, GROUP, JOIN, etc.) must still be
-        // rejected as aliases — regression guard so the non-reserved set
+        // rejected as aliases - regression guard so the non-reserved set
         // doesn't swallow clause terminators.
         CHECK_THROWS_AS(Parser::Parse("SELECT x AS where FROM t"), ParserException);
         CHECK_THROWS_AS(Parser::Parse("SELECT x AS join FROM t"),  ParserException);

@@ -97,7 +97,7 @@ const std::unordered_map<std::string, std::vector<std::string>> &ColumnSynonyms(
 }
 
 // Resolve an English noun to a table in the schema. Tries exact match,
-// case-insensitive, and singular↔plural. Returns nullptr if nothing
+// case-insensitive, and singular<->plural. Returns nullptr if nothing
 // matches or multiple tables match ambiguously.
 const Table *ResolveTable(const Schema &schema, const std::string &noun) {
     const Table *exact = nullptr;

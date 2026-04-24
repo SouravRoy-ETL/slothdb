@@ -34,7 +34,7 @@ public:
     ~Connection();
 
     // ========================================================================
-    // SQL Execution — the primary interface.
+    // SQL Execution - the primary interface.
     // Full pipeline: parse -> bind -> plan -> execute -> results.
     // ========================================================================
     QueryResult Query(const std::string &sql);

@@ -155,7 +155,7 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         }
     }
 
-    // Bind select list — expand stars.
+    // Bind select list - expand stars.
     for (auto &expr : stmt.select_list) {
         if (expr->GetExpressionType() == ExpressionType::STAR) {
             auto &star = static_cast<const StarExpression &>(*expr);
@@ -215,7 +215,7 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         result->has_window = true;
     }
 
-    // Bind ORDER BY — resolve select-list aliases first.
+    // Bind ORDER BY - resolve select-list aliases first.
     for (auto &item : stmt.order_by) {
         BoundOrderBy bound_item;
         bool resolved = false;
@@ -223,7 +223,7 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         // The alias-resolution branch re-binds the ORIGINAL (unbound)
         // select_list expression; that only works when select_list[i] is
         // itself a scalar. With SELECT *, result_names comes from star
-        // expansion but select_list[0] is still an unbound STAR — re-
+        // expansion but select_list[0] is still an unbound STAR - re-
         // binding it as a scalar throws "Unhandled expression type in
         // binder". Skip alias-resolution for any index whose select_list
         // entry is a star; fall through to normal column-name resolution.
@@ -234,7 +234,7 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
                     if (result->result_names[i] == col_ref.column_name) {
                         // Map back to the select_list entry that produced
                         // this result-name. With a bare STAR at index 0,
-                        // every expanded name maps to select_list[0] —
+                        // every expanded name maps to select_list[0] -
                         // which is the star itself. Guard against that.
                         idx_t sl_idx = std::min<idx_t>(i, stmt.select_list.size() - 1);
                         if (stmt.select_list[sl_idx]->GetExpressionType()

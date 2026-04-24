@@ -109,7 +109,7 @@ void slothdb_free_result(slothdb_result *result);
  * Lets a host iterate tables and their columns without running
  * information_schema SQL. Used by the shell's `.ask` command to build
  * a schema snapshot for natural-language-to-SQL translation, but it's
- * a first-class C API — any binding can call it.
+ * a first-class C API - any binding can call it.
  *
  * Returned pointers are valid only until the next call TO THE SAME
  * FUNCTION on the same thread. Copy the string if you need to keep it

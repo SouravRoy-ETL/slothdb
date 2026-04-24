@@ -9,13 +9,13 @@
 #include <dlfcn.h>
 #endif
 
-// Value wrapper for the C ABI — defined at global scope to match the C header.
+// Value wrapper for the C ABI - defined at global scope to match the C header.
 struct slothdb_ext_value {
     slothdb::Value val;
     std::string str_cache;
 };
 
-// Extension info — stores a pointer back to the ExtensionManager.
+// Extension info - stores a pointer back to the ExtensionManager.
 struct slothdb_ext_info {
     slothdb::ExtensionManager *manager;
     std::string extension_name;

@@ -1,9 +1,9 @@
 // SlothDB Emscripten bindings for the try.slothdb.org playground.
 //
 // Exposes a tiny embind surface on top of the stable C API:
-//   - openDatabase()      → creates an in-memory DB + connection once
-//   - runQuery(sql)       → returns a JSON string: {columns, rows, error, ms}
-//   - version()           → slothdb_version()
+//   - openDatabase()      -> creates an in-memory DB + connection once
+//   - runQuery(sql)       -> returns a JSON string: {columns, rows, error, ms}
+//   - version()           -> slothdb_version()
 //
 // JSON is hand-rolled (no external dep) so the wasm binary stays small.
 

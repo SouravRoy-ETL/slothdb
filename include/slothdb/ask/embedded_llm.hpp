@@ -18,7 +18,7 @@ std::string ModelDir();
 std::string DefaultModelPath();
 
 // The model we ship by default when `.ask --model` is used. Qwen2.5-
-// Coder-0.5B-Instruct quantized to Q4_K_M on HuggingFace — ~310 MB on
+// Coder-0.5B-Instruct quantized to Q4_K_M on HuggingFace - ~310 MB on
 // disk, Apache 2.0 license. Pinned by SHA256.
 struct ModelSpec {
     const char *name;          // human-readable

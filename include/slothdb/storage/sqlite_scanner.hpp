@@ -40,7 +40,7 @@ public:
     std::vector<std::vector<Value>> ScanTable(const std::string &table_name);
 
     // Stream rows from `table_name` directly into typed DataChunk vectors.
-    // Same output data as ScanTable → BulkLoadRows, but skips the
+    // Same output data as ScanTable -> BulkLoadRows, but skips the
     // DataTable roundtrip used by the legacy path. Mirrors
     // ArrowIPCReader::ReadIntoChunks / AvroReader::ReadIntoChunks.
     void ScanTableIntoChunks(std::vector<DataChunk> &chunks,

@@ -88,7 +88,7 @@ static inline const char *find_char2_simd(const char *p, const char *end, char c
 }
 
 // Find first byte equal to any of c1, c2, c3. Used to scan for the end of an
-// unquoted CSV field in one pass — delim / '\n' / '\r'.
+// unquoted CSV field in one pass - delim / '\n' / '\r'.
 static inline const char *find_char3_simd(const char *p, const char *end,
                                           char c1, char c2, char c3) {
 #ifdef SLOTHDB_HAS_SSE2
@@ -220,7 +220,7 @@ FastCSVReader::FastCSVReader(const std::string &path, char delimiter, bool has_h
 
 FastCSVReader::FastCSVReader(const char *buffer, size_t start, size_t end, char delimiter)
     : delimiter_(delimiter), has_header_(false), header_read_(true) {
-    // Borrowed buffer — no ownership, no header parsing.
+    // Borrowed buffer - no ownership, no header parsing.
     buffer_ = const_cast<char *>(buffer);
     size_ = end;
     pos_ = start;
@@ -232,7 +232,7 @@ FastCSVReader::~FastCSVReader() {
     if (owns_buffer_) {
         free(buffer_);
     } else if (mmap_handle_) {
-        // Only unmap if we own the mmap handle — borrowed readers don't have one.
+        // Only unmap if we own the mmap handle - borrowed readers don't have one.
 #ifdef _WIN32
         UnmapViewOfFile(buffer_);
         CloseHandle(mmap_handle_);
@@ -240,7 +240,7 @@ FastCSVReader::~FastCSVReader() {
         munmap(buffer_, size_);
 #endif
     }
-    // If !owns_buffer_ && !mmap_handle_, the buffer is borrowed — do nothing.
+    // If !owns_buffer_ && !mmap_handle_, the buffer is borrowed - do nothing.
 }
 
 void FastCSVReader::SkipLine() {
@@ -268,7 +268,7 @@ bool FastCSVReader::NextField(const char *&field_start, size_t &field_len) {
         return true;
     }
 
-    // Unquoted field — SIMD-scan to the next delimiter / newline. Processes
+    // Unquoted field - SIMD-scan to the next delimiter / newline. Processes
     // 16 bytes per iteration instead of one, which is the single biggest win
     // on wide or long-field CSVs.
     field_start = buffer_ + pos_;
@@ -374,7 +374,7 @@ int64_t FastCSVReader::ParseInt64(const char *s, size_t len) {
 }
 
 double FastCSVReader::ParseDouble(const char *s, size_t len) {
-    // Always copy to stack — buffer may be mmap'd read-only.
+    // Always copy to stack - buffer may be mmap'd read-only.
     char buf[64];
     size_t copy_len = len < 63 ? len : 63;
     memcpy(buf, s, copy_len);
@@ -465,7 +465,7 @@ idx_t FastCSVReader::ReadChunk(DataChunk &chunk, const std::vector<LogicalType> 
     idx_t num_cols = static_cast<idx_t>(types.size());
     idx_t row_count = 0;
 
-    // Get raw data pointers for each column — write directly, no Value objects.
+    // Get raw data pointers for each column - write directly, no Value objects.
     struct ColPtr {
         LogicalTypeId type_id;
         data_ptr_t data;
@@ -525,7 +525,7 @@ idx_t FastCSVReader::ReadChunk(DataChunk &chunk, const std::vector<LogicalType> 
                     break;
                 }
                 default: {
-                    // Fallback for other types — use SetValue.
+                    // Fallback for other types - use SetValue.
                     chunk.SetValue(col, row_count, Value::VARCHAR(std::string(field, len)));
                     break;
                 }
@@ -560,7 +560,7 @@ idx_t FastCSVReader::ReadChunkProjected(DataChunk &chunk, const std::vector<Logi
     idx_t num_cols = static_cast<idx_t>(types.size());
     idx_t row_count = 0;
 
-    // Find last needed column — skip to newline after it (big perf win).
+    // Find last needed column - skip to newline after it (big perf win).
     idx_t last_needed = 0;
     for (idx_t c = 0; c < num_cols; c++) {
         if (c < projection.size() && projection[c]) last_needed = c;
@@ -703,7 +703,7 @@ void FastCSVReader::ReadIntoChunks(std::vector<DataChunk> &out,
     size_t end = size_;
     size_t range = end - start;
 
-    // Small inputs (< ~2 MB) — single-threaded; parallel overhead dominates.
+    // Small inputs (< ~2 MB) - single-threaded; parallel overhead dominates.
     unsigned int nt = (range < 2 * 1024 * 1024) ? 1u : std::thread::hardware_concurrency();
     if (nt == 0) nt = 1;
     if (nt > 8) nt = 8;

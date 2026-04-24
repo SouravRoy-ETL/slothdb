@@ -59,7 +59,7 @@ TEST_CASE("HTTPFS - explicit read_csv() call accepts an https URL") {
     auto r = conn.Query(sql);
     // Employees with salary > 100000 in the fixture: Alice (120k), Bob (110k),
     // Diana (105k), Frank (130k), Grace (115k), Ivy (105k), Karen (110k),
-    // Leo (125k) → 8 rows.
+    // Leo (125k) -> 8 rows.
     CHECK(r.RowCount() == 8);
 }
 

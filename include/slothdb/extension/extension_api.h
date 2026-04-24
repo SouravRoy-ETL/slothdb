@@ -30,7 +30,7 @@
 extern "C" {
 #endif
 
-/* API version — bump major for breaking changes, minor for additions. */
+/* API version - bump major for breaking changes, minor for additions. */
 #define SLOTHDB_EXT_API_VERSION_MAJOR 1
 #define SLOTHDB_EXT_API_VERSION_MINOR 0
 
@@ -134,7 +134,7 @@ typedef int (*slothdb_ext_init_func)(slothdb_ext_info *info);
 /* Standard entry point name. */
 #define SLOTHDB_EXTENSION_INIT_FUNC "slothdb_extension_init"
 
-/* Version check function — extensions should export this. */
+/* Version check function - extensions should export this. */
 #define SLOTHDB_EXTENSION_VERSION_FUNC "slothdb_extension_version"
 typedef int (*slothdb_ext_version_func)(int *major, int *minor);
 

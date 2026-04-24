@@ -175,7 +175,7 @@ public:
 };
 
 // PRAGMA statement: `PRAGMA <name>` or `PRAGMA <name>('arg')`.
-// Returns catalog-introspection rows so BI tools (DBT, Metabase, DBeaver…)
+// Returns catalog-introspection rows so BI tools (DBT, Metabase, DBeaver...)
 // can plug into SlothDB via JDBC/ODBC drivers that issue PRAGMAs.
 class PragmaStatement : public ParsedStatement {
 public:
@@ -227,7 +227,7 @@ public:
     std::string format = "CSV"; // CSV, JSON, PARQUET
     char delimiter = ',';
     bool header = true;
-    // Optional subquery: COPY (SELECT ...) TO 'file' — only valid for export.
+    // Optional subquery: COPY (SELECT ...) TO 'file' - only valid for export.
     std::unique_ptr<SelectStatement> source_query;
 };
 

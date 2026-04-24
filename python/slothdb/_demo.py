@@ -76,7 +76,7 @@ def run():
 
     print()
     print("=" * 60)
-    print(f"SlothDB demo — {ROWS:,} rows, CSV on disk")
+    print(f"SlothDB demo - {ROWS:,} rows, CSV on disk")
     print("=" * 60)
     print()
 
@@ -102,7 +102,7 @@ def run():
     print()
     print("=" * 60)
     if duckdb_runner is None:
-        print("Tip: pip install duckdb — rerun to see side-by-side timing.")
+        print("Tip: pip install duckdb - rerun to see side-by-side timing.")
     print("Liked it?   Star the repo: https://github.com/SouravRoy-ETL/slothdb")
     print("Broke it?   File an issue: https://github.com/SouravRoy-ETL/slothdb/issues")
     print("=" * 60)

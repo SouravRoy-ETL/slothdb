@@ -30,7 +30,7 @@
 
 namespace slothdb {
 
-// Forward declarations — classes that reference each other across definitions.
+// Forward declarations - classes that reference each other across definitions.
 class PhysicalHashJoin;
 
 // Defined after PhysicalHashJoin's full declaration. Returns nullptr if op is not one.
@@ -63,7 +63,7 @@ static bool ParseCmpOp(const std::string &s, SimpleCmpOp &out) {
 }
 
 // Returns true iff `e` is an AND-tree of (ColumnRef OP Constant) comparisons
-// on numeric columns; fills `out`. On `false`, `out` may be partially filled —
+// on numeric columns; fills `out`. On `false`, `out` may be partially filled -
 // caller should discard it.
 static bool TryCompileSimplePredicate(const BoundExpression &e,
                                       std::vector<SimplePredicate> &out) {
@@ -202,7 +202,7 @@ private:
     TableScanState state_;
 };
 
-// Streaming file scan — reads CSV directly from file during execution.
+// Streaming file scan - reads CSV directly from file during execution.
 // Never materializes the entire file into memory.
 class PhysicalFileScan : public PhysicalOperator {
 public:
@@ -304,7 +304,7 @@ public:
 
     void Init() override {
         StopWorkers();
-        // Reuse the catalog-cached reader when available — avoids a second
+        // Reuse the catalog-cached reader when available - avoids a second
         // Thrift footer parse per query (~10-20ms on our 80-RG benchmark).
         if (cached_reader_) reader_sp_ = cached_reader_;
         else reader_sp_ = std::make_shared<ParquetReader>(file_path_);
@@ -316,7 +316,7 @@ public:
         current_work_.reset();
         slots_.clear();
         slots_.resize(num_rgs_);
-        // Workers are spawned lazily on the first GetData call — this avoids
+        // Workers are spawned lazily on the first GetData call - this avoids
         // paying thread-startup cost for callers that only read metadata
         // (e.g. the COUNT(*) footer fast path never calls GetData).
         workers_spawned_ = false;
@@ -344,7 +344,7 @@ public:
                 });
                 if (stop_.load()) return false;
                 current_work_ = std::move(slots_[next_emit_]);
-                // Wake any worker throttled by max_ahead — one slot just freed.
+                // Wake any worker throttled by max_ahead - one slot just freed.
                 slot_free_cv_.notify_all();
             }
             current_rg_size_ = static_cast<idx_t>(
@@ -391,7 +391,7 @@ public:
     const std::string &GetFilePath() const { return file_path_; }
     ParquetReader *GetReader() { return reader_sp_.get(); }
 
-    // One fully decoded row group — what the worker threads produce.
+    // One fully decoded row group - what the worker threads produce.
     struct RGWork {
         std::vector<ParquetColumnData> cols;
         std::vector<std::vector<Value>> cols_fallback;
@@ -399,7 +399,7 @@ public:
 
     // Pull the next decoded row group in file order; returns nullptr at EOF.
     // Called by fused scan+aggregate paths (skip DataChunk materialization).
-    // Safe to mix with GetData() — both drive the same slot queue.
+    // Safe to mix with GetData() - both drive the same slot queue.
     std::unique_ptr<RGWork> PullNextRG(idx_t &rg_idx_out) {
         if (!workers_spawned_) SpawnWorkers();
         if (next_emit_ >= num_rgs_) return nullptr;
@@ -430,7 +430,7 @@ public:
     // pull RGs via the atomic counter, decode, invoke the callback, discard
     // the RGWork, and exit when all RGs are processed. Blocks until done.
     // Used by the fused GROUP BY paths to aggregate inside worker threads
-    // — decode and aggregate fuse into a single per-RG pass with thread-
+    // - decode and aggregate fuse into a single per-RG pass with thread-
     // local state merged once at the end.
     using RGConsumerFn =
         std::function<void(const RGWork &, idx_t rg_idx, int thread_id)>;
@@ -477,7 +477,7 @@ private:
     }
 
     // Decode into a caller-owned RGWork. Used by consumer-mode workers that
-    // keep a persistent per-thread RGWork to avoid per-RG buffer alloc churn —
+    // keep a persistent per-thread RGWork to avoid per-RG buffer alloc churn -
     // the typed column vectors retain their capacity across row groups.
     void DecodeRowGroupInto(idx_t rg, RGWork &work) {
         idx_t num_cols = static_cast<idx_t>(GetTypes().size());
@@ -500,10 +500,10 @@ private:
 
     void WorkerLoop(int thread_id = 0) {
         // Bound decode-ahead in slot mode so memory doesn't balloon. Consumer
-        // mode has no queue — work is freed right after the callback — so no
+        // mode has no queue - work is freed right after the callback - so no
         // throttle is needed.
         const idx_t max_ahead = workers_.size() * 2 + 2;
-        // Thread-local persistent RGWork — reuse buffers across row groups so
+        // Thread-local persistent RGWork - reuse buffers across row groups so
         // each RG doesn't malloc a fresh ~1 MB column buffer per column.
         RGWork consumer_work;
         while (true) {
@@ -628,7 +628,7 @@ private:
 };
 
 #ifndef SLOTHDB_EDGE
-// Streaming Avro scan — mirrors PhysicalJSONScan. Init() parses the Avro
+// Streaming Avro scan - mirrors PhysicalJSONScan. Init() parses the Avro
 // container into typed DataChunks via AvroReader::ReadIntoChunks, skipping
 // the rows_/BulkLoadRows roundtrip; GetData() emits them sequentially.
 class PhysicalAvroScan : public PhysicalOperator {
@@ -659,7 +659,7 @@ private:
     idx_t emit_pos_ = 0;
 };
 
-// Streaming SQLite scan — mirrors PhysicalAvroScan / PhysicalArrowScan.
+// Streaming SQLite scan - mirrors PhysicalAvroScan / PhysicalArrowScan.
 // Init() scans the given table from the SQLite file directly into typed
 // DataChunk vectors via SQLiteScanner::ScanTableIntoChunks, skipping the
 // DataTable bulk-load roundtrip; GetData() emits them sequentially.
@@ -694,7 +694,7 @@ private:
     idx_t emit_pos_ = 0;
 };
 
-// Streaming Arrow IPC scan — mirrors PhysicalAvroScan. Init() parses the
+// Streaming Arrow IPC scan - mirrors PhysicalAvroScan. Init() parses the
 // Arrow file into typed DataChunks via ArrowIPCReader::ReadIntoChunks,
 // skipping the Value-boxed rows_/BulkLoadRows roundtrip; GetData() emits
 // them sequentially.
@@ -727,7 +727,7 @@ private:
 };
 #endif // SLOTHDB_EDGE
 
-// Streaming JSON scan — parses the file in Init() (mmap + parallel worker
+// Streaming JSON scan - parses the file in Init() (mmap + parallel worker
 // threads under the hood via JSONReader::ReadIntoChunks) into a vector of
 // DataChunks, then emits them one at a time via GetData(). Avoids the
 // DataTable bulk-load and rescan that used to happen for read_json(...)
@@ -761,7 +761,7 @@ private:
     idx_t emit_pos_ = 0;
 };
 
-// Ultra-fast scan that only counts rows — no field parsing at all.
+// Ultra-fast scan that only counts rows - no field parsing at all.
 class PhysicalCountScan : public PhysicalOperator {
 public:
     PhysicalCountScan(const std::string &file_path, char delimiter,
@@ -833,7 +833,7 @@ public:
                 }
             }
 
-            if (sel_count == 0) continue; // all filtered — pull next chunk
+            if (sel_count == 0) continue; // all filtered - pull next chunk
 
             if (result.ColumnCount() != GetTypes().size()) {
                 result.Initialize(GetTypes());
@@ -1399,18 +1399,18 @@ private:
             // No column refs.
             break;
         default:
-            // SUBQUERY or unknown — be conservative: mark all needed.
+            // SUBQUERY or unknown - be conservative: mark all needed.
             for (idx_t i = 0; i < used.size(); i++) used[i] = true;
             break;
         }
     }
 
-    // Input buffer: stores chunks as-is + a global row → (chunk,pos) lookup.
+    // Input buffer: stores chunks as-is + a global row -> (chunk,pos) lookup.
     // This avoids the O(N*C) Value allocation that dominated the old path.
     struct InputBuf {
         std::vector<DataChunk> chunks;
-        std::vector<uint32_t> chunk_of; // global row → chunk idx
-        std::vector<uint32_t> pos_of;   // global row → row within chunk
+        std::vector<uint32_t> chunk_of; // global row -> chunk idx
+        std::vector<uint32_t> pos_of;   // global row -> row within chunk
         idx_t total = 0;
         std::vector<LogicalTypeId> types;
 
@@ -1573,9 +1573,9 @@ private:
                 partitions_[pi].push_back(i);
             }
         } else if (single_col && tid == LogicalTypeId::VARCHAR) {
-            // Linear-cache fast path — most real VARCHAR PARTITION BY is
+            // Linear-cache fast path - most real VARCHAR PARTITION BY is
             // low-cardinality (~10s of categories). Keep a small inline array
-            // and do memcmp against it — much faster than std::unordered_map's
+            // and do memcmp against it - much faster than std::unordered_map's
             // string hashing + allocation per row.
             struct Entry { const char *data; uint32_t len; idx_t pi; };
             std::vector<Entry> cache;
@@ -1670,11 +1670,11 @@ private:
         auto &idxs = partitions_[p];
         if (!sort_win_) { partition_sorted_[p] = true; return; }
         // Use partial_sort when LIMIT is small and we're sorting the first (or only)
-        // partition — takes only the top-K rows in order, O(N log K) vs O(N log N).
+        // partition - takes only the top-K rows in order, O(N log K) vs O(N log N).
         // Safe for ROW_NUMBER/NTILE/LAG/LEAD since consumer LIMIT stops the emit.
         idx_t partial_k = 0;
         if (row_limit_ > 0 && row_limit_ < idxs.size()) {
-            // Only apply to the first partition — later partitions might contribute rows
+            // Only apply to the first partition - later partitions might contribute rows
             // if earlier ones don't fill the limit; conservatively sort later ones fully.
             if (p == 0) partial_k = row_limit_;
         }
@@ -1772,7 +1772,7 @@ private:
         }
 
         // SUM/COUNT/AVG/MIN/MAX over whole partition don't require sorted order
-        // (we treat ORDER BY as irrelevant for these — full-partition aggregate).
+        // (we treat ORDER BY as irrelevant for these - full-partition aggregate).
         // FIRST/LAST_VALUE are computed on-demand at emit time (they need sorted order).
         if (info.fn == WF_SUM || info.fn == WF_COUNT || info.fn == WF_AVG ||
             info.fn == WF_MIN || info.fn == WF_MAX) {
@@ -2033,7 +2033,7 @@ private:
         }
 
         if (wins.empty()) {
-            // No windows at all — trivial case. Single partition, no sort.
+            // No windows at all - trivial case. Single partition, no sort.
             partitions_.emplace_back();
             partitions_[0].reserve(input_.total);
             for (idx_t i = 0; i < input_.total; i++) partitions_[0].push_back(i);
@@ -2070,7 +2070,7 @@ private:
         if (qwin) CompileWindow(*qwin, qualify_win_info_);
 
         // Fast path: QUALIFY ROW_NUMBER() OVER (... ORDER BY X) = 1.
-        // Just reduce each partition to its argmin/argmax row — no sort.
+        // Just reduce each partition to its argmin/argmax row - no sort.
         TryTop1Qualify(ref_win, qwin);
     }
 
@@ -2094,7 +2094,7 @@ private:
         LogicalTypeId tid = (col < input_.types.size()) ? input_.types[col] : LogicalTypeId::SQLNULL;
         bool asc = ref_win->order_by[0].ascending;
 
-        // Reduce each partition to a single winner row — the argmin (asc) or argmax (desc).
+        // Reduce each partition to a single winner row - the argmin (asc) or argmax (desc).
         auto pick_one = [&](std::vector<idx_t> &idxs) {
             if (idxs.empty()) return;
             idx_t best = idxs[0];
@@ -2133,7 +2133,7 @@ private:
             idxs.push_back(best);
         };
         for (auto &idxs : partitions_) pick_one(idxs);
-        // Each partition now has size 1 — subsequent lazy sort is a no-op,
+        // Each partition now has size 1 - subsequent lazy sort is a no-op,
         // and the emit loop only produces one row per partition. QUALIFY ROW_NUMBER=1
         // evaluates true at pos 0, so all rows pass.
         for (idx_t p = 0; p < partition_sorted_.size(); p++) partition_sorted_[p] = true;
@@ -2274,7 +2274,7 @@ private:
             for (idx_t i = 0; i < n; i++) partitions_list[0].push_back(i);
         } else if (single_col_partition &&
                    (part_tid == LogicalTypeId::INTEGER || part_tid == LogicalTypeId::BIGINT)) {
-            // Raw int64 key — no Value alloc, no hash on strings.
+            // Raw int64 key - no Value alloc, no hash on strings.
             std::unordered_map<int64_t, idx_t> key_to_part;
             key_to_part.reserve(n / 4 + 16);
             for (idx_t i = 0; i < n; i++) {
@@ -2291,7 +2291,7 @@ private:
                 partitions_list[p_idx].push_back(i);
             }
         } else if (single_col_partition && part_tid == LogicalTypeId::VARCHAR) {
-            // Raw string_t read — no Value/ToString alloc.
+            // Raw string_t read - no Value/ToString alloc.
             std::unordered_map<std::string, idx_t> key_to_part;
             key_to_part.reserve(n / 4 + 16);
             for (idx_t i = 0; i < n; i++) {
@@ -2646,7 +2646,7 @@ private:
     idx_t emit_part_ = 0;
     idx_t emit_pos_ = 0;
     bool setup_done_ = false;
-    // Lazy-sort state — sort each partition on-demand at emit time.
+    // Lazy-sort state - sort each partition on-demand at emit time.
     BoundWindowExpression *sort_win_ = nullptr;
     bool sort_single_col_ok_ = false;
     idx_t sort_col_ = INVALID_INDEX;
@@ -2665,7 +2665,7 @@ private:
     // Fallback path (multi-window, different partition/order).
     bool use_fallback_ = false;
     std::vector<std::vector<Value>> fallback_rows_;
-    // LIMIT pushdown — 0 means unlimited (full sort).
+    // LIMIT pushdown - 0 means unlimited (full sort).
     idx_t row_limit_ = 0;
 };
 
@@ -2784,7 +2784,7 @@ private:
         bool is_distinct;
     };
 
-    // Fused JOIN+aggregate hot-loop — defined out-of-class (needs full PhysicalHashJoin).
+    // Fused JOIN+aggregate hot-loop - defined out-of-class (needs full PhysicalHashJoin).
     // Returns true if it handled the computation (result_rows_ populated).
     bool TryComputeFusedJoinAggregate(PhysicalHashJoin *hj,
                                        const std::vector<AggInfo> &agg_infos,
@@ -2823,7 +2823,7 @@ private:
     }
 
     void ComputeAggregates() {
-        // Process chunks directly — no intermediate row materialization.
+        // Process chunks directly - no intermediate row materialization.
         std::unordered_map<std::string, std::vector<AggState>> group_states;
         std::unordered_map<std::string, std::vector<Value>> group_keys;
         std::vector<std::string> group_order;
@@ -2862,7 +2862,7 @@ private:
         std::string key;
         idx_t total_rows_processed = 0;
 
-        // === FAST PATH: COUNT(*) with no GROUP BY — just count rows ===
+        // === FAST PATH: COUNT(*) with no GROUP BY - just count rows ===
         bool is_simple_count_star = (group_col_indices.empty() && num_aggs == 1 &&
                                      agg_infos[0].is_count_star && agg_infos[0].name == "COUNT");
         // FAST PATH: all COUNT/SUM/AVG on simple columns, no GROUP BY
@@ -3242,7 +3242,7 @@ private:
                     };
 
                     idx_t num_cols = static_cast<idx_t>(types.size());
-                    // Hoist field storage out of the loop — reused per row.
+                    // Hoist field storage out of the loop - reused per row.
                     std::vector<const char*> field_starts(num_cols);
                     std::vector<size_t> field_lens(num_cols);
                     while (pos < end) {
@@ -3454,13 +3454,13 @@ private:
             }
 
             // Direct-pointer cache for VARCHAR group keys (low-cardinality optimization).
-            // Reserve enough for typical cardinality — pointers remain stable.
+            // Reserve enough for typical cardinality - pointers remain stable.
             std::vector<std::string> str_cache_keys;
             std::vector<std::vector<AggState>> str_cache_states;
             str_cache_keys.reserve(256);
             str_cache_states.reserve(256);
 
-            // Two hash maps based on group column type — avoid string conversion.
+            // Two hash maps based on group column type - avoid string conversion.
             // unordered_dense is ~2× faster than std::unordered_map for the hot
             // INT-keyed GROUP BY path (flat open-addressing vs chained buckets).
             ankerl::unordered_dense::map<int64_t, std::vector<AggState>> int_groups;
@@ -3471,9 +3471,9 @@ private:
             std::unordered_map<std::string, Value> str_keys;
 
             // === FUSED PARQUET SINGLE-COLUMN GROUP BY ===
-            // Iterate row groups directly from ParquetColumnData — skip
+            // Iterate row groups directly from ParquetColumnData - skip
             // DataChunk materialization and the per-row vector dispatch.
-            // Also handle AGG → FILTER → SCAN: compile the filter into a
+            // Also handle AGG -> FILTER -> SCAN: compile the filter into a
             // flat predicate list and apply per row, skipping the filter's
             // copy-into-new-chunk pass entirely.
             PhysicalParquetScan *pq = dynamic_cast<PhysicalParquetScan *>(children[0].get());
@@ -3532,7 +3532,7 @@ private:
                 }
 
                 // Thread-local aggregate state. Each worker thread writes to
-                // its own TLSingle — no synchronization on the hot path.
+                // its own TLSingle - no synchronization on the hot path.
                 struct TLSingle {
                     ankerl::unordered_dense::map<int64_t, std::vector<AggState>> int_groups;
                     ankerl::unordered_dense::map<int64_t, Value> int_keys;
@@ -3755,7 +3755,7 @@ private:
                         auto &s = reinterpret_cast<const string_t *>(gvec.GetData())[i];
                         const char *s_data = s.GetData();
                         uint32_t s_len = s.GetSize();
-                        // Linear scan with direct pointer cache — no map lookup on hit.
+                        // Linear scan with direct pointer cache - no map lookup on hit.
                         states_ptr = nullptr;
                         for (idx_t oi = 0; oi < str_cache_keys.size(); oi++) {
                             const auto &ck = str_cache_keys[oi];
@@ -3765,7 +3765,7 @@ private:
                             }
                         }
                         if (!states_ptr) {
-                            // New key — add to cache and map.
+                            // New key - add to cache and map.
                             std::string k(s_data, s_len);
                             str_cache_keys.push_back(k);
                             str_cache_states.emplace_back(num_aggs);
@@ -3848,7 +3848,7 @@ private:
             auto *count_scan = dynamic_cast<PhysicalCountScan *>(children[0].get());
             auto *parquet_scan = dynamic_cast<PhysicalParquetScan *>(children[0].get());
             if (file_scan) {
-                // Reuse the already-loaded reader — no second fread.
+                // Reuse the already-loaded reader - no second fread.
                 auto *r = file_scan->GetReader();
                 idx_t count = r->CountRows();
                 state.count = static_cast<int64_t>(count);
@@ -3857,20 +3857,20 @@ private:
                 state.count = static_cast<int64_t>(count_scan->GetRowCount());
                 total_rows_processed = count_scan->GetRowCount();
             } else if (parquet_scan) {
-                // Parquet COUNT(*) — read row count from footer metadata without
+                // Parquet COUNT(*) - read row count from footer metadata without
                 // decoding any column data.
                 parquet_scan->Init();
                 state.count = parquet_scan->GetReader()->NumRows();
                 total_rows_processed = static_cast<idx_t>(state.count);
             } else {
-                // Regular table — just count chunk sizes.
+                // Regular table - just count chunk sizes.
                 while (children[0]->GetData(chunk)) {
                     state.count += static_cast<int64_t>(chunk.size());
                     total_rows_processed += chunk.size();
                 }
             }
         } else if (all_simple_aggs && is_simple_no_group) {
-            // Fast: no GROUP BY, simple aggregates — process vectors directly, no key building.
+            // Fast: no GROUP BY, simple aggregates - process vectors directly, no key building.
             // Column pruning: only parse columns we aggregate over.
             {
                 std::vector<bool> needed(children[0]->GetTypes().size(), false);
@@ -3895,7 +3895,7 @@ private:
 
             // === FUSED PARQUET FAST PATH ===
             // Sequential aggregate (parallel decode via slot mode). Q2's agg
-            // work is already tiny — 80 RGs × SUM is <10ms — so paying per-
+            // work is already tiny - 80 RGs × SUM is <10ms - so paying per-
             // query thread-pool teardown+spawn to parallelize it nets negative.
             if (auto *pq = dynamic_cast<PhysicalParquetScan *>(children[0].get())) {
                 idx_t rg_idx;
@@ -3991,7 +3991,7 @@ private:
                 }
             } else if ([&]() -> bool {
                 // === PARALLEL CSV SUM/COUNT/AVG/MIN/MAX (no GROUP BY) ===
-                // Also handles fused WHERE (AGG → FILTER → FILE_SCAN).
+                // Also handles fused WHERE (AGG -> FILTER -> FILE_SCAN).
                 PhysicalFileScan *fs = dynamic_cast<PhysicalFileScan *>(children[0].get());
                 std::vector<SimplePredicate> preds;
                 bool has_filter = false;
@@ -4193,7 +4193,7 @@ private:
                 return false;
             }()) {
             // === FUSED PARQUET GENERIC GROUP BY (multi-col or unusual types) ===
-            // Supports AGG → FILTER → SCAN via simple-predicate compilation.
+            // Supports AGG -> FILTER -> SCAN via simple-predicate compilation.
             PhysicalParquetScan *pq =
                 dynamic_cast<PhysicalParquetScan *>(children[0].get());
             std::vector<SimplePredicate> multi_preds;
@@ -4221,7 +4221,7 @@ private:
                 }
                 pq->SetNeededOutputs(needed);
                 // Skip per-row string_t materialization for VARCHAR group cols
-                // — the packed-key path uses only str_dict_indices + str_dict_values.
+                // - the packed-key path uses only str_dict_indices + str_dict_values.
                 std::vector<bool> skip(pq->GetTypes().size(), false);
                 for (auto gc : group_col_indices) {
                     if (gc < skip.size() &&
@@ -4249,7 +4249,7 @@ private:
             // 32-bit scan-wide global index; INTEGER is naturally 32 bits; BIGINT
             // is assumed to fit 32 bits for columns that realistically appear in
             // GROUP BY (year, quarter, status, etc.). When packable we use a
-            // uint64-keyed `ankerl::unordered_dense::map` — far faster than
+            // uint64-keyed `ankerl::unordered_dense::map` - far faster than
             // `std::unordered_map<std::string, ...>` with a variable-length key.
             struct PackSpec { int kind = 0; int shift = 0; };
             std::vector<PackSpec> pack(group_col_indices.size());
@@ -4268,7 +4268,7 @@ private:
                 }
             }
 
-            // Per-thread state — workers aggregate into their own slots so the
+            // Per-thread state - workers aggregate into their own slots so the
             // packed-key hot loop runs without synchronization. Each thread
             // maintains its own global dict; we reconcile across threads at
             // merge time using the (always-content-accurate) `key_vals`.
@@ -4318,7 +4318,7 @@ private:
                     g.dict_size = g.dict_val ? g.col->str_dict_values.size() : 0;
                 }
 
-                // Per-RG local→global dict translation for packed path.
+                // Per-RG local->global dict translation for packed path.
                 std::vector<std::vector<uint32_t>> local_to_global;
                 bool rg_packable = all_packable;
                 if (rg_packable) {
@@ -4588,7 +4588,7 @@ private:
 
                 auto &states = group_states[key];
 
-                // Update aggregates — read directly from vectors.
+                // Update aggregates - read directly from vectors.
                 for (idx_t a = 0; a < num_aggs; a++) {
                     auto &state = states[a];
                     auto &info = agg_infos[a];
@@ -4606,7 +4606,7 @@ private:
                                 state.count++;
                             }
                         } else if (info.col_idx == INVALID_INDEX) {
-                            // Complex argument — e.g. COUNT(CASE WHEN ... THEN 1 END).
+                            // Complex argument - e.g. COUNT(CASE WHEN ... THEN 1 END).
                             // Evaluate the expression per row; count non-null results.
                             auto &agg_expr = static_cast<BoundFunction &>(*aggregates_[a]);
                             if (!agg_expr.arguments.empty()) {
@@ -4671,7 +4671,7 @@ private:
                             }
                         }
                     } else {
-                        // Complex expression — fallback to Value path.
+                        // Complex expression - fallback to Value path.
                         auto &agg_expr = static_cast<BoundFunction &>(*aggregates_[a]);
                         Value arg_val;
                         if (!agg_expr.arguments.empty()) {
@@ -4949,7 +4949,7 @@ public:
                 std::vector<idx_t> *match_list = nullptr;
 
                 if (use_i64_hash_) {
-                    // Typed int path — read directly from the Vector data.
+                    // Typed int path - read directly from the Vector data.
                     // NULL-in-probe-key never matches in equi-join semantics.
                     const bool null_probe = !key_vec.GetValidity().RowIsValid(current_probe_row_);
                     if (!null_probe) {
@@ -4983,7 +4983,7 @@ public:
                             if (it != hash_table_i64_.end()) match_list = &it->second;
                         }
                     }
-                    // match_list stays nullptr when null_probe — falls through
+                    // match_list stays nullptr when null_probe - falls through
                     // to the usual "no match" logic below.
                 } else if (use_linear_cache_ && key_vec.GetType().id() == LogicalTypeId::VARCHAR) {
                     // Ultra-fast: direct bytes from string_t, linear memcmp.
@@ -5035,7 +5035,7 @@ public:
                 continue;
             }
 
-            // Current chunk exhausted — fetch next.
+            // Current chunk exhausted - fetch next.
             if (probe_done_) break;
             probe_chunk_.Initialize(probe_child_->GetTypes());
             if (!probe_child_->GetData(probe_chunk_)) {
@@ -5094,7 +5094,7 @@ private:
 
         // Push projection down to BOTH children before materializing. Without
         // this, the build side parses every column even if the consumer only
-        // wants one or two — wasteful for wide tables. We derive the join
+        // wants one or two - wasteful for wide tables. We derive the join
         // columns from the AST and union them with needed_cols_ (if any).
         if (!needed_cols_.empty() &&
             condition_ &&
@@ -5184,7 +5184,7 @@ private:
 
         // Pick build side. If both children are file scans, compare file sizes
         // upfront: picking the smaller side avoids a speculative LEFT pass that
-        // would abort mid-way and force LEFT to be re-scanned — parsing the
+        // would abort mid-way and force LEFT to be re-scanned - parsing the
         // same CSV twice on a big × small join. Falls back to the historic
         // "try LEFT, threshold-bail to RIGHT" path when we don't have a cheap
         // size hint.
@@ -5207,7 +5207,7 @@ private:
         }
 
         if (sized_hint) {
-            // Direct build — no speculative pass, no re-scan of the probe side.
+            // Direct build - no speculative pass, no re-scan of the probe side.
             idx_t build_side = build_is_right ? 1 : 0;
             while (true) {
                 chunk.Initialize(children[build_side]->GetTypes());
@@ -5311,7 +5311,7 @@ private:
         use_i64_hash_ = is_int_tid(build_key_type) && is_int_tid(probe_key_type_);
 
         if (use_i64_hash_) {
-            // Typed int path — no string allocation per key. Note the build
+            // Typed int path - no string allocation per key. Note the build
             // side stores Values (union over all int widths); we have to
             // coerce on the stored type, not blindly call GetValue<int64_t>
             // (that slot is only populated for BIGINT).
@@ -5342,7 +5342,7 @@ private:
             }
         }
 
-        // Build a linear cache for fast low-cardinality probe lookups — faster
+        // Build a linear cache for fast low-cardinality probe lookups - faster
         // than a hash map for dimension tables with <256 unique keys. Applies
         // to both the int64 and string paths.
         use_linear_cache_ = build_rows_.size() <= 256;
@@ -5366,7 +5366,7 @@ private:
             idx_t probe_col_count = probe_child_->GetTypes().size();
             std::vector<bool> probe_needed(probe_col_count, false);
             probe_needed[probe_join_col_] = true;
-            // Map each output column → probe column if applicable.
+            // Map each output column -> probe column if applicable.
             for (idx_t out_col = 0; out_col < needed_cols_.size() && needed_cols_[out_col]; out_col++) {}
             for (idx_t out_col = 0; out_col < needed_cols_.size(); out_col++) {
                 if (!needed_cols_[out_col]) continue;
@@ -5395,17 +5395,17 @@ private:
     bool build_is_right_ = false;
     std::vector<std::vector<Value>> build_rows_;
     std::unordered_map<std::string, std::vector<idx_t>> hash_table_;
-    // Typed int64 hash table — used when BOTH join columns are integer types.
+    // Typed int64 hash table - used when BOTH join columns are integer types.
     // Skips the Value::ToString() allocation per key (build + probe) and the
     // string-hash work. ~30-50% faster for integer joins on ≥100k rows.
     std::unordered_map<int64_t, std::vector<idx_t>> hash_table_i64_;
     bool use_i64_hash_ = false;
     LogicalTypeId probe_key_type_ = LogicalTypeId::INVALID;
-    // Linear cache for low-cardinality probes — avoids map/string hash overhead.
+    // Linear cache for low-cardinality probes - avoids map/string hash overhead.
     bool use_linear_cache_ = false;
     std::vector<std::string> build_key_cache_;
     std::vector<std::vector<idx_t>*> build_match_cache_;
-    // Parallel int64 linear cache — same idea, typed.
+    // Parallel int64 linear cache - same idea, typed.
     std::vector<int64_t> build_key_cache_i64_;
     std::vector<bool> build_matched_;
     idx_t probe_join_col_ = 0;
@@ -5432,7 +5432,7 @@ static PhysicalHashJoin *AsHashJoin(PhysicalOperator *op) {
     return dynamic_cast<PhysicalHashJoin *>(op);
 }
 
-// Fused JOIN+aggregate hot path — streams probe chunks, looks up build side,
+// Fused JOIN+aggregate hot path - streams probe chunks, looks up build side,
 // updates aggregate state directly. Cuts 2-4x off large-fact × small-dim patterns
 // (e.g. `sales JOIN regions GROUP BY manager`).
 bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
@@ -5474,7 +5474,7 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
         }
     };
 
-    // Push projection to the probe scan — only parse cols we actually read.
+    // Push projection to the probe scan - only parse cols we actually read.
     {
         std::vector<bool> probe_needed(probe_cols, false);
         probe_needed[probe_join_col] = true;
@@ -5519,7 +5519,7 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
     bool all_build_gkeys = true;
     for (auto &g : gkeys) if (!g.is_build) { all_build_gkeys = false; break; }
 
-    // Fast path: when GROUP BY is all build-side, map each build_idx → group_idx
+    // Fast path: when GROUP BY is all build-side, map each build_idx -> group_idx
     // directly (array index instead of hashing a string per probe row).
     std::vector<idx_t> build_to_gidx;
     std::vector<std::vector<Value>> group_vals_by_gidx;
@@ -5563,7 +5563,7 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
     std::unordered_map<std::string, std::vector<Value>> group_keys_map;
     std::vector<std::string> group_order;
 
-    // PARALLEL PATH: large file + build-side GROUP BY → split into N thread slices.
+    // PARALLEL PATH: large file + build-side GROUP BY -> split into N thread slices.
     // Each thread does full parse + probe + local aggregate into its own state array,
     // then merge. Eliminates the single-threaded CSV parse bottleneck.
     bool parallel_done = false;
@@ -5776,7 +5776,7 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
                 auto &br = build_rows[build_idx];
                 std::vector<AggState> *states_ptr;
                 if (all_build_gkeys) {
-                    // Direct array indexing — no string hashing in the hot loop.
+                    // Direct array indexing - no string hashing in the hot loop.
                     idx_t gidx = build_to_gidx[build_idx];
                     states_ptr = &states_by_gidx[gidx];
                 } else {
@@ -5980,7 +5980,7 @@ public:
             }
 
             if (matches) {
-                // Apply assignments — evaluate against current row.
+                // Apply assignments - evaluate against current row.
                 DataChunk row_chunk;
                 row_chunk.Initialize(types);
                 for (idx_t c = 0; c < row.size(); c++)
@@ -6087,7 +6087,7 @@ public:
     bool GetData(DataChunk &result) override {
         if (done_) return false;
         done_ = true;
-        // Return a single empty row — projections above will fill in constants.
+        // Return a single empty row - projections above will fill in constants.
         result.Initialize({});
         result.SetCardinality(1);
         return true;

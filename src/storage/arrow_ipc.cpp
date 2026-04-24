@@ -191,7 +191,7 @@ std::vector<std::vector<Value>> ArrowIPCReader::ReadAll() {
     return rows_;
 }
 
-// Parse only the schema header — magic bytes + column list — so callers
+// Parse only the schema header - magic bytes + column list - so callers
 // can register the catalog entry without reading every row.
 void ArrowIPCReader::DetectSchemaLight() {
     if (schema_parsed_) return;

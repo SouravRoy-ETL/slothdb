@@ -14,7 +14,7 @@ struct JSONOptions {
     bool auto_detect = true;
 };
 
-// Minimal JSON parser — handles objects, arrays, strings, numbers, booleans, null.
+// Minimal JSON parser - handles objects, arrays, strings, numbers, booleans, null.
 class JSONParser {
 public:
     // Parse a JSON value from a string. Returns the parsed value and updates pos.
@@ -46,15 +46,15 @@ public:
     // Read all rows.
     std::vector<std::vector<Value>> ReadAll();
 
-    // Stream directly into a DataTable — skips the rows_ intermediate and the
+    // Stream directly into a DataTable - skips the rows_ intermediate and the
     // per-cell Value boxing. Call DetectSchema() first. On NDJSON this is
     // ~3× faster than ReadAll() + BulkLoadRows() for files with mostly
     // numeric columns.
     void ReadIntoTable(class DataTable &table, const std::vector<LogicalType> &types);
 
-    // Stream directly into a vector of DataChunks — like ReadIntoTable, but
+    // Stream directly into a vector of DataChunks - like ReadIntoTable, but
     // skips the DataTable/RowGroup entirely. Used by PhysicalJSONScan so the
-    // query operator above can stream chunks straight into the aggregate —
+    // query operator above can stream chunks straight into the aggregate -
     // no bulk-load / rescan round trip.
     void ReadIntoChunks(std::vector<class DataChunk> &chunks,
                         const std::vector<LogicalType> &types);
@@ -62,7 +62,7 @@ public:
 private:
     void ParseNDJSON();
     void ParseJSONArray();
-    // Shared core of ReadIntoTable / ReadIntoChunks — parses the file with
+    // Shared core of ReadIntoTable / ReadIntoChunks - parses the file with
     // mmap + parallel worker threads, leaving the parsed DataChunks in
     // `per_thread`. Caller decides how to drain them.
     void ParallelParseToPerThread(
@@ -74,7 +74,7 @@ private:
     std::vector<std::string> column_names_;
     std::vector<LogicalType> column_types_;
     std::vector<std::unordered_map<std::string, Value>> records_;
-    // Fast-path populated directly by the rewritten NDJSON parser — skips
+    // Fast-path populated directly by the rewritten NDJSON parser - skips
     // the records_ unordered_map intermediate. ReadAll returns this if set.
     std::vector<std::vector<Value>> rows_;
     bool parsed_ = false;

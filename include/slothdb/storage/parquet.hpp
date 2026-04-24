@@ -91,7 +91,7 @@ private:
 };
 
 // ============================================================================
-// Typed column data for a full row group — avoids boxing every value in Value.
+// Typed column data for a full row group - avoids boxing every value in Value.
 // Only one of (int32/int64/float/double/bool data) is populated depending on
 // the LogicalType.  VARCHAR uses str_data + str_heap (shared so the Vector
 // can keep the backing bytes alive for its own lifetime).
@@ -115,7 +115,7 @@ struct ParquetColumnData {
     std::vector<uint32_t> str_dict_indices;
     std::vector<string_t> str_dict_values;
     bool str_dict_encoded = false;
-    // When true, the decoder skipped writing str_data[r] — consumers must
+    // When true, the decoder skipped writing str_data[r] - consumers must
     // resolve strings via str_dict_values[str_dict_indices[r]] instead.
     bool str_data_skipped = false;
     // One byte per row: 0 = null, 1 = valid. Empty means all_valid = true.
@@ -166,7 +166,7 @@ public:
 
     // Native typed decode: fills `out` with the column's values decoded
     // directly into typed buffers (no Value boxing). Returns true on success
-    // — on false, caller should use ReadColumn as a fallback. Currently
+    // - on false, caller should use ReadColumn as a fallback. Currently
     // handles BOOLEAN/INT32/INT64/FLOAT/DOUBLE/VARCHAR for standard Parquet
     // files with PLAIN / PLAIN_DICTIONARY / RLE_DICTIONARY encodings.
     //

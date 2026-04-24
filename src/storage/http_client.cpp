@@ -260,7 +260,7 @@ HTTPResponse HTTPClient::Get(const std::string &url) {
 
 // POST a body to `url` with the given content-type and extra headers.
 // Used by `.ask --ai` for LLM calls; supports localhost HTTP everywhere
-// and HTTPS on Windows (WinHTTP). On POSIX, HTTPS fails clean — the
+// and HTTPS on Windows (WinHTTP). On POSIX, HTTPS fails clean - the
 // user is expected to run a local Ollama on HTTP for the default flow.
 HTTPResponse HTTPClient::Post(const std::string &url,
                                const std::string &body,
@@ -269,7 +269,7 @@ HTTPResponse HTTPClient::Post(const std::string &url,
     HTTPResponse response;
 
 #ifdef _MSC_VER
-    // WinHTTP path — supports both HTTP and HTTPS.
+    // WinHTTP path - supports both HTTP and HTTPS.
     int wlen = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
     std::vector<wchar_t> wurl(wlen);
     MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, wurl.data(), wlen);
@@ -308,7 +308,7 @@ HTTPResponse HTTPClient::Post(const std::string &url,
         response.error = "WinHttpOpenRequest failed"; return response;
     }
 
-    // Assemble header block — Content-Type + any extras.
+    // Assemble header block - Content-Type + any extras.
     std::wstring hdrs = L"Content-Type: ";
     for (char c : content_type) hdrs += static_cast<wchar_t>(c);
     hdrs += L"\r\n";
@@ -361,7 +361,7 @@ HTTPResponse HTTPClient::Post(const std::string &url,
     response.error = "HTTP not supported in WASM build";
     return response;
 #else
-    // POSIX socket POST. HTTP only — HTTPS needs OpenSSL which we don't link.
+    // POSIX socket POST. HTTP only - HTTPS needs OpenSSL which we don't link.
     auto parts = ParseURL(url);
     if (parts.scheme == "https") {
         response.error = "HTTPS POST not supported on this platform without OpenSSL. "

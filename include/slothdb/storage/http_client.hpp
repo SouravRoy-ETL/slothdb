@@ -14,7 +14,7 @@ struct HTTPResponse {
 };
 
 // Minimal zero-dependency HTTP client.
-// Supports HTTP (not HTTPS — TLS requires OpenSSL or platform API).
+// Supports HTTP (not HTTPS - TLS requires OpenSSL or platform API).
 // For HTTPS, we'll use platform-specific APIs where available.
 class HTTPClient {
 public:
@@ -24,7 +24,7 @@ public:
     // POST a body with a given content-type. Used by `.ask --ai` to call
     // a local Ollama server (or any HTTP-speaking LLM endpoint). HTTPS
     // is supported on Windows via WinHTTP; POSIX currently supports HTTP
-    // only — sufficient for the default (localhost Ollama) use case.
+    // only - sufficient for the default (localhost Ollama) use case.
     static HTTPResponse Post(const std::string &url,
                              const std::string &body,
                              const std::string &content_type = "application/json",
@@ -50,7 +50,7 @@ private:
 #endif
 };
 
-// S3 client (simplified — anonymous access to public buckets).
+// S3 client (simplified - anonymous access to public buckets).
 class S3Client {
 public:
     // Download an S3 object. URL format: s3://bucket/key

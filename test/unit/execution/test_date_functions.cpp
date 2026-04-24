@@ -11,7 +11,7 @@ using namespace slothdb;
 static constexpr int64_t TS_2024_03_15_10_50_45_US = 1710499845000000LL;
 
 // ============================================================================
-// DATE_TRUNC — extended interval parts
+// DATE_TRUNC - extended interval parts
 // ============================================================================
 
 TEST_CASE("DATE_TRUNC - minute strips seconds") {

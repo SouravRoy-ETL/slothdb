@@ -20,7 +20,7 @@
 // Architecture:
 //   - Uses MTLDevice, MTLCommandQueue, MTLComputePipelineState
 //   - Data transferred via MTLBuffer (shared or managed memory)
-//   - Apple Silicon has unified memory — no PCIe bottleneck!
+//   - Apple Silicon has unified memory - no PCIe bottleneck!
 //   - This gives Metal an advantage over CUDA for smaller datasets
 //
 // Performance characteristics on Apple Silicon:

@@ -16,7 +16,7 @@ namespace slothdb {
 // programmatic error handling across versions.
 // ============================================================================
 
-// Error category — which subsystem produced the error.
+// Error category - which subsystem produced the error.
 enum class ErrorCategory : uint8_t {
     INTERNAL,
     PARSER,
@@ -34,7 +34,7 @@ enum class ErrorCategory : uint8_t {
     NOT_IMPLEMENTED
 };
 
-// Numeric error codes — stable across versions.
+// Numeric error codes - stable across versions.
 enum class ErrorCode : uint32_t {
     // Generic
     UNKNOWN = 0,
@@ -98,7 +98,7 @@ public:
     uint32_t GetNumericCode() const { return static_cast<uint32_t>(code_); }
     const std::string &GetMessage() const { return message_; }
 
-    // Contextual metadata — key-value pairs with extra info.
+    // Contextual metadata - key-value pairs with extra info.
     void SetContext(const std::string &key, const std::string &value);
     std::optional<std::string> GetContext(const std::string &key) const;
     const std::unordered_map<std::string, std::string> &GetAllContext() const { return context_; }
@@ -117,7 +117,7 @@ protected:
     uint32_t column_ = 0;
 };
 
-// Derived exception classes — convenience constructors, correct category/code.
+// Derived exception classes - convenience constructors, correct category/code.
 
 class InternalException : public SlothDBException {
 public:

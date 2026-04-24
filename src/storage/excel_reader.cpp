@@ -43,7 +43,7 @@ std::string ExcelReader::ExtractZipEntry(const std::vector<uint8_t> &zip_data,
                                     uncompressed_size);
             }
             if (compression == 8) {
-                // DEFLATE — decompress with miniz (raw deflate, no zlib wrapper).
+                // DEFLATE - decompress with miniz (raw deflate, no zlib wrapper).
                 size_t out_len = uncompressed_size ? uncompressed_size
                                                     : compressed_size * 8 + 1024;
                 std::string out;
@@ -178,7 +178,7 @@ void ExcelReader::ParseSheetXML(const std::string &xml,
             for (size_t i = 0; i < column_types_.size(); i++) {
                 if (i < cell_values.size() && !cell_values[i].empty()) {
                     auto &cv = cell_values[i];
-                    // Try numeric first — widen column type on first numeric
+                    // Try numeric first - widen column type on first numeric
                     // cell (column_types_ started VARCHAR from the header row).
                     bool is_num = !cv.empty() && (cv[0] == '-' || cv[0] == '.' ||
                                                   (cv[0] >= '0' && cv[0] <= '9'));
@@ -194,7 +194,7 @@ void ExcelReader::ParseSheetXML(const std::string &xml,
                                     column_types_[i] = LogicalType::DOUBLE();
                             } else {
                                 row.push_back(Value::BIGINT((int64_t)d));
-                                // Widen VARCHAR→BIGINT; keep DOUBLE if already widened.
+                                // Widen VARCHAR->BIGINT; keep DOUBLE if already widened.
                                 if (column_types_[i].id() == LogicalTypeId::VARCHAR)
                                     column_types_[i] = LogicalType::BIGINT();
                             }

@@ -9,9 +9,9 @@ namespace slothdb {
 
 // Excel (.xlsx) reader.
 // XLSX is a ZIP containing XML files:
-//   xl/worksheets/sheet1.xml — cell data
-//   xl/sharedStrings.xml — string pool
-//   xl/styles.xml — cell formatting
+//   xl/worksheets/sheet1.xml - cell data
+//   xl/sharedStrings.xml - string pool
+//   xl/styles.xml - cell formatting
 //
 // This is a minimal reader for simple flat tables (no formulas, merged cells, etc.).
 // Since implementing full ZIP deflate decompression from scratch is extremely complex,

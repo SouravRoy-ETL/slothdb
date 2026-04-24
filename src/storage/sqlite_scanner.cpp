@@ -170,7 +170,7 @@ std::vector<std::vector<Value>> SQLiteScanner::ScanBTreePage(uint32_t page_num) 
             results.push_back(std::move(record));
         }
     } else if (page_type == 5) {
-        // Interior table B-tree page — recurse into children.
+        // Interior table B-tree page - recurse into children.
         uint16_t num_cells = (header[3] << 8) | header[4];
         uint32_t right_child = (header[8] << 24) | (header[9] << 16) |
                                 (header[10] << 8) | header[11];

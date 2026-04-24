@@ -37,30 +37,30 @@ Schema TwoTableSchema() {
 // COUNT
 // ---------------------------------------------------------------------------
 
-TEST_CASE("ask: COUNT — 'how many sales'") {
+TEST_CASE("ask: COUNT - 'how many sales'") {
     auto r = Translate("how many sales", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("SELECT COUNT(*) FROM \"sales\"") != std::string::npos);
 }
 
-TEST_CASE("ask: COUNT — 'count of sales'") {
+TEST_CASE("ask: COUNT - 'count of sales'") {
     auto r = Translate("count of sales", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("COUNT(*) FROM \"sales\"") != std::string::npos);
 }
 
-TEST_CASE("ask: COUNT — 'number of sales'") {
+TEST_CASE("ask: COUNT - 'number of sales'") {
     auto r = Translate("number of sales", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("COUNT(*)") != std::string::npos);
 }
 
-TEST_CASE("ask: COUNT — plural/singular matching") {
+TEST_CASE("ask: COUNT - plural/singular matching") {
     auto r = Translate("how many sale", SalesSchema());
     CHECK(r.status == Status::OK); // "sale" resolves to "sales"
 }
 
-TEST_CASE("ask: COUNT — with year filter 'in 2024'") {
+TEST_CASE("ask: COUNT - with year filter 'in 2024'") {
     auto r = Translate("how many sales in 2024", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("WHERE") != std::string::npos);
@@ -71,44 +71,44 @@ TEST_CASE("ask: COUNT — with year filter 'in 2024'") {
 // SUM / AVG / MIN / MAX
 // ---------------------------------------------------------------------------
 
-TEST_CASE("ask: SUM — 'total amount'") {
+TEST_CASE("ask: SUM - 'total amount'") {
     auto r = Translate("total amount", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("SUM(\"amount\")") != std::string::npos);
 }
 
-TEST_CASE("ask: SUM — 'sum of amount'") {
+TEST_CASE("ask: SUM - 'sum of amount'") {
     auto r = Translate("sum of amount", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("SUM(\"amount\")") != std::string::npos);
 }
 
-TEST_CASE("ask: SUM — 'total amount per region' groups") {
+TEST_CASE("ask: SUM - 'total amount per region' groups") {
     auto r = Translate("total amount per region", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("SUM(\"amount\")") != std::string::npos);
     CHECK(r.sql.find("GROUP BY \"region\"") != std::string::npos);
 }
 
-TEST_CASE("ask: AVG — 'average amount'") {
+TEST_CASE("ask: AVG - 'average amount'") {
     auto r = Translate("average amount", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("AVG(\"amount\")") != std::string::npos);
 }
 
-TEST_CASE("ask: MIN — 'min amount'") {
+TEST_CASE("ask: MIN - 'min amount'") {
     auto r = Translate("min amount", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("MIN(\"amount\")") != std::string::npos);
 }
 
-TEST_CASE("ask: MAX — 'maximum amount'") {
+TEST_CASE("ask: MAX - 'maximum amount'") {
     auto r = Translate("maximum amount", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("MAX(\"amount\")") != std::string::npos);
 }
 
-TEST_CASE("ask: SUM + year filter — 'total amount in 2024'") {
+TEST_CASE("ask: SUM + year filter - 'total amount in 2024'") {
     auto r = Translate("total amount in 2024", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("SUM(\"amount\")") != std::string::npos);
@@ -119,7 +119,7 @@ TEST_CASE("ask: SUM + year filter — 'total amount in 2024'") {
 // TOP N
 // ---------------------------------------------------------------------------
 
-TEST_CASE("ask: TOP N — 'top 5 customer_id by amount'") {
+TEST_CASE("ask: TOP N - 'top 5 customer_id by amount'") {
     auto r = Translate("top 5 customer_id by amount", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("LIMIT 5") != std::string::npos);
@@ -127,7 +127,7 @@ TEST_CASE("ask: TOP N — 'top 5 customer_id by amount'") {
     CHECK(r.sql.find("DESC") != std::string::npos);
 }
 
-TEST_CASE("ask: TOP N — 'bottom 3 region by amount' sorts ASC") {
+TEST_CASE("ask: TOP N - 'bottom 3 region by amount' sorts ASC") {
     auto r = Translate("bottom 3 region by amount", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("LIMIT 3") != std::string::npos);
@@ -138,11 +138,11 @@ TEST_CASE("ask: TOP N — 'bottom 3 region by amount' sorts ASC") {
 // Synonyms
 // ---------------------------------------------------------------------------
 
-TEST_CASE("ask: synonym — 'total revenue' resolves to amount column") {
+TEST_CASE("ask: synonym - 'total revenue' resolves to amount column") {
     // 'revenue' has no column; synonyms should route to 'amount'/'total'.
     auto r = Translate("total revenue", SalesSchema());
     CHECK(r.status == Status::OK);
-    // Either amount or id — but must be a numeric column.
+    // Either amount or id - but must be a numeric column.
     CHECK((r.sql.find("SUM(\"amount\")") != std::string::npos ||
            r.sql.find("SUM(\"total\")") != std::string::npos));
 }
@@ -151,7 +151,7 @@ TEST_CASE("ask: synonym — 'total revenue' resolves to amount column") {
 // SELECT *
 // ---------------------------------------------------------------------------
 
-TEST_CASE("ask: bare — 'rows from sales'") {
+TEST_CASE("ask: bare - 'rows from sales'") {
     auto r = Translate("rows from sales", SalesSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("SELECT * FROM \"sales\"") != std::string::npos);
@@ -186,11 +186,11 @@ TEST_CASE("ask: open-ended question gets a helpful no-match") {
 }
 
 // ---------------------------------------------------------------------------
-// Two-table schema — "implicit table via column match"
+// Two-table schema - "implicit table via column match"
 // ---------------------------------------------------------------------------
 
 TEST_CASE("ask: agg picks the table whose columns match") {
-    // 'price' only exists in products — SUM should route there.
+    // 'price' only exists in products - SUM should route there.
     auto r = Translate("total price", TwoTableSchema());
     CHECK(r.status == Status::OK);
     CHECK(r.sql.find("\"products\"") != std::string::npos);

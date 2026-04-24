@@ -69,7 +69,7 @@ const Token &Parser::Expect(TokenType type, const std::string &context) {
 
 bool Parser::IsIdentifierOrNonReserved(TokenType t) {
     if (t == TokenType::IDENTIFIER) return true;
-    // Reserved keywords — would be parse-ambiguous if allowed as identifiers.
+    // Reserved keywords - would be parse-ambiguous if allowed as identifiers.
     // Everything else that tokenizes as a keyword falls through to the default
     // branch and is treated as non-reserved (legal in alias / column / table
     // positions). Matches DuckDB's non-reserved set.
@@ -155,7 +155,7 @@ bool Parser::IsIdentifierOrNonReserved(TokenType t) {
     default:
         // Any other keyword (time units, type names, constraint keywords,
         // window-frame words, aggregate function names, transaction verbs,
-        // MERGE / PIVOT / RETURNING / CONFLICT, etc.) is non-reserved —
+        // MERGE / PIVOT / RETURNING / CONFLICT, etc.) is non-reserved -
         // legal as an identifier in alias / column / table-alias position.
         // Guard against non-keyword token types (punctuation, operators, EOF).
         return (static_cast<int>(t) >= static_cast<int>(TokenType::KW_SELECT) &&
@@ -308,7 +308,7 @@ ParsedStmtPtr Parser::ParseSelectStatement() {
             cte.name = ExpectIdentifier("for CTE name").value;
             // Optional column alias list: nums(n) or nums(a, b).
             if (Match(TokenType::LPAREN)) {
-                // Skip column names — they're just aliases.
+                // Skip column names - they're just aliases.
                 do { Advance(); } while (Match(TokenType::COMMA));
                 Expect(TokenType::RPAREN, "after CTE column list");
             }
@@ -851,7 +851,7 @@ ParsedExprPtr Parser::ParsePrimary() {
                 static_cast<SelectStatement *>(inner.release())));
     }
 
-    // NOT EXISTS (subquery) — handled via NOT + EXISTS in ParseNot.
+    // NOT EXISTS (subquery) - handled via NOT + EXISTS in ParseNot.
 
     // CAST(expr AS type).
     if (MatchKeyword(TokenType::KW_CAST)) {
@@ -863,7 +863,7 @@ ParsedExprPtr Parser::ParsePrimary() {
         return std::make_unique<CastExpression>(std::move(expr), type_name);
     }
 
-    // TRY_CAST(expr AS type) — returns NULL on failure instead of error.
+    // TRY_CAST(expr AS type) - returns NULL on failure instead of error.
     if (Check(TokenType::IDENTIFIER) && StringUtil::Upper(Current().value) == "TRY_CAST") {
         Advance();
         Expect(TokenType::LPAREN, "after TRY_CAST");
@@ -984,7 +984,7 @@ ParsedExprPtr Parser::ParsePrimary() {
         return std::make_unique<ColumnRefExpression>(name);
     }
 
-    // Identifier — could be column, table.column, or function call.
+    // Identifier - could be column, table.column, or function call.
     if (Check(TokenType::IDENTIFIER)) {
         auto name = Advance().value;
 
@@ -1136,7 +1136,7 @@ ParsedStmtPtr Parser::ParseCreateStatement() {
         return stmt;
     }
 
-    // Otherwise expect TABLE — put CREATE back (already consumed).
+    // Otherwise expect TABLE - put CREATE back (already consumed).
     // We need to parse the rest of CREATE TABLE without the CREATE keyword.
     Expect(TokenType::KW_TABLE, "after CREATE");
 
@@ -1150,7 +1150,7 @@ ParsedStmtPtr Parser::ParseCreateStatement() {
 
     stmt->table_name = ExpectIdentifier("for table name").value;
 
-    // CREATE [OR REPLACE] TABLE <name> AS SELECT ... — CTAS.
+    // CREATE [OR REPLACE] TABLE <name> AS SELECT ... - CTAS.
     // Schema is inferred at execution from the SELECT's result types, so
     // we just stash the SelectStatement; Connection materializes into a
     // real table. Mirrors the CREATE VIEW branch above.
@@ -1243,9 +1243,9 @@ ParsedStmtPtr Parser::ParsePragmaStatement() {
 ParsedStmtPtr Parser::ParseDescribeStatement() {
     Expect(TokenType::KW_DESCRIBE, "");
     auto stmt = std::make_unique<DescribeStatement>();
-    // DESCRIBE <table_name>  →  desugars to SELECT * FROM <table_name>
-    // DESCRIBE SELECT ...    →  inner = SELECT
-    // DESCRIBE WITH ...      →  inner = CTE-SELECT
+    // DESCRIBE <table_name>  ->  desugars to SELECT * FROM <table_name>
+    // DESCRIBE SELECT ...    ->  inner = SELECT
+    // DESCRIBE WITH ...      ->  inner = CTE-SELECT
     if (CheckKeyword(TokenType::KW_SELECT) || CheckKeyword(TokenType::KW_WITH)) {
         stmt->inner = ParseSelectStatement();
     } else {

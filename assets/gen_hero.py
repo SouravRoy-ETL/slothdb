@@ -1,4 +1,4 @@
-"""Generate assets/hero.svg — pixel-art SLOTHDB wordmark with sloth kicking duck.
+"""Generate assets/hero.svg - pixel-art SLOTHDB wordmark with sloth kicking duck.
 
 Single combined hero banner: SLOTHDB text on top, animated sloth-kicks-duck
 scene underneath. Replaces the previous text-only banner.
@@ -97,7 +97,7 @@ sloth.append(px_rect(SX+4*S, SY+8*S, S, S, SLOTH_BODY))
 sloth.append(px_rect(SX+6*S, SY+8*S, S, S, SLOTH_BODY))
 sloth.append(px_rect(SX+7*S, SY+8*S, S, S, SLOTH_BODY))
 
-# Animated kicking arm — rotates around shoulder (right side)
+# Animated kicking arm - rotates around shoulder (right side)
 shoulder_cx = SX + 9*S
 shoulder_cy = SY + 5*S
 kick_arm = f'''

@@ -28,7 +28,7 @@
 namespace slothdb {
 
 // Parse a double from [start, end). Apple's libc++ doesn't implement
-// `std::from_chars` for floating point, so we can't use it portably — fall
+// `std::from_chars` for floating point, so we can't use it portably - fall
 // back to strtod via a stack buffer. Range is clamped to fit.
 static inline double parse_double_range(const char *start, const char *end) {
     size_t len = static_cast<size_t>(end - start);
@@ -215,7 +215,7 @@ void assign_value(Value &slot, LogicalTypeId tid, const char *v_start,
         slot = Value::VARCHAR(std::string(v_start, v_end - v_start));
         return;
     }
-    // Numeric literal — parse per declared type.
+    // Numeric literal - parse per declared type.
     switch (tid) {
     case LogicalTypeId::INTEGER: {
         int32_t i = 0; std::from_chars(v_start, v_end, i);
@@ -234,7 +234,7 @@ void assign_value(Value &slot, LogicalTypeId tid, const char *v_start,
         slot = Value::FLOAT((float)d); break;
     }
     default: {
-        // VARCHAR column receiving a numeric literal — keep as string.
+        // VARCHAR column receiving a numeric literal - keep as string.
         slot = Value::VARCHAR(std::string(v_start, v_end - v_start));
         break;
     }
@@ -273,7 +273,7 @@ void JSONReader::ParseNDJSON() {
         fast_skip_ws(p, end);
         if (p < end && *p == ':') p++;
         fast_skip_ws(p, end);
-        // Parse value → remember type for schema.
+        // Parse value -> remember type for schema.
         LogicalType t = LogicalType::VARCHAR();
         Value v;
         if (p < end && *p == '"') {
@@ -306,7 +306,7 @@ void JSONReader::ParseNDJSON() {
     rows_.reserve(1 << 14);
     rows_.push_back(std::move(first_row));
 
-    // Widen INTEGER to BIGINT/DOUBLE if later rows overflow — pragmatic: if
+    // Widen INTEGER to BIGINT/DOUBLE if later rows overflow - pragmatic: if
     // revenue-like columns arrive with non-integer later, we rely on
     // from_chars-to-double which tolerates ints. Keep this simple for now.
 
@@ -485,12 +485,12 @@ void JSONReader::DetectSchema() {
 }
 
 // ============================================================================
-// Streaming NDJSON → DataTable. Parses directly into DataChunk column vectors
+// Streaming NDJSON -> DataTable. Parses directly into DataChunk column vectors
 // (typed memcpy / inline construct for numerics; string_t + VectorStringBuffer
 // for VARCHAR), skipping the rows_ intermediate and per-cell Value boxing.
 // ============================================================================
 // Detect the NDJSON schema by parsing only the first record. Leaves the rest
-// of the file unparsed — callers that want the data should use
+// of the file unparsed - callers that want the data should use
 // ReadIntoTable() or ParseNDJSON() afterwards.
 static void detect_ndjson_schema_from_first(const std::string &path,
                                              std::vector<std::string> &col_names,
@@ -499,7 +499,7 @@ static void detect_ndjson_schema_from_first(const std::string &path,
     if (!f.is_open()) throw IOException(ErrorCode::FILE_NOT_FOUND, "Cannot open: " + path);
     auto sz = static_cast<size_t>(f.tellg());
     if (sz == 0) return;
-    // Read enough to capture the first object — 64 KB is plenty for any
+    // Read enough to capture the first object - 64 KB is plenty for any
     // reasonable NDJSON record.
     size_t head = std::min<size_t>(sz, 64 * 1024);
     std::string buf(head, '\0');
@@ -570,7 +570,7 @@ void JSONReader::ParallelParseToPerThread(
         detect_ndjson_schema_from_first(path_, column_names_, column_types_);
     }
 
-    // mmap the file — saves the ~150 ms user-space read on 165 MB files.
+    // mmap the file - saves the ~150 ms user-space read on 165 MB files.
     const char *buf = nullptr;
     size_t sz = 0;
 #ifdef _WIN32
@@ -603,7 +603,7 @@ void JSONReader::ParallelParseToPerThread(
     const idx_t ncols = column_names_.size();
     if (ncols == 0) return;
 
-    // Per-range parse lambda — each worker thread runs this over its byte slice
+    // Per-range parse lambda - each worker thread runs this over its byte slice
     // into a LOCAL vector<DataChunk> (no mutex contention during parse). The
     // caller then drains all workers' chunks into the DataTable serially.
     auto parse_range = [&](const char *rstart, const char *rend,
@@ -812,7 +812,7 @@ void JSONReader::ParallelParseToPerThread(
     }; // end parse_range
 
     // Split the buffer into line-aligned byte ranges and parse in parallel.
-    // For small files stay serial — thread spawn overhead would dominate.
+    // For small files stay serial - thread spawn overhead would dominate.
     const char *data = buf;
     size_t total = sz;
     unsigned int nt = std::thread::hardware_concurrency();
@@ -876,7 +876,7 @@ void JSONReader::ParallelParseToPerThread(
 std::vector<std::vector<Value>> JSONReader::ReadAll() {
     if (!parsed_) DetectSchema();
 
-    // Fast NDJSON path: rows_ already populated; avoid the records_→rows copy.
+    // Fast NDJSON path: rows_ already populated; avoid the records_->rows copy.
     if (!rows_.empty()) return std::move(rows_);
 
     std::vector<std::vector<Value>> rows;

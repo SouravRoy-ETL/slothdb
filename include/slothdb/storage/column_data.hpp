@@ -42,7 +42,7 @@ private:
 
     // For VARCHAR: owns the string data.
     std::vector<std::string> string_heap_;
-    // For zero-copy VARCHAR append — keeps source VectorStringBuffers alive so
+    // For zero-copy VARCHAR append - keeps source VectorStringBuffers alive so
     // string_t pointers in `data_` stay valid.
     std::vector<std::shared_ptr<VectorBuffer>> held_bufs_;
 

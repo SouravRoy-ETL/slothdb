@@ -91,7 +91,7 @@ public:
     const std::string &GetFileFormat() const { return file_format_; }
     const std::string &GetFileSubname() const { return file_subname_; }
 
-    // Optional cached ParquetReader shared across queries — the schema-
+    // Optional cached ParquetReader shared across queries - the schema-
     // detection path in Connection::Query opens one to populate the catalog,
     // and we stash it here so PhysicalParquetScan::Init() reuses instead of
     // re-parsing the Thrift footer on every query (~10-20ms per query).

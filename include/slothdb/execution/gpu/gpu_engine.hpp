@@ -11,7 +11,7 @@ namespace slothdb {
 
 // GPU backend type.
 enum class GPUBackend : uint8_t {
-    NONE = 0,     // No GPU available — CPU fallback.
+    NONE = 0,     // No GPU available - CPU fallback.
     CUDA = 1,     // NVIDIA CUDA.
     METAL = 2,    // Apple Metal.
     OPENCL = 3,   // OpenCL (fallback for other GPUs).
@@ -93,7 +93,7 @@ public:
     static constexpr idx_t GPU_THRESHOLD = 100000;
 };
 
-// CPU fallback engine — implements the same interface using optimized CPU code.
+// CPU fallback engine - implements the same interface using optimized CPU code.
 class CPUFallbackEngine : public GPUEngine {
 public:
     GPUDeviceInfo GetDeviceInfo() override;

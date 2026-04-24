@@ -848,7 +848,7 @@ void ParquetWriter::Finish() {
 
 ParquetReader::ParquetReader(const std::string &path) : path_(path) {
     // Map (or fread-small) the file. Gives us a stable read-only byte buffer
-    // all decode paths share — no per-column file opens.
+    // all decode paths share - no per-column file opens.
 #ifdef _WIN32
     HANDLE hFile = CreateFileA(path_.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -929,10 +929,10 @@ void ParquetReader::ReadMetadata() {
         throw IOException(ErrorCode::CORRUPT_DATA, "Parquet footer too small");
 
     size_t footer_offset = file_size_ - 8 - footer_size;
-    // Footer is contiguous in the mapped region — reference it directly.
+    // Footer is contiguous in the mapped region - reference it directly.
     const uint8_t *footer_ptr = file_data_ + footer_offset;
     // Some downstream code expects a std::vector<uint8_t>; give it one backed
-    // by the mapped bytes (copy is tiny — typical footers are a few KB).
+    // by the mapped bytes (copy is tiny - typical footers are a few KB).
     std::vector<uint8_t> footer(footer_ptr, footer_ptr + footer_size);
 
     // Try standard Parquet (Thrift FileMetaData). Legacy custom format
@@ -1082,7 +1082,7 @@ void ParquetReader::ReadMetadata() {
     meta_read_ = true;
 }
 
-// Legacy (custom-format) column chunk reader — reads from the mapped buffer.
+// Legacy (custom-format) column chunk reader - reads from the mapped buffer.
 static std::vector<Value> ReadColumnChunkLegacy(const uint8_t *file_base, size_t file_size,
                                                 const ParquetColumnMeta &meta) {
     if ((size_t)meta.data_offset + (size_t)meta.data_size > file_size) return {};
@@ -1181,7 +1181,7 @@ static void DecodePlain(const uint8_t *data, size_t size, ParquetType ptype,
 
 // Read one page from the given file offset. Returns bytes consumed.
 // `body_ptr` is set to point at the (compressed) page body inside `file_base`
-// — no copy. Caller must not mutate the bytes.
+// - no copy. Caller must not mutate the bytes.
 static size_t ReadOnePageMapped(const uint8_t *file_base, size_t file_size,
                                 int64_t offset, ParqPageHeader &hdr,
                                 const uint8_t *&body_ptr, size_t &body_size) {
@@ -1297,7 +1297,7 @@ static void DecodeDataPage(const ParqPageHeader &hdr, const uint8_t *data, size_
     }
 }
 
-// Standard-Parquet column chunk reader — reads from the mapped buffer.
+// Standard-Parquet column chunk reader - reads from the mapped buffer.
 static std::vector<Value> ReadColumnChunkStd(const uint8_t *file_base, size_t file_size,
                                              const ParquetColumnMeta &meta) {
     std::vector<Value> values;
@@ -1368,7 +1368,7 @@ std::vector<Value> ParquetReader::ReadColumnChunk(const ParquetColumnMeta &meta)
 }
 
 // ============================================================================
-// Native typed decode — writes directly into ParquetColumnData buffers
+// Native typed decode - writes directly into ParquetColumnData buffers
 // without boxing every value in `Value`.
 // ============================================================================
 namespace {
@@ -1483,7 +1483,7 @@ size_t ReadDefLevels(const uint8_t *data, size_t size, int32_t n_values,
             if (v) nn++; else saw_null = true;
         }
         out_non_null = nn;
-        if (!saw_null) def_mask.clear(); // all valid — caller can skip mask work
+        if (!saw_null) def_mask.clear(); // all valid - caller can skip mask work
         return 4 + def_len;
     } else {
         if (explicit_len > size) return 0;
@@ -1741,7 +1741,7 @@ bool ReadDictionaryPage(const uint8_t *file_base, size_t file_size, int64_t offs
 
 bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnData &out,
                                     bool skip_str_data) {
-    // Don't Clear() — reuse any existing capacity from a prior RG. We reset
+    // Don't Clear() - reuse any existing capacity from a prior RG. We reset
     // only the control fields; the numeric data vectors are resized below,
     // which is a no-op when sizes match and only zero-fills the delta
     // otherwise. Across 80 RGs this saves ~hundreds of MB of malloc/memset.
@@ -1835,7 +1835,7 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
             return false;
         }
         // A PLAIN (non-dict) data page invalidates the dict-index fast path
-        // — rows in that page don't have meaningful dict indices.
+        // - rows in that page don't have meaningful dict indices.
         if (tid == LogicalTypeId::VARCHAR && out.str_dict_encoded &&
             hdr.encoding != 2 && hdr.encoding != 8) {
             out.str_dict_encoded = false;
@@ -1846,7 +1846,7 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     }
 
     // If every page was dict-encoded, publish the dict values so consumers
-    // can resolve indices → strings without re-parsing the Parquet file.
+    // can resolve indices -> strings without re-parsing the Parquet file.
     if (tid == LogicalTypeId::VARCHAR && out.str_dict_encoded && dict.present) {
         out.str_dict_values.resize(dict.str_ptr.size());
         for (size_t i = 0; i < dict.str_ptr.size(); i++) {
@@ -1904,7 +1904,7 @@ idx_t ParquetReader::ReadRowGroupChunk(idx_t rg_idx, DataChunk &chunk,
         columns[c] = ReadColumnChunk(rg.columns[c]);
     }
 
-    // Write directly into DataChunk vectors — pack VECTOR_SIZE rows per chunk.
+    // Write directly into DataChunk vectors - pack VECTOR_SIZE rows per chunk.
     idx_t total_rows = static_cast<idx_t>(rg.num_rows);
     if (total_rows > VECTOR_SIZE) total_rows = VECTOR_SIZE; // first chunk only
 
