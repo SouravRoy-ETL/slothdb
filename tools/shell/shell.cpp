@@ -648,6 +648,56 @@ int main(int argc, char *argv[]) {
         if (trimmed.empty()) { buffer.clear(); continue; }
         if (trimmed.back() != ';') continue; // Keep reading multi-line input.
 
+        // SQL-compatible catalog commands that SlothDB's parser doesn't
+        // implement yet (SHOW TABLES / SHOW DATABASES / DESCRIBE <t>).
+        // Detect them before handing off to the engine and route to the
+        // same handlers the dot commands use. Case-insensitive, tolerant
+        // of leading whitespace, and strips the trailing semicolon.
+        {
+            std::string body = trimmed;
+            while (!body.empty() && (body.back() == ';' || body.back() == ' ' || body.back() == '\t'))
+                body.pop_back();
+            while (!body.empty() && (body.front() == ' ' || body.front() == '\t'))
+                body.erase(body.begin());
+            std::string upper;
+            upper.reserve(body.size());
+            for (char c : body) upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+
+            auto starts_with = [&](const char *prefix) {
+                size_t n = strlen(prefix);
+                return upper.size() >= n && upper.compare(0, n, prefix) == 0 &&
+                       (upper.size() == n || upper[n] == ' ' || upper[n] == '\t');
+            };
+
+            if (upper == "SHOW TABLES") {
+                handle_tables(conn, ""); buffer.clear(); continue;
+            }
+            if (starts_with("SHOW TABLES LIKE")) {
+                std::string pat = body.substr(std::string("SHOW TABLES LIKE").size());
+                while (!pat.empty() && (pat.front() == ' ' || pat.front() == '\t')) pat.erase(pat.begin());
+                handle_tables(conn, pat); buffer.clear(); continue;
+            }
+            if (upper == "SHOW DATABASES" || upper == "SHOW SCHEMAS") {
+                run_query(conn, "PRAGMA database_list;"); buffer.clear(); continue;
+            }
+            if (starts_with("DESCRIBE") || starts_with("DESC")) {
+                // `DESCRIBE SELECT ...` is a real SlothDB statement; leave
+                // it for the engine. Only intercept the bare-identifier
+                // form (`DESCRIBE customers` / `DESC customers`).
+                size_t kw_len = starts_with("DESCRIBE") ? 8 : 4;
+                std::string rest = body.substr(kw_len);
+                while (!rest.empty() && (rest.front() == ' ' || rest.front() == '\t')) rest.erase(rest.begin());
+                std::string rest_upper;
+                for (char c : rest) rest_upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+                bool is_query = rest_upper.rfind("SELECT", 0) == 0 ||
+                                rest_upper.rfind("WITH", 0) == 0 ||
+                                rest_upper.rfind("(", 0) == 0;
+                if (!is_query && !rest.empty()) {
+                    handle_schema(conn, rest); buffer.clear(); continue;
+                }
+            }
+        }
+
         run_query(conn, buffer);
         buffer.clear();
     }
