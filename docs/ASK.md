@@ -4,7 +4,7 @@
   <img src="../assets/ask-demo.svg" alt="slothdb .ask demo - natural-language queries translated to SQL" width="100%">
 </p>
 
-`.ask` turns plain English into SQL, shows you the SQL, and prompts `[Y/n]` before running. **Nothing leaves the machine.** No API keys, no tokens on the wire, no schema leakage - the whole pipeline is in the same MIT binary SlothDB already ships.
+`.ask` turns plain natural language into SQL, shows you the SQL, and prompts `[Y/n]` before running. The rules parser is English-only (hand-coded patterns); the local Qwen2.5-Coder fallback speaks 29 languages including English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, and Hindi. **Nothing leaves the machine.** No API keys, no tokens on the wire, no schema leakage - the whole pipeline is in the same MIT binary SlothDB already ships.
 
 ## How it works
 

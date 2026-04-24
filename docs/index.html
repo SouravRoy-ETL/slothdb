@@ -122,7 +122,7 @@
 
     <div class="ctas">
       <a class="btn glow" href="playground/">Try in browser</a>
-      <a class="btn ghost" href="#ask">Ask in English</a>
+      <a class="btn ghost" href="#ask">Ask in any language</a>
       <a class="btn ghost" href="#benchmarks">Benchmarks</a>
       <a class="btn ghost" href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
     </div>
@@ -370,8 +370,8 @@
 </section>
 
 <section class="page left" id="ask">
-  <h2>Ask in English. Get SQL.</h2>
-  <p class="section-lede">Type <code>.ask</code> at the <code>slothdb&gt;</code> prompt. A rules parser handles catalog questions and common shapes in under 10 ms with no model. Open-ended questions fall through to a local Qwen (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under <code>-DSLOTHDB_ASK_MODEL=ON</code>). Every generated statement is <code>[Y/n]</code>-gated before it runs. Nothing leaves the machine.</p>
+  <h2>Ask in any language. Get SQL.</h2>
+  <p class="section-lede">Type <code>.ask</code> at the <code>slothdb&gt;</code> prompt. A rules parser handles catalog questions and common English shapes in under 10 ms with no model. Anything else falls through to a local Qwen2.5-Coder (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under <code>-DSLOTHDB_ASK_MODEL=ON</code>), which speaks 29 natural languages: English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, Hindi, and more. Every generated statement is <code>[Y/n]</code>-gated before it runs. Nothing leaves the machine.</p>
   <div class="demo-wrap" style="margin-top: 24px;">
     <img src="assets/ask-demo.svg" alt=".ask pipeline: rules-first, router, two local Qwens, [Y/n] gate">
   </div>

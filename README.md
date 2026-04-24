@@ -32,9 +32,9 @@ SELECT region, SUM(revenue) FROM 'sales.parquet' GROUP BY region;
 
 ---
 
-## Ask in English. Get SQL.
+## Ask in any language. Get SQL.
 
-Type `.ask` at the `slothdb>` prompt. A rules parser handles catalog questions and common shapes in under 10 ms with no model. Open-ended questions fall through to a local Qwen (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under `-DSLOTHDB_ASK_MODEL=ON`). Every generated statement is `[Y/n]`-gated before it runs. Nothing leaves the machine.
+Type `.ask` at the `slothdb>` prompt. A rules parser handles catalog questions and common English shapes in under 10 ms with no model. Anything else falls through to a local Qwen2.5-Coder (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under `-DSLOTHDB_ASK_MODEL=ON`), which speaks 29 natural languages: English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, Hindi, and more. Every generated statement is `[Y/n]`-gated before it runs. Nothing leaves the machine.
 
 <div align="center">
   <img src="assets/ask-demo.svg" alt=".ask: rules-first, router, two local Qwens, [Y/n] gate" width="100%">
