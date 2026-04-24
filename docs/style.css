@@ -232,6 +232,44 @@ table.data tr:last-child td { border-bottom: none; }
 .btn.ghost { background: transparent; border-color: var(--border-card); color: var(--text); }
 .btn.ghost:hover { background: var(--bg-elev); text-decoration: none; border-color: var(--accent); }
 
+/* Glowing CTA - uses the accent (purple) colour as a soft pulsing halo
+   so the eye lands there first. Applied to the "Try in browser" button
+   in the hero; on hover the halo intensifies and the button lifts.
+   Reduced-motion users get a static glow without the pulse animation. */
+.btn.glow {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--fg-bright, #fff);
+  box-shadow: 0 0 0 1px var(--accent-soft),
+              0 0 24px -4px var(--accent-soft);
+  animation: btn-glow-pulse 2.6s ease-in-out infinite;
+}
+.btn.glow:hover {
+  text-decoration: none;
+  background: var(--accent-soft);
+  color: var(--fg-bright, #fff);
+  border-color: var(--accent-bright);
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 2px var(--accent),
+              0 0 32px 2px var(--accent),
+              0 0 64px 8px var(--accent-soft);
+  animation: none; /* steady glow on hover, no competing pulse */
+}
+@keyframes btn-glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px var(--accent-soft),
+                0 0 16px -4px var(--accent-soft);
+  }
+  50% {
+    box-shadow: 0 0 0 1px var(--accent),
+                0 0 32px 0 var(--accent-soft);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn.glow { animation: none; }
+  .btn.glow:hover { transform: none; }
+}
+
 /* Footer */
 footer {
   border-top: 1px solid var(--border);
