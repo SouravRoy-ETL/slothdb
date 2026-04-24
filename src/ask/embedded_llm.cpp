@@ -2,13 +2,17 @@
 #include "slothdb/storage/http_client.hpp"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef SLOTHDB_ASK_MODEL
@@ -425,17 +429,8 @@ std::string ModelDir() {
     return p.string();
 }
 
-const ModelSpec &DefaultModel() {
-    // Two tiers, env-var switched:
-    //   unset / default: Qwen2.5-Coder-0.5B-Instruct Q4_K_M (~310 MB).
-    //     Small enough that lazy-download is tolerable, strong enough for
-    //     COUNT / GROUP BY / filter / TOP-N style questions. Mis-writes
-    //     window functions on analytic queries - that is why the 1.5B
-    //     tier exists.
-    //   SLOTHDB_ASK_MODEL_LARGE=1 (or any truthy value): switch to the
-    //     1.5B tier. Same quantization, same pipeline, ~986 MB on disk.
-    //     Better at window functions, ranking, LAG/LEAD, joins.
-    static const ModelSpec small_spec = {
+const ModelSpec &SmallModel() {
+    static const ModelSpec spec = {
         /*name=*/          "Qwen2.5-Coder-0.5B-Instruct-Q4_K_M",
         /*url=*/           "https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF/"
                            "resolve/main/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
@@ -444,7 +439,11 @@ const ModelSpec &DefaultModel() {
         /*chat_template=*/ "qwen",
         /*expected_bytes=*/ 310ULL * 1024ULL * 1024ULL
     };
-    static const ModelSpec large_spec = {
+    return spec;
+}
+
+const ModelSpec &LargeModel() {
+    static const ModelSpec spec = {
         /*name=*/          "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M",
         /*url=*/           "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/"
                            "resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
@@ -453,17 +452,90 @@ const ModelSpec &DefaultModel() {
         /*chat_template=*/ "qwen",
         /*expected_bytes=*/ 986ULL * 1024ULL * 1024ULL
     };
-    std::string val;
-#ifdef _MSC_VER
-    char *buf = nullptr; size_t sz = 0;
-    if (_dupenv_s(&buf, &sz, "SLOTHDB_ASK_MODEL_LARGE") == 0 && buf) {
-        val = buf; free(buf);
+    return spec;
+}
+
+// Backwards-compatible default - the small tier. Routing now happens
+// per-question via PickModelForQuestion(). Keep this pointing at the
+// small tier so any old caller still works.
+const ModelSpec &DefaultModel() { return SmallModel(); }
+
+const ModelSpec &PickModelForQuestion(const std::string &question) {
+    std::string lo;
+    lo.reserve(question.size());
+    for (char c : question)
+        lo.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+
+    // Signals that analytic / window-function SQL is probably needed.
+    // Matching ANY of these routes to the 1.5B tier. False positives are
+    // cheap (just a slower / larger model that is already downloaded);
+    // false negatives matter more - the 0.5B produces wrong-shape SQL.
+    static const char *analytic_markers[] = {
+        " per ", " within each ", " in each ", " for each ",
+        " rank ", "ranking", "top-", "top_",
+        " biggest ", " smallest ", " largest ", " highest ", " lowest ",
+        "appears most", "appears least",
+        " most common", " least common", " most frequent", " least frequent",
+        "most common", "least common", "most frequent", "least frequent",
+        "row_number", "partition by", "over (", "over(",
+        "lag(", "lead(", "ntile", "percentile",
+        " join ", "join ", " inner join", " left join", " right join",
+        " correlat", " regression", " median ", " percentile ",
+        " distinct ", " unique ",
+        nullptr
+    };
+    for (int i = 0; analytic_markers[i]; i++) {
+        if (lo.find(analytic_markers[i]) != std::string::npos) {
+            return LargeModel();
+        }
     }
-#else
-    if (const char *e = std::getenv("SLOTHDB_ASK_MODEL_LARGE")) val = e;
-#endif
-    bool want_large = !val.empty() && val != "0" && val != "false" && val != "FALSE";
-    return want_large ? large_spec : small_spec;
+    return SmallModel();
+}
+
+// Helpers for the background-download coordination below.
+static std::string SpecPath(const ModelSpec &spec) {
+    return (std::filesystem::path(ModelDir()) / spec.local_file).string();
+}
+
+static bool SpecAlreadyOnDisk(const ModelSpec &spec) {
+    std::error_code ec;
+    auto path = SpecPath(spec);
+    if (!std::filesystem::exists(path, ec)) return false;
+    auto sz = std::filesystem::file_size(path, ec);
+    // Sanity: must be at least half the expected size to avoid trusting
+    // a truncated partial download from a previous attempt.
+    return !ec && sz > spec.expected_bytes / 2;
+}
+
+// Tracks downloads in flight so StartBackgroundDownloads is idempotent
+// and EnsureModelAvailable can wait on a thread that's already running.
+// Keyed by local_file (unique per tier).
+namespace {
+struct DownloadRegistry {
+    std::mutex m;
+    std::set<std::string> in_flight;
+} g_dl;
+} // namespace
+
+static void TryBackgroundDownload(const ModelSpec &spec) {
+    {
+        std::lock_guard<std::mutex> lk(g_dl.m);
+        if (g_dl.in_flight.count(spec.local_file)) return; // already running
+        if (SpecAlreadyOnDisk(spec)) return;
+        g_dl.in_flight.insert(spec.local_file);
+    }
+    std::thread([spec]() {
+        auto path = SpecPath(spec);
+        HTTPClient::DownloadToFile(spec.url, path);
+        std::lock_guard<std::mutex> lk(g_dl.m);
+        g_dl.in_flight.erase(spec.local_file);
+    }).detach();
+}
+
+void StartBackgroundDownloads() {
+    // Both tiers; idempotent, non-blocking.
+    TryBackgroundDownload(SmallModel());
+    TryBackgroundDownload(LargeModel());
 }
 
 std::string DefaultModelPath() {
@@ -478,21 +550,39 @@ bool EmbeddedAvailable() {
 #endif
 }
 
-bool EnsureModelDownloaded(bool verbose, std::string &err) {
-    const auto &spec = DefaultModel();
-    auto path = DefaultModelPath();
-    std::error_code ec;
-    if (std::filesystem::exists(path, ec)) {
-        auto sz = std::filesystem::file_size(path, ec);
-        if (!ec && sz > spec.expected_bytes / 2) {
-            // Size sanity check passed - trust the file.
-            return true;
-        }
-        // Partial / empty file - retry.
-        if (verbose) {
-            fprintf(stderr, "  (existing model file looks truncated; re-downloading)\n");
-        }
+bool EnsureModelAvailable(const ModelSpec &spec, bool verbose, std::string &err) {
+    auto path = SpecPath(spec);
+
+    // Fast path.
+    if (SpecAlreadyOnDisk(spec)) return true;
+
+    // Is a background download running for this spec already? If so,
+    // wait for it; user doesn't care whether the bytes came from here or
+    // from the detached thread kicked off at .ask start.
+    bool was_in_flight = false;
+    {
+        std::lock_guard<std::mutex> lk(g_dl.m);
+        was_in_flight = g_dl.in_flight.count(spec.local_file) > 0;
     }
+    if (was_in_flight) {
+        if (verbose) {
+            fprintf(stderr, "  Waiting for %s background download...\n",
+                    spec.name);
+        }
+        while (true) {
+            {
+                std::lock_guard<std::mutex> lk(g_dl.m);
+                if (!g_dl.in_flight.count(spec.local_file)) break;
+            }
+            if (SpecAlreadyOnDisk(spec)) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+        if (SpecAlreadyOnDisk(spec)) return true;
+        // Background thread finished but file not usable - fall through
+        // and retry inline so the user gets a proper error if the URL
+        // itself is broken.
+    }
+
     if (verbose) {
         fprintf(stderr, "  Downloading %s (~%zu MB) from:\n    %s\n  to: %s\n",
                 spec.name,
@@ -500,13 +590,26 @@ bool EnsureModelDownloaded(bool verbose, std::string &err) {
                 spec.url, path.c_str());
         fprintf(stderr, "  (one-time; lives in ~/.slothdb/models/)\n");
     }
-    if (!HTTPClient::DownloadToFile(spec.url, path)) {
+    {
+        std::lock_guard<std::mutex> lk(g_dl.m);
+        g_dl.in_flight.insert(spec.local_file);
+    }
+    bool ok = HTTPClient::DownloadToFile(spec.url, path);
+    {
+        std::lock_guard<std::mutex> lk(g_dl.m);
+        g_dl.in_flight.erase(spec.local_file);
+    }
+    if (!ok) {
         err = "Download failed. Check network and retry, or grab the file "
               "manually and put it at: " + path;
         return false;
     }
     if (verbose) fprintf(stderr, "  Model downloaded.\n");
     return true;
+}
+
+bool EnsureModelDownloaded(bool verbose, std::string &err) {
+    return EnsureModelAvailable(DefaultModel(), verbose, err);
 }
 
 #ifdef SLOTHDB_ASK_MODEL
@@ -523,11 +626,23 @@ static void silent_log(ggml_log_level level, const char *text, void *) {
 EmbeddedResult GenerateSQLLocal(const Schema &schema,
                                  const std::string &question) {
     EmbeddedResult r;
+
+    // Kick both tiers' downloads in background. Idempotent; a tier that
+    // is already on disk or already downloading is a no-op. This means
+    // simple questions served by the 0.5B don't pay the 1.5B's cold-
+    // download latency - the large model streams in while the user is
+    // asking, and is ready for the next analytic question.
+    StartBackgroundDownloads();
+
+    // Per-question routing: analytic shapes go to the large tier; simple
+    // shapes stay on small. Deterministic based on lowercase keywords.
+    const ModelSpec &spec = PickModelForQuestion(question);
+
     std::string err;
-    if (!EnsureModelDownloaded(/*verbose=*/true, err)) {
+    if (!EnsureModelAvailable(spec, /*verbose=*/true, err)) {
         r.message = err; return r;
     }
-    auto path = DefaultModelPath();
+    auto path = SpecPath(spec);
 
     // Silence llama.cpp + ggml chatter before any call that could log.
     llama_log_set(silent_log, nullptr);

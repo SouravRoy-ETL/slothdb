@@ -496,8 +496,9 @@ static bool ask_once(slothdb_connection *conn, const std::string &question) {
     }
 
     if (slothdb::ask::EmbeddedAvailable()) {
+        const auto &picked = slothdb::ask::PickModelForQuestion(question);
         printf("-- %s (rules did not match - asking the local model)\n",
-               slothdb::ask::DefaultModel().name);
+               picked.name);
         fflush(stdout);
         auto er = slothdb::ask::GenerateSQLLocal(schema, question);
         if (er.ok && !er.sql.empty()) {
@@ -529,6 +530,14 @@ static bool ask_once(slothdb_connection *conn, const std::string &question) {
 }
 
 static void handle_ask(slothdb_connection *conn, const std::string &arg) {
+    // Start both-tier parallel downloads as soon as .ask is invoked, so
+    // the large model is streaming to disk while the user types their
+    // first question. Idempotent - already-downloaded or already-in-
+    // flight tiers are no-ops.
+    if (slothdb::ask::EmbeddedAvailable()) {
+        slothdb::ask::StartBackgroundDownloads();
+    }
+
     // With an argument: single-shot. Pipeline -> confirm -> run -> return.
     if (!arg.empty()) {
         ask_once(conn, arg);
@@ -539,8 +548,15 @@ static void handle_ask(slothdb_connection *conn, const std::string &arg) {
     // the NL pipeline. Blank line / `exit` / Ctrl+D exits back to SQL.
     printf("ask mode: natural language -> SQL, inside the shell.\n");
     if (slothdb::ask::EmbeddedAvailable()) {
-        printf("  Model: %s (loads on first query).\n",
-               slothdb::ask::DefaultModel().name);
+        const auto &sm = slothdb::ask::SmallModel();
+        const auto &lg = slothdb::ask::LargeModel();
+        printf("  Models (both lazy-downloaded in parallel on first use):\n");
+        printf("    small : %s (~%zu MB) -> simple COUNT/GROUP BY/filter/TOP-N\n",
+               sm.name, sm.expected_bytes / (1024ULL * 1024ULL));
+        printf("    large : %s (~%zu MB) -> window functions / joins / analytic\n",
+               lg.name, lg.expected_bytes / (1024ULL * 1024ULL));
+        printf("  Router picks per question. Rules-first handles catalog / simple\n"
+               "  shapes instantly without touching the model.\n");
     } else {
         printf("  Rules parser only (built without -DSLOTHDB_ASK_MODEL=ON).\n");
     }

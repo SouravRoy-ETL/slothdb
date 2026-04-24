@@ -590,12 +590,13 @@ Result Translate(const std::string &nl, const Schema &schema) {
             }
         }
 
-        // Top-N-per-group: "top 3 X per Y", "top 5 X in each Y",
-        // "rank X within each Y" all require ROW_NUMBER() OVER
-        // (PARTITION BY ...). The small Qwen hallucinates a plain
-        // GROUP BY here; the 1.5B model does better. Either way the
-        // rules parser has no emitter, so refuse with a hint that
-        // SLOTHDB_ASK_MODEL_LARGE may produce the correct SQL.
+        // Top-N-per-group and rank-within-group need ROW_NUMBER() OVER
+        // (PARTITION BY ...). The rules parser has no emitter for this
+        // shape, but PATTERN 2 below happily matches "top 3 X per Y" as
+        // an aggregate + LIMIT and emits garbage SQL. Force these into
+        // NO_MATCH so the shell falls back to the model; the router
+        // will send them to the 1.5B tier which handles window
+        // functions correctly.
         bool has_top = contains(" top ") || q_lo.rfind("top ", 0) == 0 ||
                        contains("top-") || contains("top_") ||
                        contains(" highest ") || contains(" largest ") ||
@@ -605,18 +606,8 @@ Result Translate(const std::string &nl, const Schema &schema) {
                          contains(" by each ");
         bool rank_verb = contains(" rank ") || q_lo.rfind("rank ", 0) == 0;
         if ((has_top && per_group) || (rank_verb && per_group)) {
-            Result r;
-            r.status = Status::REFUSE;
-            r.message =
-                "top-N per group / ranking within groups needs "
-                "ROW_NUMBER() OVER (PARTITION BY ...) which the rules "
-                "parser doesn't emit. The 0.5B model often produces a "
-                "plain GROUP BY instead (wrong shape). Set "
-                "SLOTHDB_ASK_MODEL_LARGE=1 to opt into Qwen2.5-Coder-1.5B "
-                "which handles window functions much better, or write the "
-                "query with `ROW_NUMBER() OVER (PARTITION BY ...)` "
-                "directly.";
-            return r;
+            return NoMatch(
+                "top-N per group / rank within groups - deferring to model");
         }
     }
 
