@@ -6,13 +6,6 @@
 
 <p>SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. <b>Up to 5x faster</b> where it counts.</p>
 
-```sql
--- Query files directly. No import step.
-SELECT region, SUM(revenue) FROM 'sales.parquet' GROUP BY region;
-```
-
-<p><code>pip install slothdb</code> &middot; <a href="#performance">benchmarks</a> &middot; <a href="https://slothdb.org/playground/">browser playground</a> &middot; MIT.</p>
-
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
 [![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm&label=npm)](https://www.npmjs.com/package/@slothdb/wasm)
 [![PyPI downloads](https://static.pepy.tech/badge/slothdb)](https://pepy.tech/project/slothdb)

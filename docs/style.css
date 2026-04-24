@@ -232,37 +232,41 @@ table.data tr:last-child td { border-bottom: none; }
 .btn.ghost { background: transparent; border-color: var(--border-card); color: var(--text); }
 .btn.ghost:hover { background: var(--bg-elev); text-decoration: none; border-color: var(--accent); }
 
-/* Glowing CTA - uses the accent (purple) colour as a soft pulsing halo
-   so the eye lands there first. Applied to the "Try in browser" button
-   in the hero; on hover the halo intensifies and the button lifts.
-   Reduced-motion users get a static glow without the pulse animation. */
+/* Glowing CTA - filled accent button (matches the nav Support pill's
+   base colour so the hero primary action reads as "same family") with
+   a soft purple halo pulsing on top as an add-on. On hover the halo
+   steadies, brightens, and the button lifts. Reduced-motion users
+   get a static filled button without the pulse. */
 .btn.glow {
-  background: transparent;
+  background: var(--accent);
+  color: #0A0A0B;
   border-color: var(--accent);
-  color: var(--fg-bright, #fff);
-  box-shadow: 0 0 0 1px var(--accent-soft),
-              0 0 24px -4px var(--accent-soft);
+  box-shadow: 0 0 16px -2px var(--accent-soft),
+              0 0 32px 4px var(--accent-soft);
   animation: btn-glow-pulse 2.6s ease-in-out infinite;
 }
 .btn.glow:hover {
   text-decoration: none;
-  background: var(--accent-soft);
-  color: var(--fg-bright, #fff);
+  background: var(--accent-bright);
+  color: #0A0A0B;
   border-color: var(--accent-bright);
   transform: translateY(-1px);
-  box-shadow: 0 0 0 2px var(--accent),
-              0 0 32px 2px var(--accent),
-              0 0 64px 8px var(--accent-soft);
+  box-shadow: 0 0 24px 0 var(--accent),
+              0 0 48px 8px var(--accent-soft);
   animation: none; /* steady glow on hover, no competing pulse */
 }
+/* Light-theme override: white text on purple matches the Support pill
+   in light mode (see nav.top .support-btn light override above). */
+[data-theme="light"] .btn.glow,
+[data-theme="light"] .btn.glow:hover { color: #FFFFFF; }
 @keyframes btn-glow-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 1px var(--accent-soft),
-                0 0 16px -4px var(--accent-soft);
+    box-shadow: 0 0 12px -2px var(--accent-soft),
+                0 0 24px 2px var(--accent-soft);
   }
   50% {
-    box-shadow: 0 0 0 1px var(--accent),
-                0 0 32px 0 var(--accent-soft);
+    box-shadow: 0 0 24px 0 var(--accent),
+                0 0 48px 8px var(--accent-soft);
   }
 }
 @media (prefers-reduced-motion: reduce) {
