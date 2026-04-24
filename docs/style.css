@@ -274,6 +274,129 @@ table.data tr:last-child td { border-bottom: none; }
   .btn.glow:hover { transform: none; }
 }
 
+/* "Query files and cloud data directly" section. Two-column split:
+   left = interactive code panel with language tabs + example picker,
+   right = headline + subtitle + Live demo CTA. DuckDB.org clone. */
+.demo-section { padding-top: 20px; padding-bottom: 80px; }
+.demo-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 56px;
+  max-width: 1180px;
+  margin: 0 auto;
+  align-items: center;
+}
+@media (max-width: 900px) {
+  .demo-grid { grid-template-columns: 1fr; gap: 32px; }
+}
+.demo-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 340px;
+}
+.demo-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-elev);
+  border-radius: 999px;
+  width: fit-content;
+}
+.demo-tab {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font: 500 13px/1 var(--sans);
+  padding: 8px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.demo-tab:hover { color: var(--text); }
+.demo-tab.active {
+  background: var(--bg-card);
+  color: var(--fg-bright, var(--text));
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+.demo-code {
+  background: var(--bg-code);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--text);
+  white-space: pre;
+  overflow-x: auto;
+  min-height: 180px;
+}
+.demo-code .cm { color: var(--text-muted); font-style: italic; }
+.demo-code .kw { color: var(--accent); font-weight: 500; }
+.demo-code .fn { color: #60A5FA; }
+.demo-code .str { color: var(--win); }
+.demo-select { position: relative; width: fit-content; }
+.demo-select-btn {
+  background: transparent;
+  border: 1px solid var(--border-card);
+  color: var(--text-dim);
+  font: 500 13px/1 var(--sans);
+  padding: 8px 14px 8px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  transition: color 0.12s, border-color 0.12s;
+}
+.demo-select-btn:hover { color: var(--text); border-color: var(--accent); }
+.demo-select-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+.demo-select-btn svg { transition: transform 0.15s; }
+.demo-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 240px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  padding: 6px;
+  z-index: 20;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.5);
+}
+.demo-select-menu button {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: 500 13px/1 var(--sans);
+  padding: 9px 12px;
+  text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.demo-select-menu button:hover,
+.demo-select-menu button.active { background: var(--bg-elev); }
+.demo-select-menu button.active { color: var(--fg-bright, var(--text)); }
+.demo-copy h2 {
+  font-size: clamp(28px, 3.2vw, 42px);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  margin: 0 0 18px;
+}
+.demo-copy .section-lede {
+  max-width: 520px;
+  margin: 0 0 28px;
+}
+
 /* Footer */
 footer {
   border-top: 1px solid var(--border);

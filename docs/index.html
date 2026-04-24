@@ -27,7 +27,7 @@
 
 <link rel="canonical" href="https://slothdb.org/">
 <link rel="icon" type="image/svg+xml" href="assets/icon.svg">
-<link rel="stylesheet" href="style.css?v=20260424-backdrop2">
+<link rel="stylesheet" href="style.css?v=20260424-demo">
 <script>
   (function(){
     var t = localStorage.getItem('slothdb-theme') || 'dark';
@@ -148,6 +148,40 @@
       <a class="btn ghost" href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
     </div>
     <div class="used-by">MIT &middot; 138 ms vs DuckDB 1.1.3's 540 ms (3.9&times;) &middot; 5.43&times; on Avro &middot; v0.1.7 &middot; <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.1.7">release notes</a></div>
+  </div>
+</section>
+
+<section class="page demo-section">
+  <div class="demo-grid">
+    <div class="demo-panel">
+      <div class="demo-tabs" role="tablist" aria-label="Client language">
+        <button class="demo-tab active" role="tab" data-lang="sql">SQL</button>
+        <button class="demo-tab" role="tab" data-lang="python">Python</button>
+        <button class="demo-tab" role="tab" data-lang="node">Node.js</button>
+        <button class="demo-tab" role="tab" data-lang="c">C / C++</button>
+      </div>
+      <pre class="demo-code" id="demo-code"></pre>
+      <div class="demo-select" id="demo-select">
+        <button class="demo-select-btn" id="demo-select-btn" aria-haspopup="listbox" aria-expanded="false">
+          <span class="demo-select-label">Aggregation query</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.7"><polyline points="3,4 6,7 9,4"/></svg>
+        </button>
+        <div class="demo-select-menu" role="listbox" hidden>
+          <button role="option" data-example="agg" class="active">Aggregation query</button>
+          <button role="option" data-example="join">Join query</button>
+          <button role="option" data-example="csv">Read CSV files</button>
+          <button role="option" data-example="parquet">Read Parquet files</button>
+          <button role="option" data-example="avro">Avro (native decoder)</button>
+          <button role="option" data-example="http">Query over HTTPS</button>
+          <button role="option" data-example="ctas">CREATE TABLE AS SELECT</button>
+        </div>
+      </div>
+    </div>
+    <div class="demo-copy">
+      <h2>Query files and cloud data directly.</h2>
+      <p class="section-lede">Point SQL at CSV, Parquet, JSON, Avro, Excel, Arrow, or SQLite in-process. No import step. Local paths, <code>https://</code>, and public <code>s3://</code> URLs all take the same SQL. Seven file formats in the core binary, no <code>INSTALL</code> / <code>LOAD</code> to run first.</p>
+      <a class="btn glow" href="playground/">Live demo -&gt;</a>
+    </div>
   </div>
 </section>
 
@@ -594,6 +628,249 @@ fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
       document.getElementById('gh-stars').textContent = '★ ' + d.stargazers_count;
   })
   .catch(() => {});
+
+// Interactive "Query files directly" demo panel: language tab + example
+// dropdown. Changing either re-renders the code block with the matching
+// snippet. SQL tab gets simple keyword highlighting; other languages are
+// rendered as plain monospace (their libraries already carry their own
+// syntactic color in the reader's head).
+(function() {
+  var panel = document.getElementById('demo-code');
+  if (!panel) return;
+
+  var examples = {
+    agg: {
+      label: 'Aggregation query',
+      sql: "-- Total revenue by region across a Parquet file.\n" +
+           "SELECT region, SUM(revenue) AS total\n" +
+           "FROM 'sales.parquet'\n" +
+           "GROUP BY region\n" +
+           "ORDER BY total DESC;",
+      python: "import slothdb\n\n" +
+              "db = slothdb.connect()\n" +
+              "df = db.sql(\"\"\"\n" +
+              "    SELECT region, SUM(revenue) AS total\n" +
+              "    FROM 'sales.parquet'\n" +
+              "    GROUP BY region ORDER BY total DESC\n" +
+              "\"\"\").fetchdf()",
+      node: "import { SlothDB } from '@slothdb/wasm';\n\n" +
+            "const db = await SlothDB.create();\n" +
+            "const { rows } = db.query(`\n" +
+            "  SELECT region, SUM(revenue) AS total\n" +
+            "  FROM 'sales.parquet'\n" +
+            "  GROUP BY region ORDER BY total DESC\n" +
+            "`);",
+      c: "#include \"slothdb/api/slothdb.h\"\n\n" +
+         "slothdb_result *r;\n" +
+         "slothdb_query(conn,\n" +
+         "  \"SELECT region, SUM(revenue) AS total \"\n" +
+         "  \"FROM 'sales.parquet' GROUP BY region\", &r);"
+    },
+    join: {
+      label: 'Join query',
+      sql: "-- Top 3 customers by order count, joining two files.\n" +
+           "SELECT c.name, COUNT(o.id) AS orders\n" +
+           "FROM 'customers.parquet' c\n" +
+           "JOIN 'orders.parquet' o ON o.customer_id = c.id\n" +
+           "GROUP BY c.name\n" +
+           "ORDER BY orders DESC\n" +
+           "LIMIT 3;",
+      python: "db.sql(\"\"\"\n" +
+              "    SELECT c.name, COUNT(o.id) AS orders\n" +
+              "    FROM 'customers.parquet' c\n" +
+              "    JOIN 'orders.parquet' o ON o.customer_id = c.id\n" +
+              "    GROUP BY c.name ORDER BY orders DESC LIMIT 3\n" +
+              "\"\"\").fetchdf()",
+      node: "db.query(`\n" +
+            "  SELECT c.name, COUNT(o.id) AS orders\n" +
+            "  FROM 'customers.parquet' c\n" +
+            "  JOIN 'orders.parquet' o ON o.customer_id = c.id\n" +
+            "  GROUP BY c.name ORDER BY orders DESC LIMIT 3\n" +
+            "`);",
+      c: "slothdb_query(conn,\n" +
+         "  \"SELECT c.name, COUNT(o.id) AS orders \"\n" +
+         "  \"FROM 'customers.parquet' c \"\n" +
+         "  \"JOIN 'orders.parquet' o ON o.customer_id = c.id \"\n" +
+         "  \"GROUP BY c.name ORDER BY orders DESC LIMIT 3\", &r);"
+    },
+    csv: {
+      label: 'Read CSV files',
+      sql: "-- Glob-read every CSV in data/ and filter by year.\n" +
+           "SELECT * FROM read_csv('data/*.csv')\n" +
+           "WHERE year >= 2023;",
+      python: "db.sql(\"SELECT * FROM read_csv('data/*.csv') WHERE year >= 2023\")\n" +
+              "  .fetchdf()",
+      node: "db.query(\"SELECT * FROM read_csv('data/*.csv') WHERE year >= 2023\");",
+      c: "slothdb_query(conn,\n" +
+         "  \"SELECT * FROM read_csv('data/*.csv') WHERE year >= 2023\", &r);"
+    },
+    parquet: {
+      label: 'Read Parquet files',
+      sql: "-- Parquet is fastest: columnar, compressed, filter pushdown.\n" +
+           "SELECT country, AVG(price)\n" +
+           "FROM 'events.parquet'\n" +
+           "WHERE event_date > DATE '2024-01-01'\n" +
+           "GROUP BY country;",
+      python: "db.sql(\"\"\"\n" +
+              "    SELECT country, AVG(price) FROM 'events.parquet'\n" +
+              "    WHERE event_date > DATE '2024-01-01' GROUP BY country\n" +
+              "\"\"\").fetchdf()",
+      node: "db.query(`\n" +
+            "  SELECT country, AVG(price) FROM 'events.parquet'\n" +
+            "  WHERE event_date > DATE '2024-01-01' GROUP BY country\n" +
+            "`);",
+      c: "slothdb_query(conn,\n" +
+         "  \"SELECT country, AVG(price) FROM 'events.parquet' \"\n" +
+         "  \"WHERE event_date > DATE '2024-01-01' GROUP BY country\", &r);"
+    },
+    avro: {
+      label: 'Avro (native decoder)',
+      sql: "-- Avro reads natively - no extension load, 5.43x DuckDB.\n" +
+           "SELECT SUM(revenue) AS total\n" +
+           "FROM read_avro('events.avro');",
+      python: "db.sql(\"SELECT SUM(revenue) AS total FROM read_avro('events.avro')\")\n" +
+              "  .fetchdf()",
+      node: "db.query(\"SELECT SUM(revenue) AS total FROM read_avro('events.avro')\");",
+      c: "slothdb_query(conn,\n" +
+         "  \"SELECT SUM(revenue) AS total FROM read_avro('events.avro')\", &r);"
+    },
+    http: {
+      label: 'Query over HTTPS',
+      sql: "-- https:// and public s3:// take the same SQL path.\n" +
+           "SELECT * FROM 'https://host/data.csv';\n" +
+           "SELECT * FROM 's3://public-bucket/events.parquet';",
+      python: "db.sql(\"SELECT * FROM 'https://host/data.csv'\").fetchdf()",
+      node: "db.query(\"SELECT * FROM 'https://host/data.csv'\");",
+      c: "slothdb_query(conn,\n" +
+         "  \"SELECT * FROM 'https://host/data.csv'\", &r);"
+    },
+    ctas: {
+      label: 'CREATE TABLE AS SELECT',
+      sql: "-- Materialize a file into a persistent table in one step.\n" +
+           "CREATE TABLE sales AS\n" +
+           "SELECT * FROM 'sales_2024.csv';\n\n" +
+           "SELECT region, SUM(revenue) FROM sales GROUP BY region;",
+      python: "db.sql(\"CREATE TABLE sales AS SELECT * FROM 'sales_2024.csv'\")\n" +
+              "db.sql(\"SELECT region, SUM(revenue) FROM sales GROUP BY region\")\n" +
+              "  .fetchdf()",
+      node: "await db.query(\"CREATE TABLE sales AS SELECT * FROM 'sales_2024.csv'\");\n" +
+            "db.query(\"SELECT region, SUM(revenue) FROM sales GROUP BY region\");",
+      c: "slothdb_query(conn,\n" +
+         "  \"CREATE TABLE sales AS SELECT * FROM 'sales_2024.csv'\", &r);"
+    }
+  };
+
+  // Minimal SQL highlighter. Keyword regex bounded by word boundaries;
+  // string literals (single-quoted) and comments (-- to EOL) get their
+  // own classes. Everything else stays plain.
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function highlightSQL(text) {
+    var out = '';
+    var i = 0;
+    while (i < text.length) {
+      var c = text[i];
+      // Comment -- ...\n
+      if (c === '-' && text[i + 1] === '-') {
+        var end = text.indexOf('\n', i);
+        if (end === -1) end = text.length;
+        out += '<span class="cm">' + esc(text.slice(i, end)) + '</span>';
+        i = end;
+        continue;
+      }
+      // String 'literal'
+      if (c === "'") {
+        var end2 = text.indexOf("'", i + 1);
+        if (end2 === -1) end2 = text.length - 1;
+        out += '<span class="str">' + esc(text.slice(i, end2 + 1)) + '</span>';
+        i = end2 + 1;
+        continue;
+      }
+      // Word
+      if (/[A-Za-z_]/.test(c)) {
+        var j = i;
+        while (j < text.length && /[A-Za-z0-9_]/.test(text[j])) j++;
+        var word = text.slice(i, j);
+        var up = word.toUpperCase();
+        var keywords = ['SELECT','FROM','WHERE','GROUP','BY','ORDER','LIMIT',
+          'JOIN','ON','AS','AND','OR','NOT','CREATE','TABLE','DATE','DESC','ASC',
+          'CASE','WHEN','THEN','ELSE','END','INSERT','INTO','VALUES','UPDATE',
+          'SET','DELETE','DISTINCT','UNION','ALL','HAVING','WITH','OVER',
+          'PARTITION','ROWS','BETWEEN','PRECEDING','FOLLOWING','CURRENT','ROW'];
+        var builtins = ['SUM','COUNT','AVG','MIN','MAX','READ_CSV','READ_PARQUET',
+          'READ_JSON','READ_AVRO','READ_XLSX','READ_ARROW','SQLITE_SCAN',
+          'ROW_NUMBER','RANK','DENSE_RANK','LAG','LEAD','COALESCE','CAST'];
+        if (keywords.indexOf(up) !== -1) {
+          out += '<span class="kw">' + esc(word) + '</span>';
+        } else if (builtins.indexOf(up) !== -1) {
+          out += '<span class="fn">' + esc(word) + '</span>';
+        } else {
+          out += esc(word);
+        }
+        i = j;
+        continue;
+      }
+      out += esc(c);
+      i++;
+    }
+    return out;
+  }
+
+  var currentLang = 'sql';
+  var currentExample = 'agg';
+
+  function render() {
+    var code = examples[currentExample][currentLang];
+    if (currentLang === 'sql') {
+      panel.innerHTML = highlightSQL(code);
+    } else {
+      panel.textContent = code;
+    }
+    var label = document.querySelector('.demo-select-label');
+    if (label) label.textContent = examples[currentExample].label;
+  }
+
+  document.querySelectorAll('.demo-tab').forEach(function(t) {
+    t.addEventListener('click', function() {
+      var lang = t.getAttribute('data-lang');
+      document.querySelectorAll('.demo-tab').forEach(function(x) {
+        x.classList.toggle('active', x === t);
+      });
+      currentLang = lang;
+      render();
+    });
+  });
+
+  var selectBtn = document.getElementById('demo-select-btn');
+  var selectMenu = document.querySelector('.demo-select-menu');
+  if (selectBtn && selectMenu) {
+    selectBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var open = !selectMenu.hidden;
+      selectMenu.hidden = open;
+      selectBtn.setAttribute('aria-expanded', String(!open));
+    });
+    document.addEventListener('click', function() {
+      selectMenu.hidden = true;
+      selectBtn.setAttribute('aria-expanded', 'false');
+    });
+    selectMenu.querySelectorAll('button').forEach(function(b) {
+      b.addEventListener('click', function(e) {
+        e.stopPropagation();
+        currentExample = b.getAttribute('data-example');
+        selectMenu.querySelectorAll('button').forEach(function(x) {
+          x.classList.toggle('active', x === b);
+        });
+        selectMenu.hidden = true;
+        selectBtn.setAttribute('aria-expanded', 'false');
+        render();
+      });
+    });
+  }
+
+  render();
+})();
 
 // Hero install widget: tab switching + copy-to-clipboard.
 (function() {
