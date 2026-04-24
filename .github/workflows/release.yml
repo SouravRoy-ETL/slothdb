@@ -19,10 +19,11 @@ jobs:
     - uses: actions/checkout@v4
       with:
         ref: ${{ github.event.inputs.tag || github.ref }}
+        submodules: recursive
     - name: Build
       run: |
-        cmake -B build -DSLOTHDB_BUILD_SHELL=ON
-        cmake --build build --config Release
+        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_ASK_MODEL=ON -DSLOTHDB_BUILD_TESTS=OFF
+        cmake --build build --config Release -j
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
@@ -35,6 +36,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         ref: ${{ github.event.inputs.tag || github.ref }}
+        submodules: recursive
     - name: Derive version from tag
       id: ver
       run: |
@@ -44,7 +46,7 @@ jobs:
         echo "Building version: $VERSION"
     - name: Build
       run: |
-        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_ASK_MODEL=ON -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
         cmake --build build -j$(nproc)
         strip build/src/slothdb
     - name: Build .deb package
@@ -85,9 +87,10 @@ jobs:
     - uses: actions/checkout@v4
       with:
         ref: ${{ github.event.inputs.tag || github.ref }}
+        submodules: recursive
     - name: Build
       run: |
-        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_ASK_MODEL=ON -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
         cmake --build build -j$(sysctl -n hw.ncpu)
     - name: Upload
       uses: actions/upload-artifact@v4
@@ -116,6 +119,18 @@ jobs:
       run: |
         mv slothdb-linux-x64/slothdb slothdb-linux-x64/slothdb-linux-x64
         mv slothdb-macos/slothdb     slothdb-macos/slothdb-macos
+    # Delete any pre-existing assets of the same name so a re-run of this
+    # workflow on an existing tag (workflow_dispatch) replaces stale
+    # binaries rather than silently keeping them.
+    - name: Remove stale assets
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        TAG="${{ steps.ver.outputs.tag }}"
+        VERSION="${{ steps.ver.outputs.version }}"
+        for asset in slothdb.exe slothdb-linux-x64 slothdb-macos "slothdb_${VERSION}_amd64.deb"; do
+          gh release delete-asset "$TAG" "$asset" --yes --repo "$GITHUB_REPOSITORY" || true
+        done
     - name: Attach to release
       uses: softprops/action-gh-release@v2
       with:
