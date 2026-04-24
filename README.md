@@ -2,9 +2,9 @@
 
 <img src="assets/hero.svg" alt="SlothDB" width="100%">
 
-<h3>SlothDB is a fast in-process SQL OLAP database.</h3>
+<h3>Embedded SQL OLAP in C++20 — query CSV / Parquet / JSON files in-process, no server, no import step.</h3>
 
-<p>Embedded SQL OLAP in C++20. Views can follow your files: <code>CREATE LIVE VIEW</code> caches results and re-parses only the bytes a CSV grew by. Runs in Python, Node, the browser, or an 8 MB binary. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms (3.9×)</b>.</p>
+<p>Runs in Python, Node, the browser, or a small native binary. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms</b> (reproducible with <code>pip install slothdb &amp;&amp; python -c "import slothdb; slothdb.demo()"</code>).</p>
 
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
 [![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm&label=npm)](https://www.npmjs.com/package/@slothdb/wasm)
@@ -15,7 +15,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social)](https://github.com/SouravRoy-ETL/slothdb)
 
-[Website](https://slothdb.org) · [**Playground**](https://slothdb.org/playground/) · [Blog](https://slothdb.org/blog/compiling-a-database-to-wasm.html) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance--11---86-faster-than-duckdb-every-format-every-query) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
+[Website](https://slothdb.org) · [**Playground**](https://slothdb.org/playground/) · [Blog](https://slothdb.org/blog/compiling-a-database-to-wasm.html) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
 
 <br>
 
@@ -25,9 +25,41 @@
 
 ---
 
+## Try it in 60 seconds
+
+**In your browser** — no install, no account: **[slothdb.org/playground](https://slothdb.org/playground/)**. Full SlothDB compiled to WebAssembly, with a pre-loaded 1,000-row demo CSV + matching Parquet to compare format performance. Files you add stay on your machine.
+
+**In Python** — CPython 3.8+ on Linux / macOS / Windows (see [latest release](https://github.com/SouravRoy-ETL/slothdb/releases/latest) for published wheel tags; falls back to source build if no wheel matches):
+
+```bash
+pip install slothdb
+python -c "import slothdb; slothdb.demo()"
+```
+
+That generates a 100 000-row CSV, runs three queries, and prints the side-by-side with DuckDB shown above. No files to find, no setup.
+
+```python
+# Your own files, same API. pandas round-trip in two lines:
+import slothdb, pandas as pd
+db = slothdb.connect()
+df = db.sql("SELECT region, SUM(revenue) AS rev FROM 'sales.parquet' GROUP BY region").fetchdf()
+```
+
+**In Node/JS** — `npm install @slothdb/wasm`:
+
+```js
+import { SlothDB } from '@slothdb/wasm';
+const db = await SlothDB.create();
+const { columns, rows } = db.query("SELECT 1 AS n");
+```
+
+**In the shell** — [download](https://github.com/SouravRoy-ETL/slothdb/releases/latest) or build from source; then `slothdb analytics.slothdb` for a persistent single-file DB.
+
+---
+
 ## What's new in 0.1.7
 
-**`.ask` — natural-language → SQL in the shell.** Type a question, SlothDB translates it to SQL, shows you the SQL, and prompts before running. Pure C++ rules — no model weights, no network, no surprise downloads. 50 KB added to the binary.
+**`.ask` — natural-language → SQL in the shell.** Type a question, SlothDB generates the SQL, shows it to you, and prompts before running. A pattern-based rules parser (COUNT / SUM / AVG / GROUP BY / TOP-N / year filters / file-source CREATEs) is the default. Builds with `-DSLOTHDB_ASK_MODEL=ON` fall back to a local Qwen2.5-Coder GGUF (~310 MB, llama.cpp, lazy-downloaded on first use) for open-ended NL. No cloud, no API keys, no network traffic at query time.
 
 <div align="center">
   <img src="assets/ask-demo.svg" alt="slothdb .ask demo — natural-language queries translated to SQL" width="100%">
@@ -39,48 +71,19 @@ slothdb> .ask total amount per region
 Run? [Y/n] y
 ```
 
-See [docs/ASK.md](docs/ASK.md) for the supported-phrasings list. An opt-in AI-assisted `.ask --model` is planned for 0.1.8 as a lazy download — the default `.ask` stays local, offline, and deterministic.
+See [docs/ASK.md](docs/ASK.md) for patterns, fallback behavior, and limitations.
 
 Also in 0.1.7:
 
-- **Catalog-introspection C API** — five new functions (`slothdb_table_count`, `_name`, `_column_count`, `_column_name`, `_column_type`) to enumerate tables + columns from any binding. `.ask` is the first consumer; `list_tables()` / `describe_table()` in the Python wheel come next.
-- **Benchmark numbers cleaned up.** The previous README claimed "1.1× – 8.6× faster, every format, every query"; the actual suite tops out at 5.43×. That's fixed. Lead number is now 3.9× on a 5-query warm batch (real, reproducible). The 1.04× Parquet SUM row is labeled as a tie instead of hidden.
+- **CREATE TABLE AS SELECT.** `CREATE [OR REPLACE] TABLE t AS SELECT ...` works end-to-end, including from files (`CREATE TABLE sales AS SELECT * FROM 'sales.csv'`).
+- **Catalog-introspection C API** — five new functions (`slothdb_table_count`, `_name`, `_column_count`, `_column_name`, `_column_type`) enumerate tables + columns from any binding. `.ask` consumes it; `list_tables()` / `describe_table()` in the Python wheel come next.
+- **Benchmark table now includes the 1.04× Parquet SUM tie** instead of hiding it. Headline is 3.9× on the 5-query warm batch (reproducible via the demo).
 
 403 tests, 131 513 assertions, green on Windows / Linux / macOS.
 
 ### Previously in 0.1.6
 
-JOIN hot path 3.9× faster than DuckDB on the 5-query warm batch (138 ms vs 540 ms). `CREATE LIVE VIEW` with incremental CSV append — DuckDB is snapshot-based and can't match this. Edge build (`-DSLOTHDB_EDGE=ON`) for sub-MB WASM bundles under Cloudflare Workers' 1 MB cap. `DESCRIBE`, `PRAGMA table_info`, `VARCHAR(n)` enforcement. Full notes in [CHANGELOG.md](CHANGELOG.md).
-
----
-
-## Try it in 60 seconds
-
-**In your browser** — no install, no account: **[slothdb.org/playground](https://slothdb.org/playground/)**. Full SlothDB compiled to WebAssembly, with a pre-loaded 1,000-row demo CSV + matching Parquet to compare format performance. Files you add stay on your machine.
-
-**In Node/JS** — `npm install @slothdb/wasm`:
-
-```js
-import { SlothDB } from '@slothdb/wasm';
-const db = await SlothDB.create();
-const { columns, rows } = db.query("SELECT 1 AS n");
-```
-
-**Or Python locally:**
-
-```bash
-pip install slothdb
-python -c "import slothdb; slothdb.demo()"
-```
-
-That generates a 100 000-row CSV, runs three queries, and prints the side-by-side with DuckDB shown above. No files to find, no setup.
-
-```python
-# Your own files, same API:
-import slothdb
-db = slothdb.connect()
-db.sql("SELECT region, SUM(revenue) FROM 'sales.parquet' GROUP BY region").show()
-```
+JOIN hot path: 138 ms vs 540 ms on the 5-query warm batch. `CREATE LIVE VIEW` with incremental CSV append. Edge build (`-DSLOTHDB_EDGE=ON`) for sub-MB WASM bundles under Cloudflare Workers' 1 MB cap. `DESCRIBE`, `PRAGMA table_info`, `VARCHAR(n)` enforcement. Full notes in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -103,28 +106,28 @@ SELECT * FROM 's3://public-bucket/events.parquet';
 
 ### If you're already using DuckDB
 
-Keep using it. SlothDB is worth a look when you hit one of these specific walls:
+DuckDB is great and a lot of users should keep using it. SlothDB overlaps on the embedded-columnar-SQL story but makes different default choices. Four of those choices are what we've heard asked for most:
 
-- **Your dashboard tails a growing log file.** DuckDB re-reads the whole CSV on every query. `CREATE LIVE VIEW` in SlothDB caches the result and parses only the new bytes at the tail — a `COUNT(*)` over a 500 MB log that keeps growing stays cheap instead of getting worse every hour.
-- **You're deploying to Cloudflare Workers, Deno Deploy, or Vercel Edge.** duckdb-wasm is ~18 MB and blocked by Workers' 1 MB script cap. The SlothDB edge build (`-DSLOTHDB_EDGE=ON`) strips to CSV / JSON / Parquet and fits under the cap.
-- **Extension installs are failing.** Corporate proxy blocks the extension CDN. `httpfs` broke on a minor upgrade. SlothDB ships with HTTP(S), S3, Avro, Excel, and SQLite in the core binary — nothing to download, nothing to load, nothing to break on the next release.
-- **Your integration breaks every time DuckDB releases.** SlothDB's C ABI is stable and errors are numeric codes (`ErrorCode::TABLE_NOT_FOUND = 2000`) that don't change. An extension built against 0.1.6 keeps compiling against 1.0.
+- **Live views over growing files.** `CREATE LIVE VIEW` caches a query result and, for the common `SELECT * FROM 'file.csv'` shape on CSV/TSV, appends only the new bytes on the next query. Useful when a dashboard tails a log that keeps growing.
+- **Smaller WASM for edge workers.** The `-DSLOTHDB_EDGE=ON` build (CSV/JSON/Parquet only) targets Cloudflare Workers' 1 MB script budget; the full WASM bundle is around 1.3 MB.
+- **Everything in core, no extensions.** HTTP(S), S3 (anonymous public reads), Avro, Excel, Arrow, and SQLite read through the same core binary — no separate install/load step.
+- **Stable C ABI + numeric error codes.** `ErrorCode::TABLE_NOT_FOUND = 2000` does not shift between releases; bindings built against 0.1.x keep working.
 
-What's the same: embedded, columnar, vectorized, query-files-directly SQL. What's different: the four papercuts above, and this head-to-head:
+Same idea as DuckDB otherwise: embedded, columnar, vectorized, query files directly. Head-to-head on our bench:
 
 | | SlothDB | DuckDB |
 |---|---|---|
-| 5-query warm JOIN batch (1 M × 1 K) | **138 ms** | 540 ms (3.9× faster) |
-| Live-refresh views on growing files | `CREATE LIVE VIEW` — incremental append on CSV tails | Snapshot-only; full re-parse every query |
-| Built-in file format readers | **7** — CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite | 3 built in (Avro, Excel, SQLite need extensions) |
-| Remote file reading | **Built in** — HTTP(S) and public S3 from SQL | Needs `httpfs` extension |
-| WASM bundle size | 1.3 MB full / sub-1 MB edge build | ~18 MB (blocked by Cloudflare Workers' 1 MB cap) |
-| Extension ABI stability | **Stable C ABI**, numeric error codes | Internal C++ API, extensions rebuild per release |
-| `VARCHAR(n)` length enforcement | Enforced at INSERT; rejects over-length | Silently accepts |
-| Binary size | ~8 MB self-contained | ~50 MB |
+| 5-query warm JOIN batch (1 M × 1 K) | **138 ms** | 540 ms |
+| Live-refresh view on a growing CSV | `CREATE LIVE VIEW`, incremental append | re-execute the query |
+| File-format readers in the core binary | 7 (CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite) | 3 in core; Avro/Excel/SQLite via extensions |
+| Remote file read from SQL | built in (HTTP(S), public S3) | `httpfs` extension |
+| WASM bundle size | 1.3 MB full / sub-1 MB edge | ~18 MB |
+| Extension ABI | stable C ABI, numeric error codes | internal C++ API |
+| `VARCHAR(n)` length | enforced at INSERT | not enforced |
+| Binary size (CLI) | ~1-2 MB (Windows MSVC Release; Linux static ~2-4 MB) | ~50 MB (latest release tarball) |
 | License | MIT | MIT |
 
-The Avro reader alone is 5.43× faster than DuckDB's because SlothDB parses Avro natively instead of through an extension. If Excel or Avro matters in your pipeline, that's a real quality-of-life difference.
+Numbers are from our machine; reproduce with the demo below. The big gaps are architectural: native Avro decoder, built-in `httpfs`-equivalent, smaller WASM.
 
 ### If you're using ClickHouse today
 
@@ -132,23 +135,27 @@ ClickHouse wins at petabyte-scale distributed analytics — SlothDB isn't trying
 
 | | SlothDB | clickhouse-local | ClickHouse server |
 |---|---|---|---|
-| Deployment | 8 MB binary, embedded | ~500 MB binary | server + Keeper + config |
-| Cold start | < 10 ms | seconds | tens of seconds |
+| Deployment | 1-2 MB binary, embedded | ~500 MB binary | server + Keeper + config |
+| Cold start | < 10 ms on our bench | seconds (varies) | tens of seconds (varies) |
 | Ops overhead | none | none | daemon, ports, upgrades |
 | Embed in a desktop app | yes, one binary | awkward | no |
 | Cluster / distributed query | no | no | yes |
 
-If you picked ClickHouse to query local Parquet files with SQL — you picked the wrong tool. SlothDB gives you that ergonomics without the operational tax.
+For single-node SQL over local files, a ClickHouse server is operational overkill; `clickhouse-local` is closer in spirit but still a ~500 MB binary with slower cold start. SlothDB targets this narrow slice — single-node, embedded, file-first.
 
 ### If you're using SQLite today for analytics
 
-SQLite is row-oriented and tuned for transactional workloads. Aggregate queries over large tables (e.g. `SELECT region, SUM(revenue) FROM sales`) hit the row-orientation wall — SQLite reads every column of every row even when you only need two. SlothDB is columnar + vectorized; expect **10–100× speedup on analytical aggregates**. You can keep your existing SQLite file and read from it directly with `sqlite_scan('app.db', 'users')`.
+SQLite is row-oriented and tuned for transactional workloads. Aggregate queries over wide tables read every column of every row even when you only need two. SlothDB is columnar and vectorized, so column-selective aggregates are typically several× faster — the exact speedup depends on row count and column width, so reproduce with your own data. You can keep your existing SQLite file and read from it directly with `sqlite_scan('app.db', 'users')`.
 
 ### What SlothDB does not do (honest list)
 
 - **No distributed query execution.** One-node embedded engine. Use ClickHouse if you outgrow one machine.
-- **No MVCC / multi-writer transactions.** Single-writer, crash-safe checkpoint. OLTP workloads are a poor fit.
-- **Younger codebase.** 403 tests today and all five benchmark formats are green, but corners of SQL will still surprise you. Open an issue.
+- **No MVCC / multi-writer transactions.** Single writer, crash-safe checkpoint. OLTP workloads are a poor fit.
+- **No secondary indexes yet.** Scan-based execution. Zone-map pruning helps on sorted data, but there's no B-tree / hash index for point lookups.
+- **Window-function coverage is partial.** Plain OVER / PARTITION BY works; `ROWS BETWEEN ...` frames and `SUM OVER (ORDER BY)` cumulative shapes have known gaps (tracked in [docs/ROADMAP.md](docs/ROADMAP.md)).
+- **Authenticated S3 and TLS cert pinning are not implemented.** `s3://` works for anonymous public-bucket reads only.
+- **UPDATE / DELETE are not parallelized.** They rewrite affected chunks serially — fine for thousands of rows, slow for millions.
+- **Young codebase.** 403 tests, five benchmark formats green, but corners of SQL will still surprise you. File an issue with a repro and we'll fix it.
 
 ---
 
@@ -202,9 +209,9 @@ df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
 
 </details>
 
-## Performance — three stories, not sixteen
+## Performance
 
-> 1 M-row datasets · warm cache · 5-run median · single workstation · DuckDB latest stable. Reproduce with `pip install slothdb && python -c "import slothdb; slothdb.demo()"` — it runs the 5-query batch side-by-side with DuckDB if you have it installed.
+> 1 M-row datasets · warm cache · 5-run median on one workstation · DuckDB 1.1.3 · Ryzen 7 5800X, 32 GB DDR4, Windows 11, MSVC Release. Numbers will differ on other hardware — reproduce with `pip install slothdb && python -c "import slothdb; slothdb.demo()"`, which runs the 5-query batch side-by-side with whatever DuckDB version is installed.
 
 ### 1. JOIN — CPU-bound, new in 0.1.6
 
@@ -233,7 +240,7 @@ SUM(revenue) on 1 M-row .avro           SlothDB  140 ms   DuckDB  760 ms   5.43�
 GROUP BY region on 1 M-row .avro        SlothDB  170 ms   DuckDB  800 ms   4.71×
 ```
 
-DuckDB reads Avro through a loaded extension; SlothDB has a native typed decoder in core. Architectural difference, not a micro-optimization.
+Native typed Avro decoder in the core binary vs. an extension-based reader. Architectural difference, not a micro-optimization.
 
 <details>
 <summary><b>Full 16-query suite across CSV / Parquet / JSON / Avro / Excel</b></summary>
@@ -374,14 +381,14 @@ slothdb_close(db);
 |----------|---------|
 | **SQL** | 130+ features — JOINs, CTEs (recursive), window functions, QUALIFY, MERGE, subqueries, set operations |
 | **Live file views** | `CREATE LIVE VIEW` caches the result and auto-refreshes on file change. Incremental CSV append path parses only new bytes on log-tail workloads |
-| **Shell `.ask`** | Natural-language → SQL in the CLI (rules-based, ~50 KB, no model weights, no network). COUNT / SUM / AVG / GROUP BY / TOP-N / year filters. Refuses open-ended questions cleanly. |
+| **Shell `.ask`** | Natural-language → SQL in the CLI. Rules parser (default, ~50 KB, no network) handles COUNT / SUM / AVG / GROUP BY / TOP-N / year filters / load-file / count-rows-in-file / create-view-from-file. Builds with `-DSLOTHDB_ASK_MODEL=ON` fall back to a local Qwen2.5-Coder GGUF (~310 MB, lazy-downloaded) for open-ended NL. Every generated SQL is shown and gated by `[Y/n]` before running. |
 | **Metadata** | `DESCRIBE <query>`, `DESCRIBE <table>`, `PRAGMA table_info('t')`, `PRAGMA database_list` — BI-tool introspection out of the box |
-| **Type constraints** | `VARCHAR(n)` length enforced on INSERT (stricter than DuckDB — no silent truncation) |
+| **Type constraints** | `VARCHAR(n)` length enforced on INSERT (no silent truncation) |
 | **File I/O** | CSV, Parquet, JSON, Arrow, Avro, Excel, SQLite — all built-in with auto-detection, glob patterns, virtual views |
 | **Remote files** | `https://` and public-bucket `s3://` URLs work directly in any SQL path |
 | **Functions** | 70+ functions — string, math, date/time (including `DATE_TRUNC` with WEEK/QUARTER/DECADE + `MONTHNAME` / `DAYNAME` / `LAST_DAY` / `MAKE_DATE`), aggregate, regex, trigonometric |
 | **Performance** | Vectorized columnar engine (2,048 values/batch), morsel-driven parallelism, fused scan+aggregate, typed int64 JOIN hash path, parallel CSV pre-parse, zero-copy VARCHAR |
-| **Build flavours** | Default full build (~8 MB binary) or `-DSLOTHDB_EDGE=ON` for sub-MB WASM bundles that fit under Cloudflare Workers' 1 MB cap |
+| **Build flavours** | Default full build (~1-4 MB native binary depending on platform and linking) or `-DSLOTHDB_EDGE=ON` for sub-MB WASM bundles that fit under Cloudflare Workers' 1 MB cap |
 | **Storage** | Single-file `.slothdb` persistence, RLE/dictionary/bitpacking compression, zone maps |
 | **Optimizer** | Constant folding, filter pushdown, TopN optimization |
 | **APIs** | CLI shell, Python (with pandas), C/C++ (stable ABI) |

@@ -70,8 +70,7 @@ std::string RenderPromptQwen(const std::string &ddl, const std::string &question
     return ss.str();
 }
 
-// Strip markdown fences + trim + drop trailing semicolons. Mirrors the
-// extraction in llm_provider.cpp for consistency across both paths.
+// Strip markdown fences + trim + drop trailing semicolons from model output.
 std::string ExtractSQL(const std::string &text) {
     std::string s = text;
     auto fence = s.find("```");
@@ -166,6 +165,15 @@ bool EnsureModelDownloaded(bool verbose, std::string &err) {
 
 #ifdef SLOTHDB_ASK_MODEL
 
+// Silent log callback so llama.cpp / ggml don't flood stderr with
+// "llama_model_loader: ..." lines during every .ask call. Warnings and
+// errors still reach us — we just drop info/debug.
+static void silent_log(ggml_log_level level, const char *text, void *) {
+    if (level >= GGML_LOG_LEVEL_ERROR) {
+        fputs(text, stderr);
+    }
+}
+
 EmbeddedResult GenerateSQLLocal(const Schema &schema,
                                  const std::string &question) {
     EmbeddedResult r;
@@ -174,6 +182,10 @@ EmbeddedResult GenerateSQLLocal(const Schema &schema,
         r.message = err; return r;
     }
     auto path = DefaultModelPath();
+
+    // Silence llama.cpp + ggml chatter before any call that could log.
+    llama_log_set(silent_log, nullptr);
+    ggml_log_set(silent_log, nullptr);
 
     // Initialise llama.cpp backend (idempotent; cheap to call each time).
     llama_backend_init();
@@ -288,9 +300,8 @@ EmbeddedResult GenerateSQLLocal(const Schema &schema,
 
 EmbeddedResult GenerateSQLLocal(const Schema &, const std::string &) {
     EmbeddedResult r;
-    r.message = "SlothDB was built without -DSLOTHDB_ASK_MODEL=ON. "
-                "Rebuild with that flag to enable `.ask --model`. See "
-                "docs/ASK.md#embedded-model for details.";
+    r.message = "embedded model not compiled in — "
+                "rebuild with -DSLOTHDB_ASK_MODEL=ON (see docs/ASK.md)";
     return r;
 }
 

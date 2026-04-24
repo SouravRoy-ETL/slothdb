@@ -8,7 +8,6 @@
 
 #include "slothdb/api/slothdb.h"
 #include "slothdb/ask/nl_to_sql.hpp"
-#include "slothdb/ask/llm_provider.hpp"
 #include "slothdb/ask/embedded_llm.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -62,45 +61,71 @@ static void print_help() {
     printf("  ------------\n");
     printf("  .help                       Show this help\n");
     printf("  .quit / .exit               Exit the shell\n");
-    printf("  .tables [PATTERN]           List tables (LIKE pattern optional)\n");
-    printf("  .schema [TABLE]             Show CREATE statements for tables\n");
-    printf("  .open <path>                Close current DB and open a new one\n");
-    printf("  .ask <question>             NL → SQL (rules). Add --ai for cloud LLM, --model for local GGUF.\n");
-    printf("                              `.ask` alone opens an interactive sub-REPL.\n");
     printf("  .version                    Print SlothDB version\n");
     printf("  .clear                      Clear the screen\n");
+    printf("  .open <path>                Close current DB and open a new one\n");
+    printf("                                :memory:        in-process, non-persistent\n");
+    printf("                                file.slothdb    single-file persistent DB\n");
+    printf("  .tables [PATTERN]           List tables. PATTERN is SQL LIKE ('sales%%').\n");
+    printf("  .schema [TABLE]             Show CREATE TABLE statements. No arg = all tables.\n");
+    printf("  .ask [question]             Natural language -> SQL. With no argument opens\n");
+    printf("                              an interactive NL prompt. Rules parser handles\n");
+    printf("                              common shapes (counts, top-N, group by, filters);\n");
+    printf("                              builds compiled with -DSLOTHDB_ASK_MODEL=ON fall\n");
+    printf("                              back to a local Qwen model (~310 MB, auto-\n");
+    printf("                              downloaded on first use).\n");
+    printf("                              Every generated SQL is shown and gated by [Y/n].\n");
+    printf("                              Docs: docs/ASK.md in the repo.\n");
     printf("\n");
-    printf("  Query any file directly\n");
-    printf("  -----------------------\n");
+    printf("  Query any file directly (no import step needed)\n");
+    printf("  ------------------------------------------------\n");
     printf("  SELECT * FROM 'data.csv';\n");
-    printf("  SELECT * FROM read_parquet('events.parquet');\n");
     printf("  SELECT * FROM 'logs.json';\n");
+    printf("  SELECT * FROM read_parquet('events.parquet');\n");
     printf("  SELECT * FROM read_xlsx('report.xlsx');\n");
     printf("  SELECT * FROM read_avro('events.avro');\n");
+    printf("  SELECT * FROM read_arrow('stream.arrow');\n");
     printf("  SELECT * FROM sqlite_scan('app.db', 'users');\n");
+    printf("  SELECT * FROM 'https://host/data.csv';    -- HTTPS and s3:// work too\n");
     printf("\n");
-    printf("  Persistent tables (single-file .slothdb database)\n");
-    printf("  -------------------------------------------------\n");
+    printf("  Materialize / transform with CTAS\n");
+    printf("  ---------------------------------\n");
     printf("  CREATE TABLE sales AS SELECT * FROM 'sales.csv';\n");
-    printf("  SELECT region, SUM(revenue) FROM sales GROUP BY region;\n");
+    printf("  CREATE OR REPLACE TABLE top AS\n");
+    printf("    SELECT region, SUM(revenue) AS rev FROM sales GROUP BY region;\n");
+    printf("  CREATE TABLE IF NOT EXISTS archive AS SELECT * FROM sales WHERE year < 2024;\n");
     printf("\n");
-    printf("  Multi-line input\n");
+    printf("  Virtual and live views\n");
+    printf("  ----------------------\n");
+    printf("  CREATE VIEW v AS SELECT ... ;            -- re-executes on every SELECT\n");
+    printf("  CREATE LIVE VIEW lv AS SELECT * FROM 'app.log';\n");
+    printf("      -- cached; invalidates when the source file's mtime changes.\n");
+    printf("\n");
+    printf("  Export with COPY\n");
     printf("  ----------------\n");
-    printf("  Statements run when they end with a semicolon.\n");
-    printf("  Enter by itself cancels a partial statement.\n");
+    printf("  COPY sales TO 'out.csv';\n");
+    printf("  COPY (SELECT * FROM sales WHERE region='EU') TO 'eu.parquet' (FORMAT PARQUET);\n");
     printf("\n");
-    printf("  Shell features\n");
+    printf("  Catalog introspection\n");
+    printf("  ---------------------\n");
+    printf("  PRAGMA table_info('sales');           -- column name/type/notnull/pk\n");
+    printf("  PRAGMA database_list;                 -- attached DBs (currently just one)\n");
+    printf("  DESCRIBE SELECT ... ;                 -- result schema of a query\n");
+    printf("  EXPLAIN SELECT ... ;                  -- logical plan\n");
+    printf("\n");
+    printf("  Input handling\n");
     printf("  --------------\n");
+    printf("  Statements run when they end with a semicolon.\n");
+    printf("  Blank line cancels a partial statement.\n");
 #ifdef SLOTHDB_HAS_LINENOISE
-    printf("  Arrow keys move the cursor. Up/Down browses history.\n");
+    printf("  Arrow keys move the cursor; Up/Down browses history.\n");
     printf("  History persists in .slothdb_history in the current directory.\n");
     printf("  Ctrl+C cancels input. Ctrl+D at empty prompt exits.\n");
 #else
-    printf("  On Windows, use cmd.exe's native line editing.\n");
-    printf("  Ctrl+C exits.\n");
+    printf("  On Windows, use cmd.exe's native line editing. Ctrl+C exits.\n");
 #endif
     printf("\n");
-    printf("  Full documentation: https://github.com/SouravRoy-ETL/slothdb\n");
+    printf("  Docs: https://github.com/SouravRoy-ETL/slothdb\n");
     printf("\n");
 }
 
@@ -165,158 +190,127 @@ static bool confirm_and_run(slothdb_connection *conn, const std::string &sql) {
     return true;
 }
 
-enum class AskMode { Rules, Cloud, Embedded };
+// Forward decls — definitions live below (shell dispatchers used by the
+// catalog-intent shortcut above the .ask pipeline).
+static void handle_tables(slothdb_connection *conn, const std::string &arg);
+static void handle_schema(slothdb_connection *conn, const std::string &arg);
 
-// Run one NL question against .ask. `mode` picks the path:
-//   Rules    = rules-first; on refusal, fall through to configured backend
-//   Cloud    = skip rules, go straight to cloud provider (.ask --ai)
-//   Embedded = skip rules, go straight to local GGUF (.ask --model)
-static bool ask_once(slothdb_connection *conn, const std::string &question,
-                     AskMode mode = AskMode::Rules) {
-    auto schema = build_ask_schema(conn);
-    if (schema.tables.empty()) {
-        printf("No tables found. Load data first (create a table or "
-               "query a file) before using .ask.\n");
-        return true;
-    }
-
-    if (mode == AskMode::Rules) {
-        auto r = slothdb::ask::Translate(question, schema);
-        if (r.status == slothdb::ask::Status::OK) {
-            return confirm_and_run(conn, r.sql);
-        }
-        printf("Rules didn't match: %s\n", r.message.c_str());
-        if (!r.unresolved.empty()) {
-            printf("  Unresolved token: '%s'\n", r.unresolved.c_str());
-        }
-        // Rule refusal — no automatic fallback to AI; the user must opt
-        // in via --ai or --model. Auto-falling-through to the cloud
-        // silently is a privacy surprise (user's question leaves the
-        // machine without consent). Explicit opt-in matters here.
-        printf("  Run with `.ask --ai <question>` to try a cloud LLM, or "
-               "`.ask --model <question>` for a local model.\n");
-        return true;
-    }
-
-    if (mode == AskMode::Embedded) {
-        if (!slothdb::ask::EmbeddedAvailable()) {
-            printf("  Embedded model not compiled in. Rebuild with "
-                   "-DSLOTHDB_ASK_MODEL=ON (see docs/ASK.md#embedded-model).\n");
-            return true;
-        }
-        printf("-- running local %s...\n",
-               slothdb::ask::DefaultModel().name);
-        fflush(stdout);
-        auto er = slothdb::ask::GenerateSQLLocal(schema, question);
-        if (!er.ok) {
-            printf("  Embedded error: %s\n", er.message.c_str());
-            return true;
-        }
-        return confirm_and_run(conn, er.sql);
-    }
-
-    // mode == AskMode::Cloud
-    auto cfg = slothdb::ask::ConfigFromEnvironment();
-    if (cfg.provider == slothdb::ask::Provider::None) {
-        printf("  No LLM provider configured. Set SLOTHDB_ASK_PROVIDER=ollama "
-               "(or openai/anthropic) to enable --ai, or use --model for the "
-               "embedded local path.\n");
-        return true;
-    }
-    const char *prov_name = "unknown";
-    switch (cfg.provider) {
-        case slothdb::ask::Provider::Ollama:    prov_name = "ollama";    break;
-        case slothdb::ask::Provider::OpenAI:    prov_name = "openai";    break;
-        case slothdb::ask::Provider::Anthropic: prov_name = "anthropic"; break;
-        default: break;
-    }
-    printf("-- trying %s (%s)...\n", prov_name, cfg.model.c_str());
-    fflush(stdout);
-    auto lr = slothdb::ask::GenerateSQL(cfg, schema, question);
-    if (!lr.ok) {
-        printf("  LLM error: %s\n", lr.message.c_str());
-        return true;
-    }
-    return confirm_and_run(conn, lr.sql);
+// Lowercase copy for intent matching.
+static std::string to_lower(const std::string &s) {
+    std::string out; out.reserve(s.size());
+    for (char c : s) out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
 }
 
-// Extract a named `--flag` from a question string. Returns true if
-// found (as a whole token, not a substring) and strips it from `q`.
-static bool strip_named_flag(std::string &q, const std::string &flag) {
-    size_t p = q.find(flag);
-    while (p != std::string::npos) {
-        bool left_ok  = (p == 0 || q[p - 1] == ' ' || q[p - 1] == '\t');
-        size_t end = p + flag.size();
-        bool right_ok = (end == q.size() || q[end] == ' ' || q[end] == '\t');
-        if (left_ok && right_ok) {
-            if (p > 0 && q[p - 1] == ' ') p--;
-            else if (end < q.size() && q[end] == ' ') end++;
-            q.erase(p, end - p);
-            while (!q.empty() && (q.front() == ' ' || q.front() == '\t')) q.erase(q.begin());
-            while (!q.empty() && (q.back()  == ' ' || q.back()  == '\t')) q.pop_back();
+// Catalog-intent classifier. Returns true if the question is purely
+// catalog introspection (show tables, describe X) and routes it to the
+// dot-command handlers, which use the C API rather than SQL —
+// information_schema isn't a real schema in SlothDB's parser.
+static bool handle_catalog_intent(slothdb_connection *conn,
+                                   const std::string &question) {
+    std::string q = to_lower(question);
+    // Strip trailing punctuation / whitespace.
+    while (!q.empty() && (q.back() == ' ' || q.back() == '\t' ||
+                          q.back() == '?' || q.back() == '.' ||
+                          q.back() == '!')) q.pop_back();
+    // "show tables" / "list tables" / "what tables" / "which tables" /
+    // "all tables" / "tables".
+    auto is_tables = [](const std::string &s) {
+        return s == "tables" || s == "show tables" || s == "list tables" ||
+               s == "what tables" || s == "which tables" ||
+               s == "all tables" || s == "display tables" ||
+               s == "show all tables" || s == "list all tables" ||
+               s == "what tables are there" || s == "what tables exist" ||
+               s == "show schemas" || s == "list schemas";
+    };
+    if (is_tables(q)) {
+        handle_tables(conn, "");
+        return true;
+    }
+    // "describe <table>" / "schema of <table>" / "columns in <table>" /
+    // "columns of <table>" / "<table> schema" / "<table> columns".
+    const char *describe_prefixes[] = {
+        "describe ", "desc ", "schema of ", "schema for ",
+        "columns in ", "columns of ", "show schema of ",
+        "show schema for ", "show columns in ", "show columns of ", nullptr
+    };
+    for (int i = 0; describe_prefixes[i]; i++) {
+        const std::string p = describe_prefixes[i];
+        if (q.size() > p.size() && q.compare(0, p.size(), p) == 0) {
+            handle_schema(conn, q.substr(p.size()));
             return true;
         }
-        p = q.find(flag, p + 1);
     }
     return false;
 }
 
-static bool strip_ai_flag(std::string &q)    { return strip_named_flag(q, "--ai"); }
-static bool strip_model_flag(std::string &q) { return strip_named_flag(q, "--model"); }
+// Run one NL question. Rules-first for the common shapes — instant,
+// deterministic, no model load. When rules refuse, hand off to the
+// embedded GGUF (if compiled in); it loads lazily on first miss and
+// handles open-ended NL. Shows the generated SQL with [Y/n] before running.
+static bool ask_once(slothdb_connection *conn, const std::string &question) {
+    // Catalog-introspection questions don't go through the SQL pipeline —
+    // SlothDB's parser doesn't expose information_schema, so we route
+    // these to the dot-command handlers directly.
+    if (handle_catalog_intent(conn, question)) return true;
+
+    auto schema = build_ask_schema(conn);
+
+    // File-source intents ("load sales.csv", "query events.parquet") work
+    // on an empty catalog. Only fall back to the empty-schema message
+    // when Translate also refuses.
+    auto r = slothdb::ask::Translate(question, schema);
+    if (r.status == slothdb::ask::Status::OK) {
+        return confirm_and_run(conn, r.sql);
+    }
+    if (schema.tables.empty()) {
+        printf("No tables loaded yet. Try: `.ask load sales.csv` or "
+               "`.ask query events.parquet`, or run a CREATE/SELECT in "
+               "SQL first.\n");
+        return true;
+    }
+
+    if (slothdb::ask::EmbeddedAvailable()) {
+        printf("-- %s (rules did not match - asking the local model)\n",
+               slothdb::ask::DefaultModel().name);
+        fflush(stdout);
+        auto er = slothdb::ask::GenerateSQLLocal(schema, question);
+        if (er.ok && !er.sql.empty()) {
+            return confirm_and_run(conn, er.sql);
+        }
+        printf("  Model couldn't answer: %s\n", er.message.c_str());
+        return true;
+    }
+
+    // Rules refused and the model isn't compiled in — honest error.
+    printf("  Rules didn't match: %s\n", r.message.c_str());
+    if (!r.unresolved.empty()) {
+        printf("  Unresolved token: '%s'\n", r.unresolved.c_str());
+    }
+    printf("  Build with -DSLOTHDB_ASK_MODEL=ON to enable the local "
+           "Qwen model (handles arbitrary NL).\n");
+    return true;
+}
 
 static void handle_ask(slothdb_connection *conn, const std::string &arg) {
-    std::string question = arg;
-    bool force_ai = strip_ai_flag(question);
-    bool force_model = strip_model_flag(question);
-    AskMode mode = AskMode::Rules;
-    if (force_model) mode = AskMode::Embedded;
-    else if (force_ai) mode = AskMode::Cloud;
-
-    // With an argument: single-shot. Translate → confirm → run → return
-    // to the main SQL prompt.
-    if (!question.empty()) {
-        ask_once(conn, question, mode);
+    // With an argument: single-shot. Pipeline → confirm → run → return.
+    if (!arg.empty()) {
+        ask_once(conn, arg);
         return;
     }
 
-    // No argument: enter interactive ask-mode. Keeps reading NL lines
-    // (no ".ask" prefix required) until the user types exit / quit /
-    // ":q" / ":quit", hits an empty line, or sends EOF. Each non-empty
-    // line runs through the NL→SQL pipeline, shows the generated SQL,
-    // and prompts [Y/n] before executing.
-    //
-    // Inside ask-mode: type a question per line. Override the mode
-    // per-line with --ai / --model, or set it sticky with :ai / :model /
-    // :rules commands.
-    printf("ask mode — type a question in English.\n");
-    printf("  Commands: `:ai` / `:model` / `:rules` set default backend; "
-           "per-line `--ai` / `--model` override. `exit` / blank line / Ctrl+D to leave.\n");
-    {
-        auto cfg = slothdb::ask::ConfigFromEnvironment();
-        bool cloud_ok = (cfg.provider != slothdb::ask::Provider::None);
-        bool model_ok = slothdb::ask::EmbeddedAvailable();
-        printf("  backends: rules [always on]");
-        if (cloud_ok) {
-            const char *prov_name = "?";
-            switch (cfg.provider) {
-                case slothdb::ask::Provider::Ollama:    prov_name = "ollama";    break;
-                case slothdb::ask::Provider::OpenAI:    prov_name = "openai";    break;
-                case slothdb::ask::Provider::Anthropic: prov_name = "anthropic"; break;
-                default: break;
-            }
-            printf(" · cloud [%s/%s]", prov_name, cfg.model.c_str());
-        } else {
-            printf(" · cloud [not configured]");
-        }
-        if (model_ok) {
-            printf(" · model [%s]", slothdb::ask::DefaultModel().name);
-        } else {
-            printf(" · model [not compiled in]");
-        }
-        printf("\n\n");
+    // No argument: interactive NL shell. Each non-empty line runs through
+    // the NL pipeline. Blank line / `exit` / Ctrl+D exits back to SQL.
+    printf("ask mode: natural language -> SQL, inside the shell.\n");
+    if (slothdb::ask::EmbeddedAvailable()) {
+        printf("  Model: %s (loads on first query).\n",
+               slothdb::ask::DefaultModel().name);
+    } else {
+        printf("  Rules parser only (built without -DSLOTHDB_ASK_MODEL=ON).\n");
     }
+    printf("  Docs: https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md\n");
+    printf("  `exit` / blank line / Ctrl+D to leave.\n\n");
 
-    AskMode sticky = mode; // honor the flag given alongside `.ask`
     while (true) {
         printf("ask> ");
         fflush(stdout);
@@ -331,57 +325,94 @@ static void handle_ask(slothdb_connection *conn, const std::string &arg) {
         if (line.empty()) break;
         if (line == "exit" || line == "quit" || line == ":q" ||
             line == ":quit" || line == ":exit") break;
-        if (line == ":ai")    { sticky = AskMode::Cloud;    printf("  (cloud mode on)\n");    continue; }
-        if (line == ":model") { sticky = AskMode::Embedded; printf("  (embedded mode on)\n"); continue; }
-        if (line == ":rules") { sticky = AskMode::Rules;    printf("  (rules mode on — no AI fallback)\n"); continue; }
-
-        AskMode line_mode = sticky;
-        if (strip_model_flag(line)) line_mode = AskMode::Embedded;
-        else if (strip_ai_flag(line)) line_mode = AskMode::Cloud;
-        if (!ask_once(conn, line, line_mode)) break;
+        if (!ask_once(conn, line)) break;
         printf("\n");
     }
     printf("Back to SQL mode.\n");
 }
 
-static void handle_tables(slothdb_connection *conn, const std::string &arg) {
-    std::string sql = "SELECT table_name FROM information_schema.tables";
-    if (!arg.empty()) {
-        std::string pattern = arg;
-        // Strip surrounding quotes if the user gave them.
-        if (pattern.size() >= 2 && (pattern.front() == '\'' || pattern.front() == '"')) {
-            pattern = pattern.substr(1, pattern.size() - 2);
+// Simple wildcard match: '%' matches any run of chars. Used for the
+// optional LIKE pattern on .tables.
+static bool like_match(const std::string &name, const std::string &pattern) {
+    // Iterative DP-free matcher for '%' only (no '_' / escapes needed here).
+    size_t ni = 0, pi = 0, star_n = std::string::npos, star_p = 0;
+    while (ni < name.size()) {
+        if (pi < pattern.size() && pattern[pi] == '%') {
+            star_p = ++pi;
+            star_n = ni;
+        } else if (pi < pattern.size() && pattern[pi] == name[ni]) {
+            pi++; ni++;
+        } else if (star_n != std::string::npos) {
+            pi = star_p;
+            ni = ++star_n;
+        } else {
+            return false;
         }
-        sql += " WHERE table_name LIKE '" + pattern + "'";
     }
-    sql += " ORDER BY table_name";
-    // Best-effort: if information_schema isn't implemented, fall through with a hint.
-    slothdb_result *result = nullptr;
-    auto status = slothdb_query(conn, sql.c_str(), &result);
-    if (status == SLOTHDB_OK) {
-        print_result(result);
-        slothdb_free_result(result);
-        return;
-    }
-    slothdb_free_result(result);
-    printf("(no tables, or catalog introspection unavailable — try \n"
-           " SELECT * FROM information_schema.tables)\n");
+    while (pi < pattern.size() && pattern[pi] == '%') pi++;
+    return pi == pattern.size();
 }
 
-static void handle_schema(slothdb_connection *conn, const std::string &arg) {
-    std::string sql;
-    if (arg.empty()) {
-        sql = "SELECT table_name, column_name, data_type "
-              "FROM information_schema.columns ORDER BY table_name, ordinal_position";
-    } else {
-        std::string name = arg;
-        if (name.size() >= 2 && (name.front() == '\'' || name.front() == '"')) {
-            name = name.substr(1, name.size() - 2);
-        }
-        sql = "SELECT column_name, data_type FROM information_schema.columns "
-              "WHERE table_name = '" + name + "' ORDER BY ordinal_position";
+// Enumerate tables via the catalog C API — information_schema isn't a real
+// schema in SlothDB's parser, so SQL-based introspection doesn't work.
+static void handle_tables(slothdb_connection *conn, const std::string &arg) {
+    std::string pattern = arg;
+    if (pattern.size() >= 2 && (pattern.front() == '\'' || pattern.front() == '"')) {
+        pattern = pattern.substr(1, pattern.size() - 2);
     }
-    run_query(conn, sql);
+    uint64_t n = slothdb_table_count(conn);
+    if (n == 0) {
+        printf("(no tables)\n");
+        return;
+    }
+    printf("%-32s\n", "table_name");
+    printf("--------------------------------\n");
+    uint64_t shown = 0;
+    for (uint64_t i = 0; i < n; i++) {
+        const char *name = slothdb_table_name(conn, i);
+        std::string sname(name ? name : "");
+        if (!pattern.empty() && !like_match(sname, pattern)) continue;
+        printf("%-32s\n", sname.c_str());
+        shown++;
+    }
+    printf("(%llu table%s)\n", (unsigned long long)shown, shown == 1 ? "" : "s");
+}
+
+// Show columns for a specific table (or every table when arg is empty)
+// via the catalog C API.
+static void handle_schema(slothdb_connection *conn, const std::string &arg) {
+    std::string name = arg;
+    if (name.size() >= 2 && (name.front() == '\'' || name.front() == '"')) {
+        name = name.substr(1, name.size() - 2);
+    }
+    uint64_t n = slothdb_table_count(conn);
+    if (n == 0) { printf("(no tables)\n"); return; }
+
+    auto print_table = [&](uint64_t ti) {
+        const char *tname = slothdb_table_name(conn, ti);
+        if (!tname) return;
+        printf("%s (\n", tname);
+        uint64_t cn = slothdb_table_column_count(conn, ti);
+        for (uint64_t j = 0; j < cn; j++) {
+            const char *cname = slothdb_table_column_name(conn, ti, j);
+            const char *ctype = slothdb_table_column_type(conn, ti, j);
+            printf("  %-24s %s%s\n",
+                   cname ? cname : "",
+                   ctype ? ctype : "",
+                   (j + 1 == cn) ? "" : ",");
+        }
+        printf(");\n");
+    };
+
+    if (name.empty()) {
+        for (uint64_t i = 0; i < n; i++) { print_table(i); if (i + 1 < n) printf("\n"); }
+        return;
+    }
+    for (uint64_t i = 0; i < n; i++) {
+        const char *tname = slothdb_table_name(conn, i);
+        if (tname && name == tname) { print_table(i); return; }
+    }
+    printf("(no table named '%s')\n", name.c_str());
 }
 
 // SQL keyword completion (for linenoise TAB).

@@ -4,32 +4,40 @@
   <img src="../assets/ask-demo.svg" alt="slothdb .ask demo — natural-language queries translated to SQL" width="100%">
 </p>
 
-`.ask` translates plain English into SQL, shows you the SQL, and prompts before running. It's **pure rules** — no model weights, no network, no telemetry. Around 50 KB of C++ inside the regular SlothDB binary.
+`.ask` turns plain English into SQL, shows you the SQL, and prompts before running. Nothing leaves the machine — inference runs locally.
 
-## Two modes
+## How it works
+
+Two layers, tried in this order:
+
+1. **Embedded model** (when built with `-DSLOTHDB_ASK_MODEL=ON`). A ~310 MB [Qwen2.5-Coder-0.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) GGUF runs locally via llama.cpp. On the first query the model is downloaded to `~/.slothdb/models/`; subsequent queries are fully offline. Handles arbitrary NL.
+2. **Rules parser** (always on). A ~50 KB pure-C++ pattern engine covering the common shapes (COUNT / SUM / AVG / MIN / MAX / GROUP BY / TOP-N / latest / superlative / `show tables`). Used as a fallback when the model isn't compiled in, or when the model can't produce SQL.
+
+No cloud, no API keys, no telemetry. The only network activity is the one-time model download on first use, and only if `SLOTHDB_ASK_MODEL=ON` was set at build time.
+
+## Two usage modes
 
 **Single-shot:**
 
 ```
 slothdb> .ask how many sales in 2024
+-- Qwen2.5-Coder-0.5B-Instruct-Q4_K_M...
 -- SELECT COUNT(*) FROM "sales" WHERE "order_date" LIKE '2024%'
 Run? [Y/n] y
 3
 ```
 
-**Interactive** — enter by typing `.ask` alone. Keep asking without re-prefixing. `exit` / `quit` / blank line / Ctrl-D leaves.
+**Interactive** — type `.ask` alone. Keep asking without re-prefixing; `exit` / blank line / Ctrl-D leaves.
 
 ```
 slothdb> .ask
-ask mode — type a question in English.
-  Commands: `exit` / `quit` / blank line / Ctrl+D to leave.
+ask mode — type a question in English. Model: Qwen2.5-Coder-0.5B-Instruct-Q4_K_M (loads on first query).
+  `exit` / blank line / Ctrl+D to leave.
 
-ask> find me the latest sales
--- SELECT * FROM "sales" ORDER BY "order_date" DESC LIMIT 1
-Run? [Y/n] y
-…
-ask> which region had the most customer_id
--- SELECT "region", COUNT(DISTINCT "customer_id") AS "n" FROM "sales" GROUP BY "region" ORDER BY COUNT(DISTINCT "customer_id") DESC LIMIT 1
+ask> show tables
+-- SELECT table_name FROM information_schema.tables ORDER BY table_name
+ask> most loyal repeat customers
+-- SELECT "customer_id", COUNT(*) AS orders FROM "sales" GROUP BY "customer_id" HAVING COUNT(*) > 1 ORDER BY orders DESC LIMIT 10
 Run? [Y/n] y
 …
 ask> exit
@@ -37,10 +45,28 @@ Back to SQL mode.
 slothdb>
 ```
 
-## Supported phrasings
+## Building with the embedded model
+
+Default builds exclude the model — the binary stays small and there's no llama.cpp dependency. To turn it on:
+
+```bash
+git submodule update --init --depth 1 third_party/llama.cpp
+cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_ASK_MODEL=ON
+cmake --build build --config Release
+./build/src/Release/slothdb
+```
+
+First `.ask` call downloads the GGUF (~310 MB) to `~/.slothdb/models/`. The model lives there permanently; move or delete the file to pick up a different model.
+
+**Binary impact.** Default build stays small. With `SLOTHDB_ASK_MODEL=ON` the slothdb binary grows by ~30 MB (statically-linked llama.cpp + ggml). Model weights themselves are never bundled — they live on disk under `~/.slothdb/`.
+
+## What the rules parser covers
+
+When the model isn't compiled in, these phrasings still work:
 
 | Shape | Example | Generates |
 |---|---|---|
+| Catalog | `show tables`, `list tables`, `what tables` | `SELECT table_name FROM information_schema.tables` |
 | Count | `how many sales`, `count of sales`, `number of sales` | `COUNT(*)` |
 | Count + year | `how many sales in 2024` | adds `WHERE date LIKE '2024%'` |
 | Sum | `total amount`, `sum of amount` | `SUM(amount)` |
@@ -51,21 +77,21 @@ slothdb>
 | Superlative | `which region had the most customer_id`, `which month had most orders` | `GROUP BY key` + `COUNT(DISTINCT)` or `SUM`, `ORDER BY … DESC LIMIT 1` |
 | Select-all | `rows from sales` | `SELECT * FROM sales LIMIT 100` |
 
-Year filtering (`in 2024`, `during 2024`) auto-detects a `date`-typed or `*_date` / `*_at` column. If there isn't one, the filter is skipped silently — only the underlying query runs.
+Year filtering (`in 2024`, `during 2024`) auto-detects a `date`-typed or `*_date` / `*_at` column. If there isn't one, the filter is skipped.
 
-## Heuristics you should know about
+## Heuristics worth knowing
 
-- **Singular ↔ plural**: `sale` resolves to `sales` (and back). This matters because different users phrase the same question differently.
-- **ID-column detection**: a metric named `id` or ending in `_id` is treated as an identifier, not a value. `which region had most customer_id` uses `COUNT(DISTINCT customer_id)`, not `SUM` — because summing IDs is meaningless.
-- **Exact match before synonym**: `total price` on a two-table schema with `sales.amount` and `products.price` routes to `products`, not `sales` — even though synonyms would route `price → amount`. Exact column-name wins.
-- **Filler words stripped**: `find`, `me`, `show`, `give`, `tell`, `list`, `which`, `who`, `had`, `has`, `please`, `all`, `the` — all stripped before matching. So *"find me the latest sales"* is equivalent to *"latest sales"*.
-- **Month / year / week / day grouping** on a **typed DATE** column uses `EXTRACT`. On a **VARCHAR** column we fall back to grouping by the whole string — SlothDB's planner doesn't currently accept function expressions in `GROUP BY`, so the coarser grouping keeps the query correct. Once that lands we'll tighten to `SUBSTRING(date, 1, 7)` for monthly, etc.
+- **Singular ↔ plural**: `sale` resolves to `sales` (and back).
+- **ID-column detection**: a metric named `id` or ending in `_id` is treated as an identifier, not a value. `which region had most customer_id` uses `COUNT(DISTINCT customer_id)`, not `SUM` — summing IDs is meaningless.
+- **Exact match before synonym**: `total price` on a schema with `sales.amount` and `products.price` routes to `products`, not `sales`.
+- **Filler words stripped**: `find`, `me`, `show`, `give`, `tell`, `list`, `which`, `who`, `had`, `has`, `please`, `all`, `the` — all stripped before matching.
+- **Month / year / week / day grouping** on a typed `DATE` column uses `EXTRACT`; on a `VARCHAR` it groups by the whole string (SlothDB's planner currently rejects function expressions in `GROUP BY`).
 
 ## Column-name synonyms
 
-If the NL noun doesn't match a column exactly, `.ask` tries a small synonym table:
+When the NL noun doesn't match a column exactly, the rules parser consults a small synonym table. (The model ignores this and routes columns directly.)
 
-| You say | We look for |
+| You say | Rules parser looks for |
 |---|---|
 | `revenue` | `revenue`, `total`, `amount`, `value`, `price`, `sales`, `sum` |
 | `amount` | `amount`, `total`, `value`, `price` |
@@ -78,87 +104,8 @@ If the NL noun doesn't match a column exactly, `.ask` tries a small synonym tabl
 | `date` / `month` / `year` | `date`, `day`, `time`, `timestamp`, `created_at`, `order_date` |
 | `region` | `region`, `country`, `location`, `area` |
 
-## What `.ask` won't do (on purpose)
+Entries live in `src/ask/nl_to_sql.cpp`, function `ColumnSynonyms()`. Add via PR.
 
-The rule engine is narrow by design — it refuses rather than hallucinate SQL it doesn't understand. Specifically:
+## Safety
 
-- **Multi-table JOINs** — if your question implicitly joins two tables ("customer names with their total spend"), `.ask` refuses. Write the JOIN yourself.
-- **Genuinely ambiguous phrasings** — "who are my most loyal repeat customers", "which products are trending" — these don't have a single correct SQL answer. The refusal message points you at `.schema` and the supported list here.
-- **Running totals / cumulative sums** — the window-function SQL is standard, but SlothDB's current engine doesn't execute unbounded-frame windows correctly. `.ask` refuses with a pointer to that gap rather than generate misleading output.
-- **Full-text search / fuzzy matching on values** — no `LIKE '%foo%'` on arbitrary text unless you name the column and value explicitly (which is just SQL anyway).
-
-Two AI fallbacks exist for the open-ended tail. Both are opt-in; **default `.ask` stays rules-only, local, deterministic**.
-
-### `--ai` — cloud LLM (Ollama / OpenAI / Anthropic)
-
-Works today if you already run one of these. Zero bytes added to SlothDB; the LLM is whatever you're running.
-
-```bash
-# Local Ollama (default)
-ollama pull llama3:8b-instruct
-SLOTHDB_ASK_PROVIDER=ollama slothdb
-
-# OpenAI
-export OPENAI_API_KEY=sk-...
-SLOTHDB_ASK_PROVIDER=openai slothdb
-
-# Anthropic
-export ANTHROPIC_API_KEY=sk-ant-...
-SLOTHDB_ASK_PROVIDER=anthropic slothdb
-```
-
-```
-slothdb> .ask --ai most loyal repeat customers
--- trying ollama (llama3:8b-instruct)...
--- SELECT customer_id, COUNT(*) AS orders FROM sales GROUP BY customer_id HAVING COUNT(*) > 1 ORDER BY orders DESC LIMIT 10
-Run? [Y/n]
-```
-
-Env vars:
-- `SLOTHDB_ASK_PROVIDER` — `ollama` (default) / `openai` / `anthropic` / `none`
-- `SLOTHDB_ASK_MODEL` — model name (e.g. `llama3:8b`, `gpt-4o-mini`, `claude-3-5-haiku-20241022`)
-- `SLOTHDB_ASK_HOST` — for Ollama (e.g. `127.0.0.1:11434`)
-- `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` — for the respective providers
-
-The core SlothDB engine stays offline — only `.ask --ai` ever makes an outbound call, and only with an explicit flag or `:ai` toggle.
-
-### <a id="embedded-model"></a>`--model` — embedded local GGUF (opt-in build)
-
-Fully local, no network, no API keys. Enabled at build time; the model file is lazy-downloaded to `~/.slothdb/models/` on first use.
-
-```bash
-# One-time setup:
-git submodule update --init --depth 1 third_party/llama.cpp
-cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_ASK_MODEL=ON
-cmake --build build --config Release
-./build/src/slothdb
-
-# In the shell — first call downloads ~310 MB; subsequent calls are offline:
-slothdb> .ask --model most loyal repeat customers
--- running local Qwen2.5-Coder-0.5B-Instruct-Q4_K_M...
-  Downloading Qwen2.5-Coder-0.5B-Instruct-Q4_K_M (~310 MB) from HuggingFace...
-  (one-time; lives in ~/.slothdb/models/)
--- SELECT "customer_id", COUNT(*) AS orders FROM "sales" GROUP BY "customer_id" HAVING COUNT(*) > 1 ORDER BY orders DESC LIMIT 10
-Run? [Y/n]
-```
-
-**Model choice.** Pinned to [Qwen2.5-Coder-0.5B-Instruct at Q4_K_M](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF) — Apache 2.0, ~310 MB on disk, coding-tuned (better than the generic Instruct variant on SQL tasks for the same size). A future release may swap to a SlothDB-specific fine-tune at smaller size.
-
-**Binary impact.** Default build stays at 8 MB — the `SLOTHDB_ASK_MODEL` option is off by default and `llama.cpp` is only compiled when the flag is on. The model weights themselves are never bundled in the binary; they live in `~/.slothdb/models/` and the user controls when they download.
-
-**Status (0.1.7):** Scaffolding landed. Full inference path is wired but marked experimental — the llama.cpp API changes across releases and we haven't stress-tested against every Windows/Linux/macOS toolchain. Contributions welcome. If the build fails for you, report with the CMake error and the llama.cpp commit hash from `git -C third_party/llama.cpp log -1`.
-
-### Interactive mode flags
-
-Inside the `ask>` sub-REPL you can switch backend per-line or stickily:
-
-```
-ask> .ai                     # sticky: route all future lines via --ai
-ask> .model                  # sticky: route via --model
-ask> .rules                  # sticky: rules-only (default; refuses on miss)
-ask> most loyal customers --ai     # one-off override on this line
-```
-
-## Extending the synonyms
-
-Synonyms live in `src/ask/nl_to_sql.cpp`, function `ColumnSynonyms()`. Short and auditable by design — every entry is a place the engine guesses, which is also a place it can be wrong. Add entries via PR.
+Every generated SQL statement is shown with a `[Y/n]` prompt before execution. There's no autorun, no implicit writes — the pipeline is always *see the SQL → press y → run it*.

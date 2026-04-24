@@ -101,7 +101,9 @@ struct ParsedColumnDef {
     bool is_primary_key = false;
 };
 
-// CREATE TABLE statement.
+// CREATE TABLE statement. When `query` is set this is CTAS
+// (CREATE [OR REPLACE] TABLE <name> AS SELECT ...): `columns` stays empty
+// and the schema is inferred from the SELECT's result types at execution.
 class CreateTableStatement : public ParsedStatement {
 public:
     CreateTableStatement() : ParsedStatement(StatementType::CREATE_TABLE) {}
@@ -109,6 +111,9 @@ public:
     std::string table_name;
     std::vector<ParsedColumnDef> columns;
     bool if_not_exists = false;
+    bool or_replace = false;
+    std::unique_ptr<SelectStatement> query;     // non-null for CTAS
+    std::string original_sql;                   // raw SELECT SQL for CTAS re-run
 };
 
 // DROP TABLE statement.

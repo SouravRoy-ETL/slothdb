@@ -1141,6 +1141,7 @@ ParsedStmtPtr Parser::ParseCreateStatement() {
     Expect(TokenType::KW_TABLE, "after CREATE");
 
     auto stmt = std::make_unique<CreateTableStatement>();
+    stmt->or_replace = or_replace;
     if (MatchKeyword(TokenType::KW_IF)) {
         Expect(TokenType::KW_NOT, "after IF");
         Expect(TokenType::KW_EXISTS, "after NOT");
@@ -1149,16 +1150,15 @@ ParsedStmtPtr Parser::ParseCreateStatement() {
 
     stmt->table_name = ExpectIdentifier("for table name").value;
 
-    // CREATE TABLE ... AS SELECT ...
+    // CREATE [OR REPLACE] TABLE <name> AS SELECT ... — CTAS.
+    // Schema is inferred at execution from the SELECT's result types, so
+    // we just stash the SelectStatement; Connection materializes into a
+    // real table. Mirrors the CREATE VIEW branch above.
     if (MatchKeyword(TokenType::KW_AS)) {
-        // CTAS: will be handled at execution level.
-        // Store the inner select as a special marker.
-        // For now, parse columns from the select result.
-        // We'll handle this in Connection::Query.
-        stmt->table_name = stmt->table_name; // keep name
-        // Parse isn't easy here without a proper CTAS node.
-        // Skip for now and require column defs.
-        ThrowError("CREATE TABLE AS SELECT not yet supported in parser");
+        auto inner = ParseSelectStatement();
+        stmt->query = std::unique_ptr<SelectStatement>(
+            static_cast<SelectStatement *>(inner.release()));
+        return stmt;
     }
 
     Expect(TokenType::LPAREN, "after table name");

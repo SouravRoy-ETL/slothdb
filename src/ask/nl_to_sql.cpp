@@ -297,9 +297,190 @@ std::string ExtractGroupBy(const std::vector<std::string> &tokens) {
     return "";
 }
 
+// Recognized file-source extensions. Ordered longest-first for greedy match.
+const std::vector<std::string> &FileExts() {
+    static const std::vector<std::string> v = {
+        ".parquet", ".sqlite", ".slothdb", ".arrow", ".xlsx",
+        ".avro", ".json", ".csv", ".tsv", ".db"
+    };
+    return v;
+}
+
+// Find a filename in the raw NL — quoted or bare. Returns the literal
+// file path (unquoted) plus the slice boundaries in the raw string for
+// downstream alias / view-name extraction. Returns empty filename on miss.
+struct FileMatch { std::string path; size_t start = 0; size_t end = 0; };
+FileMatch ExtractFilename(const std::string &raw) {
+    // Try quoted first: 'x.csv' or "x.csv".
+    for (char q : {'\'', '"'}) {
+        size_t i = 0;
+        while ((i = raw.find(q, i)) != std::string::npos) {
+            size_t j = raw.find(q, i + 1);
+            if (j == std::string::npos) break;
+            std::string inside = raw.substr(i + 1, j - i - 1);
+            auto lo = lower(inside);
+            for (const auto &ext : FileExts()) {
+                if (lo.size() >= ext.size() &&
+                    lo.compare(lo.size() - ext.size(), ext.size(), ext) == 0) {
+                    return {inside, i, j + 1};
+                }
+            }
+            i = j + 1;
+        }
+    }
+    // Bare token containing a recognized extension.
+    auto lo = lower(raw);
+    for (const auto &ext : FileExts()) {
+        size_t pos = 0;
+        while ((pos = lo.find(ext, pos)) != std::string::npos) {
+            // Walk back to start of the filename (not a space / quote / paren).
+            size_t s = pos;
+            while (s > 0) {
+                char c = lo[s - 1];
+                if (c == ' ' || c == '\t' || c == '(' || c == ')' ||
+                    c == ',' || c == '\'' || c == '"') break;
+                s--;
+            }
+            size_t e = pos + ext.size();
+            // End must be on a word boundary (don't match ".csvv").
+            if (e < raw.size()) {
+                char c = lo[e];
+                if (std::isalnum(static_cast<unsigned char>(c))) {
+                    pos = e;
+                    continue;
+                }
+            }
+            return {raw.substr(s, e - s), s, e};
+        }
+    }
+    return {};
+}
+
+// Extract `as <name>` or `into <name>` after `after_pos`. Returns the
+// raw identifier (no quoting) or empty if absent. Also accepts `named X`
+// and `called X` because those are what people actually type.
+std::string ExtractAsName(const std::string &raw_lower, size_t after_pos) {
+    struct Kw { const char *word; size_t len; };
+    static const Kw kws[] = {
+        {" as ", 4}, {" into ", 6}, {" named ", 7}, {" called ", 8}
+    };
+    for (const auto &kw : kws) {
+        size_t p = raw_lower.find(kw.word, after_pos);
+        if (p == std::string::npos) continue;
+        p += kw.len;
+        while (p < raw_lower.size() && std::isspace(
+                   static_cast<unsigned char>(raw_lower[p]))) p++;
+        size_t e = p;
+        while (e < raw_lower.size()) {
+            char c = raw_lower[e];
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') break;
+            e++;
+        }
+        if (e > p) return raw_lower.substr(p, e - p);
+    }
+    return "";
+}
+
+// Strip directory + extension from a file path for the fallback CTAS
+// name. "./data/sales.csv" -> "sales".
+std::string BasenameNoExt(const std::string &path) {
+    size_t s = path.find_last_of("/\\");
+    std::string name = (s == std::string::npos) ? path : path.substr(s + 1);
+    size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos) name = name.substr(0, dot);
+    // Defensive: make it a safe SQL identifier. Replace non-[A-Za-z0-9_]
+    // with '_', ensure leading char isn't a digit.
+    for (auto &c : name) {
+        if (!std::isalnum(static_cast<unsigned char>(c))) c = '_';
+    }
+    if (name.empty() ||
+        std::isdigit(static_cast<unsigned char>(name[0]))) {
+        name = "t_" + name;
+    }
+    return name;
+}
+
+// Rules that fire on a file-source intent — no schema lookup needed. The
+// file may not even be imported yet; that is the point. Covers the four
+// common shapes: SELECT over a file, COUNT rows, CREATE TABLE AS (load
+// into a named table), CREATE [LIVE] VIEW over the file.
+Result MatchFileSource(const std::string &raw) {
+    auto fm = ExtractFilename(raw);
+    if (fm.path.empty()) return NoMatch("no file reference");
+
+    std::string lo = lower(raw);
+    auto contains = [&](const std::string &needle) {
+        return lo.find(needle) != std::string::npos;
+    };
+
+    // Classify intent. Order matters: check specific (count, view) before
+    // generic (load, select).
+    bool want_count = contains("count ") || contains("how many") ||
+                      contains("number of rows") || contains("row count");
+    bool want_live_view = contains("live view");
+    bool want_view = want_live_view || contains("create view") ||
+                     contains(" view ");
+    bool want_load = contains("load ") || contains("import ") ||
+                     contains("ingest ");
+
+    std::ostringstream sql;
+    if (want_count) {
+        sql << "SELECT COUNT(*) FROM '" << fm.path << "'";
+        Result r; r.status = Status::OK; r.sql = sql.str(); return r;
+    }
+    if (want_view) {
+        // Try to find the view name. Users say "create view X from foo.csv"
+        // or "create live view X from foo.csv". Scan for "view <word>".
+        std::string view_name;
+        size_t vp = lo.find("view ");
+        if (vp != std::string::npos) {
+            size_t p = vp + 5;
+            while (p < lo.size() && std::isspace(
+                       static_cast<unsigned char>(lo[p]))) p++;
+            size_t e = p;
+            while (e < lo.size()) {
+                char c = lo[e];
+                if (!std::isalnum(static_cast<unsigned char>(c)) &&
+                    c != '_') break;
+                e++;
+            }
+            if (e > p) view_name = lo.substr(p, e - p);
+        }
+        if (view_name.empty() || view_name == "from" || view_name == "of") {
+            view_name = BasenameNoExt(fm.path) + "_v";
+        }
+        sql << "CREATE " << (want_live_view ? "LIVE " : "")
+            << "VIEW " << view_name << " AS SELECT * FROM '"
+            << fm.path << "'";
+        Result r; r.status = Status::OK; r.sql = sql.str(); return r;
+    }
+    if (want_load) {
+        std::string name = ExtractAsName(lo, fm.end);
+        if (name.empty()) name = BasenameNoExt(fm.path);
+        sql << "CREATE TABLE " << name << " AS SELECT * FROM '"
+            << fm.path << "'";
+        Result r; r.status = Status::OK; r.sql = sql.str(); return r;
+    }
+
+    // Fallback: `show sales.csv` / `query events.parquet` / `read x.json` /
+    // bare `'sales.csv'` — plain SELECT. Cap at 100 rows when the user
+    // didn't ask for aggregation; this is a quick-look pattern, not an
+    // analytic query.
+    sql << "SELECT * FROM '" << fm.path << "' LIMIT 100";
+    Result r; r.status = Status::OK; r.sql = sql.str(); return r;
+}
+
 } // namespace
 
 Result Translate(const std::string &nl, const Schema &schema) {
+    // PATTERN 0 (schema-free): file-source intents. Runs before tokenize
+    // because filenames contain dots that the tokenizer splits on. Works
+    // on an empty catalog (the whole point of "load x.csv").
+    {
+        auto r = MatchFileSource(nl);
+        if (r.status == Status::OK) return r;
+    }
+
     auto tokens = Tokenize(nl);
     if (tokens.empty()) return NoMatch("empty question");
 

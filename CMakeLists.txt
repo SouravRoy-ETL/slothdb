@@ -38,6 +38,13 @@ if(SLOTHDB_ASK_MODEL)
     set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)
     set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
+    # MSVC: llama-chat.cpp uses u8"..." literals that become const char8_t*
+    # under C++20 and clash with lambdas expecting const char*. This flag
+    # reverts u8 literals to const char* without downgrading the parent
+    # project's C++20 standard.
+    if(MSVC AND TARGET llama)
+        target_compile_options(llama PRIVATE /Zc:char8_t-)
+    endif()
 endif()
 
 include(cmake/CompilerOptions.cmake)

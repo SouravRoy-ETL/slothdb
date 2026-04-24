@@ -234,6 +234,58 @@ QueryResult Connection::Query(const std::string &sql) {
             continue;
         }
 
+        // Handle CREATE TABLE AS SELECT (CTAS): execute the SELECT, materialize
+        // the result into a new table. Schema is inferred from the query's
+        // result types/names. Mirrors the CREATE VIEW materialization path but
+        // without SetViewQuery — this is a real table, not a virtual view.
+        if (stmt->GetType() == StatementType::CREATE_TABLE) {
+            auto &ct = static_cast<CreateTableStatement &>(*stmt);
+            if (ct.query) {
+                if (ct.if_not_exists && db_.GetCatalog().GetTable(ct.table_name)) {
+                    continue;
+                }
+
+                // Extract the SELECT SQL from the original statement.
+                std::string select_sql;
+                {
+                    auto upper_sql = StringUtil::Upper(sql);
+                    auto as_pos = upper_sql.find(" AS ");
+                    if (as_pos != std::string::npos) {
+                        select_sql = sql.substr(as_pos + 4);
+                        while (!select_sql.empty() &&
+                               (select_sql.back() == ';' || select_sql.back() == ' ' ||
+                                select_sql.back() == '\n' || select_sql.back() == '\r')) {
+                            select_sql.pop_back();
+                        }
+                    }
+                }
+                if (select_sql.empty()) {
+                    throw BinderException(
+                        "CREATE TABLE AS SELECT: could not extract SELECT text");
+                }
+
+                auto ctas_result = Query(select_sql);
+
+                if (ct.or_replace) db_.GetCatalog().DropTable(ct.table_name);
+                if (db_.GetCatalog().GetTable(ct.table_name)) {
+                    throw CatalogException("Table '" + ct.table_name +
+                                           "' already exists");
+                }
+
+                std::vector<ColumnDefinition> cols;
+                for (idx_t i = 0; i < ctas_result.column_names.size(); i++) {
+                    cols.emplace_back(ctas_result.column_names[i],
+                                      ctas_result.column_types[i]);
+                }
+                auto &entry = db_.GetCatalog().CreateTable(ct.table_name,
+                                                           std::move(cols));
+                auto storage = std::make_shared<DataTable>(ctas_result.column_types);
+                BulkLoadRows(*storage, ctas_result.column_types, ctas_result.rows);
+                entry.SetStorage(storage);
+                continue;
+            }
+        }
+
         // Handle CREATE VIEW: store the SQL query for virtual re-execution.
         if (stmt->GetType() == StatementType::CREATE_VIEW) {
             auto &cv = static_cast<CreateViewStatement &>(*stmt);

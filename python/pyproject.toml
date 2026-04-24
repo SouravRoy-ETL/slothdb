@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slothdb"
-version = "0.1.6"
-description = "Fast in-process OLAP engine for Python — query Parquet, CSV, JSON, Arrow and SQLite with SQL. 1.1–8.6× faster than DuckDB."
+version = "0.1.7"
+description = "Embedded SQL OLAP engine for Python — query Parquet, CSV, JSON, Arrow, Avro, Excel, and SQLite files directly with SQL, in-process. Zero server, no import step."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
