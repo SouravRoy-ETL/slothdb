@@ -194,6 +194,7 @@ static bool confirm_and_run(slothdb_connection *conn, const std::string &sql) {
 // catalog-intent shortcut above the .ask pipeline).
 static void handle_tables(slothdb_connection *conn, const std::string &arg);
 static void handle_schema(slothdb_connection *conn, const std::string &arg);
+static std::string strip_invisible(const std::string &s);
 
 // Lowercase copy for intent matching.
 static std::string to_lower(const std::string &s) {
@@ -316,7 +317,7 @@ static void handle_ask(slothdb_connection *conn, const std::string &arg) {
         fflush(stdout);
         char buf[1024];
         if (!fgets(buf, sizeof(buf), stdin)) { printf("\n"); break; }
-        std::string line(buf);
+        std::string line = strip_invisible(buf);
         while (!line.empty() &&
                (line.back() == '\n' || line.back() == '\r' ||
                 line.back() == ' '  || line.back() == '\t')) {
@@ -454,20 +455,67 @@ static void slothdb_complete(const char *buf, linenoiseCompletions *lc) {
 }
 #endif
 
+// Strip invisible UTF-8 characters that sneak into pasted input and break
+// parsing silently:
+//   U+200B..U+200F  ZWSP / ZWNJ / ZWJ / LRM / RLM
+//   U+202A..U+202E  LRE / RLE / PDF / LRO / RLO
+//   U+2066..U+2069  LRI / RLI / FSI / PDI
+//   U+FEFF          BOM / zero-width no-break space
+//   U+00AD          soft hyphen
+// Windows File Explorer's "Copy as path" injects U+202A before the drive
+// letter; the user sees `'C:\...'` but the shell sees `'<LRE>C:\...'` and
+// the CSV reader reports a confusing "file not found." Cheap to skip before
+// parsing, zero cost when absent.
+static std::string strip_invisible(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    const auto n = s.size();
+    for (size_t i = 0; i < n; ) {
+        unsigned char b0 = static_cast<unsigned char>(s[i]);
+        if (b0 == 0xE2 && i + 2 < n) {
+            unsigned char b1 = static_cast<unsigned char>(s[i + 1]);
+            unsigned char b2 = static_cast<unsigned char>(s[i + 2]);
+            if (b1 == 0x80 && ((b2 >= 0x8B && b2 <= 0x8F) ||
+                               (b2 >= 0xAA && b2 <= 0xAE))) {
+                i += 3; continue;
+            }
+            if (b1 == 0x81 && b2 >= 0xA6 && b2 <= 0xA9) {
+                i += 3; continue;
+            }
+        }
+        if (b0 == 0xEF && i + 2 < n &&
+            static_cast<unsigned char>(s[i + 1]) == 0xBB &&
+            static_cast<unsigned char>(s[i + 2]) == 0xBF) {
+            i += 3; continue;
+        }
+        if (b0 == 0xC2 && i + 1 < n &&
+            static_cast<unsigned char>(s[i + 1]) == 0xAD) {
+            i += 2; continue;
+        }
+        out.push_back(s[i]);
+        i++;
+    }
+    return out;
+}
+
 // Read one logical line, falling back to getline on Windows. Returns false on
-// EOF / Ctrl+D.
+// EOF / Ctrl+D. Strips invisible BIDI / ZWSP / BOM marks from the result so
+// pasted file paths with hidden control characters parse the same as the
+// visible text the user sees.
 static bool read_line(const char *prompt, std::string &out) {
 #ifdef SLOTHDB_HAS_LINENOISE
     char *raw = linenoise(prompt);
     if (!raw) return false;
-    out = raw;
-    if (!out.empty()) linenoiseHistoryAdd(raw);
+    out = strip_invisible(raw);
+    if (!out.empty()) linenoiseHistoryAdd(out.c_str());
     linenoiseFree(raw);
     return true;
 #else
     printf("%s", prompt);
     fflush(stdout);
-    return static_cast<bool>(std::getline(std::cin, out));
+    if (!std::getline(std::cin, out)) return false;
+    out = strip_invisible(out);
+    return true;
 #endif
 }
 
