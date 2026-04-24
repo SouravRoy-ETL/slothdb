@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef SLOTHDB_ASK_MODEL
@@ -362,6 +363,143 @@ static std::string IdentKey(const std::string &s) {
 // form differs from the schema's canonical casing. Never rewrites
 // single-word all-lowercase matches (too many false positives against
 // SQL keywords like `date`, `count`, `sum`).
+// Extract every bare or double-quoted identifier in the SQL that could be
+// referencing a column. Skips string literals. Used by the schema
+// validator to flag columns the model hallucinated.
+std::vector<std::string> ExtractIdentifiers(const std::string &sql) {
+    std::vector<std::string> out;
+    bool in_str = false;
+    size_t i = 0;
+    auto is_id_start = [](char c) {
+        return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+    };
+    auto is_id_char = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    };
+    while (i < sql.size()) {
+        char c = sql[i];
+        if (in_str) {
+            if (c == '\'' && (i + 1 >= sql.size() || sql[i + 1] != '\'')) in_str = false;
+            i++; continue;
+        }
+        if (c == '\'') { in_str = true; i++; continue; }
+        if (c == '"') {
+            // Quoted identifier - collect until the closing quote.
+            size_t e = i + 1;
+            while (e < sql.size() && sql[e] != '"') e++;
+            if (e > i + 1) out.push_back(sql.substr(i + 1, e - i - 1));
+            i = (e < sql.size()) ? e + 1 : e;
+            continue;
+        }
+        if (is_id_start(c)) {
+            size_t start = i;
+            while (i < sql.size() && is_id_char(sql[i])) i++;
+            out.push_back(sql.substr(start, i - start));
+            continue;
+        }
+        i++;
+    }
+    return out;
+}
+
+// SQL keywords, common builtins, and typical aliases we never flag as
+// "not in schema". Conservative: if a token matches any of these, it's
+// definitely not a hallucinated column. Case-insensitive.
+static bool IsSQLReservedOrBuiltin(const std::string &tok_lower) {
+    static const std::unordered_set<std::string> known = {
+        // Statement keywords
+        "select","from","where","group","by","having","order","limit","offset",
+        "with","as","on","using","join","inner","left","right","full","cross",
+        "outer","union","except","intersect","all","distinct","qualify",
+        "and","or","not","in","is","null","like","between","case","when","then",
+        "else","end","asc","desc","true","false","only","ties","nulls","first","last",
+        "create","table","view","index","drop","alter","insert","update","delete",
+        "into","values","set","if","exists","replace","temp","temporary",
+        "primary","key","foreign","references","default","unique","check","constraint",
+        // Frame
+        "over","partition","rows","range","unbounded","preceding","following","current","row",
+        // Aggregate functions
+        "count","sum","avg","min","max","median","mode","mean","stddev","variance",
+        "array_agg","string_agg","group_concat","list_agg","bit_and","bit_or","bit_xor",
+        "any_value","first_value","last_value","nth_value",
+        // Window functions
+        "row_number","rank","dense_rank","percent_rank","cume_dist","ntile","lag","lead",
+        // String / math / date builtins
+        "upper","lower","length","char_length","substr","substring","trim","ltrim","rtrim",
+        "replace","left","right","concat","coalesce","nullif","cast","convert","format",
+        "abs","ceil","ceiling","floor","round","sqrt","power","pow","exp","log","ln",
+        "date","time","timestamp","interval","extract","year","month","day","hour","minute","second",
+        "now","current_date","current_time","current_timestamp",
+        "date_trunc","date_part","date_diff","date_add","date_sub",
+        "monthname","dayname","last_day","make_date","age",
+        // Common idioms
+        "true","false",
+        // File-source function aliases
+        "read_csv","read_parquet","read_json","read_xlsx","read_avro","read_arrow","sqlite_scan",
+        // Frequent alias names
+        "t","a","b","c","x","y","z","n","rn","cnt","val","res","tmp","alias",
+        "src","dst","left","right","lhs","rhs","old","new",
+        // Named windows
+        "w"
+    };
+    return known.count(tok_lower) > 0;
+}
+
+// Cross-check every identifier in the generated SQL against the schema.
+// Returns a list of column-shaped names that don't match any table or
+// column. Used to catch Qwen column hallucinations ("SELECT revenue"
+// when the table has no `revenue` column).
+std::vector<std::string> FindUnknownColumns(const std::string &sql, const Schema &schema) {
+    // Collect all schema names (tables + columns) in a normalized set.
+    std::unordered_set<std::string> schema_norm;
+    for (const auto &t : schema.tables) {
+        schema_norm.insert(IdentKey(t.name));
+        for (const auto &c : t.columns) schema_norm.insert(IdentKey(c.name));
+    }
+    // Collect aliases defined in this SQL (`AS <ident>` and `<table> <alias>`
+    // forms) so we don't flag them as unknown columns. Simple scan for
+    // ` AS <ident>` case-insensitive.
+    std::unordered_set<std::string> aliases;
+    {
+        std::string lo;
+        lo.reserve(sql.size());
+        for (char c : sql) lo.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c))));
+        size_t pos = 0;
+        while ((pos = lo.find(" as ", pos)) != std::string::npos) {
+            size_t p = pos + 4;
+            while (p < lo.size() && (lo[p] == ' ' || lo[p] == '\t')) p++;
+            if (p < lo.size() && lo[p] == '"') {
+                size_t e = lo.find('"', p + 1);
+                if (e != std::string::npos) aliases.insert(IdentKey(sql.substr(p + 1, e - p - 1)));
+                pos = (e == std::string::npos) ? lo.size() : e + 1;
+                continue;
+            }
+            size_t e = p;
+            while (e < lo.size() && (std::isalnum(static_cast<unsigned char>(lo[e])) || lo[e] == '_')) e++;
+            if (e > p) aliases.insert(IdentKey(sql.substr(p, e - p)));
+            pos = e;
+        }
+    }
+
+    auto idents = ExtractIdentifiers(sql);
+    std::vector<std::string> unknown;
+    std::unordered_set<std::string> seen;
+    for (const auto &id : idents) {
+        std::string lo;
+        for (char c : id) lo.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c))));
+        if (IsSQLReservedOrBuiltin(lo)) continue;
+        auto k = IdentKey(id);
+        if (schema_norm.count(k)) continue;
+        if (aliases.count(k)) continue;
+        if (seen.count(k)) continue;
+        seen.insert(k);
+        unknown.push_back(id);
+    }
+    return unknown;
+}
+
 std::string NormalizeIdentifiers(const std::string &sql, const Schema &schema) {
     // Build: normalized_key -> canonical_schema_name. Skip very short
     // names (<3 chars) to avoid rewriting common words.
@@ -563,6 +701,10 @@ const ModelSpec &PickModelForQuestion(const std::string &question) {
         " per ", " within each ", " in each ", " for each ",
         " rank ", "ranking", "top-", "top_",
         " biggest ", " smallest ", " largest ", " highest ", " lowest ",
+        " most important", " least important",
+        " most significant", " least significant",
+        " most valuable", " least valuable",
+        " best customer", " worst customer", " best ", " worst ",
         "appears most", "appears least",
         " most common", " least common", " most frequent", " least frequent",
         "most common", "least common", "most frequent", "least frequent",
@@ -852,6 +994,34 @@ EmbeddedResult GenerateSQLLocal(const Schema &schema,
         schema);
     if (r.sql.empty()) {
         r.message = "model returned empty SQL";
+        return r;
+    }
+
+    // Schema validator: catch column hallucinations before [Y/n] prompts
+    // the user to run wrong SQL. Walks the cleaned-up SQL for bare /
+    // quoted identifiers; any that isn't a SQL keyword, a schema table,
+    // a schema column, or an inline alias is flagged. Refuse cleanly
+    // with a list of valid columns so the user can rephrase.
+    auto unknown = FindUnknownColumns(r.sql, schema);
+    if (!unknown.empty()) {
+        std::ostringstream msg;
+        msg << "model referenced column(s) not in the schema: ";
+        for (size_t i = 0; i < unknown.size(); i++) {
+            if (i) msg << ", ";
+            msg << "`" << unknown[i] << "`";
+        }
+        msg << ".\n  Valid columns:";
+        for (const auto &t : schema.tables) {
+            msg << "\n    " << t.name << ": ";
+            for (size_t i = 0; i < t.columns.size(); i++) {
+                if (i) msg << ", ";
+                msg << t.columns[i].name;
+            }
+        }
+        msg << "\n  Rephrase with an explicit column, or set "
+               "SLOTHDB_ASK_MODEL_LARGE=1 for the 1.5B tier.";
+        r.message = msg.str();
+        r.ok = false;
         return r;
     }
     r.ok = true;
