@@ -30,7 +30,7 @@ std::string HomeDir() {
 #endif
 }
 
-// Render a DDL block for the prompt. Capped at 20 tables — enough for
+// Render a DDL block for the prompt. Capped at 20 tables - enough for
 // realistic shell sessions, prevents the prompt from exploding if the
 // user has an enormous catalog attached.
 std::string RenderDDL(const Schema &schema) {
@@ -49,7 +49,7 @@ std::string RenderDDL(const Schema &schema) {
 }
 
 // Build the chat-formatted prompt. Qwen2.5 uses the ChatML format
-// (<|im_start|>...<|im_end|>). We render that directly — llama.cpp's
+// (<|im_start|>...<|im_end|>). We render that directly - llama.cpp's
 // chat-template API would work too but this is explicit and easier to
 // debug when output looks wrong.
 std::string RenderPromptQwen(const std::string &ddl, const std::string &question) {
@@ -101,7 +101,7 @@ std::string ModelDir() {
 
 const ModelSpec &DefaultModel() {
     // Pinned GGUF. Qwen2.5-Coder-0.5B-Instruct, Q4_K_M quantization,
-    // ~310 MB on disk. Apache 2.0. Coding-tuned — better SQL quality
+    // ~310 MB on disk. Apache 2.0. Coding-tuned - better SQL quality
     // at this size than the generic Instruct variant.
     //
     // The SHA256 below is left empty for now; on first release land the
@@ -139,10 +139,10 @@ bool EnsureModelDownloaded(bool verbose, std::string &err) {
     if (std::filesystem::exists(path, ec)) {
         auto sz = std::filesystem::file_size(path, ec);
         if (!ec && sz > spec.expected_bytes / 2) {
-            // Size sanity check passed — trust the file.
+            // Size sanity check passed - trust the file.
             return true;
         }
-        // Partial / empty file — retry.
+        // Partial / empty file - retry.
         if (verbose) {
             fprintf(stderr, "  (existing model file looks truncated; re-downloading)\n");
         }
@@ -167,7 +167,7 @@ bool EnsureModelDownloaded(bool verbose, std::string &err) {
 
 // Silent log callback so llama.cpp / ggml don't flood stderr with
 // "llama_model_loader: ..." lines during every .ask call. Warnings and
-// errors still reach us — we just drop info/debug.
+// errors still reach us - we just drop info/debug.
 static void silent_log(ggml_log_level level, const char *text, void *) {
     if (level >= GGML_LOG_LEVEL_ERROR) {
         fputs(text, stderr);
@@ -243,7 +243,7 @@ EmbeddedResult GenerateSQLLocal(const Schema &schema,
         return r;
     }
 
-    // Greedy decode — simple and deterministic. The question space here
+    // Greedy decode - simple and deterministic. The question space here
     // (single SQL query) doesn't benefit much from sampling.
     std::string out;
     int n_predict = 512;
@@ -300,7 +300,7 @@ EmbeddedResult GenerateSQLLocal(const Schema &schema,
 
 EmbeddedResult GenerateSQLLocal(const Schema &, const std::string &) {
     EmbeddedResult r;
-    r.message = "embedded model not compiled in — "
+    r.message = "embedded model not compiled in - "
                 "rebuild with -DSLOTHDB_ASK_MODEL=ON (see docs/ASK.md)";
     return r;
 }

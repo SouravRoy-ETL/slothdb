@@ -22,7 +22,7 @@
   <circle cx="18" cy="16" r="6" fill="#ff5f56"/>
   <circle cx="38" cy="16" r="6" fill="#ffbd2e"/>
   <circle cx="58" cy="16" r="6" fill="#27c93f"/>
-  <text class="title" x="450" y="20" text-anchor="middle">slothdb demo — python</text>
+  <text class="title" x="450" y="20" text-anchor="middle">slothdb demo - python</text>
 
   <g transform="translate(24, 70)">
 
@@ -53,7 +53,7 @@
       <animate attributeName="opacity" from="0" to="1" begin="3.0s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="header" x="0" y="142">SlothDB demo — 100,000 rows, CSV on disk</text>
+      <text class="header" x="0" y="142">SlothDB demo - 100,000 rows, CSV on disk</text>
       <animate attributeName="opacity" from="0" to="1" begin="3.1s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">

@@ -190,7 +190,7 @@ static bool confirm_and_run(slothdb_connection *conn, const std::string &sql) {
     return true;
 }
 
-// Forward decls — definitions live below (shell dispatchers used by the
+// Forward decls - definitions live below (shell dispatchers used by the
 // catalog-intent shortcut above the .ask pipeline).
 static void handle_tables(slothdb_connection *conn, const std::string &arg);
 static void handle_schema(slothdb_connection *conn, const std::string &arg);
@@ -204,7 +204,7 @@ static std::string to_lower(const std::string &s) {
 
 // Catalog-intent classifier. Returns true if the question is purely
 // catalog introspection (show tables, describe X) and routes it to the
-// dot-command handlers, which use the C API rather than SQL —
+// dot-command handlers, which use the C API rather than SQL -
 // information_schema isn't a real schema in SlothDB's parser.
 static bool handle_catalog_intent(slothdb_connection *conn,
                                    const std::string &question) {
@@ -244,12 +244,12 @@ static bool handle_catalog_intent(slothdb_connection *conn,
     return false;
 }
 
-// Run one NL question. Rules-first for the common shapes — instant,
+// Run one NL question. Rules-first for the common shapes - instant,
 // deterministic, no model load. When rules refuse, hand off to the
 // embedded GGUF (if compiled in); it loads lazily on first miss and
 // handles open-ended NL. Shows the generated SQL with [Y/n] before running.
 static bool ask_once(slothdb_connection *conn, const std::string &question) {
-    // Catalog-introspection questions don't go through the SQL pipeline —
+    // Catalog-introspection questions don't go through the SQL pipeline -
     // SlothDB's parser doesn't expose information_schema, so we route
     // these to the dot-command handlers directly.
     if (handle_catalog_intent(conn, question)) return true;
@@ -282,7 +282,7 @@ static bool ask_once(slothdb_connection *conn, const std::string &question) {
         return true;
     }
 
-    // Rules refused and the model isn't compiled in — honest error.
+    // Rules refused and the model isn't compiled in - honest error.
     printf("  Rules didn't match: %s\n", r.message.c_str());
     if (!r.unresolved.empty()) {
         printf("  Unresolved token: '%s'\n", r.unresolved.c_str());
@@ -293,7 +293,7 @@ static bool ask_once(slothdb_connection *conn, const std::string &question) {
 }
 
 static void handle_ask(slothdb_connection *conn, const std::string &arg) {
-    // With an argument: single-shot. Pipeline → confirm → run → return.
+    // With an argument: single-shot. Pipeline -> confirm -> run -> return.
     if (!arg.empty()) {
         ask_once(conn, arg);
         return;
@@ -353,7 +353,7 @@ static bool like_match(const std::string &name, const std::string &pattern) {
     return pi == pattern.size();
 }
 
-// Enumerate tables via the catalog C API — information_schema isn't a real
+// Enumerate tables via the catalog C API - information_schema isn't a real
 // schema in SlothDB's parser, so SQL-based introspection doesn't work.
 static void handle_tables(slothdb_connection *conn, const std::string &arg) {
     std::string pattern = arg;
@@ -432,7 +432,7 @@ static const char *kSqlKeywords[] = {
 static void slothdb_complete(const char *buf, linenoiseCompletions *lc) {
     size_t buf_len = strlen(buf);
     if (buf_len == 0) return;
-    // Find the last whitespace — we complete the word after it.
+    // Find the last whitespace - we complete the word after it.
     const char *word = buf;
     for (size_t i = buf_len; i-- > 0; ) {
         if (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '\n') {
@@ -556,7 +556,7 @@ int main(int argc, char *argv[]) {
                 // Open the new database FIRST; swap in only on success.
                 // Previously this closed the old db before attempting the
                 // new open, so a failure left the shell with invalid
-                // handles and `return 1`'d the whole process — exiting
+                // handles and `return 1`'d the whole process - exiting
                 // the REPL instead of returning to the prompt.
                 slothdb_database   *new_db   = nullptr;
                 slothdb_connection *new_conn = nullptr;
@@ -580,7 +580,7 @@ int main(int argc, char *argv[]) {
                     if (new_db) slothdb_close(new_db);
                     continue;  // back to the prompt, old db still active
                 }
-                // Success — dispose of the old handles and swap.
+                // Success - dispose of the old handles and swap.
                 slothdb_disconnect(conn);
                 slothdb_close(db);
                 db = new_db;

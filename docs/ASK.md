@@ -1,10 +1,10 @@
-# `.ask` — Natural-language queries in the SlothDB shell
+# `.ask` - Natural-language queries in the SlothDB shell
 
 <p align="center">
-  <img src="../assets/ask-demo.svg" alt="slothdb .ask demo — natural-language queries translated to SQL" width="100%">
+  <img src="../assets/ask-demo.svg" alt="slothdb .ask demo - natural-language queries translated to SQL" width="100%">
 </p>
 
-`.ask` turns plain English into SQL, shows you the SQL, and prompts before running. Nothing leaves the machine — inference runs locally.
+`.ask` turns plain English into SQL, shows you the SQL, and prompts before running. Nothing leaves the machine - inference runs locally.
 
 ## How it works
 
@@ -27,11 +27,11 @@ Run? [Y/n] y
 3
 ```
 
-**Interactive** — type `.ask` alone. Keep asking without re-prefixing; `exit` / blank line / Ctrl-D leaves.
+**Interactive** - type `.ask` alone. Keep asking without re-prefixing; `exit` / blank line / Ctrl-D leaves.
 
 ```
 slothdb> .ask
-ask mode — type a question in English. Model: Qwen2.5-Coder-0.5B-Instruct-Q4_K_M (loads on first query).
+ask mode - type a question in English. Model: Qwen2.5-Coder-0.5B-Instruct-Q4_K_M (loads on first query).
   `exit` / blank line / Ctrl+D to leave.
 
 ask> show tables
@@ -47,7 +47,7 @@ slothdb>
 
 ## Building with the embedded model
 
-Default builds exclude the model — the binary stays small and there's no llama.cpp dependency. To turn it on:
+Default builds exclude the model - the binary stays small and there's no llama.cpp dependency. To turn it on:
 
 ```bash
 git submodule update --init --depth 1 third_party/llama.cpp
@@ -58,7 +58,7 @@ cmake --build build --config Release
 
 First `.ask` call downloads the GGUF (~310 MB) to `~/.slothdb/models/`. The model lives there permanently; move or delete the file to pick up a different model.
 
-**Binary impact.** Default build stays small. With `SLOTHDB_ASK_MODEL=ON` the slothdb binary grows by ~30 MB (statically-linked llama.cpp + ggml). Model weights themselves are never bundled — they live on disk under `~/.slothdb/`.
+**Binary impact.** Default build stays small. With `SLOTHDB_ASK_MODEL=ON` the slothdb binary grows by ~30 MB (statically-linked llama.cpp + ggml). Model weights themselves are never bundled - they live on disk under `~/.slothdb/`.
 
 ## What the rules parser covers
 
@@ -82,9 +82,9 @@ Year filtering (`in 2024`, `during 2024`) auto-detects a `date`-typed or `*_date
 ## Heuristics worth knowing
 
 - **Singular ↔ plural**: `sale` resolves to `sales` (and back).
-- **ID-column detection**: a metric named `id` or ending in `_id` is treated as an identifier, not a value. `which region had most customer_id` uses `COUNT(DISTINCT customer_id)`, not `SUM` — summing IDs is meaningless.
+- **ID-column detection**: a metric named `id` or ending in `_id` is treated as an identifier, not a value. `which region had most customer_id` uses `COUNT(DISTINCT customer_id)`, not `SUM` - summing IDs is meaningless.
 - **Exact match before synonym**: `total price` on a schema with `sales.amount` and `products.price` routes to `products`, not `sales`.
-- **Filler words stripped**: `find`, `me`, `show`, `give`, `tell`, `list`, `which`, `who`, `had`, `has`, `please`, `all`, `the` — all stripped before matching.
+- **Filler words stripped**: `find`, `me`, `show`, `give`, `tell`, `list`, `which`, `who`, `had`, `has`, `please`, `all`, `the` - all stripped before matching.
 - **Month / year / week / day grouping** on a typed `DATE` column uses `EXTRACT`; on a `VARCHAR` it groups by the whole string (SlothDB's planner currently rejects function expressions in `GROUP BY`).
 
 ## Column-name synonyms
@@ -108,4 +108,4 @@ Entries live in `src/ask/nl_to_sql.cpp`, function `ColumnSynonyms()`. Add via PR
 
 ## Safety
 
-Every generated SQL statement is shown with a `[Y/n]` prompt before execution. There's no autorun, no implicit writes — the pipeline is always *see the SQL → press y → run it*.
+Every generated SQL statement is shown with a `[Y/n]` prompt before execution. There's no autorun, no implicit writes - the pipeline is always *see the SQL -> press y -> run it*.

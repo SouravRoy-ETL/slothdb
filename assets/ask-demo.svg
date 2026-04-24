@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" width="960" height="620" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 680" width="960" height="680" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace">
   <style>
     .bg       { fill: #0f1117; }
     .chrome   { fill: #1a1d25; }
     .stroke   { stroke: #2a2d35; stroke-width: 1; }
     .title    { fill: #8b8f9a; font-size: 12px; }
     text      { font-size: 14px; fill: #e6e8eb; white-space: pre; }
+    .sql      { fill: #e6e8eb; }
     .prompt   { fill: #a78bfa; font-weight: 600; }
-    .ask      { fill: #60a5fa; font-weight: 600; }
+    .askprompt{ fill: #60a5fa; font-weight: 600; }
+    .cmd      { fill: #60a5fa; font-weight: 600; }
     .muted    { fill: #6b7280; }
     .comment  { fill: #7c7f8a; font-style: italic; }
     .kw       { fill: #f472b6; font-weight: 600; }
@@ -22,106 +24,107 @@
     .line     { opacity: 0; }
   </style>
 
-  <rect class="bg" x="0" y="0" width="960" height="620" rx="8"/>
+  <rect class="bg" x="0" y="0" width="960" height="680" rx="8"/>
   <rect class="chrome stroke" x="0" y="0" width="960" height="32" rx="8"/>
   <circle cx="18" cy="16" r="6" fill="#ff5f56"/>
   <circle cx="38" cy="16" r="6" fill="#ffbd2e"/>
   <circle cx="58" cy="16" r="6" fill="#27c93f"/>
-  <text class="title" x="480" y="20" text-anchor="middle">slothdb  —  .ask  (natural language -&gt; SQL, in-process)</text>
+  <text class="title" x="480" y="20" text-anchor="middle">slothdb shell  -  interactive .ask sub-REPL</text>
 
   <g transform="translate(24, 58)">
 
-    <!-- Interaction 1: load a file -->
+    <!-- Step 1: user opens .ask (no argument) -->
     <g class="line">
-      <text x="0" y="0"><tspan class="prompt">slothdb&gt; </tspan><tspan class="ask">.ask</tspan> load sales.csv as sales</text>
+      <text x="0" y="0"><tspan class="prompt">slothdb&gt; </tspan><tspan class="cmd">.ask</tspan></text>
       <animate attributeName="opacity" from="0" to="1" begin="0.2s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="22"><tspan class="comment">-- </tspan><tspan class="kw">CREATE TABLE </tspan><tspan class="id">sales </tspan><tspan class="kw">AS SELECT </tspan>* <tspan class="kw">FROM </tspan><tspan class="str">'sales.csv'</tspan></text>
-      <animate attributeName="opacity" from="0" to="1" begin="0.7s" dur="0.2s" fill="freeze"/>
-    </g>
-    <g class="line">
-      <text x="0" y="44"><tspan class="muted">Run? [Y/n] </tspan>y     <tspan class="ok">OK  (1,248,392 rows in 128 ms)</tspan></text>
-      <animate attributeName="opacity" from="0" to="1" begin="1.1s" dur="0.2s" fill="freeze"/>
+      <text x="0" y="22" class="muted">ask mode: natural language -&gt; SQL, inside the shell.</text>
+      <text x="0" y="40" class="muted">  Model: Qwen2.5-Coder-0.5B-Instruct-Q4_K_M (loads on first query).</text>
+      <text x="0" y="58" class="muted">  Docs: github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md</text>
+      <text x="0" y="76" class="muted">  `exit` / blank line / Ctrl+D to leave.</text>
+      <animate attributeName="opacity" from="0" to="1" begin="0.7s" dur="0.3s" fill="freeze"/>
     </g>
 
-    <!-- Interaction 2: GROUP BY -->
+    <!-- Interaction A: file-source CREATE -->
     <g class="line">
-      <text x="0" y="82"><tspan class="prompt">slothdb&gt; </tspan><tspan class="ask">.ask</tspan> total amount per region</text>
-      <animate attributeName="opacity" from="0" to="1" begin="1.8s" dur="0.2s" fill="freeze"/>
+      <text x="0" y="108"><tspan class="askprompt">ask&gt; </tspan>load sales.csv as sales</text>
+      <animate attributeName="opacity" from="0" to="1" begin="1.4s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="104"><tspan class="comment">-- </tspan><tspan class="kw">SELECT </tspan><tspan class="id">"region"</tspan>, <tspan class="kw">SUM</tspan>(<tspan class="id">"amount"</tspan>) <tspan class="kw">FROM </tspan><tspan class="id">"sales" </tspan><tspan class="kw">GROUP BY </tspan><tspan class="id">"region"</tspan></text>
+      <text x="0" y="130"><tspan class="comment">-- </tspan><tspan class="kw">CREATE TABLE </tspan><tspan class="id">sales </tspan><tspan class="kw">AS SELECT </tspan>* <tspan class="kw">FROM </tspan><tspan class="str">'sales.csv'</tspan></text>
+      <animate attributeName="opacity" from="0" to="1" begin="1.9s" dur="0.2s" fill="freeze"/>
+    </g>
+    <g class="line">
+      <text x="0" y="152"><tspan class="muted">Run? [Y/n] </tspan>y     <tspan class="ok">OK  (1,248,392 rows in 128 ms)</tspan></text>
       <animate attributeName="opacity" from="0" to="1" begin="2.3s" dur="0.2s" fill="freeze"/>
     </g>
+
+    <!-- Interaction B: GROUP BY -->
     <g class="line">
-      <text x="0" y="126"><tspan class="muted">Run? [Y/n] </tspan>y</text>
-      <animate attributeName="opacity" from="0" to="1" begin="2.7s" dur="0.2s" fill="freeze"/>
+      <text x="0" y="184"><tspan class="askprompt">ask&gt; </tspan>total amount per region</text>
+      <animate attributeName="opacity" from="0" to="1" begin="2.9s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="148">EMEA   1,482,900.00</text>
-      <text x="0" y="166">APAC     935,120.00</text>
-      <text x="0" y="184">AMER   2,310,440.00</text>
-      <animate attributeName="opacity" from="0" to="1" begin="3.0s" dur="0.25s" fill="freeze"/>
+      <text x="0" y="206"><tspan class="comment">-- </tspan><tspan class="kw">SELECT </tspan><tspan class="id">"region"</tspan>, <tspan class="kw">SUM</tspan>(<tspan class="id">"amount"</tspan>) <tspan class="kw">FROM </tspan><tspan class="id">"sales" </tspan><tspan class="kw">GROUP BY </tspan><tspan class="id">"region"</tspan></text>
+      <animate attributeName="opacity" from="0" to="1" begin="3.4s" dur="0.2s" fill="freeze"/>
+    </g>
+    <g class="line">
+      <text x="0" y="228"><tspan class="muted">Run? [Y/n] </tspan>y</text>
+      <text x="0" y="248">EMEA   1,482,900.00</text>
+      <text x="0" y="266">APAC     935,120.00</text>
+      <text x="0" y="284">AMER   2,310,440.00</text>
+      <animate attributeName="opacity" from="0" to="1" begin="3.8s" dur="0.25s" fill="freeze"/>
     </g>
 
-    <!-- Interaction 3: year filter -->
+    <!-- Interaction C: LLM fallback -->
     <g class="line">
-      <text x="0" y="222"><tspan class="prompt">slothdb&gt; </tspan><tspan class="ask">.ask</tspan> average amount in 2024</text>
-      <animate attributeName="opacity" from="0" to="1" begin="3.6s" dur="0.2s" fill="freeze"/>
+      <text x="0" y="316"><tspan class="askprompt">ask&gt; </tspan>which customer placed the most orders last quarter</text>
+      <animate attributeName="opacity" from="0" to="1" begin="4.7s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="244"><tspan class="comment">-- </tspan><tspan class="kw">SELECT AVG</tspan>(<tspan class="id">"amount"</tspan>) <tspan class="kw">FROM </tspan><tspan class="id">"sales" </tspan><tspan class="kw">WHERE EXTRACT</tspan>(<tspan class="kw">YEAR FROM </tspan><tspan class="id">"order_date"</tspan>) = <tspan class="str">2024</tspan></text>
-      <animate attributeName="opacity" from="0" to="1" begin="4.1s" dur="0.2s" fill="freeze"/>
+      <text class="muted" x="0" y="338">-- rules did not match, asking the local model</text>
+      <animate attributeName="opacity" from="0" to="1" begin="5.2s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="266"><tspan class="muted">Run? [Y/n] </tspan>y     <tspan class="ok">285.42</tspan></text>
-      <animate attributeName="opacity" from="0" to="1" begin="4.5s" dur="0.2s" fill="freeze"/>
-    </g>
-
-    <!-- Interaction 4: open-ended, LLM fallback -->
-    <g class="line">
-      <text x="0" y="304"><tspan class="prompt">slothdb&gt; </tspan><tspan class="ask">.ask</tspan> which customer placed the most orders last quarter</text>
-      <animate attributeName="opacity" from="0" to="1" begin="5.1s" dur="0.2s" fill="freeze"/>
+      <text x="0" y="360"><tspan class="comment">-- </tspan><tspan class="kw">SELECT </tspan><tspan class="id">"customer_id"</tspan>, <tspan class="kw">COUNT</tspan>(*) <tspan class="kw">FROM </tspan><tspan class="id">"sales" </tspan><tspan class="kw">GROUP BY </tspan><tspan class="id">"customer_id" </tspan><tspan class="kw">ORDER BY </tspan><tspan class="kw">COUNT</tspan>(*) <tspan class="kw">DESC LIMIT </tspan><tspan class="str">1</tspan></text>
+      <animate attributeName="opacity" from="0" to="1" begin="5.8s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text class="muted" x="0" y="326">-- rules did not match - asking the local model  (Qwen2.5-Coder-0.5B-Instruct-Q4_K_M)</text>
-      <animate attributeName="opacity" from="0" to="1" begin="5.7s" dur="0.2s" fill="freeze"/>
-    </g>
-    <g class="line">
-      <text x="0" y="348"><tspan class="comment">-- </tspan><tspan class="kw">SELECT </tspan><tspan class="id">"customer_id"</tspan>, <tspan class="kw">COUNT</tspan>(*) <tspan class="kw">FROM </tspan><tspan class="id">"sales" </tspan><tspan class="kw">GROUP BY </tspan><tspan class="id">"customer_id" </tspan><tspan class="kw">ORDER BY </tspan><tspan class="kw">COUNT</tspan>(*) <tspan class="kw">DESC LIMIT </tspan><tspan class="str">1</tspan></text>
+      <text x="0" y="382"><tspan class="muted">Run? [Y/n] </tspan>y     <tspan class="ok">customer_id = 48201  (312 orders)</tspan></text>
       <animate attributeName="opacity" from="0" to="1" begin="6.3s" dur="0.2s" fill="freeze"/>
     </g>
+
+    <!-- Leaving .ask mode with a blank line -->
     <g class="line">
-      <text x="0" y="370"><tspan class="muted">Run? [Y/n] </tspan>y     <tspan class="ok">customer_id = 48201  (312 orders)</tspan></text>
-      <animate attributeName="opacity" from="0" to="1" begin="6.8s" dur="0.2s" fill="freeze"/>
+      <text x="0" y="414"><tspan class="askprompt">ask&gt; </tspan><tspan class="muted">(blank line)</tspan></text>
+      <animate attributeName="opacity" from="0" to="1" begin="6.9s" dur="0.2s" fill="freeze"/>
+    </g>
+    <g class="line">
+      <text x="0" y="436" class="muted">Back to SQL mode.</text>
+      <animate attributeName="opacity" from="0" to="1" begin="7.2s" dur="0.2s" fill="freeze"/>
+    </g>
+    <g class="line">
+      <text x="0" y="458"><tspan class="prompt">slothdb&gt; </tspan><tspan class="cursor">&#9611;<animate attributeName="opacity" values="1;0;1" dur="1s" begin="7.5s" repeatCount="indefinite"/></tspan></text>
+      <animate attributeName="opacity" from="0" to="1" begin="7.5s" dur="0.2s" fill="freeze"/>
     </g>
 
     <!-- Footer rule + summary -->
     <g class="line">
-      <text class="rule" x="0" y="410">============================================================================</text>
-      <animate attributeName="opacity" from="0" to="1" begin="7.3s" dur="0.2s" fill="freeze"/>
+      <text class="rule" x="0" y="498">============================================================================</text>
+      <animate attributeName="opacity" from="0" to="1" begin="8.0s" dur="0.2s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="432"><tspan class="cta">Rules-first. </tspan>Fast patterns instantly.  <tspan class="cta">Qwen locally </tspan>for open-ended NL.</text>
-      <animate attributeName="opacity" from="0" to="1" begin="7.5s" dur="0.3s" fill="freeze"/>
+      <text x="0" y="520"><tspan class="cta">Rules-first </tspan>for common shapes.  <tspan class="cta">Local Qwen </tspan>for open-ended NL.  No cloud. No API keys.</text>
+      <animate attributeName="opacity" from="0" to="1" begin="8.2s" dur="0.3s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="454"><tspan class="muted">No cloud. No API keys. Every generated SQL gated by </tspan><tspan class="ok">[Y/n]</tspan><tspan class="muted"> before it runs.</tspan></text>
-      <animate attributeName="opacity" from="0" to="1" begin="7.8s" dur="0.3s" fill="freeze"/>
+      <text x="0" y="544"><tspan class="cta">Docs: </tspan><tspan class="link">github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md</tspan></text>
+      <animate attributeName="opacity" from="0" to="1" begin="8.5s" dur="0.3s" fill="freeze"/>
     </g>
     <g class="line">
-      <text x="0" y="482"><tspan class="cta">Docs: </tspan><tspan class="link">github.com/SouravRoy-ETL/slothdb/blob/main/docs/ASK.md</tspan></text>
-      <animate attributeName="opacity" from="0" to="1" begin="8.1s" dur="0.3s" fill="freeze"/>
-    </g>
-    <g class="line">
-      <text x="0" y="502"><tspan class="cta">Try in browser: </tspan><tspan class="link">slothdb.org/playground</tspan><tspan class="muted">    ·    </tspan><tspan class="cta">Star: </tspan><tspan class="link">github.com/SouravRoy-ETL/slothdb</tspan></text>
-      <animate attributeName="opacity" from="0" to="1" begin="8.3s" dur="0.3s" fill="freeze"/>
-    </g>
-
-    <!-- Cursor -->
-    <g>
-      <text x="0" y="542"><tspan class="prompt">slothdb&gt; </tspan><tspan class="cursor">&#9611;<animate attributeName="opacity" values="1;0;1" dur="1s" begin="8.8s" repeatCount="indefinite"/></tspan></text>
+      <text x="0" y="564"><tspan class="cta">Try in browser: </tspan><tspan class="link">slothdb.org/playground</tspan><tspan class="muted">    ,    </tspan><tspan class="cta">Star: </tspan><tspan class="link">github.com/SouravRoy-ETL/slothdb</tspan></text>
+      <animate attributeName="opacity" from="0" to="1" begin="8.7s" dur="0.3s" fill="freeze"/>
     </g>
 
   </g>

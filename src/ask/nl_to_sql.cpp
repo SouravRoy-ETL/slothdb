@@ -54,7 +54,7 @@ bool IsYear(const std::string &s) {
     return s.size() == 4 && IsInteger(s);
 }
 
-// Stopwords the rule engine routinely skips over. Not exhaustive — we
+// Stopwords the rule engine routinely skips over. Not exhaustive - we
 // only strip what matters for matching patterns, not for proper NL.
 const std::unordered_set<std::string> &Stopwords() {
     static const std::unordered_set<std::string> s = {
@@ -106,7 +106,7 @@ const Table *ResolveTable(const Schema &schema, const std::string &noun) {
     }
     if (exact) return exact;
 
-    // Singular → plural and plural → singular.
+    // Singular -> plural and plural -> singular.
     std::string variant;
     if (!noun.empty() && noun.back() == 's') {
         variant = noun.substr(0, noun.size() - 1);
@@ -229,7 +229,7 @@ int FindToken(const std::vector<std::string> &tokens, const std::string &kw) {
     return -1;
 }
 
-// Extract a 4-digit year from tokens after "in"/"during"/"for" — very
+// Extract a 4-digit year from tokens after "in"/"during"/"for" - very
 // common NL pattern ("sales in 2024"). Returns empty if absent.
 std::string ExtractYear(const std::vector<std::string> &tokens) {
     for (size_t i = 0; i + 1 < tokens.size(); i++) {
@@ -251,7 +251,7 @@ std::string RenderYearFilter(const Column &date_col, const std::string &year) {
                        t.find("text") != std::string::npos ||
                        t.find("string") != std::string::npos);
     if (is_varchar) {
-        // Substring match on the year — works for ISO-8601 and YYYY-first
+        // Substring match on the year - works for ISO-8601 and YYYY-first
         // date strings. Not perfect; a follow-up could parse and compare.
         return "\"" + date_col.name + "\" LIKE '" + year + "%'";
     }
@@ -287,7 +287,7 @@ int ExtractTopN(const std::vector<std::string> &tokens) {
 std::string ExtractGroupBy(const std::vector<std::string> &tokens) {
     for (size_t i = 0; i + 1 < tokens.size(); i++) {
         if (tokens[i] == "by" || tokens[i] == "per") {
-            // "grouped by X", "sorted by X" — we want the trailing noun only
+            // "grouped by X", "sorted by X" - we want the trailing noun only
             // in contexts where GROUP BY makes sense. Conservative: take
             // the next token that isn't a keyword.
             std::string cand = tokens[i + 1];
@@ -306,7 +306,7 @@ const std::vector<std::string> &FileExts() {
     return v;
 }
 
-// Find a filename in the raw NL — quoted or bare. Returns the literal
+// Find a filename in the raw NL - quoted or bare. Returns the literal
 // file path (unquoted) plus the slice boundaries in the raw string for
 // downstream alias / view-name extraction. Returns empty filename on miss.
 struct FileMatch { std::string path; size_t start = 0; size_t end = 0; };
@@ -400,7 +400,7 @@ std::string BasenameNoExt(const std::string &path) {
     return name;
 }
 
-// Rules that fire on a file-source intent — no schema lookup needed. The
+// Rules that fire on a file-source intent - no schema lookup needed. The
 // file may not even be imported yet; that is the point. Covers the four
 // common shapes: SELECT over a file, COUNT rows, CREATE TABLE AS (load
 // into a named table), CREATE [LIVE] VIEW over the file.
@@ -463,7 +463,7 @@ Result MatchFileSource(const std::string &raw) {
     }
 
     // Fallback: `show sales.csv` / `query events.parquet` / `read x.json` /
-    // bare `'sales.csv'` — plain SELECT. Cap at 100 rows when the user
+    // bare `'sales.csv'` - plain SELECT. Cap at 100 rows when the user
     // didn't ask for aggregation; this is a quick-look pattern, not an
     // analytic query.
     sql << "SELECT * FROM '" << fm.path << "' LIMIT 100";
@@ -552,8 +552,8 @@ Result Translate(const std::string &nl, const Schema &schema) {
 
     // ---- PATTERN 2: SUM / AVG / MIN / MAX ----
     // "total X", "sum of X", "average X", "mean X", "min X", "max X"
-    // plus optional "per Y" / "by Y" → GROUP BY
-    // plus optional "in YYYY" → WHERE year
+    // plus optional "per Y" / "by Y" -> GROUP BY
+    // plus optional "in YYYY" -> WHERE year
     struct AggSpec { std::string kw; std::string sql_fn; };
     static const AggSpec aggs[] = {
         {"total",   "SUM"},
@@ -569,8 +569,8 @@ Result Translate(const std::string &nl, const Schema &schema) {
     for (const auto &agg : aggs) {
         int idx = FindToken(toks, agg.kw);
         if (idx < 0) continue;
-        // After the agg keyword, optional "of", then a noun → column.
-        // Then optional "by"/"per" noun → group col.
+        // After the agg keyword, optional "of", then a noun -> column.
+        // Then optional "by"/"per" noun -> group col.
         size_t i = static_cast<size_t>(idx) + 1;
         if (i < toks.size() && toks[i] == "of") i++;
         if (i >= toks.size()) continue;
@@ -595,8 +595,8 @@ Result Translate(const std::string &nl, const Schema &schema) {
             // Implicit table: prefer a table that has an EXACT column-name
             // match before falling back to synonym routing. This matters
             // for e.g. "total price" in a schema with both products.price
-            // and sales.amount — without the exact-match pass, synonyms
-            // route "price" → "amount" and we pick sales, which is wrong.
+            // and sales.amount - without the exact-match pass, synonyms
+            // route "price" -> "amount" and we pick sales, which is wrong.
             for (const auto &t : schema.tables) {
                 for (const auto &c : t.columns) {
                     if (lower(c.name) == col_noun) { table = &t; break; }
@@ -645,7 +645,7 @@ Result Translate(const std::string &nl, const Schema &schema) {
     }
 
     // ---- PATTERN 3: top-N plain ----
-    // "top N X by Y" (without an agg keyword) — implies SUM of Y.
+    // "top N X by Y" (without an agg keyword) - implies SUM of Y.
     if (top_n != 0 && toks.size() >= 3) {
         // Find "top"/"biggest"/"highest" position.
         int kw_idx = -1;
@@ -733,7 +733,7 @@ Result Translate(const std::string &nl, const Schema &schema) {
             if (!dc) {
                 return NoMatch("'" + toks[0] + " " + noun +
                                "' needs a date-like column on " + t->name +
-                               " — none found. Try `.schema " + t->name +
+                               " - none found. Try `.schema " + t->name +
                                "` to see columns.");
             }
             std::ostringstream sql;
@@ -746,13 +746,13 @@ Result Translate(const std::string &nl, const Schema &schema) {
     }
 
     // ---- PATTERN 5: superlative 'which X has most Y' / 'X with most Y' ----
-    // 'which month had most customers'  → SELECT month-expr, COUNT(DISTINCT
+    // 'which month had most customers'  -> SELECT month-expr, COUNT(DISTINCT
     //   customer) FROM t GROUP BY month-expr ORDER BY count DESC LIMIT 1.
-    // 'which region has the highest amount' → SUM(amount) variant.
+    // 'which region has the highest amount' -> SUM(amount) variant.
     //
-    // The grouping key can be 'month' / 'year' / 'day' / 'week' — those
+    // The grouping key can be 'month' / 'year' / 'day' / 'week' - those
     // get rendered via EXTRACT / substring depending on the date col's
-    // type — or any column on the implicit table.
+    // type - or any column on the implicit table.
     {
         int most_idx = -1;
         bool is_least = false;
@@ -788,7 +788,7 @@ Result Translate(const std::string &nl, const Schema &schema) {
                 if (table) break;
             }
             if (metric_noun.empty()) {
-                // Didn't resolve any noun after 'most' — honest refusal.
+                // Didn't resolve any noun after 'most' - honest refusal.
                 return NoMatch(
                     "saw '" + toks[static_cast<size_t>(most_idx)] +
                     "' but couldn't map the following nouns to any column. "
@@ -798,7 +798,7 @@ Result Translate(const std::string &nl, const Schema &schema) {
             if (!table && !schema.tables.empty()) table = &schema.tables[0];
             if (!table) return NoMatch("no tables loaded");
 
-            // Grouping expression: month/year/week/day on a date column →
+            // Grouping expression: month/year/week/day on a date column ->
             // EXTRACT; otherwise, a direct column match on the table.
             std::string group_expr;
             std::string group_alias;
@@ -806,7 +806,7 @@ Result Translate(const std::string &nl, const Schema &schema) {
                 group_noun == "week" || group_noun == "day") {
                 const Column *dc = DateColumn(*table);
                 if (!dc) return NoMatch("'" + group_noun +
-                    "' needs a date column on " + table->name + " — none found.");
+                    "' needs a date column on " + table->name + " - none found.");
                 std::string kw = group_noun;
                 for (auto &c : kw) c = static_cast<char>(std::toupper(
                     static_cast<unsigned char>(c)));
@@ -817,7 +817,7 @@ Result Translate(const std::string &nl, const Schema &schema) {
                 if (is_varchar) {
                     // VARCHAR date columns: function-in-GROUP-BY is currently
                     // unreliable in the engine (planner bug). Fall back to
-                    // grouping by the raw column — coarser than the user
+                    // grouping by the raw column - coarser than the user
                     // asked ("per month" ends up per-day for ISO dates) but
                     // always correct. Promote to EXTRACT once the engine
                     // lands function-aware grouping.
@@ -843,8 +843,8 @@ Result Translate(const std::string &nl, const Schema &schema) {
             std::string metric_t = lower(metric_col->type);
             std::string metric_n = lower(metric_col->name);
             // ID-ish columns (named `id` or ending `_id`) are semantically
-            // identifiers, not metrics — summing them is nonsense. Use
-            // COUNT(DISTINCT) for those. Everything else numeric → SUM.
+            // identifiers, not metrics - summing them is nonsense. Use
+            // COUNT(DISTINCT) for those. Everything else numeric -> SUM.
             bool is_id_col = (metric_n == "id") ||
                              (metric_n.size() > 3 &&
                               metric_n.compare(metric_n.size() - 3, 3, "_id") == 0);
@@ -869,7 +869,7 @@ Result Translate(const std::string &nl, const Schema &schema) {
         }
     }
 
-    // ---- PATTERN 6: plain "X from Y" / "Y rows" — SELECT *  ----
+    // ---- PATTERN 6: plain "X from Y" / "Y rows" - SELECT *  ----
     if (toks.size() >= 2 &&
         (toks[0] == "rows" || toks[0] == "data") &&
         toks[1] == "from") {
