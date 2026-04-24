@@ -2,9 +2,9 @@
 
 <img src="assets/hero.svg" alt="SlothDB" width="100%">
 
-<h3>Embedded SQL OLAP in C++20 - query CSV / Parquet / JSON files in-process. The only natural-language SQL pipeline that never leaves the laptop.</h3>
+<h3>Embedded SQL OLAP in C++20. Ask in English. Nothing leaves your laptop.</h3>
 
-<p><b><code>.ask</code></b> turns English into SQL with zero egress: a rules-first parser handles simple shapes without touching a model; a deterministic two-tier router sends analytic questions to a local 1.5B Qwen and simple ones to a local 0.5B; every generated statement is <code>[Y/n]</code>-gated before execution. MIT-licensed binary, no API keys, no tokens on the wire. On a 5-query warm JOIN batch: <b>138 ms vs DuckDB's 540 ms</b> (reproducible with <code>pip install slothdb &amp;&amp; python -c "import slothdb; slothdb.demo()"</code>).</p>
+<p><b><code>.ask</code></b> is a <b>pipeline</b>, not an LLM wrapper: <b>rules-first</b> (sub-10 ms, no model) → <b>router</b> → <b>two local Qwens</b> (0.5B + 1.5B, Q4_K_M, lazy-downloaded in parallel on first use under <code>-DSLOTHDB_ASK_MODEL=ON</code>) → <b>[Y/n] gate</b>. Any Qwen is replaceable; the pipeline is what makes it safe to run inside a VPC. On our 5-query warm JOIN batch: 138 ms vs DuckDB 1.1.3's 540 ms; 16-query suite median 1.70× (range 1.04×-5.43×, 15 wins + 1 tie).</p>
 
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
 [![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm&label=npm)](https://www.npmjs.com/package/@slothdb/wasm)
@@ -25,45 +25,27 @@
 
 ---
 
-## Natural language in the shell: `.ask` - local AI, first class
-
-Every NL-to-SQL tool you've used sends your schema to someone else's GPU. `.ask` doesn't. The whole pipeline lives in the same MIT binary SlothDB already ships, so a compliance team approves it in an afternoon.
-
-**Three layers, cheapest first:**
-
-1. **Rules parser (always on, instant).** A pure-C++ pattern engine handles COUNT / SUM / AVG / GROUP BY / TOP-N / year filters / file-source CREATE/view/count / catalog introspection. No model touched. Sub-10 ms.
-2. **Local Qwen 0.5B (~310 MB).** For questions the rules can't shape. Handles open-ended NL at ~200 ms on a laptop CPU.
-3. **Local Qwen 1.5B (~986 MB).** For analytic questions (window functions, joins, ranking within groups, LAG/LEAD). Better grammar at the cost of size.
-
-Both tiers are **lazy-downloaded in parallel** on first `.ask` - the 310 MB arrives in seconds and serves the first simple question while the 986 MB streams in the background for the first analytic one. A deterministic router scans the question for analytic signals and picks the tier; you never choose. Every generated SQL is shown and `[Y/n]`-gated before execution - there is no autorun.
-
-What this buys you: **zero egress, no API keys, no tokens on the wire, no per-query cost, no ToS** on schema/column names. Works on a plane after one-time setup. Works inside a corporate VPC. Works in an MIT-licensed binary that ships inside your product.
+## `.ask` - the pipeline
 
 <div align="center">
-  <img src="assets/ask-demo.svg" alt="Interactive .ask sub-REPL: two-tier local Qwen, rules-first router, Y/n gate" width="100%">
+  <img src="assets/ask-demo.svg" alt=".ask: rules-first, router, two local Qwens, [Y/n] gate" width="100%">
 </div>
 
-```
-slothdb> .ask
-ask mode: natural language -> SQL, inside the shell.
-  Models (both lazy-downloaded in parallel on first use):
-    small : Qwen2.5-Coder-0.5B-Instruct-Q4_K_M (~310 MB) -> simple COUNT / GROUP BY / filter / TOP-N
-    large : Qwen2.5-Coder-1.5B-Instruct-Q4_K_M (~986 MB) -> window functions / joins / analytic
-  Router picks per question. Rules-first handles catalog / simple shapes instantly without touching the model.
+Three layers, cheapest first. The router picks per question; you never choose.
 
-ask> load sales.csv as sales
--- CREATE TABLE sales AS SELECT * FROM 'sales.csv'
-Run? [Y/n] y     OK
+| tier | what | cost | covers |
+|---|---|--:|---|
+| 1 | **Rules parser** (always on) | sub-10 ms, no model | catalog introspection, COUNT/SUM/AVG/GROUP BY/TOP-N, year filters, file-source CREATE/view |
+| 2 | **Local Qwen 2.5-Coder 0.5B Q4_K_M** (~310 MB) | ~200 ms on laptop CPU | open-ended SELECT/GROUP BY/filter |
+| 3 | **Local Qwen 2.5-Coder 1.5B Q4_K_M** (~986 MB) | ~500 ms on laptop CPU | window functions, ranking within groups, LAG/LEAD, joins |
 
-ask> top 3 customers per region by revenue
--- Qwen2.5-Coder-1.5B-Instruct-Q4_K_M (rules did not match - asking the local model)
--- SELECT * FROM (SELECT region, customer_id, revenue,
---          ROW_NUMBER() OVER (PARTITION BY region ORDER BY revenue DESC) AS rn
---        FROM sales) WHERE rn <= 3
-Run? [Y/n] y
-```
+**Both model tiers download lazily in parallel on first `.ask`.** Needs `-DSLOTHDB_ASK_MODEL=ON` at build time (adds ~30 MB to the binary and ~1.3 GB of weights). Default builds ship only the rules layer. Every generated statement is shown and `[Y/n]`-gated - there is no autorun.
 
-One-shot form: `slothdb> .ask how many sales`. Cumulative / running / moving aggregates **refuse cleanly** rather than return wrong numbers (SlothDB's window-frame executor has a known gap). Full patterns, refusals, and router logic: [docs/ASK.md](docs/ASK.md).
+**What this buys you:** zero egress, no API keys, no tokens on the wire. Runs inside a VPC, on a plane, in an air-gapped lab. MIT binary.
+
+**What it does not:** GPT-4-class SQL. Qwen 0.5B/1.5B at Q4 quantization still hallucinates column names and misreads wide schemas - the `[Y/n]` gate is the correctness barrier, not the model. Cumulative / running / moving aggregates **refuse cleanly** because SlothDB's window-frame executor has a known gap. If you need top-tier accuracy on complex joins, a cloud model behind your own API key still beats us - we're the option for when that isn't allowed.
+
+Full pipeline spec, router signals, refusal policy: [docs/ASK.md](docs/ASK.md).
 
 ---
 
