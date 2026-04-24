@@ -94,7 +94,8 @@ std::string RenderDDL(const Schema &schema) {
 std::string RenderPromptQwen(const std::string &ddl, const std::string &question) {
     std::ostringstream ss;
     ss << "<|im_start|>system\n"
-       << "You are a SQL generator for SlothDB (DuckDB-compatible dialect). "
+       << "You are a SQL generator for SlothDB (ANSI SQL with DuckDB-style "
+       << "QUALIFY / MERGE / recursive CTEs). "
        << "Given the schema below and a natural-language question, output "
        << "ONE SQL SELECT statement that answers the question. No commentary, "
        << "no markdown fences, no explanations.\n"
