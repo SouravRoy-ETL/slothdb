@@ -1,5 +1,7 @@
 #include "slothdb/ask/embedded_llm.hpp"
 #include "slothdb/storage/http_client.hpp"
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -7,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #ifdef SLOTHDB_ASK_MODEL
 #include "llama.h"
@@ -30,18 +33,40 @@ std::string HomeDir() {
 #endif
 }
 
+// Wrap an identifier in double quotes if it contains any character that
+// would need quoting in SQL (spaces, punctuation, starts with a digit, or
+// is a reserved word the user might hit). Otherwise emit as-is. We always
+// quote when in doubt - the model then mimics the form it sees.
+std::string QuoteIdentIfNeeded(const std::string &name) {
+    auto needs_quote = [&]() {
+        if (name.empty()) return true;
+        if (std::isdigit(static_cast<unsigned char>(name[0]))) return true;
+        for (char c : name) {
+            bool ok = std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+            if (!ok) return true;
+        }
+        return false;
+    };
+    if (needs_quote()) return "\"" + name + "\"";
+    return name;
+}
+
 // Render a DDL block for the prompt. Capped at 20 tables - enough for
 // realistic shell sessions, prevents the prompt from exploding if the
-// user has an enormous catalog attached.
+// user has an enormous catalog attached. Identifiers containing spaces
+// or other non-word characters are rendered with surrounding double
+// quotes so the model learns by example that multi-word column names
+// MUST be quoted in the generated SQL.
 std::string RenderDDL(const Schema &schema) {
     std::ostringstream ss;
     size_t limit = schema.tables.size() < 20 ? schema.tables.size() : 20;
     for (size_t i = 0; i < limit; i++) {
         const auto &t = schema.tables[i];
-        ss << "CREATE TABLE " << t.name << " (";
+        ss << "CREATE TABLE " << QuoteIdentIfNeeded(t.name) << " (";
         for (size_t j = 0; j < t.columns.size(); j++) {
             if (j > 0) ss << ", ";
-            ss << t.columns[j].name << " " << t.columns[j].type;
+            ss << QuoteIdentIfNeeded(t.columns[j].name) << " "
+               << t.columns[j].type;
         }
         ss << ");\n";
     }
@@ -51,16 +76,25 @@ std::string RenderDDL(const Schema &schema) {
 // Build the chat-formatted prompt. Qwen2.5 uses the ChatML format
 // (<|im_start|>...<|im_end|>). We render that directly - llama.cpp's
 // chat-template API would work too but this is explicit and easier to
-// debug when output looks wrong.
+// debug when output looks wrong. The quoting rule is spelled out
+// explicitly because small models drop it without the reminder.
 std::string RenderPromptQwen(const std::string &ddl, const std::string &question) {
     std::ostringstream ss;
     ss << "<|im_start|>system\n"
        << "You are a SQL generator for SlothDB (DuckDB-compatible dialect). "
-       << "Given the schema below and a natural-language question, output ONE "
-       << "SQL SELECT statement that answers the question. No commentary. "
-       << "Use only tables and columns from the schema. Prefer explicit column "
-       << "names over SELECT *. Wrap identifiers in double quotes when they "
-       << "could clash with keywords.\n\nSchema:\n"
+       << "Given the schema below and a natural-language question, output "
+       << "ONE SQL SELECT statement that answers the question. No commentary, "
+       << "no markdown fences, no explanations.\n"
+       << "Rules:\n"
+       << "  1. Use only tables and columns from the schema below.\n"
+       << "  2. Prefer explicit column names over SELECT *.\n"
+       << "  3. Any identifier that is quoted in the schema (wrapped in "
+       << "double quotes) MUST also be quoted in the SQL you generate. "
+       << "This includes every column name that contains a space "
+       << "(e.g. `\"Customer Id\"`, `\"Subscription Date\"`).\n"
+       << "  4. String literals use single quotes. Identifiers use double "
+       << "quotes. Never confuse the two.\n"
+       << "\nSchema:\n"
        << ddl
        << "<|im_end|>\n"
        << "<|im_start|>user\n"
@@ -88,6 +122,93 @@ std::string ExtractSQL(const std::string &text) {
     while (!s.empty() && is_ws(s.back())) s.pop_back();
     while (!s.empty() && s.back() == ';') s.pop_back();
     return s;
+}
+
+// Post-process the model's SQL: wrap any schema identifier that contains
+// a space with double quotes, unless it is already quoted or is inside a
+// string literal. Small models (0.5B Qwen) drop quotes on multi-word
+// identifiers even with an explicit prompt rule, so we enforce it after
+// the fact. Only multi-word identifiers are rewritten - single-word
+// names don't need quoting and rewriting them would risk breaking
+// keywords like SELECT / FROM.
+std::string QuoteSchemaIdents(const std::string &sql, const Schema &schema) {
+    // Collect identifiers that contain a space. Tables and columns both.
+    std::vector<std::string> targets;
+    auto add_if_multiword = [&](const std::string &s) {
+        if (s.find(' ') != std::string::npos) targets.push_back(s);
+    };
+    for (const auto &t : schema.tables) {
+        add_if_multiword(t.name);
+        for (const auto &c : t.columns) add_if_multiword(c.name);
+    }
+    if (targets.empty()) return sql;
+
+    // Longest-first so "Subscription Date End" rewrites before "Subscription
+    // Date" (which is a prefix of the longer name).
+    std::sort(targets.begin(), targets.end(),
+              [](const std::string &a, const std::string &b) {
+                  return a.size() > b.size();
+              });
+
+    // Walk the SQL. Track whether we're inside a string literal ('...') or
+    // already-quoted identifier ("..."). Both are left untouched.
+    std::string out;
+    out.reserve(sql.size() + 16);
+    bool in_str = false;   // inside '...'
+    bool in_dq  = false;   // inside "..."
+    size_t i = 0;
+    while (i < sql.size()) {
+        char c = sql[i];
+        if (in_str) {
+            out.push_back(c);
+            if (c == '\'' && (i + 1 >= sql.size() || sql[i + 1] != '\'')) in_str = false;
+            i++; continue;
+        }
+        if (in_dq) {
+            out.push_back(c);
+            if (c == '"') in_dq = false;
+            i++; continue;
+        }
+        if (c == '\'') { in_str = true; out.push_back(c); i++; continue; }
+        if (c == '"')  { in_dq  = true; out.push_back(c); i++; continue; }
+
+        // Try to match a target at this position (case-insensitive).
+        bool matched = false;
+        for (const auto &t : targets) {
+            if (i + t.size() > sql.size()) continue;
+            bool eq = true;
+            for (size_t k = 0; k < t.size(); k++) {
+                char a = std::tolower(static_cast<unsigned char>(sql[i + k]));
+                char b = std::tolower(static_cast<unsigned char>(t[k]));
+                if (a != b) { eq = false; break; }
+            }
+            if (!eq) continue;
+            // Left boundary: must not be alnum or underscore (otherwise
+            // we'd match a middle of a longer identifier).
+            if (i > 0) {
+                char p = sql[i - 1];
+                if (std::isalnum(static_cast<unsigned char>(p)) || p == '_' || p == '"') continue;
+            }
+            // Right boundary: same check.
+            size_t after = i + t.size();
+            if (after < sql.size()) {
+                char n = sql[after];
+                if (std::isalnum(static_cast<unsigned char>(n)) || n == '_' || n == '"') continue;
+            }
+            // Rewrite: emit the schema-canonical form wrapped in quotes.
+            out.push_back('"');
+            out.append(t);
+            out.push_back('"');
+            i = after;
+            matched = true;
+            break;
+        }
+        if (!matched) {
+            out.push_back(c);
+            i++;
+        }
+    }
+    return out;
 }
 
 } // namespace
@@ -287,7 +408,7 @@ EmbeddedResult GenerateSQLLocal(const Schema &schema,
     auto end_marker = out.find("<|im_end|>");
     if (end_marker != std::string::npos) out = out.substr(0, end_marker);
 
-    r.sql = ExtractSQL(out);
+    r.sql = QuoteSchemaIdents(ExtractSQL(out), schema);
     if (r.sql.empty()) {
         r.message = "model returned empty SQL";
         return r;

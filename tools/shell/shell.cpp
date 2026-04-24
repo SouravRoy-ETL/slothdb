@@ -214,32 +214,86 @@ static bool handle_catalog_intent(slothdb_connection *conn,
     while (!q.empty() && (q.back() == ' ' || q.back() == '\t' ||
                           q.back() == '?' || q.back() == '.' ||
                           q.back() == '!')) q.pop_back();
-    // "show tables" / "list tables" / "what tables" / "which tables" /
-    // "all tables" / "tables".
+
+    // Strip common polite-filler / article words from the head of the
+    // question so "show me all the columns in customers" routes the same
+    // as "show columns in customers". Otherwise these queries fall
+    // through to the model and get hallucinated answers.
+    static const char *leading_fillers[] = {
+        "please ", "can you ", "could you ",
+        "show me all the ", "show me all ", "show me the ", "show me ",
+        "list me all the ", "list me all ", "list me the ", "list me ",
+        "tell me all the ", "tell me all ", "tell me the ", "tell me ",
+        "give me all the ", "give me all ", "give me the ", "give me ",
+        "display all the ", "display the ", "display all ",
+        "show all the ", "show all ", "show the ",
+        "list all the ", "list all ", "list the ",
+        "i want to see ", "i'd like to see ", "i want to know ",
+        "what are the ", "what are all the ", "what are ",
+        nullptr
+    };
+    bool stripped = true;
+    while (stripped) {
+        stripped = false;
+        for (int i = 0; leading_fillers[i]; i++) {
+            const std::string f = leading_fillers[i];
+            if (q.size() > f.size() && q.compare(0, f.size(), f) == 0) {
+                q.erase(0, f.size());
+                stripped = true;
+                break;
+            }
+        }
+    }
+
+    // Tables question: "tables", "show tables", "list tables", ...
     auto is_tables = [](const std::string &s) {
         return s == "tables" || s == "show tables" || s == "list tables" ||
                s == "what tables" || s == "which tables" ||
                s == "all tables" || s == "display tables" ||
                s == "show all tables" || s == "list all tables" ||
                s == "what tables are there" || s == "what tables exist" ||
-               s == "show schemas" || s == "list schemas";
+               s == "show schemas" || s == "list schemas" ||
+               s == "schemas" || s == "databases" || s == "show databases";
     };
     if (is_tables(q)) {
         handle_tables(conn, "");
         return true;
     }
-    // "describe <table>" / "schema of <table>" / "columns in <table>" /
-    // "columns of <table>" / "<table> schema" / "<table> columns".
-    const char *describe_prefixes[] = {
-        "describe ", "desc ", "schema of ", "schema for ",
-        "columns in ", "columns of ", "show schema of ",
-        "show schema for ", "show columns in ", "show columns of ", nullptr
+
+    // Column / schema question: many phrasings all route to handle_schema
+    // with the table name as argument. Order matters (longer prefixes first)
+    // so "show columns in t" doesn't partially-match "columns in t".
+    static const char *describe_prefixes[] = {
+        "show columns in ", "show columns of ", "show columns for ",
+        "show schema of ",  "show schema for ",
+        "columns in ",      "columns of ",       "columns for ",
+        "schema of ",       "schema for ",
+        "describe ",        "desc ",
+        "what columns in ", "what columns of ",  "what columns are in ",
+        "what columns does ",
+        "fields in ",       "fields of ",
+        nullptr
     };
     for (int i = 0; describe_prefixes[i]; i++) {
         const std::string p = describe_prefixes[i];
         if (q.size() > p.size() && q.compare(0, p.size(), p) == 0) {
-            handle_schema(conn, q.substr(p.size()));
-            return true;
+            std::string rest = q.substr(p.size());
+            // Strip a trailing " have" / " has" / " table" suffix, which
+            // appears in phrasings like "what columns does customers have".
+            auto strip_suffix = [&](const char *suf) {
+                size_t n = strlen(suf);
+                if (rest.size() > n && rest.compare(rest.size() - n, n, suf) == 0)
+                    rest.erase(rest.size() - n);
+            };
+            strip_suffix(" have");
+            strip_suffix(" has");
+            strip_suffix(" table");
+            while (!rest.empty() && (rest.back() == ' ' || rest.back() == '\t'))
+                rest.pop_back();
+            if (!rest.empty()) {
+                handle_schema(conn, rest);
+                return true;
+            }
         }
     }
     return false;
