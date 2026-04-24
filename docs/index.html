@@ -103,8 +103,25 @@
 <span class="kw">FROM</span> <span class="str">'sales.parquet'</span>
 <span class="kw">GROUP BY</span> region;</pre>
 
+    <div class="install-widget" id="install-widget">
+      <div class="install-tabs" role="tablist">
+        <button class="install-tab active" role="tab" data-tab="py">Python</button>
+        <button class="install-tab" role="tab" data-tab="js">Node.js</button>
+        <button class="install-tab" role="tab" data-tab="sh">Linux / macOS</button>
+        <button class="install-tab" role="tab" data-tab="win">Windows</button>
+        <button class="install-tab" role="tab" data-tab="src">From source</button>
+      </div>
+      <div class="install-body">
+        <div class="install-cmd active" data-tab="py"><span class="prompt">$</span><code>pip install slothdb</code><button class="copy-btn" title="Copy" data-copy="pip install slothdb">Copy</button></div>
+        <div class="install-cmd" data-tab="js" hidden><span class="prompt">$</span><code>npm install @slothdb/wasm</code><button class="copy-btn" title="Copy" data-copy="npm install @slothdb/wasm">Copy</button></div>
+        <div class="install-cmd" data-tab="sh" hidden><span class="prompt">$</span><code>curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash</code><button class="copy-btn" title="Copy" data-copy="curl -fsSL https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/install.sh | bash">Copy</button></div>
+        <div class="install-cmd" data-tab="win" hidden><a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest/download/slothdb.exe" class="dl-link">Download slothdb.exe &mdash; latest release</a></div>
+        <div class="install-cmd" data-tab="src" hidden><span class="prompt">$</span><code>git clone https://github.com/SouravRoy-ETL/slothdb &amp;&amp; cd slothdb &amp;&amp; cmake -B build &amp;&amp; cmake --build build</code><button class="copy-btn" title="Copy" data-copy="git clone https://github.com/SouravRoy-ETL/slothdb && cd slothdb && cmake -B build && cmake --build build">Copy</button></div>
+      </div>
+    </div>
+
     <div class="ctas">
-      <a class="btn primary" href="#install">pip install slothdb</a>
+      <a class="btn ghost" href="playground/">Try in browser</a>
       <a class="btn ghost" href="#benchmarks">Benchmarks</a>
       <a class="btn ghost" href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
     </div>
@@ -554,6 +571,35 @@ fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
       document.getElementById('gh-stars').textContent = '★ ' + d.stargazers_count;
   })
   .catch(() => {});
+
+// Hero install widget: tab switching + copy-to-clipboard.
+(function() {
+  var widget = document.getElementById('install-widget');
+  if (!widget) return;
+  var tabs = widget.querySelectorAll('.install-tab');
+  var panels = widget.querySelectorAll('.install-cmd');
+  tabs.forEach(function(t) {
+    t.addEventListener('click', function() {
+      var name = t.getAttribute('data-tab');
+      tabs.forEach(function(x) { x.classList.toggle('active', x === t); });
+      panels.forEach(function(p) {
+        var match = p.getAttribute('data-tab') === name;
+        p.classList.toggle('active', match);
+        p.hidden = !match;
+      });
+    });
+  });
+  widget.querySelectorAll('.copy-btn').forEach(function(b) {
+    b.addEventListener('click', function() {
+      var txt = b.getAttribute('data-copy');
+      if (!txt) return;
+      navigator.clipboard && navigator.clipboard.writeText(txt);
+      var orig = b.textContent;
+      b.textContent = 'Copied';
+      setTimeout(function() { b.textContent = orig; }, 1200);
+    });
+  });
+})();
 </script>
 
 </body>
