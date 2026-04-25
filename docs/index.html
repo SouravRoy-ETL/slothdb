@@ -40,6 +40,38 @@
   "@context": "https://schema.org",
   "@graph": [
     {
+      "@type": "Organization",
+      "@id": "https://slothdb.org/#organization",
+      "name": "SlothDB",
+      "alternateName": "slothdb",
+      "url": "https://slothdb.org/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://slothdb.org/assets/icon.svg",
+        "width": 200,
+        "height": 200
+      },
+      "founder": {
+        "@type": "Person",
+        "name": "Sourav Roy",
+        "url": "https://github.com/SouravRoy-ETL"
+      },
+      "sameAs": [
+        "https://github.com/SouravRoy-ETL/slothdb",
+        "https://pypi.org/project/slothdb/",
+        "https://www.npmjs.com/package/@slothdb/wasm"
+      ]
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://slothdb.org/#website",
+      "url": "https://slothdb.org/",
+      "name": "SlothDB",
+      "description": "Fast embedded SQL database. Built from scratch in C++20.",
+      "publisher": { "@id": "https://slothdb.org/#organization" },
+      "inLanguage": "en"
+    },
+    {
       "@type": "SoftwareApplication",
       "name": "SlothDB",
       "alternateName": ["slothdb"],
@@ -52,12 +84,20 @@
       "license": "https://opensource.org/licenses/MIT",
       "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
       "author": { "@type": "Person", "name": "Sourav Roy", "url": "https://github.com/SouravRoy-ETL" },
+      "publisher": { "@id": "https://slothdb.org/#organization" },
       "programmingLanguage": "C++20",
       "codeRepository": "https://github.com/SouravRoy-ETL/slothdb"
     }
   ]
 }
 </script>
+
+<!-- Bing Webmaster verification. If you used "Import from GSC" in Bing
+     Webmaster Tools, you don't need this and can leave it commented.
+     Otherwise: get a token from bing.com/webmasters, paste into content
+     attribute, and uncomment the line below.
+<meta name="msvalidate.01" content="REPLACE_WITH_BING_VERIFICATION_TOKEN">
+-->
 </head>
 <body>
 
