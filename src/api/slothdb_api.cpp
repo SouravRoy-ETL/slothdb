@@ -24,6 +24,23 @@ struct slothdb_result {
     std::string error;
     // Cache for string values (keeps pointers alive until result is freed).
     std::vector<std::string> string_cache;
+    // Lazy typed-batch buffers, one per column. Built on first call to
+    // slothdb_column_int32/int64/double_buffer for that column and
+    // reused across calls (and across re-fetches by the same caller).
+    struct ColumnBuf {
+        std::vector<int32_t>  i32;
+        std::vector<int64_t>  i64;
+        std::vector<double>   f64;
+        std::vector<uint8_t>  validity;
+        bool has_nulls = false;
+        std::vector<uint64_t> str_offsets;   // row_count+1 entries
+        std::vector<char>     str_blob;
+        bool i32_built = false;
+        bool i64_built = false;
+        bool f64_built = false;
+        bool str_built = false;
+    };
+    std::vector<ColumnBuf> col_bufs;
 };
 
 extern "C" {
@@ -150,6 +167,134 @@ const char *slothdb_value_varchar(slothdb_result *result, uint64_t row, uint64_t
 
 void slothdb_free_result(slothdb_result *result) {
     delete result;
+}
+
+// ============================================================================
+// Typed batch fetch — populate per-column buffers on demand and return raw
+// pointers. One C call per column instead of two per cell — drops 60M
+// ctypes calls to ~6 for a 10M x 3 query.
+// ============================================================================
+
+static slothdb_result::ColumnBuf *EnsureColBuf(slothdb_result *r, uint64_t col) {
+    if (!r) return nullptr;
+    if (col >= r->result.ColumnCount()) return nullptr;
+    if (r->col_bufs.size() != r->result.ColumnCount()) {
+        r->col_bufs.resize(r->result.ColumnCount());
+    }
+    return &r->col_bufs[col];
+}
+
+static void BuildValidity(slothdb_result *r, uint64_t col,
+                          slothdb_result::ColumnBuf &buf) {
+    if (!buf.validity.empty()) return;
+    auto n = r->result.RowCount();
+    buf.validity.assign(n, 1);
+    bool any_null = false;
+    for (uint64_t i = 0; i < n; i++) {
+        if (r->result.GetValue(i, col).IsNull()) {
+            buf.validity[i] = 0;
+            any_null = true;
+        }
+    }
+    buf.has_nulls = any_null;
+}
+
+const int32_t *slothdb_column_int32_buffer(slothdb_result *result, uint64_t col) {
+    auto *buf = EnsureColBuf(result, col);
+    if (!buf) return nullptr;
+    if (slothdb_column_type(result, col) != SLOTHDB_TYPE_INTEGER) return nullptr;
+    if (buf->i32_built) return buf->i32.data();
+    auto n = result->result.RowCount();
+    buf->i32.resize(n);
+    for (uint64_t i = 0; i < n; i++) {
+        auto &v = result->result.GetValue(i, col);
+        buf->i32[i] = v.IsNull() ? 0 : v.GetValue<int32_t>();
+    }
+    BuildValidity(result, col, *buf);
+    buf->i32_built = true;
+    return buf->i32.data();
+}
+
+const int64_t *slothdb_column_int64_buffer(slothdb_result *result, uint64_t col) {
+    auto *buf = EnsureColBuf(result, col);
+    if (!buf) return nullptr;
+    auto t = slothdb_column_type(result, col);
+    if (t != SLOTHDB_TYPE_BIGINT && t != SLOTHDB_TYPE_INTEGER) return nullptr;
+    if (buf->i64_built) return buf->i64.data();
+    auto n = result->result.RowCount();
+    buf->i64.resize(n);
+    if (t == SLOTHDB_TYPE_BIGINT) {
+        for (uint64_t i = 0; i < n; i++) {
+            auto &v = result->result.GetValue(i, col);
+            buf->i64[i] = v.IsNull() ? 0 : v.GetValue<int64_t>();
+        }
+    } else {
+        for (uint64_t i = 0; i < n; i++) {
+            auto &v = result->result.GetValue(i, col);
+            buf->i64[i] = v.IsNull() ? 0 : (int64_t)v.GetValue<int32_t>();
+        }
+    }
+    BuildValidity(result, col, *buf);
+    buf->i64_built = true;
+    return buf->i64.data();
+}
+
+const double *slothdb_column_double_buffer(slothdb_result *result, uint64_t col) {
+    auto *buf = EnsureColBuf(result, col);
+    if (!buf) return nullptr;
+    auto t = slothdb_column_type(result, col);
+    if (t != SLOTHDB_TYPE_DOUBLE && t != SLOTHDB_TYPE_FLOAT) return nullptr;
+    if (buf->f64_built) return buf->f64.data();
+    auto n = result->result.RowCount();
+    buf->f64.resize(n);
+    for (uint64_t i = 0; i < n; i++) {
+        auto &v = result->result.GetValue(i, col);
+        buf->f64[i] = v.IsNull() ? 0.0
+            : (t == SLOTHDB_TYPE_DOUBLE ? v.GetValue<double>()
+                                        : (double)v.GetValue<float>());
+    }
+    BuildValidity(result, col, *buf);
+    buf->f64_built = true;
+    return buf->f64.data();
+}
+
+const uint8_t *slothdb_column_validity_buffer(slothdb_result *result, uint64_t col) {
+    auto *buf = EnsureColBuf(result, col);
+    if (!buf) return nullptr;
+    BuildValidity(result, col, *buf);
+    return buf->has_nulls ? buf->validity.data() : nullptr;
+}
+
+int slothdb_column_varchar_buffer(slothdb_result *result, uint64_t col,
+                                   const uint64_t **out_offsets,
+                                   const char **out_blob) {
+    auto *buf = EnsureColBuf(result, col);
+    if (!buf) return -1;
+    if (slothdb_column_type(result, col) != SLOTHDB_TYPE_VARCHAR) return -1;
+    if (!buf->str_built) {
+        auto n = result->result.RowCount();
+        buf->str_offsets.assign(n + 1, 0);
+        // First pass: compute total bytes and per-row lengths.
+        size_t total = 0;
+        std::vector<std::string> tmp(n);
+        for (uint64_t i = 0; i < n; i++) {
+            auto &v = result->result.GetValue(i, col);
+            if (!v.IsNull()) tmp[i] = v.ToString();
+            total += tmp[i].size();
+            buf->str_offsets[i + 1] = total;
+        }
+        buf->str_blob.resize(total);
+        // Second pass: copy.
+        for (uint64_t i = 0; i < n; i++) {
+            auto off = buf->str_offsets[i];
+            std::memcpy(buf->str_blob.data() + off, tmp[i].data(), tmp[i].size());
+        }
+        BuildValidity(result, col, *buf);
+        buf->str_built = true;
+    }
+    if (out_offsets) *out_offsets = buf->str_offsets.data();
+    if (out_blob) *out_blob = buf->str_blob.empty() ? "" : buf->str_blob.data();
+    return 0;
 }
 
 // Thread-local cache for the catalog-introspection C API's returned

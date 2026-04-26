@@ -104,6 +104,43 @@ const char *slothdb_value_varchar(slothdb_result *result, uint64_t row, uint64_t
 void slothdb_free_result(slothdb_result *result);
 
 /* ========================================================================
+ * Typed batch fetch
+ *
+ * One C call returns the entire column as a typed buffer. Used by
+ * language bindings to avoid the per-cell C call overhead that
+ * dominates `result.rows` materialisation in Python (10M cells * 1us
+ * per ctypes call = 60 seconds).
+ *
+ * The returned pointer is valid until the result is freed. Buffer
+ * length is row_count() entries. NULL values are represented as the
+ * type's zero (caller can use slothdb_column_validity_buffer to get
+ * a parallel uint8 mask of validity bits).
+ * ======================================================================== */
+
+/* Pointer to the column's int32 data (row_count entries).
+   Returns NULL if the column type is not INTEGER. */
+const int32_t *slothdb_column_int32_buffer(slothdb_result *result, uint64_t col);
+
+/* Pointer to the column's int64 data. Returns NULL if not BIGINT. */
+const int64_t *slothdb_column_int64_buffer(slothdb_result *result, uint64_t col);
+
+/* Pointer to the column's double data. Returns NULL if not DOUBLE/FLOAT. */
+const double *slothdb_column_double_buffer(slothdb_result *result, uint64_t col);
+
+/* Per-row validity bits (1 = valid, 0 = NULL). Returns NULL if there
+   are no nulls in the column (caller can assume all-valid). */
+const uint8_t *slothdb_column_validity_buffer(slothdb_result *result, uint64_t col);
+
+/* For VARCHAR columns: fills `offsets` with row_count+1 byte offsets
+   into the returned blob (offsets[i] .. offsets[i+1] = i-th string).
+   `out_blob` is set to a contiguous byte buffer holding all string
+   bytes. Returns 0 on success, -1 if the column is not VARCHAR.
+   Both pointers are valid until the result is freed. */
+int slothdb_column_varchar_buffer(slothdb_result *result, uint64_t col,
+                                   const uint64_t **out_offsets,
+                                   const char **out_blob);
+
+/* ========================================================================
  * Catalog introspection
  *
  * Lets a host iterate tables and their columns without running

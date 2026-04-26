@@ -991,6 +991,60 @@ public:
         if (!children.empty()) children[0]->SetRowLimit(n);
     }
 
+    // Forward column pruning down through the projection. The needed-out
+    // mask is stated in the projection's OUTPUT slots, which we map back
+    // to INPUT slots by following each output expression's ColumnRef
+    // (the only kind of expression that pulls from a single input column).
+    // For non-ColumnRef projections we conservatively mark every input
+    // column referenced by the expression. Without this, callers like
+    // PhysicalWindow telling Projection "I only need cols 1,7" never
+    // reaches PhysicalParquetScan and we decode all 10 columns of 10M
+    // rows instead of 2.
+    void SetNeededOutputs(const std::vector<bool> &out_mask) override {
+        if (children.empty()) return;
+        idx_t in_cols = children[0]->GetTypes().size();
+        std::vector<bool> in_mask(in_cols, false);
+        for (idx_t o = 0; o < expressions_.size() && o < out_mask.size(); o++) {
+            if (!out_mask[o]) continue;
+            auto *e = expressions_[o].get();
+            if (!e) continue;
+            // Walk the expression collecting input column refs.
+            std::function<void(const BoundExpression &)> walk =
+                [&](const BoundExpression &x) {
+                    if (x.GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                        auto &c = static_cast<const BoundColumnRef &>(x);
+                        if (c.column_index < in_mask.size()) in_mask[c.column_index] = true;
+                    } else if (x.GetExpressionType() == BoundExpressionType::COMPARISON) {
+                        auto &c = static_cast<const BoundComparison &>(x);
+                        walk(*c.left); walk(*c.right);
+                    } else if (x.GetExpressionType() == BoundExpressionType::ARITHMETIC) {
+                        auto &a = static_cast<const BoundArithmetic &>(x);
+                        walk(*a.left); walk(*a.right);
+                    } else if (x.GetExpressionType() == BoundExpressionType::FUNCTION) {
+                        auto &f = static_cast<const BoundFunction &>(x);
+                        for (auto &a : f.arguments) walk(*a);
+                    } else if (x.GetExpressionType() == BoundExpressionType::CAST) {
+                        auto &c = static_cast<const BoundCast &>(x);
+                        walk(*c.child);
+                    } else if (x.GetExpressionType() == BoundExpressionType::CONJUNCTION) {
+                        auto &c = static_cast<const BoundConjunction &>(x);
+                        walk(*c.left); walk(*c.right);
+                    } else if (x.GetExpressionType() == BoundExpressionType::NEGATION) {
+                        auto &n = static_cast<const BoundNegation &>(x);
+                        walk(*n.child);
+                    } else if (x.GetExpressionType() == BoundExpressionType::IS_NULL) {
+                        auto &n = static_cast<const BoundIsNull &>(x);
+                        walk(*n.child);
+                    } else if (x.GetExpressionType() == BoundExpressionType::UNARY_MINUS) {
+                        auto &u = static_cast<const BoundUnaryMinus &>(x);
+                        walk(*u.child);
+                    }
+                };
+            walk(*e);
+        }
+        children[0]->SetNeededOutputs(in_mask);
+    }
+
     // Detect SELECT * style identity projection: every output column is
     // a plain BoundColumnRef pointing at the same input slot. When this
     // holds, GetData becomes a passthrough — chunks flow from the child
@@ -1727,6 +1781,16 @@ public:
         if (result.ColumnCount() != GetTypes().size()) result.Initialize(GetTypes());
         else result.Reset();
 
+        // Vectorised fast path: every output column is either a plain
+        // COLUMN_REF or a positional window function (ROW_NUMBER / RANK /
+        // DENSE_RANK with no qualify, no lag/lead, no aggregate-shape
+        // window). The 10M-row sort+emit becomes a typed-array gather +
+        // a positional sequence write, no Value boxing per output row.
+        if (!qualify_has_win_ && CanUseVectorisedEmit()) {
+            idx_t out = VectorisedEmit(result);
+            return out > 0;
+        }
+
         idx_t out = 0;
         while (emit_part_ < partitions_.size() && out < VECTOR_SIZE) {
             // Lazy sort: only pay sort cost for partitions we actually emit from.
@@ -1781,6 +1845,171 @@ public:
 
         result.SetCardinality(out);
         return out > 0;
+    }
+
+    // Returns true iff every select_list entry can be emitted via the
+    // typed-vectorised path (no per-row Value boxing).
+    bool CanUseVectorisedEmit() const {
+        for (idx_t col = 0; col < select_list_.size(); col++) {
+            auto &expr = select_list_[col];
+            auto et = expr->GetExpressionType();
+            if (et == BoundExpressionType::COLUMN_REF) continue;
+            if (et == BoundExpressionType::WINDOW) {
+                auto &info = select_win_info_[col];
+                if (info.fn == WF_ROW_NUMBER) continue;
+                // RANK / DENSE_RANK need to peek at the previous order-by
+                // value — also vectorisable but slightly more careful.
+                if (info.fn == WF_RANK || info.fn == WF_DENSE_RANK) continue;
+                return false;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    // Typed-vectorised emit. For each output column:
+    //   - COLUMN_REF: gather typed values from the input chunks via
+    //     `idxs[emit_pos_..emit_pos_+count]`, write into the output's
+    //     typed array directly. Validity bit copied per row.
+    //   - ROW_NUMBER: write the running 1-based counter into the output
+    //     int32 array.
+    //   - RANK / DENSE_RANK: same as ROW_NUMBER but bumped only on
+    //     tie-break of the order-by key.
+    idx_t VectorisedEmit(DataChunk &result) {
+        idx_t out = 0;
+        idx_t num_cols = select_list_.size();
+
+        // Pre-cache, per output column, the BoundColumnRef.column_index
+        // or the WinFunc kind. Resolved at first call.
+        if (vec_emit_cache_.empty()) {
+            vec_emit_cache_.resize(num_cols);
+            for (idx_t c = 0; c < num_cols; c++) {
+                auto &expr = select_list_[c];
+                if (expr->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                    vec_emit_cache_[c].is_col = true;
+                    vec_emit_cache_[c].input_col =
+                        static_cast<BoundColumnRef &>(*expr).column_index;
+                } else {
+                    vec_emit_cache_[c].is_col = false;
+                    vec_emit_cache_[c].fn = select_win_info_[c].fn;
+                    vec_emit_cache_[c].rank_order_col = select_win_info_[c].rank_order_col;
+                    vec_emit_cache_[c].rank_order_tid = select_win_info_[c].rank_order_tid;
+                }
+            }
+        }
+
+        while (emit_part_ < partitions_.size() && out < VECTOR_SIZE) {
+            if (emit_pos_ == 0) SortOnePartition(emit_part_);
+            auto &idxs = partitions_[emit_part_];
+            idx_t avail = idxs.size() - emit_pos_;
+            idx_t take = std::min<idx_t>(avail, VECTOR_SIZE - out);
+            if (take == 0) {
+                emit_part_++;
+                emit_pos_ = 0;
+                rank_cur_ = 1;
+                rank_prev_ = INVALID_INDEX;
+                dense_cur_ = 1;
+                dense_prev_ = INVALID_INDEX;
+                continue;
+            }
+
+            for (idx_t c = 0; c < num_cols; c++) {
+                auto &slot = vec_emit_cache_[c];
+                auto &dst_vec = result.GetVector(c);
+                if (slot.is_col) {
+                    idx_t in_col = slot.input_col;
+                    LogicalTypeId in_tid = input_.types[in_col];
+                    if (in_tid == LogicalTypeId::BIGINT) {
+                        auto *d = dst_vec.GetData<int64_t>();
+                        for (idx_t r = 0; r < take; r++) {
+                            idx_t row = idxs[emit_pos_ + r];
+                            if (input_.IsNull(row, in_col))
+                                dst_vec.GetValidity().SetInvalid(out + r);
+                            else d[out + r] = input_.GetInt64(row, in_col);
+                        }
+                    } else if (in_tid == LogicalTypeId::INTEGER) {
+                        auto *d = dst_vec.GetData<int32_t>();
+                        for (idx_t r = 0; r < take; r++) {
+                            idx_t row = idxs[emit_pos_ + r];
+                            if (input_.IsNull(row, in_col))
+                                dst_vec.GetValidity().SetInvalid(out + r);
+                            else d[out + r] = input_.GetInt32(row, in_col);
+                        }
+                    } else if (in_tid == LogicalTypeId::DOUBLE) {
+                        auto *d = dst_vec.GetData<double>();
+                        for (idx_t r = 0; r < take; r++) {
+                            idx_t row = idxs[emit_pos_ + r];
+                            if (input_.IsNull(row, in_col))
+                                dst_vec.GetValidity().SetInvalid(out + r);
+                            else d[out + r] = input_.GetDouble(row, in_col);
+                        }
+                    } else if (in_tid == LogicalTypeId::VARCHAR) {
+                        for (idx_t r = 0; r < take; r++) {
+                            idx_t row = idxs[emit_pos_ + r];
+                            if (input_.IsNull(row, in_col))
+                                dst_vec.GetValidity().SetInvalid(out + r);
+                            else dst_vec.SetValue(out + r, Value::VARCHAR(input_.GetStr(row, in_col).GetString()));
+                        }
+                    } else {
+                        // Fallback for less-common types.
+                        for (idx_t r = 0; r < take; r++) {
+                            idx_t row = idxs[emit_pos_ + r];
+                            dst_vec.SetValue(out + r, input_.Get(row, in_col));
+                        }
+                    }
+                } else {
+                    // Window function — typed sequence per partition.
+                    // ROW_NUMBER / RANK / DENSE_RANK all return BIGINT
+                    // (matches the binder's return-type assignment).
+                    auto *d = dst_vec.GetData<int64_t>();
+                    if (slot.fn == WF_ROW_NUMBER) {
+                        for (idx_t r = 0; r < take; r++) {
+                            d[out + r] = static_cast<int64_t>(emit_pos_ + r + 1);
+                        }
+                    } else if (slot.fn == WF_RANK || slot.fn == WF_DENSE_RANK) {
+                        idx_t order_col = slot.rank_order_col;
+                        LogicalTypeId otid = slot.rank_order_tid;
+                        for (idx_t r = 0; r < take; r++) {
+                            idx_t row = idxs[emit_pos_ + r];
+                            // Compare order key vs previous; bump on change.
+                            bool same = false;
+                            if (rank_prev_ != INVALID_INDEX) {
+                                if (otid == LogicalTypeId::BIGINT)
+                                    same = input_.GetInt64(rank_prev_, order_col) == input_.GetInt64(row, order_col);
+                                else if (otid == LogicalTypeId::INTEGER)
+                                    same = input_.GetInt32(rank_prev_, order_col) == input_.GetInt32(row, order_col);
+                                else if (otid == LogicalTypeId::DOUBLE)
+                                    same = input_.GetDouble(rank_prev_, order_col) == input_.GetDouble(row, order_col);
+                                else
+                                    same = input_.Get(rank_prev_, order_col) == input_.Get(row, order_col);
+                            }
+                            if (slot.fn == WF_RANK) {
+                                if (!same) rank_cur_ = static_cast<idx_t>(emit_pos_ + r + 1);
+                                d[out + r] = static_cast<int64_t>(rank_cur_);
+                            } else {
+                                if (!same) dense_cur_++;
+                                if (rank_prev_ == INVALID_INDEX) dense_cur_ = 1;
+                                d[out + r] = static_cast<int64_t>(dense_cur_);
+                            }
+                            rank_prev_ = row;
+                        }
+                    }
+                }
+            }
+
+            emit_pos_ += take;
+            out += take;
+            if (emit_pos_ >= idxs.size()) {
+                emit_part_++;
+                emit_pos_ = 0;
+                rank_cur_ = 1;
+                rank_prev_ = INVALID_INDEX;
+                dense_cur_ = 1;
+                dense_prev_ = INVALID_INDEX;
+            }
+        }
+        result.SetCardinality(out);
+        return out;
     }
 
 private:
@@ -1931,6 +2160,15 @@ private:
         // Precomputed Value per partition (only for aggregate-shape windows).
         std::vector<Value> part_value;
     };
+
+    struct VecEmitSlot {
+        bool is_col = false;
+        idx_t input_col = INVALID_INDEX;
+        WinFunc fn = WF_UNKNOWN;
+        idx_t rank_order_col = INVALID_INDEX;
+        LogicalTypeId rank_order_tid = LogicalTypeId::SQLNULL;
+    };
+    std::vector<VecEmitSlot> vec_emit_cache_;
 
     // Reads entire child input into InputBuf with typed raw Vector storage.
     void ReadInput() {

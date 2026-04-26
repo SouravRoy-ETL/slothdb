@@ -180,6 +180,7 @@ class Connection:
         lib.slothdb_column_count.restype = ctypes.c_uint64
         lib.slothdb_row_count.restype = ctypes.c_uint64
         lib.slothdb_column_name.restype = ctypes.c_char_p
+        lib.slothdb_column_type.restype = ctypes.c_int
         lib.slothdb_value_varchar.restype = ctypes.c_char_p
         lib.slothdb_value_is_null.restype = ctypes.c_int
         lib.slothdb_value_int32.restype = ctypes.c_int32
@@ -189,6 +190,27 @@ class Connection:
         lib.slothdb_free_result.argtypes = [ctypes.c_void_p]
         lib.slothdb_close.argtypes = [ctypes.c_void_p]
         lib.slothdb_disconnect.argtypes = [ctypes.c_void_p]
+        # Typed batch fetch — one C call per column instead of two per cell.
+        # Critical for SELECT N rows queries: drops materialisation cost
+        # from O(rows * cols * 2 ctypes calls) to O(cols).
+        try:
+            lib.slothdb_column_int32_buffer.restype = ctypes.POINTER(ctypes.c_int32)
+            lib.slothdb_column_int32_buffer.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+            lib.slothdb_column_int64_buffer.restype = ctypes.POINTER(ctypes.c_int64)
+            lib.slothdb_column_int64_buffer.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+            lib.slothdb_column_double_buffer.restype = ctypes.POINTER(ctypes.c_double)
+            lib.slothdb_column_double_buffer.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+            lib.slothdb_column_validity_buffer.restype = ctypes.POINTER(ctypes.c_uint8)
+            lib.slothdb_column_validity_buffer.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+            lib.slothdb_column_varchar_buffer.restype = ctypes.c_int
+            lib.slothdb_column_varchar_buffer.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint64,
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_uint64)),
+                ctypes.POINTER(ctypes.c_char_p),
+            ]
+            self._has_batch_api = True
+        except AttributeError:
+            self._has_batch_api = False
 
         # Open database
         self._db = ctypes.c_void_p()
@@ -215,15 +237,98 @@ class Connection:
             self._lib.slothdb_free_result(result_ptr)
             raise RuntimeError(f"Query failed: {error_msg}")
 
-        # Extract results
         num_cols = self._lib.slothdb_column_count(result_ptr)
         num_rows = self._lib.slothdb_row_count(result_ptr)
 
         columns = []
+        col_types = []
         for c in range(num_cols):
             name = self._lib.slothdb_column_name(result_ptr, c)
             columns.append({"name": name.decode("utf-8") if name else f"col{c}"})
+            col_types.append(self._lib.slothdb_column_type(result_ptr, c) if self._has_batch_api else 0)
 
+        # Fast path: typed batch fetch. One C call per column populates a
+        # raw C buffer; ctypes reads it as a Python list in a tight loop.
+        # Drops 30M ctypes calls to ~6 on a 10M-row x 3-col query.
+        # SLOTHDB_TYPE_* values: 2=BOOLEAN 5=INTEGER 6=BIGINT 11=FLOAT
+        # 12=DOUBLE 15=VARCHAR — others fall back to per-cell.
+        TYPE_BOOLEAN, TYPE_INTEGER, TYPE_BIGINT = 2, 5, 6
+        TYPE_FLOAT, TYPE_DOUBLE, TYPE_VARCHAR = 11, 12, 15
+        FAST_TYPES = {TYPE_INTEGER, TYPE_BIGINT, TYPE_DOUBLE, TYPE_FLOAT, TYPE_VARCHAR}
+
+        all_fast = self._has_batch_api and num_rows > 0 and all(t in FAST_TYPES for t in col_types)
+        if all_fast:
+            # Build column-major typed buffers, then transpose to row tuples.
+            cols_data = []
+            cols_validity = []
+            for c in range(num_cols):
+                t = col_types[c]
+                v_ptr = self._lib.slothdb_column_validity_buffer(result_ptr, c)
+                validity = None
+                if v_ptr:
+                    validity = (ctypes.c_uint8 * num_rows).from_address(
+                        ctypes.addressof(v_ptr.contents))
+                if t == TYPE_BIGINT or t == TYPE_INTEGER:
+                    p = self._lib.slothdb_column_int64_buffer(result_ptr, c)
+                    if not p:
+                        all_fast = False; break
+                    arr = (ctypes.c_int64 * num_rows).from_address(
+                        ctypes.addressof(p.contents))
+                    cols_data.append(list(arr))
+                elif t == TYPE_DOUBLE or t == TYPE_FLOAT:
+                    p = self._lib.slothdb_column_double_buffer(result_ptr, c)
+                    if not p:
+                        all_fast = False; break
+                    arr = (ctypes.c_double * num_rows).from_address(
+                        ctypes.addressof(p.contents))
+                    cols_data.append(list(arr))
+                elif t == TYPE_VARCHAR:
+                    offs_pp = ctypes.POINTER(ctypes.c_uint64)()
+                    blob_p = ctypes.c_char_p()
+                    rc = self._lib.slothdb_column_varchar_buffer(
+                        result_ptr, c, ctypes.byref(offs_pp), ctypes.byref(blob_p))
+                    if rc != 0:
+                        all_fast = False; break
+                    offs = (ctypes.c_uint64 * (num_rows + 1)).from_address(
+                        ctypes.addressof(offs_pp.contents))
+                    blob_addr = ctypes.cast(blob_p, ctypes.c_void_p).value
+                    if blob_addr is None or offs[num_rows] == 0:
+                        cols_data.append([""] * num_rows)
+                    else:
+                        total = offs[num_rows]
+                        # Copy whole blob once, then slice per row.
+                        whole = ctypes.string_at(blob_addr, total)
+                        col_strs = [
+                            whole[offs[i]:offs[i + 1]].decode("utf-8", errors="replace")
+                            for i in range(num_rows)
+                        ]
+                        cols_data.append(col_strs)
+                else:
+                    all_fast = False; break
+                cols_validity.append(validity)
+
+            if all_fast:
+                # Transpose column-major -> row tuples.
+                if any(v is not None for v in cols_validity):
+                    rows = []
+                    for r in range(num_rows):
+                        row = []
+                        for c in range(num_cols):
+                            v = cols_validity[c]
+                            if v is not None and not v[r]:
+                                row.append(None)
+                            else:
+                                row.append(cols_data[c][r])
+                        rows.append(tuple(row))
+                else:
+                    # No nulls anywhere — zip is the fastest transpose.
+                    rows = list(zip(*cols_data))
+                self._lib.slothdb_free_result(result_ptr)
+                return QueryResult(columns, rows)
+
+        # Fallback: legacy per-cell path. Used when batch API isn't
+        # available, when types include something the batch path doesn't
+        # cover (e.g. BOOLEAN), or when the batch fetch failed.
         rows = []
         for r in range(num_rows):
             row = []
