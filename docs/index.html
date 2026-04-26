@@ -150,11 +150,17 @@
       <path d="M 720,0 L 720,60 Q 720,100 760,100 L 820,100"/>
       <path d="M 720,900 L 720,840 Q 720,800 680,800 L 620,800"/>
     </svg>
+    <!-- Decorative pipe-style query lines floating in the hero backdrop.
+         DuckDB-style aesthetic; the runnable SQL is in <pre class="hero-code">
+         below. Pipe (|>) syntax is not parsed by SlothDB today — these spans
+         are pure visual decoration at 35% opacity. -->
     <div class="hero-backdrop-text">
-      <span style="top: 18%; left: 8%;">SELECT</span>
-      <span style="top: 34%; right: 9%;">GROUP BY ALL</span>
-      <span style="bottom: 22%; left: 11%;">SUM(revenue)</span>
-      <span style="bottom: 12%; right: 14%;">read_parquet('*.pq')</span>
+      <span style="top: 14%; left: 7%;">FROM 'sales.parquet'</span>
+      <span style="top: 26%; left: 9%;">|&gt; WHERE region = 'US'</span>
+      <span style="top: 18%; right: 8%;">|&gt; GROUP BY product</span>
+      <span style="top: 30%; right: 10%;">|&gt; SELECT product, SUM(revenue)</span>
+      <span style="bottom: 22%; left: 10%;">|&gt; ORDER BY revenue DESC</span>
+      <span style="bottom: 12%; right: 12%;">|&gt; LIMIT 10</span>
     </div>
   </div>
   <div class="inner">
