@@ -365,7 +365,7 @@ cmake --build build-wasm-edge</pre>
     <p>CSV, JSON, and Parquet are still built in. Calling an excluded reader (<code>read_xlsx</code>, <code>read_avro</code>, <code>read_arrow</code>, <code>sqlite_scan</code>) throws a clear error pointing at the full build. See <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/EDGE_BUILD.md">EDGE_BUILD.md</a> for audience, runtime distinctions, and expected sizes.</p>
 
     <h2 id="limitations">Limitations</h2>
-    <p>SlothDB is v0.1.7. What it <b>does not do</b> (yet):</p>
+    <p>SlothDB is v0.2.0. What it <b>does not do</b> (yet):</p>
     <ul>
       <li><b>No distributed execution.</b> Single-node embedded engine. Use ClickHouse if you outgrow one machine.</li>
       <li><b>No MVCC or multi-writer transactions.</b> Single-writer, crash-safe checkpoint.</li>
@@ -394,7 +394,7 @@ cmake --build build-wasm-edge</pre>
     <p>Yes. SlothDB builds on x86_64 and arm64 on Linux, macOS, and Windows.</p>
 
     <h3>Is it production-ready?</h3>
-    <p>It's v0.1.7 and about seven months old. 403 tests pass on every CI run, but you'll find edge cases. Treat it as beta. Don't put it in front of paying customers yet without a load test.</p>
+    <p>It's v0.2.0 and about seven months old. 403 tests pass on every CI run, but you'll find edge cases. Treat it as beta. Don't put it in front of paying customers yet without a load test.</p>
 
     <h3>How can I help?</h3>
     <p>File issues, open PRs, share benchmark results, or just tell people about it. See the <a href="community.html">community page</a>.</p>
@@ -439,7 +439,7 @@ cmake --build build-wasm-edge</pre>
     </div>
   </div>
   <div class="meta">
-    SlothDB v0.1.7 · <a href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
+    SlothDB v0.2.0 · <a href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
   </div>
 </footer>
 

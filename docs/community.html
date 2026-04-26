@@ -109,14 +109,14 @@ ctest --test-dir build -C Release</pre>
 
 <section class="page narrow">
   <h2>Project status</h2>
-  <p>SlothDB is v0.1.7. About seven months old, one primary author, CI-green on Windows, Linux and macOS. Use it in real workflows, expect to file bugs. It's not production-critical yet.</p>
+  <p>SlothDB is v0.2.0. About seven months old, one primary author, CI-green on Windows, Linux and macOS. Use it in real workflows, expect to file bugs. It's not production-critical yet.</p>
   <p>The project is developed in the open. Every optimization, every benchmark change, every extension is one commit in the <a href="https://github.com/SouravRoy-ETL/slothdb/commits/main">git log</a>.</p>
 </section>
 
 <section class="page narrow">
   <h2>Release history</h2>
   <ul>
-    <li><b>v0.1.7</b>: interactive <code>.ask</code> natural-language-to-SQL sub-REPL in the CLI shell (rules-first, ~50 KB; optional local Qwen GGUF fallback under <code>-DSLOTHDB_ASK_MODEL=ON</code>), CREATE TABLE AS SELECT (including from files), catalog-introspection C API for Python / Node / WASM bindings, README integrity pass (retracted the "1.1× to 8.6×" range; honest range is 1.04× to 5.43×, median 1.70×)</li>
+    <li><b>v0.2.0</b>: interactive <code>.ask</code> natural-language-to-SQL sub-REPL in the CLI shell (rules-first, ~50 KB; optional local Qwen GGUF fallback under <code>-DSLOTHDB_ASK_MODEL=ON</code>), CREATE TABLE AS SELECT (including from files), catalog-introspection C API for Python / Node / WASM bindings, README integrity pass (retracted the "1.1× to 8.6×" range; honest range is 1.04× to 5.43×, median 1.70×)</li>
     <li><b>v0.1.6</b>: JOIN hot-path overhaul (288 ms -> 85 ms on big × small), <code>CREATE LIVE VIEW</code> with incremental CSV-append path for log-tail workloads, <code>SLOTHDB_EDGE</code> build for sub-MB WASM bundles (Cloudflare Workers target), <code>DESCRIBE</code>, <code>PRAGMA table_info</code> / <code>database_list</code>, <code>VARCHAR(n)</code> length enforcement, ORDER BY on narrowed projections, JOIN reverse-order equi-join fix</li>
     <li><b>v0.1.5</b>: WASM playground at <a href="playground/">slothdb.org/playground</a>, <code>@slothdb/wasm</code> npm package, binder / planner fixes (non-reserved keywords as identifiers, SELECT * ORDER BY, UNION + JOIN file-literal preprocessing, COPY with bare file literal)</li>
     <li><b>v0.1.4</b>: remote file reading (<code>https://</code> and public <code>s3://</code> URLs), extended <code>DATE_TRUNC</code> (week/quarter/decade/etc.), new scalars <code>MONTHNAME</code> / <code>DAYNAME</code> / <code>LAST_DAY</code> / <code>MAKE_DATE</code></li>
@@ -172,7 +172,7 @@ ctest --test-dir build -C Release</pre>
     </div>
   </div>
   <div class="meta">
-    SlothDB v0.1.7 · <a href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
+    SlothDB v0.2.0 · <a href="https://github.com/SouravRoy-ETL/slothdb">GitHub</a>
   </div>
 </footer>
 

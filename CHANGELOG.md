@@ -2,6 +2,59 @@
 
 All notable changes to SlothDB are documented here.
 
+## 0.2.0 — performance overhaul, predicate + top-N pushdown, typed Python batch fetch
+
+A wide perf and correctness pass. The 18-query bench against DuckDB went from 3 wins / 6 ties / 9 slow to 11 wins / 5 ties / 2 slow. Several queries that were 50-6000x slower than DuckDB are now within 1.2x or beat it.
+
+### Performance
+
+- **Top-N pushdown for `ORDER BY ... LIMIT N`.** Bounded-heap operator instead of full sort + truncate. 10M-row Parquet `ORDER BY q DESC LIMIT 10`: 420,344 ms -> 119 ms.
+- **Two-pass top-N for Parquet.** Pass 1 decodes only the order-by column to find the top-K row indices; pass 2 fetches just those rows from the few RGs that contain them. Pass 2 is parallelised across unique RGs.
+- **Parquet row-group statistics pruning.** WHERE clauses pushed into the scan; row groups whose min/max prove no row matches are skipped without decoding. Three latent bugs fixed along the way: stats not propagated from the Thrift parser, fields 5/6 swapped vs the Parquet spec, and cross-type Value comparison silently returning false. `WHERE quantity > 999` (no rows match): 4,984 ms -> 2 ms.
+- **Streaming `FROM 'file.parquet'`.** The bare-string-literal Parquet path was materialising every row into an in-memory DataTable before scanning. Now uses the streaming PhysicalParquetScan, identical to `read_parquet()` form. `count(*)`: 90,000 ms -> 0.8 ms.
+- **Fused `count(*) WHERE pred OVER PARQUET`.** When the planner sees AGG -> FILTER -> PARQUET with a compileable predicate, runs RunParallelRGs and counts matches per-row inside the worker, skipping PhysicalFilter's row-copy pass entirely. Single-predicate inner loop is hoisted to a per-(type, op) tight loop the compiler auto-vectorises. 4,984 ms -> 76 ms.
+- **Vectorised filter executor.** CompareTyped used per-row string comparison of the op name. Hoisted op selection to an enum + branch-free loop. Auto-vectorises when both inputs are all-valid.
+- **Typed batch C API.** New `slothdb_column_int32_buffer / int64_buffer / double_buffer / varchar_buffer / validity_buffer` entry points. The Python wrapper now reads one typed buffer per column and transposes via `zip(*cols)` instead of two ctypes calls per cell. SELECT 2 cols x 10M rows: 46 s -> 16 s; row tuples now contain typed values (`int`, `float`) instead of strings.
+- **Vectorised window emit.** PhysicalWindow's row-at-a-time emit got a typed-array fast path for the common SELECT cols + ROW_NUMBER/RANK/DENSE_RANK pattern. Plus eager parallel per-partition sort.
+- **Identity projection passthrough.** `SELECT * FROM x` now passes chunks unchanged through PhysicalProjection — no per-row ExpressionExecutor overhead. Plus column-pruning hints now forward through projections to file scans, so `SELECT a, b FROM big.parquet ORDER BY a LIMIT 10` decodes only `a` and `b` instead of all 10 columns.
+- **URL caching for HTTPS Parquet.** Repeated queries against the same HTTPS Parquet file reuse the cached download instead of re-fetching.
+
+### Bench (10M-row Parquet, vs DuckDB 1.4.3)
+
+| Query | Before this release | After | DuckDB | Delta |
+|---|---:|---:|---:|---|
+| `count(*)` | 90,000 ms | **0.8 ms** | 2.0 ms | 100,000x faster |
+| `count(*) WHERE q > 50` | 4,984 ms | **76 ms** | 65 ms | 65x faster |
+| `WHERE q > 999` (prunable) | 4,984 ms | **2 ms** | n/a | 2,500x faster |
+| `ORDER BY q DESC LIMIT 10` | 420,344 ms | **119 ms** | 29 ms | 3,500x faster |
+| Window `row_number()` | 99,000 ms | 25,000 ms | 11,500 ms | 4x faster |
+
+### SQL surface
+
+- **Recursive `__FILE__` walker.** `WHERE x IN (SELECT ... FROM 'file.csv')`, EXISTS, scalar subqueries, and CTEs containing file literals now bind correctly. Single root-cause fix unlocked 9 coverage tests across `subq`, `cte`, `complex`, `intro` categories.
+- **`::` postfix cast** (Postgres-style). `'3.14'::DOUBLE` parses now.
+- **`GROUP BY ALL`** (DuckDB-style). Binder fills group keys from non-aggregate select-list entries.
+- **`IF(c, t, f)`, `IIF(c, t, f)`, `IFNULL(a, b)`, `NVL(a, b)`** as ternary / null-coalesce helpers.
+- **Multi-arg `COALESCE`** correctly resolves to the type of the first non-NULL-typed argument instead of crashing on `SetValue for type NULL`.
+- **Tokenizer accepts `[`, `]`, `{`, `}`, `:`** (foundation for upcoming list / struct / map literal support).
+
+### Bug fixes
+
+- Recursive CTE handler now pushes the CTE name to the cleanup list immediately after `CreateTable`. Previously, a failure during recursion left the catalog table behind, breaking the next query that reused the CTE name.
+- `BindComparison` now promotes a literal CONSTANT to the column's type when one side is a column ref. Without this, `bigint_col > 50` (where 50 binds as INTEGER) fell into a `std::stod` per-row slow path.
+- `python/setup.py`'s `bdist_wheel` override forces a platform-tagged wheel (`py3-none-win_amd64`) instead of pure-Python. Fixes the 0.1.7 wheel that was published as `py3-none-any` and shipped no DLL — the cause of issue #4.
+
+### Cleanup
+
+- `sloth-test/` (local benchmark scratch) removed from tracking and added to `.gitignore`.
+- Personal author name removed from public HTML pages and JSON-LD; replaced with project / GitHub references.
+
+### Coverage
+
+170-test SQL battery against DuckDB 1.4.3: 117 pass on both engines (was 108 in the 0.1.7 baseline). Remaining gaps are date / timestamp literals, list / struct / JSON, and a handful of subquery edge cases.
+
+---
+
 ## 0.1.7 — `.ask` natural-language SQL, catalog introspection C API, marketing credibility pass
 
 The shell gains a `.ask` command that translates plain English to SQL using a pure rules engine — no model weights, no network, no surprise downloads. 50 KB added to the binary. The C API gains five catalog-introspection functions so any binding (Python, Node, WASM) can enumerate tables + columns without running `information_schema` SQL. **403 tests / 131 513 assertions** green on Windows, Linux, macOS.
