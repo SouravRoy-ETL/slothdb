@@ -1,75 +1,69 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <!-- SlothDB brand mark.
-       DuckDB-style: solid shapes, single readable silhouette, friendly mascot.
-       The sloth's distinctive dark eye-mask is the recognisable feature here. -->
+  <!-- SlothDB mark v2.
+       Cleaner, more iconic: sloth face only, no body, no branch. Sleepy
+       half-closed eyes (the actual sloth signature) + smaller, separated
+       eye-patches read clearly at favicon size. Round avatar background
+       so it works as a profile picture without clipping. -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7C5CE6"/>
-      <stop offset="1" stop-color="#5B3FCF"/>
-    </linearGradient>
+    <radialGradient id="bg" cx="0.5" cy="0.4" r="0.65">
+      <stop offset="0"   stop-color="#9275F0"/>
+      <stop offset="0.6" stop-color="#7C5CE6"/>
+      <stop offset="1"   stop-color="#5B3FCF"/>
+    </radialGradient>
     <linearGradient id="fur" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#D9B98F"/>
+      <stop offset="0" stop-color="#E5C9A1"/>
       <stop offset="1" stop-color="#B68F62"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F4DDB9"/>
+      <stop offset="1" stop-color="#E5C9A1"/>
     </linearGradient>
   </defs>
 
-  <!-- Rounded-square background (DuckDB's logo also sits in a tile shape). -->
-  <rect x="0" y="0" width="512" height="512" rx="96" fill="url(#bg)"/>
+  <!-- Background — circle so it survives LinkedIn / Slack / GitHub
+       avatar cropping without clipping the rounded-square corners. -->
+  <circle cx="256" cy="256" r="256" fill="url(#bg)"/>
 
-  <!-- Branch the sloth hangs from. -->
-  <rect x="56" y="92" width="400" height="22" rx="11" fill="#3D2817" opacity="0.85"/>
-  <ellipse cx="100" cy="103" rx="18" ry="6" fill="#5C3D26" opacity="0.6"/>
+  <!-- Subtle inner ring for depth (very faint). -->
+  <circle cx="256" cy="256" r="244" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="2"/>
 
-  <!-- Right arm (slung over the branch). -->
-  <path d="M 320 110 C 340 90, 360 100, 360 130 L 348 200 C 348 215, 332 215, 328 200 Z"
-        fill="url(#fur)"/>
+  <!-- Outer fur silhouette — slightly larger than the face plate so the
+       face reads as set into a fur ring. -->
+  <ellipse cx="256" cy="270" rx="170" ry="160" fill="url(#fur)"/>
 
-  <!-- Left arm. -->
-  <path d="M 192 110 C 172 90, 152 100, 152 130 L 164 200 C 164 215, 180 215, 184 200 Z"
-        fill="url(#fur)"/>
+  <!-- Two soft ear bumps (subtle — not pointy, more like fur tufts). -->
+  <ellipse cx="118" cy="190" rx="34" ry="42" fill="url(#fur)" transform="rotate(-18 118 190)"/>
+  <ellipse cx="394" cy="190" rx="34" ry="42" fill="url(#fur)" transform="rotate(18 394 190)"/>
 
-  <!-- Body/head capsule — single shape so the silhouette reads at 16px. -->
-  <ellipse cx="256" cy="290" rx="120" ry="140" fill="url(#fur)"/>
+  <!-- Face plate — lighter, larger relative to head, gives a clear oval
+       canvas for the eye markings. -->
+  <ellipse cx="256" cy="282" rx="138" ry="132" fill="url(#face)"/>
 
-  <!-- Inner face — slightly lighter, gives the round face plate. -->
-  <ellipse cx="256" cy="320" rx="92" ry="100" fill="#EBD3AE"/>
+  <!-- Eye-mask markings — two SEPARATED almond shapes, not the joined
+       butterfly from v1. Real sloths have distinct dark patches around
+       each eye. This reads cleaner at every size. -->
+  <ellipse cx="200" cy="262" rx="42" ry="34" fill="#3D2817" transform="rotate(-12 200 262)"/>
+  <ellipse cx="312" cy="262" rx="42" ry="34" fill="#3D2817" transform="rotate(12 312 262)"/>
 
-  <!-- The sloth's signature dark eye-mask (the brand-defining feature). -->
-  <path d="M 188 300
-           Q 188 268, 222 268
-           Q 256 268, 256 300
-           Q 256 268, 290 268
-           Q 324 268, 324 300
-           Q 324 348, 290 348
-           Q 256 348, 256 320
-           Q 256 348, 222 348
-           Q 188 348, 188 300 Z"
-        fill="#3D2817"/>
+  <!-- Sleepy half-closed eyes — the trademark sloth expression.
+       Drawn as a thick arc (closed eyelid) over a tiny visible eye-glint. -->
+  <path d="M 168 262 Q 200 248, 232 262" stroke="#1A0F08" stroke-width="6"
+        stroke-linecap="round" fill="none"/>
+  <path d="M 280 262 Q 312 248, 344 262" stroke="#1A0F08" stroke-width="6"
+        stroke-linecap="round" fill="none"/>
+  <!-- Tiny eye glints under the closed lids. -->
+  <circle cx="200" cy="265" r="2.5" fill="#1A0F08"/>
+  <circle cx="312" cy="265" r="2.5" fill="#1A0F08"/>
 
-  <!-- Eyes (white + pupil) — closed-ish sleepy slits would be cuter but
-       open eyes read better at favicon size. -->
-  <circle cx="222" cy="304" r="11" fill="#FFFFFF"/>
-  <circle cx="290" cy="304" r="11" fill="#FFFFFF"/>
-  <circle cx="225" cy="306" r="5.5" fill="#1A0F08"/>
-  <circle cx="293" cy="306" r="5.5" fill="#1A0F08"/>
+  <!-- Nose — small triangular, centred. -->
+  <path d="M 248 322 L 264 322 L 256 336 Z" fill="#3D2817"/>
+  <ellipse cx="256" cy="322" rx="11" ry="6" fill="#3D2817"/>
 
-  <!-- Nose. -->
-  <path d="M 246 360 Q 256 374, 266 360 Q 256 372, 246 360 Z" fill="#3D2817"/>
-  <ellipse cx="256" cy="358" rx="9" ry="6" fill="#3D2817"/>
-
-  <!-- Mouth — gentle smile. -->
-  <path d="M 240 384 Q 256 396, 272 384" stroke="#3D2817" stroke-width="5"
+  <!-- Mouth — gentle smile, slightly upturned. -->
+  <path d="M 232 358 Q 256 372, 280 358" stroke="#3D2817" stroke-width="5"
         stroke-linecap="round" fill="none"/>
 
-  <!-- Cheek blush (warmth). -->
-  <ellipse cx="200" cy="354" rx="10" ry="6" fill="#E8A88E" opacity="0.5"/>
-  <ellipse cx="312" cy="354" rx="10" ry="6" fill="#E8A88E" opacity="0.5"/>
-
-  <!-- Tiny leaf accent on the branch — the SlothDB-not-DuckDB tell. -->
-  <path d="M 432 92
-           Q 460 70, 478 80
-           Q 470 100, 442 105
-           Q 432 100, 432 92 Z"
-        fill="#6BBF59"/>
-  <path d="M 442 92 L 470 82" stroke="#3A7A2E" stroke-width="2" stroke-linecap="round"/>
+  <!-- Cheek warmth (very subtle). -->
+  <ellipse cx="170" cy="328" rx="14" ry="8" fill="#E8A88E" opacity="0.4"/>
+  <ellipse cx="342" cy="328" rx="14" ry="8" fill="#E8A88E" opacity="0.4"/>
 </svg>

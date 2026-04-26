@@ -1,14 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" width="1200" height="360">
-  <!-- Horizontal lockup: mark + wordmark + tagline.
-       Use this on README headers, slide decks, and the site nav. -->
+  <!-- Horizontal lockup v2: cleaner sloth-face mark + wordmark + tagline.
+       Use this on README headers, slide decks, light-bg surfaces. -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7C5CE6"/>
-      <stop offset="1" stop-color="#5B3FCF"/>
-    </linearGradient>
+    <radialGradient id="bg" cx="0.5" cy="0.4" r="0.65">
+      <stop offset="0"   stop-color="#9275F0"/>
+      <stop offset="0.6" stop-color="#7C5CE6"/>
+      <stop offset="1"   stop-color="#5B3FCF"/>
+    </radialGradient>
     <linearGradient id="fur" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#D9B98F"/>
+      <stop offset="0" stop-color="#E5C9A1"/>
       <stop offset="1" stop-color="#B68F62"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F4DDB9"/>
+      <stop offset="1" stop-color="#E5C9A1"/>
     </linearGradient>
     <linearGradient id="db" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#7C5CE6"/>
@@ -18,24 +23,22 @@
 
   <!-- Mark — same artwork as sloth-mark.svg, scaled down. -->
   <g transform="translate(20, 20) scale(0.625)">
-    <rect x="0" y="0" width="512" height="512" rx="96" fill="url(#bg)"/>
-    <rect x="56" y="92" width="400" height="22" rx="11" fill="#3D2817" opacity="0.85"/>
-    <ellipse cx="100" cy="103" rx="18" ry="6" fill="#5C3D26" opacity="0.6"/>
-    <path d="M 320 110 C 340 90, 360 100, 360 130 L 348 200 C 348 215, 332 215, 328 200 Z" fill="url(#fur)"/>
-    <path d="M 192 110 C 172 90, 152 100, 152 130 L 164 200 C 164 215, 180 215, 184 200 Z" fill="url(#fur)"/>
-    <ellipse cx="256" cy="290" rx="120" ry="140" fill="url(#fur)"/>
-    <ellipse cx="256" cy="320" rx="92" ry="100" fill="#EBD3AE"/>
-    <path d="M 188 300 Q 188 268, 222 268 Q 256 268, 256 300 Q 256 268, 290 268 Q 324 268, 324 300 Q 324 348, 290 348 Q 256 348, 256 320 Q 256 348, 222 348 Q 188 348, 188 300 Z" fill="#3D2817"/>
-    <circle cx="222" cy="304" r="11" fill="#FFFFFF"/>
-    <circle cx="290" cy="304" r="11" fill="#FFFFFF"/>
-    <circle cx="225" cy="306" r="5.5" fill="#1A0F08"/>
-    <circle cx="293" cy="306" r="5.5" fill="#1A0F08"/>
-    <ellipse cx="256" cy="358" rx="9" ry="6" fill="#3D2817"/>
-    <path d="M 240 384 Q 256 396, 272 384" stroke="#3D2817" stroke-width="5" stroke-linecap="round" fill="none"/>
-    <ellipse cx="200" cy="354" rx="10" ry="6" fill="#E8A88E" opacity="0.5"/>
-    <ellipse cx="312" cy="354" rx="10" ry="6" fill="#E8A88E" opacity="0.5"/>
-    <path d="M 432 92 Q 460 70, 478 80 Q 470 100, 442 105 Q 432 100, 432 92 Z" fill="#6BBF59"/>
-    <path d="M 442 92 L 470 82" stroke="#3A7A2E" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="256" cy="256" r="256" fill="url(#bg)"/>
+    <circle cx="256" cy="256" r="244" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="2"/>
+    <ellipse cx="256" cy="270" rx="170" ry="160" fill="url(#fur)"/>
+    <ellipse cx="118" cy="190" rx="34" ry="42" fill="url(#fur)" transform="rotate(-18 118 190)"/>
+    <ellipse cx="394" cy="190" rx="34" ry="42" fill="url(#fur)" transform="rotate(18 394 190)"/>
+    <ellipse cx="256" cy="282" rx="138" ry="132" fill="url(#face)"/>
+    <ellipse cx="200" cy="262" rx="42" ry="34" fill="#3D2817" transform="rotate(-12 200 262)"/>
+    <ellipse cx="312" cy="262" rx="42" ry="34" fill="#3D2817" transform="rotate(12 312 262)"/>
+    <path d="M 168 262 Q 200 248, 232 262" stroke="#1A0F08" stroke-width="6" stroke-linecap="round" fill="none"/>
+    <path d="M 280 262 Q 312 248, 344 262" stroke="#1A0F08" stroke-width="6" stroke-linecap="round" fill="none"/>
+    <circle cx="200" cy="265" r="2.5" fill="#1A0F08"/>
+    <circle cx="312" cy="265" r="2.5" fill="#1A0F08"/>
+    <ellipse cx="256" cy="322" rx="11" ry="6" fill="#3D2817"/>
+    <path d="M 232 358 Q 256 372, 280 358" stroke="#3D2817" stroke-width="5" stroke-linecap="round" fill="none"/>
+    <ellipse cx="170" cy="328" rx="14" ry="8" fill="#E8A88E" opacity="0.4"/>
+    <ellipse cx="342" cy="328" rx="14" ry="8" fill="#E8A88E" opacity="0.4"/>
   </g>
 
   <!-- Wordmark. -->
