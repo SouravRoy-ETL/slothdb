@@ -21,6 +21,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <queue>
 #include <system_error>
 #include <thread>
 #include <type_traits>
@@ -929,6 +930,13 @@ public:
         : PhysicalOperator(PhysicalOperatorType::PROJECTION, std::move(types)),
           expressions_(std::move(expressions)) {}
 
+    // Pass row-limit hints through. LIMIT -> PROJECTION -> ORDER_BY is a
+    // common plan shape; without forwarding here, ORDER_BY does a full
+    // sort of millions of rows even when LIMIT 10 sits above.
+    void SetRowLimit(idx_t n) override {
+        if (!children.empty()) children[0]->SetRowLimit(n);
+    }
+
     void Init() override {
         for (auto &child : children) child->Init();
     }
@@ -962,6 +970,14 @@ public:
         : PhysicalOperator(PhysicalOperatorType::ORDER_BY, std::move(types)),
           orders_(std::move(orders)) {}
 
+    // Top-N pushdown: PhysicalLimit propagates `limit + offset` here.
+    // When set, we use a bounded min/max heap of that size instead of
+    // collecting + sorting the full input. Critical for queries like
+    // `ORDER BY x DESC LIMIT 10` over millions of rows — full sort
+    // is O(N log N), bounded heap is O(N log K) which can be 1000x
+    // faster when K << N.
+    void SetRowLimit(idx_t n) override { row_limit_ = n; }
+
     void Init() override {
         for (auto &child : children) child->Init();
         collected_ = false;
@@ -969,7 +985,6 @@ public:
     }
 
     bool GetData(DataChunk &result) override {
-        // Collect all input first.
         if (!collected_) {
             CollectAll();
             collected_ = true;
@@ -992,7 +1007,80 @@ public:
     }
 
 private:
+    // Compare(a, b) returns true if `a` should come before `b` in the
+    // final OUTPUT order. Used both as the std::sort comparator and as
+    // the priority_queue ordering function.
+    bool Less(const std::vector<Value> &a, const std::vector<Value> &b) const {
+        for (auto &order : orders_) {
+            idx_t col_idx = 0;
+            if (order.expression->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                col_idx = static_cast<BoundColumnRef &>(*order.expression).column_index;
+            }
+            auto &va = a[col_idx];
+            auto &vb = b[col_idx];
+            if (va.IsNull() && vb.IsNull()) continue;
+            if (va.IsNull()) return !order.ascending;
+            if (vb.IsNull()) return order.ascending;
+            if (va < vb) return order.ascending;
+            if (vb < va) return !order.ascending;
+        }
+        return false;
+    }
+
     void CollectAll() {
+        // Bounded-heap top-N path. Triggered when LIMIT pushed a small
+        // limit down. Threshold guards against degenerate cases — for
+        // very large K the heap loses its advantage and a full sort is
+        // simpler.
+        constexpr idx_t TOP_N_THRESHOLD = 65536;
+        if (row_limit_ > 0 && row_limit_ <= TOP_N_THRESHOLD) {
+            CollectTopN(row_limit_);
+            return;
+        }
+        CollectFull();
+    }
+
+    void CollectTopN(idx_t k) {
+        // priority_queue with Less-by-output-order at the top. Heap top
+        // is therefore the WORST candidate (latest in output order); when
+        // a better candidate arrives we pop top and push the new row.
+        auto cmp = [this](const std::vector<Value> &a, const std::vector<Value> &b) {
+            return this->Less(a, b);
+        };
+        std::priority_queue<std::vector<Value>,
+                            std::vector<std::vector<Value>>,
+                            decltype(cmp)> pq(cmp);
+
+        DataChunk chunk;
+        while (true) {
+            chunk.Initialize(children[0]->GetTypes());
+            if (!children[0]->GetData(chunk)) break;
+            for (idx_t i = 0; i < chunk.size(); i++) {
+                std::vector<Value> row;
+                row.reserve(chunk.ColumnCount());
+                for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
+                    row.push_back(chunk.GetValue(col, i));
+                }
+                if (pq.size() < k) {
+                    pq.push(std::move(row));
+                } else if (Less(row, pq.top())) {
+                    pq.pop();
+                    pq.push(std::move(row));
+                }
+            }
+        }
+
+        // Drain: heap pops worst-first, so we get [worst .. best].
+        // Reverse for the [best .. worst] output order.
+        sorted_rows_.reserve(pq.size());
+        while (!pq.empty()) {
+            sorted_rows_.push_back(pq.top());
+            pq.pop();
+        }
+        std::reverse(sorted_rows_.begin(), sorted_rows_.end());
+    }
+
+    void CollectFull() {
         DataChunk chunk;
         while (true) {
             chunk.Initialize(children[0]->GetTypes());
@@ -1005,29 +1093,9 @@ private:
                 sorted_rows_.push_back(std::move(row));
             }
         }
-
-        // Sort using the order expressions.
-        // For now, we evaluate order expressions as column indices.
         std::sort(sorted_rows_.begin(), sorted_rows_.end(),
             [this](const std::vector<Value> &a, const std::vector<Value> &b) {
-                for (auto &order : orders_) {
-                    // Get the column index from the order expression.
-                    idx_t col_idx = 0;
-                    if (order.expression->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                        col_idx = static_cast<BoundColumnRef &>(*order.expression).column_index;
-                    }
-
-                    auto &va = a[col_idx];
-                    auto &vb = b[col_idx];
-
-                    if (va.IsNull() && vb.IsNull()) continue;
-                    if (va.IsNull()) return !order.ascending;
-                    if (vb.IsNull()) return order.ascending;
-
-                    if (va < vb) return order.ascending;
-                    if (vb < va) return !order.ascending;
-                }
-                return false;
+                return Less(a, b);
             });
     }
 
@@ -1035,6 +1103,7 @@ private:
     std::vector<std::vector<Value>> sorted_rows_;
     bool collected_ = false;
     idx_t emit_pos_ = 0;
+    idx_t row_limit_ = 0;  // 0 = no limit pushdown, full sort path
 };
 
 class PhysicalLimit : public PhysicalOperator {
