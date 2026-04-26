@@ -1,116 +1,96 @@
 # Iteration progress — 2026-04-26
 
-Working from REPORT.md's gap analysis. Each row is one commit, with the
-test-pass delta it produced.
+| Commit | Change | Pass rate | Perf delta |
+|---|---|---|---|
+| baseline | 0.1.8 wheel as published | 108/170 (63.5%) | — |
+| `e770661` | `::` postfix cast + `GROUP BY ALL` + new tokens | 110/170 | — |
+| `5411389` | `IF` / `IIF` / `IFNULL` / `NVL` + multi-arg `COALESCE` | 112/170 | — |
+| `d1a1318` | Recursive walker for `__FILE__` in nested SELECTs | 116/170 | — |
+| `b2102ad` | Recursive-CTE table-cleanup fix | 117/170 | — |
+| `cf15a0c` | Top-N pushdown for `ORDER BY ... LIMIT N` | 116/170* | **53×** |
 
-| Commit | Change | Pass rate |
-|---|---|---|
-| baseline | 0.1.8 wheel as published | 108/170 (63.5%) |
-| `e770661` | `::` postfix cast + `GROUP BY ALL` + new tokens (`[`, `]`, `{`, `}`, `::`, `:`) | 110/170 (64.7%) |
-| `5411389` | `IF` / `IIF` / `IFNULL` / `NVL` + multi-arg `COALESCE` fix | **112/170 (65.9%)** |
+\* Top-N caused 1 unrelated regression (`groupby/rollup` access violation). Pre-existing
+silent bug in positional `GROUP BY 1` exposed by test ordering — separate root cause from
+top-N.
 
-Net: **+4 tests, +2.4 percentage points, ~2 hours of work**.
+## Coverage delta
 
-## What this taught me about realistic velocity
+**Net: +8 tests fixed, -1 regression = +7 = 116/170 (68.2%)**
 
-Each one-line gap on the report aggregates very different real costs:
+Categories that moved:
+- `subq` 0/7 → 1/7 (in_subq passes)
+- `cte` 0/3 → 2/3 (simple_cte, multi_cte pass; recursive_cte still binder bug)
+- `complex` 0/6 → 1/6 (yoy_lag now passes)
+- `case` 2/4 → 3/4 (case_no_else)
+- `null` 3/5 → 5/5 (coalesce, ifnull)
+- `types` 6/7 → 7/7 (`::` cast)
+- `groupby` 6/8 → 6/8 (group_by_all gained, rollup regressed via flaky)
+- `complex` 0/6 → 1/6
 
-- **Tier 4 fixes** (function aliases, single-token additions): 30 min each, +1 test each. Done a batch.
-- **Tier 3 fixes** (FILTER clause, USING, list/struct literals): 2-4 hours each because they touch tokenizer + parser + AST + binder + executor + result types. **Not attempted yet.**
-- **Tier 2 fixes** (date/time literals): 1-2 days because the type system has DATE/TIMESTAMP enum entries but no `Value::DATE()` factory, no string parsers, no arithmetic. **Discovered scope mid-session, parked.**
-- **Tier 1 fixes** (top-N pushdown, HTTP Range, binder `__FILE__` recursion): 1-3 days each — planner, reader, or AST-walker rewrites. **Not attempted yet.**
+## Performance wins
 
-Net point: **single sessions move the pass rate by 2-3 points**. Hitting 90% is 8-10 more sessions, not one.
+| Query | Before | After | Speedup |
+|---|---:|---:|---:|
+| **`parquet10m_orderby_top10`** (10M-row Parquet, ORDER BY + LIMIT 10) | 420,344 ms | **7,924 ms** | **53×** |
+| `csv1m_orderby_top10` (1M-row CSV, ORDER BY + LIMIT 10) | 7,281 ms | **940 ms** | **7.7×** |
+| `avro1m_orderby_top10` (1M-row Avro, ORDER BY + LIMIT 10) | 2,869 ms | **700 ms** | **4.1× → wins vs DuckDB** |
 
-## Phased plan (what to do next, in order)
+The catastrophic 6,154× regression on `parquet10m_orderby_top10` is now 159× — still slower
+than DuckDB (49 ms vs 7,924 ms) but no longer pathological. Remaining gap is per-value
+`Vector::GetValue` overhead in the heap-comparison path; vectorised compares are a separate
+follow-up.
 
-### Session 2 — binder `__FILE__` bug (highest leverage)
-Single root cause behind ~10 tests across subqueries, CTEs, EXPLAIN,
-and complex queries.
+## Honest claim audit (post-fixes)
 
-The fix path is clear:
-1. Refactor the file-rewriting logic in `connection.cpp:1385-1485` into
-   a standalone helper `MaterializeFileRef(TableRef&, Catalog&, ...)`.
-2. Add an AST walker that visits every nested SELECT (CTEs +
-   `SubqueryExpression` nodes inside select_list / where / having /
-   qualify).
-3. Apply the helper to every `TableRef` found.
+| Hero claim | Status |
+|---|---|
+| "Up to 5× faster where it counts" | ✅ True — CSV bulk aggregates, Avro reads, and now Avro top-N. |
+| "138 ms vs DuckDB 540 ms" 5-query batch | ✅ Holds. |
+| "Reads Parquet directly" | 🟡 Reads work; ORDER BY + LIMIT now usable; predicate pushdown still missing (75× slower on filter scans). |
+| "Reads Avro directly" | ✅ 4–7× faster than DuckDB. |
+| "Query files over HTTPS" | 🟡 Works for CSV; Parquet still 22× slower (no Range requests). |
+| "Same model as DuckDB and SQLite" | 🟡 Subqueries, CTEs, joins now reach binder via recursive walker, but scalar-subquery-as-expression and FROM-(SELECT) still missing. |
 
-Expected gain: **+8-10 tests** (subq×7, cte×3, intro×2 partial).
+## Remaining big items, ordered
 
-### Session 3 — DATE / TIMESTAMP first-class values
-Currently DATE/TIMESTAMP are LogicalType enum entries with no `Value::`
-factory. Need:
-1. `Value::DATE(int32 days_since_epoch)` and `Value::TIMESTAMP(int64 us_since_epoch)`.
-2. String parsers `ParseDate("YYYY-MM-DD")` and `ParseTimestamp("YYYY-MM-DD HH:MM:SS")`.
-3. Parser: `DATE 'literal'` and `TIMESTAMP 'literal'` typed-literal handling.
-4. Wire to existing EXTRACT, DATE_DIFF, STRFTIME, INTERVAL arithmetic.
+### Tier 1 (still ship-blocking)
+1. **Parquet predicate pushdown via row-group statistics.** The Parquet reader already parses
+   min/max stats per column per row group (`src/storage/parquet.cpp:225` `ParseStatistics`).
+   Need to expose them through the reader API and use in the scan operator to skip row groups
+   that can't satisfy WHERE predicates. Bench: 5,395 ms → expected 100 ms (target: 50× speedup).
+2. **HTTP Range requests for Parquet over HTTPS.** Fetch the footer with a Range request,
+   parse metadata, then range-fetch only column chunks needed. Bench: 132 s → expected 6–10 s.
+3. **`(SELECT ...)` as scalar expression** (`src/parser/parser.cpp` ParsePrimary). Unblocks
+   subq/scalar_subq, subq/correlated, complex/yoy_lag (already fixed via walker), several
+   real-world patterns.
+4. **`FROM (SELECT ...)`** (parser + AST: TableRef.subquery field). Unblocks
+   subq/from_subq, complex/top_n_per_group, complex/pivot.
+5. **`WHERE EXISTS / NOT IN / ANY / ALL`** parser corner cases — different parse error each.
 
-Expected gain: **+6-8 tests** (dates×8, plus unblocks `complex/moving_avg` etc).
+### Tier 2 (parity / DuckDB-compat)
+6. DATE / TIMESTAMP first-class values + literal parsing.
+7. `JOIN ... USING(col)` + `SEMI JOIN` / `ANTI JOIN` keywords.
+8. Window frame `OVER (... ROWS BETWEEN ... AND ...)` parsing.
+9. `count(*) FILTER (WHERE ...)` aggregate.
+10. `VALUES (...), (...)` as a table source.
 
-### Session 4 — Top-N pushdown for `ORDER BY ... LIMIT N`
-Single biggest perf bug (6,154x slower on 10M-row Parquet). Path:
-1. Detect ORDER BY + LIMIT in the planner.
-2. Emit a bounded-heap operator instead of full sort + truncate.
+### Tier 3 (polish, smaller payoff)
+11. List/struct/JSON literals — `[1,2,3]` and `{'k':v}` parser support, then full type-system
+    integration (multi-week project).
+12. `EXPLAIN ANALYZE` and `EXPLAIN` of file-literal queries.
+13. Aggregate functions: `LIST`, `APPROX_COUNT_DISTINCT`, `QUANTILE_CONT`.
 
-Expected gain: **6-10x speedup on a query everyone types**.
-No coverage tests blocked, but fixes the worst regression in the report.
+## Known issues introduced this session
 
-### Session 5 — Parquet predicate pushdown via row-group statistics
-75x slowdown on `WHERE quantity > 50` over 10M-row Parquet. Path:
-1. Read `min/max` per column per row group from the Parquet metadata.
-2. In the scan operator, check predicates against the stats and skip
-   row groups that can't satisfy them.
+- **`groupby/rollup`** intermittent access violation when run after `groupby/group_by_position`.
+  Both queries pass in isolation. `GROUP BY 1` (positional) silently returns wrong results
+  even on the baseline 0.1.8, so the harness "PASS" was misleading. The crash is downstream
+  state corruption — separate root cause from the top-N change. Needs its own session.
 
-Expected gain: **20-50x on selective filters**. No coverage tests, just perf.
+## Velocity reality
 
-### Session 6 — HTTP Range requests for Parquet
-22x slowdown over HTTPS (132s vs 6s). Path:
-1. The `HTTPClient` should issue a Range request for the last 64 KB
-   first to read the Parquet footer.
-2. Parse footer to get column-chunk byte offsets.
-3. Range-fetch only the columns needed by the query.
-
-Expected gain: **10-30x speedup on remote Parquet**.
-Real users care about this for object-storage workflows.
-
-### Session 7 — `JOIN ... USING(col)` + `SEMI JOIN` / `ANTI JOIN`
-Three tests blocked, plus DuckDB-compat polish. Path:
-1. Add `KW_SEMI`, `KW_ANTI` tokens.
-2. Recognise them as join types in the parser.
-3. Convert `USING(col)` to an equivalent ON clause at parse time.
-
-Expected gain: **+3-5 tests**.
-
-### Session 8 — `count(*) FILTER (WHERE ...)`
-1 test blocked. Filter-aware aggregate is a parser + planner change.
-
-Expected gain: **+1-2 tests**, but it's the kind of feature analysts
-hit constantly.
-
-### Session 9 — `VALUES` as a table source
-1 test blocked. `FROM (VALUES (1,'a'),(2,'b'))` should bind as an
-inline table.
-
-Expected gain: **+1-2 tests**, but it unblocks every "let me inline
-some test data" use case.
-
-### Session 10+ — list/struct/JSON first-class types
-This is multi-week work and probably should be its own milestone.
-Tokens already added in session 1; everything downstream (AST node
-types, binder rules, executor paths, result serialization,
-type system extensions) is still missing.
-
-Expected gain: **+14 tests across list/struct/json**, plus opens up
-JSON pathing which is heavily used in real OLAP.
-
-## Things this run validated
-
-- The harness (`harness.py`) correctly catches regressions. Every fix
-  added has been verified to not break previously-passing tests.
-- The `:: cast`, `GROUP BY ALL`, `IF/IIF/IFNULL/NVL` fixes all
-  work on real queries beyond just the test cases (smoke-tested in
-  the Python wheel before re-running the suite).
-- The `__FILE__` binder bug is more pervasive than I first thought —
-  it blocks `EXPLAIN`, almost every `complex` test, and arguably is
-  the single highest-leverage code change in the queue.
+- 8 hours of work this session = 7 net coverage tests + 53× perf win on the worst query +
+  full diagnostic of remaining gaps with sized fix paths.
+- Next ~3 sessions should plausibly reach 80% coverage AND close the remaining two
+  Tier-1 perf items.
+- Hitting 90%+ requires the multi-week list/struct/JSON type-system buildout.

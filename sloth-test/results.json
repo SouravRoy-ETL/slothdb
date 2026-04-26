@@ -6,13 +6,13 @@
     "sql": "SELECT 42",
     "slothdb": {
       "ok": true,
-      "ms": 0.65,
+      "ms": 0.41,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.44,
+      "ms": 2.57,
       "rows": 1,
       "error": null
     }
@@ -24,13 +24,13 @@
     "sql": "SELECT 'hi' AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.1,
+      "ms": 0.11,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.69,
+      "ms": 0.53,
       "rows": 1,
       "error": null
     }
@@ -42,13 +42,13 @@
     "sql": "SELECT TRUE AS t",
     "slothdb": {
       "ok": true,
-      "ms": 0.08,
+      "ms": 0.05,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.65,
+      "ms": 1.14,
       "rows": 1,
       "error": null
     }
@@ -66,7 +66,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.52,
+      "ms": 0.53,
       "rows": 1,
       "error": null
     }
@@ -78,13 +78,13 @@
     "sql": "SELECT 1 + 2 * 3 - 4 / 2 AS x",
     "slothdb": {
       "ok": true,
-      "ms": 0.09,
+      "ms": 0.08,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 2.55,
+      "ms": 3.29,
       "rows": 1,
       "error": null
     }
@@ -96,13 +96,13 @@
     "sql": "SELECT 10 % 3 AS r",
     "slothdb": {
       "ok": true,
-      "ms": 0.08,
+      "ms": 0.07,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.45,
+      "ms": 1.26,
       "rows": 1,
       "error": null
     }
@@ -114,13 +114,13 @@
     "sql": "SELECT 'a' || 'b' AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.1,
+      "ms": 0.11,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.1,
+      "ms": 1.14,
       "rows": 1,
       "error": null
     }
@@ -132,13 +132,13 @@
     "sql": "SELECT concat('a', 'b', 'c') AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.16,
+      "ms": 0.13,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.61,
+      "ms": 1.03,
       "rows": 1,
       "error": null
     }
@@ -156,7 +156,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.7,
+      "ms": 0.54,
       "rows": 1,
       "error": null
     }
@@ -168,13 +168,13 @@
     "sql": "SELECT CAST(42 AS DOUBLE) AS d",
     "slothdb": {
       "ok": true,
-      "ms": 0.15,
+      "ms": 0.19,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.64,
+      "ms": 0.5,
       "rows": 1,
       "error": null
     }
@@ -186,13 +186,13 @@
     "sql": "SELECT CAST('123' AS INTEGER) AS i",
     "slothdb": {
       "ok": true,
-      "ms": 0.11,
+      "ms": 0.09,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.57,
+      "ms": 0.68,
       "rows": 1,
       "error": null
     }
@@ -210,7 +210,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.62,
+      "ms": 0.55,
       "rows": 1,
       "error": null
     }
@@ -222,13 +222,13 @@
     "sql": "SELECT '3.14'::DOUBLE AS d",
     "slothdb": {
       "ok": true,
-      "ms": 0.12,
+      "ms": 0.1,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.1,
+      "ms": 0.58,
       "rows": 1,
       "error": null
     }
@@ -240,13 +240,13 @@
     "sql": "SELECT CAST('1.5' AS DECIMAL(10,2)) AS d",
     "slothdb": {
       "ok": true,
-      "ms": 0.1,
+      "ms": 0.29,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 6.47,
+      "ms": 7.59,
       "rows": 1,
       "error": null
     }
@@ -258,13 +258,13 @@
     "sql": "SELECT CAST(1 AS BOOLEAN) AS b",
     "slothdb": {
       "ok": true,
-      "ms": 0.08,
+      "ms": 0.1,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.74,
+      "ms": 0.76,
       "rows": 1,
       "error": null
     }
@@ -282,7 +282,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.22,
+      "ms": 1.13,
       "rows": 1,
       "error": null
     }
@@ -294,13 +294,13 @@
     "sql": "SELECT upper('abc') AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.09,
+      "ms": 0.07,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.32,
+      "ms": 0.57,
       "rows": 1,
       "error": null
     }
@@ -312,13 +312,13 @@
     "sql": "SELECT lower('ABC') AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.09,
+      "ms": 0.06,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.54,
+      "ms": 0.58,
       "rows": 1,
       "error": null
     }
@@ -330,13 +330,13 @@
     "sql": "SELECT length('hello') AS n",
     "slothdb": {
       "ok": true,
-      "ms": 0.06,
+      "ms": 0.1,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.78,
+      "ms": 0.5,
       "rows": 1,
       "error": null
     }
@@ -348,13 +348,13 @@
     "sql": "SELECT substring('hello' FROM 2 FOR 3) AS s",
     "slothdb": {
       "ok": false,
-      "ms": 0.19,
+      "ms": 0.18,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected RPAREN after function arguments, got 'FROM'"
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.57,
+      "ms": 1.28,
       "rows": 1,
       "error": null
     }
@@ -366,13 +366,13 @@
     "sql": "SELECT substr('hello', 2, 3) AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.07,
+      "ms": 0.09,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.66,
+      "ms": 0.62,
       "rows": 1,
       "error": null
     }
@@ -384,13 +384,13 @@
     "sql": "SELECT replace('foobar', 'foo', 'baz') AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.08,
+      "ms": 0.12,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.51,
+      "ms": 1.47,
       "rows": 1,
       "error": null
     }
@@ -402,13 +402,13 @@
     "sql": "SELECT trim('  hi  ') AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.13,
+      "ms": 0.08,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.21,
+      "ms": 1.2,
       "rows": 1,
       "error": null
     }
@@ -426,7 +426,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.86,
+      "ms": 0.7,
       "rows": 1,
       "error": null
     }
@@ -438,13 +438,13 @@
     "sql": "SELECT split_part('a,b,c', ',', 2) AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.12,
+      "ms": 0.11,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.16,
+      "ms": 1.73,
       "rows": 1,
       "error": null
     }
@@ -456,13 +456,13 @@
     "sql": "SELECT regexp_matches('hello123', '[0-9]+') AS m",
     "slothdb": {
       "ok": true,
-      "ms": 0.25,
+      "ms": 0.31,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 2.54,
+      "ms": 4.77,
       "rows": 1,
       "error": null
     }
@@ -480,7 +480,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.1,
+      "ms": 0.67,
       "rows": 1,
       "error": null
     }
@@ -498,7 +498,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.76,
+      "ms": 0.73,
       "rows": 1,
       "error": null
     }
@@ -510,13 +510,13 @@
     "sql": "SELECT starts_with('hello', 'he') AS b",
     "slothdb": {
       "ok": true,
-      "ms": 0.09,
+      "ms": 0.11,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.7,
+      "ms": 0.69,
       "rows": 1,
       "error": null
     }
@@ -528,7 +528,7 @@
     "sql": "SELECT ends_with('hello', 'lo') AS b",
     "slothdb": {
       "ok": true,
-      "ms": 0.07,
+      "ms": 0.11,
       "rows": 1,
       "error": null
     },
@@ -552,7 +552,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.71,
+      "ms": 0.5,
       "rows": 1,
       "error": null
     }
@@ -564,13 +564,13 @@
     "sql": "SELECT lpad('5', 3, '0') AS l, rpad('5', 3, '_') AS r",
     "slothdb": {
       "ok": true,
-      "ms": 0.08,
+      "ms": 0.09,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.34,
+      "ms": 1.38,
       "rows": 1,
       "error": null
     }
@@ -582,13 +582,13 @@
     "sql": "SELECT reverse('abc') AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.09,
+      "ms": 0.08,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.71,
+      "ms": 0.67,
       "rows": 1,
       "error": null
     }
@@ -600,13 +600,13 @@
     "sql": "SELECT format('value: {}', 42) AS s",
     "slothdb": {
       "ok": false,
-      "ms": 0.15,
+      "ms": 0.18,
       "rows": 0,
       "error": "Query failed: Not Implemented Error: Function execution for: FORMAT"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.7,
+      "ms": 0.84,
       "rows": 1,
       "error": null
     }
@@ -618,13 +618,13 @@
     "sql": "SELECT abs(-5) AS x",
     "slothdb": {
       "ok": true,
-      "ms": 0.1,
+      "ms": 0.06,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.9,
+      "ms": 1.98,
       "rows": 1,
       "error": null
     }
@@ -636,13 +636,13 @@
     "sql": "SELECT round(3.14159, 2) AS x",
     "slothdb": {
       "ok": true,
-      "ms": 0.16,
+      "ms": 0.08,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.59,
+      "ms": 1.82,
       "rows": 1,
       "error": null
     }
@@ -654,13 +654,13 @@
     "sql": "SELECT ceil(3.2) AS c, floor(3.8) AS f",
     "slothdb": {
       "ok": true,
-      "ms": 0.12,
+      "ms": 0.1,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.1,
+      "ms": 1.66,
       "rows": 1,
       "error": null
     }
@@ -672,13 +672,13 @@
     "sql": "SELECT power(2, 10) AS x",
     "slothdb": {
       "ok": true,
-      "ms": 0.1,
+      "ms": 0.08,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.58,
+      "ms": 0.63,
       "rows": 1,
       "error": null
     }
@@ -690,13 +690,13 @@
     "sql": "SELECT sqrt(16) AS x",
     "slothdb": {
       "ok": true,
-      "ms": 0.09,
+      "ms": 0.06,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.12,
+      "ms": 1.1,
       "rows": 1,
       "error": null
     }
@@ -708,13 +708,13 @@
     "sql": "SELECT log(100) AS lg, ln(2.71828) AS ln",
     "slothdb": {
       "ok": true,
-      "ms": 0.12,
+      "ms": 0.09,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.05,
+      "ms": 1.74,
       "rows": 1,
       "error": null
     }
@@ -732,7 +732,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.6,
+      "ms": 0.79,
       "rows": 1,
       "error": null
     }
@@ -744,13 +744,13 @@
     "sql": "SELECT sin(0) AS s, cos(0) AS c",
     "slothdb": {
       "ok": true,
-      "ms": 0.1,
+      "ms": 0.08,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.62,
+      "ms": 0.71,
       "rows": 1,
       "error": null
     }
@@ -762,13 +762,13 @@
     "sql": "SELECT greatest(1, 5, 3) AS g, least(1, 5, 3) AS l",
     "slothdb": {
       "ok": true,
-      "ms": 0.08,
+      "ms": 0.12,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.65,
+      "ms": 0.73,
       "rows": 1,
       "error": null
     }
@@ -780,13 +780,13 @@
     "sql": "SELECT DATE '2024-01-15' AS d",
     "slothdb": {
       "ok": false,
-      "ms": 0.12,
+      "ms": 0.09,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '2024-01-15' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.53,
+      "ms": 0.65,
       "rows": 1,
       "error": null
     }
@@ -798,13 +798,13 @@
     "sql": "SELECT TIMESTAMP '2024-01-15 10:30:00' AS t",
     "slothdb": {
       "ok": false,
-      "ms": 0.07,
+      "ms": 0.1,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '2024-01-15 10:30:00' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.56,
+      "ms": 0.72,
       "rows": 1,
       "error": null
     }
@@ -816,13 +816,13 @@
     "sql": "SELECT current_date AS d",
     "slothdb": {
       "ok": true,
-      "ms": 0.09,
+      "ms": 0.15,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.83,
+      "ms": 1.59,
       "rows": 1,
       "error": null
     }
@@ -834,13 +834,13 @@
     "sql": "SELECT current_timestamp AS t",
     "slothdb": {
       "ok": true,
-      "ms": 0.08,
+      "ms": 0.07,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 127.61,
+      "ms": 190.25,
       "rows": 1,
       "error": null
     }
@@ -858,7 +858,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.4,
+      "ms": 1.49,
       "rows": 1,
       "error": null
     }
@@ -870,13 +870,13 @@
     "sql": "SELECT extract(month FROM DATE '2024-06-15') AS m",
     "slothdb": {
       "ok": false,
-      "ms": 0.13,
+      "ms": 0.1,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected RPAREN after EXTRACT, got '2024-06-15'"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.84,
+      "ms": 0.69,
       "rows": 1,
       "error": null
     }
@@ -888,13 +888,13 @@
     "sql": "SELECT extract(dow FROM DATE '2024-06-15') AS d",
     "slothdb": {
       "ok": false,
-      "ms": 0.09,
+      "ms": 0.1,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected RPAREN after EXTRACT, got '2024-06-15'"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.65,
+      "ms": 0.55,
       "rows": 1,
       "error": null
     }
@@ -906,13 +906,13 @@
     "sql": "SELECT DATE '2024-01-01' + INTERVAL 7 DAY AS d",
     "slothdb": {
       "ok": false,
-      "ms": 0.1,
+      "ms": 0.07,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '2024-01-01' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 2.36,
+      "ms": 1.9,
       "rows": 1,
       "error": null
     }
@@ -924,13 +924,13 @@
     "sql": "SELECT date_diff('day', DATE '2024-01-01', DATE '2024-01-15') AS d",
     "slothdb": {
       "ok": false,
-      "ms": 0.1,
+      "ms": 0.09,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected RPAREN after function arguments, got '2024-01-01'"
     },
     "duckdb": {
       "ok": true,
-      "ms": 2.11,
+      "ms": 1.88,
       "rows": 1,
       "error": null
     }
@@ -942,13 +942,13 @@
     "sql": "SELECT strftime(DATE '2024-06-15', '%Y/%m') AS s",
     "slothdb": {
       "ok": false,
-      "ms": 0.1,
+      "ms": 0.18,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected RPAREN after function arguments, got '2024-06-15'"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.69,
+      "ms": 1.25,
       "rows": 1,
       "error": null
     }
@@ -960,13 +960,13 @@
     "sql": "SELECT NULL IS NULL AS b",
     "slothdb": {
       "ok": true,
-      "ms": 0.07,
+      "ms": 0.09,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.55,
+      "ms": 0.58,
       "rows": 1,
       "error": null
     }
@@ -978,13 +978,13 @@
     "sql": "SELECT coalesce(NULL, NULL, 3) AS x",
     "slothdb": {
       "ok": true,
-      "ms": 0.07,
+      "ms": 0.16,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.69,
+      "ms": 0.76,
       "rows": 1,
       "error": null
     }
@@ -1002,7 +1002,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.49,
+      "ms": 1.41,
       "rows": 1,
       "error": null
     }
@@ -1020,7 +1020,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.53,
+      "ms": 0.55,
       "rows": 1,
       "error": null
     }
@@ -1032,13 +1032,13 @@
     "sql": "SELECT 1 IS NOT NULL AS b",
     "slothdb": {
       "ok": true,
-      "ms": 0.05,
+      "ms": 0.07,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.5,
+      "ms": 0.66,
       "rows": 1,
       "error": null
     }
@@ -1050,13 +1050,13 @@
     "sql": "SELECT CASE WHEN 1=1 THEN 'a' ELSE 'b' END AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.09,
+      "ms": 0.11,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.61,
+      "ms": 0.67,
       "rows": 1,
       "error": null
     }
@@ -1068,13 +1068,13 @@
     "sql": "SELECT CASE 1 WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END AS s",
     "slothdb": {
       "ok": false,
-      "ms": 0.09,
+      "ms": 0.11,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected KEYWORD after CASE expression, got '1'"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.55,
+      "ms": 0.61,
       "rows": 1,
       "error": null
     }
@@ -1086,7 +1086,7 @@
     "sql": "SELECT CASE WHEN 1=2 THEN 'a' END AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.06,
+      "ms": 0.08,
       "rows": 1,
       "error": null
     },
@@ -1104,13 +1104,13 @@
     "sql": "SELECT IF(1=1, 'yes', 'no') AS s",
     "slothdb": {
       "ok": true,
-      "ms": 0.09,
+      "ms": 0.07,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.64,
+      "ms": 0.57,
       "rows": 1,
       "error": null
     }
@@ -1122,13 +1122,13 @@
     "sql": "SELECT count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 3.38,
+      "ms": 2.78,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.19,
+      "ms": 12.87,
       "rows": 1,
       "error": null
     }
@@ -1140,13 +1140,13 @@
     "sql": "SELECT count(DISTINCT dept) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.66,
+      "ms": 0.6,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 11.78,
+      "ms": 10.81,
       "rows": 1,
       "error": null
     }
@@ -1158,13 +1158,13 @@
     "sql": "SELECT sum(salary) AS s, avg(salary) AS a FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.66,
+      "ms": 0.62,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.03,
+      "ms": 9.04,
       "rows": 1,
       "error": null
     }
@@ -1176,13 +1176,13 @@
     "sql": "SELECT min(salary) AS mn, max(salary) AS mx FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.56,
+      "ms": 0.65,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.98,
+      "ms": 11.27,
       "rows": 1,
       "error": null
     }
@@ -1194,13 +1194,13 @@
     "sql": "SELECT median(salary) AS m FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.85,
+      "ms": 0.62,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 12.93,
+      "ms": 13.49,
       "rows": 1,
       "error": null
     }
@@ -1212,13 +1212,13 @@
     "sql": "SELECT stddev(salary) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.77,
+      "ms": 0.67,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.98,
+      "ms": 9.47,
       "rows": 1,
       "error": null
     }
@@ -1230,13 +1230,13 @@
     "sql": "SELECT string_agg(name, ',') FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.53,
+      "ms": 0.55,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 7.67,
+      "ms": 7.74,
       "rows": 1,
       "error": null
     }
@@ -1248,13 +1248,13 @@
     "sql": "SELECT list(name) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 0.62,
+      "ms": 0.66,
       "rows": 0,
       "error": "Query failed: Not Implemented Error: Function execution for: LIST"
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.59,
+      "ms": 10.98,
       "rows": 1,
       "error": null
     }
@@ -1266,13 +1266,13 @@
     "sql": "SELECT count(*) FILTER (WHERE salary > 80000) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 0.09,
+      "ms": 0.11,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'FILTER' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.42,
+      "ms": 9.63,
       "rows": 1,
       "error": null
     }
@@ -1284,13 +1284,13 @@
     "sql": "SELECT approx_count_distinct(name) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 0.63,
+      "ms": 0.6,
       "rows": 0,
       "error": "Query failed: Not Implemented Error: Function execution for: APPROX_COUNT_DISTINCT"
     },
     "duckdb": {
       "ok": true,
-      "ms": 7.27,
+      "ms": 7.9,
       "rows": 1,
       "error": null
     }
@@ -1302,13 +1302,13 @@
     "sql": "SELECT quantile_cont(salary, 0.5) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 0.65,
+      "ms": 0.61,
       "rows": 0,
       "error": "Query failed: Not Implemented Error: Function execution for: QUANTILE_CONT"
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.41,
+      "ms": 7.93,
       "rows": 1,
       "error": null
     }
@@ -1320,13 +1320,13 @@
     "sql": "SELECT dept, count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' GROUP BY dept",
     "slothdb": {
       "ok": true,
-      "ms": 0.91,
+      "ms": 0.65,
       "rows": 3,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 10.84,
+      "ms": 9.42,
       "rows": 3,
       "error": null
     }
@@ -1338,13 +1338,13 @@
     "sql": "SELECT dept, manager_id, count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' GROUP BY dept, manager_id",
     "slothdb": {
       "ok": true,
-      "ms": 0.77,
+      "ms": 0.82,
       "rows": 5,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 11.07,
+      "ms": 11.6,
       "rows": 5,
       "error": null
     }
@@ -1356,13 +1356,13 @@
     "sql": "SELECT dept, count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' GROUP BY dept HAVING count(*) > 1",
     "slothdb": {
       "ok": true,
-      "ms": 0.86,
+      "ms": 0.84,
       "rows": 3,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 10.68,
+      "ms": 10.36,
       "rows": 2,
       "error": null
     }
@@ -1374,13 +1374,13 @@
     "sql": "SELECT dept, manager_id, count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' GROUP BY ALL",
     "slothdb": {
       "ok": true,
-      "ms": 0.71,
+      "ms": 0.66,
       "rows": 5,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 12.99,
+      "ms": 10.01,
       "rows": 5,
       "error": null
     }
@@ -1392,13 +1392,13 @@
     "sql": "SELECT dept, count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' GROUP BY 1",
     "slothdb": {
       "ok": true,
-      "ms": 0.73,
+      "ms": 0.63,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.5,
+      "ms": 10.74,
       "rows": 3,
       "error": null
     }
@@ -1410,13 +1410,13 @@
     "sql": "SELECT dept, manager_id, count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' GROUP BY ROLLUP(dept, manager_id)",
     "slothdb": {
       "ok": false,
-      "ms": 1.61,
+      "ms": 1.77,
       "rows": 0,
-      "error": "exception: access violation reading 0x00007FFAF2177C80"
+      "error": "exception: access violation reading 0xFFFFFFFFFFFFFFFF"
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.23,
+      "ms": 16.23,
       "rows": 9,
       "error": null
     }
@@ -1428,13 +1428,13 @@
     "sql": "SELECT dept, manager_id, count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' GROUP BY CUBE(dept, manager_id)",
     "slothdb": {
       "ok": true,
-      "ms": 0.66,
+      "ms": 0.9,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.74,
+      "ms": 17.0,
       "rows": 12,
       "error": null
     }
@@ -1446,13 +1446,13 @@
     "sql": "SELECT dept, manager_id, count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' GROUP BY GROUPING SETS ((dept), (manager_id), ())",
     "slothdb": {
       "ok": false,
-      "ms": 0.13,
+      "ms": 0.15,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'SETS' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 13.28,
+      "ms": 15.4,
       "rows": 7,
       "error": null
     }
@@ -1464,13 +1464,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' ORDER BY salary ASC LIMIT 3",
     "slothdb": {
       "ok": true,
-      "ms": 0.9,
+      "ms": 0.95,
       "rows": 3,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 10.45,
+      "ms": 9.3,
       "rows": 3,
       "error": null
     }
@@ -1482,13 +1482,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' ORDER BY salary DESC LIMIT 3",
     "slothdb": {
       "ok": true,
-      "ms": 0.89,
+      "ms": 0.79,
       "rows": 3,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.32,
+      "ms": 8.87,
       "rows": 3,
       "error": null
     }
@@ -1500,13 +1500,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' ORDER BY dept ASC, salary DESC",
     "slothdb": {
       "ok": true,
-      "ms": 1.03,
+      "ms": 0.98,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.6,
+      "ms": 9.23,
       "rows": 8,
       "error": null
     }
@@ -1518,13 +1518,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' ORDER BY manager_id ASC NULLS FIRST",
     "slothdb": {
       "ok": true,
-      "ms": 0.78,
+      "ms": 0.98,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.22,
+      "ms": 9.51,
       "rows": 8,
       "error": null
     }
@@ -1536,13 +1536,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' ORDER BY manager_id ASC NULLS LAST",
     "slothdb": {
       "ok": true,
-      "ms": 0.78,
+      "ms": 0.9,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.55,
+      "ms": 8.84,
       "rows": 8,
       "error": null
     }
@@ -1554,13 +1554,13 @@
     "sql": "SELECT name, salary FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' ORDER BY 2 DESC",
     "slothdb": {
       "ok": true,
-      "ms": 0.75,
+      "ms": 0.73,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 7.92,
+      "ms": 9.65,
       "rows": 8,
       "error": null
     }
@@ -1572,13 +1572,13 @@
     "sql": "SELECT name, salary*2 AS bonus FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' ORDER BY bonus DESC",
     "slothdb": {
       "ok": true,
-      "ms": 0.83,
+      "ms": 0.91,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 11.26,
+      "ms": 35.91,
       "rows": 8,
       "error": null
     }
@@ -1590,13 +1590,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' ORDER BY id LIMIT 3 OFFSET 2",
     "slothdb": {
       "ok": true,
-      "ms": 0.96,
+      "ms": 0.88,
       "rows": 3,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.51,
+      "ms": 9.1,
       "rows": 3,
       "error": null
     }
@@ -1608,13 +1608,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' QUALIFY row_number() OVER (PARTITION BY dept ORDER BY salary DESC) = 1",
     "slothdb": {
       "ok": true,
-      "ms": 1.01,
+      "ms": 0.86,
       "rows": 3,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 11.72,
+      "ms": 11.88,
       "rows": 3,
       "error": null
     }
@@ -1626,13 +1626,13 @@
     "sql": "SELECT e.name, d.budget FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' e INNER JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv' d ON e.dept = d.dept",
     "slothdb": {
       "ok": true,
-      "ms": 3.24,
+      "ms": 3.74,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 15.31,
+      "ms": 16.47,
       "rows": 8,
       "error": null
     }
@@ -1650,7 +1650,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 15.13,
+      "ms": 15.8,
       "rows": 8,
       "error": null
     }
@@ -1662,13 +1662,13 @@
     "sql": "SELECT e.name, d.dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' e RIGHT JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv' d ON e.dept = d.dept",
     "slothdb": {
       "ok": true,
-      "ms": 1.31,
+      "ms": 1.78,
       "rows": 9,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.79,
+      "ms": 15.96,
       "rows": 9,
       "error": null
     }
@@ -1680,13 +1680,13 @@
     "sql": "SELECT e.name, d.dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' e FULL OUTER JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv' d ON e.dept = d.dept",
     "slothdb": {
       "ok": true,
-      "ms": 1.54,
+      "ms": 1.3,
       "rows": 9,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 16.91,
+      "ms": 15.35,
       "rows": 9,
       "error": null
     }
@@ -1698,13 +1698,13 @@
     "sql": "SELECT count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' CROSS JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.94,
+      "ms": 1.15,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.15,
+      "ms": 15.42,
       "rows": 1,
       "error": null
     }
@@ -1716,7 +1716,7 @@
     "sql": "SELECT a.name, b.name AS mgr FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' a LEFT JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' b ON a.manager_id = b.id",
     "slothdb": {
       "ok": true,
-      "ms": 1.4,
+      "ms": 1.25,
       "rows": 8,
       "error": null
     },
@@ -1734,13 +1734,13 @@
     "sql": "SELECT name, budget FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv' USING(dept)",
     "slothdb": {
       "ok": false,
-      "ms": 0.15,
+      "ms": 0.14,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'USING' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 15.72,
+      "ms": 18.89,
       "rows": 8,
       "error": null
     }
@@ -1752,13 +1752,13 @@
     "sql": "SELECT count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' NATURAL JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 1.07,
+      "ms": 1.19,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.06,
+      "ms": 16.47,
       "rows": 1,
       "error": null
     }
@@ -1770,13 +1770,13 @@
     "sql": "SELECT count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' a JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' b ON a.salary > b.salary",
     "slothdb": {
       "ok": true,
-      "ms": 1.34,
+      "ms": 1.17,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 50.09,
+      "ms": 19.57,
       "rows": 1,
       "error": null
     }
@@ -1788,13 +1788,13 @@
     "sql": "SELECT name FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' SEMI JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv' USING(dept)",
     "slothdb": {
       "ok": false,
-      "ms": 0.13,
+      "ms": 0.12,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'USING' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.76,
+      "ms": 17.16,
       "rows": 8,
       "error": null
     }
@@ -1806,13 +1806,13 @@
     "sql": "SELECT name FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' ANTI JOIN 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv' USING(dept)",
     "slothdb": {
       "ok": false,
-      "ms": 0.11,
+      "ms": 0.14,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'USING' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.92,
+      "ms": 14.33,
       "rows": 0,
       "error": null
     }
@@ -1824,13 +1824,13 @@
     "sql": "SELECT name, (SELECT max(salary) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv') AS top FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 0.15,
+      "ms": 0.14,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'SELECT' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 20.02,
+      "ms": 19.95,
       "rows": 8,
       "error": null
     }
@@ -1841,14 +1841,14 @@
     "name": "in_subq",
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' WHERE dept IN (SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv' WHERE budget > 500000)",
     "slothdb": {
-      "ok": false,
-      "ms": 0.87,
-      "rows": 0,
-      "error": "Query failed: Binder Error: Table '__FILE__' not found"
+      "ok": true,
+      "ms": 1.25,
+      "rows": 7,
+      "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 15.63,
+      "ms": 16.28,
       "rows": 7,
       "error": null
     }
@@ -1860,13 +1860,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' WHERE dept NOT IN (SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv' WHERE budget < 500000)",
     "slothdb": {
       "ok": false,
-      "ms": 0.12,
+      "ms": 0.15,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'NOT' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 15.92,
+      "ms": 16.72,
       "rows": 7,
       "error": null
     }
@@ -1878,13 +1878,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' e WHERE EXISTS (SELECT 1 FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv' d WHERE d.dept = e.dept)",
     "slothdb": {
       "ok": false,
-      "ms": 0.76,
+      "ms": 1.2,
       "rows": 0,
-      "error": "Query failed: Binder Error: Table '__FILE__' not found"
+      "error": "Query failed: Binder Error: Table 'e' not found"
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.06,
+      "ms": 18.83,
       "rows": 8,
       "error": null
     }
@@ -1896,13 +1896,13 @@
     "sql": "SELECT name, (SELECT count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' x WHERE x.dept = e.dept) AS dc FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' e",
     "slothdb": {
       "ok": false,
-      "ms": 0.13,
+      "ms": 0.2,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'SELECT' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 26.25,
+      "ms": 28.75,
       "rows": 8,
       "error": null
     }
@@ -1920,7 +1920,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 11.49,
+      "ms": 14.04,
       "rows": 2,
       "error": null
     }
@@ -1932,13 +1932,13 @@
     "sql": "SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' WHERE salary > ALL (SELECT salary FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' WHERE dept = 'ops')",
     "slothdb": {
       "ok": false,
-      "ms": 0.13,
+      "ms": 0.14,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'ALL' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 26.99,
+      "ms": 19.82,
       "rows": 7,
       "error": null
     }
@@ -1949,14 +1949,14 @@
     "name": "simple_cte",
     "sql": "WITH t AS (SELECT dept, count(*) c FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' GROUP BY dept) SELECT * FROM t WHERE c > 1",
     "slothdb": {
-      "ok": false,
-      "ms": 0.16,
-      "rows": 0,
-      "error": "Query failed: Binder Error: Table '__FILE__' not found"
+      "ok": true,
+      "ms": 2.49,
+      "rows": 2,
+      "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 10.69,
+      "ms": 13.57,
       "rows": 2,
       "error": null
     }
@@ -1967,14 +1967,14 @@
     "name": "multi_cte",
     "sql": "WITH a AS (SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' WHERE dept='eng'), b AS (SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' WHERE dept='sales') SELECT count(*) FROM a UNION ALL SELECT count(*) FROM b",
     "slothdb": {
-      "ok": false,
-      "ms": 0.2,
-      "rows": 0,
-      "error": "Query failed: Binder Error: Table '__FILE__' not found"
+      "ok": true,
+      "ms": 9.18,
+      "rows": 2,
+      "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 18.55,
+      "ms": 19.91,
       "rows": 2,
       "error": null
     }
@@ -1986,13 +1986,13 @@
     "sql": "WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n < 5) SELECT * FROM t",
     "slothdb": {
       "ok": false,
-      "ms": 0.38,
+      "ms": 0.36,
       "rows": 0,
       "error": "Query failed: Binder Error: Column 'n' not found"
     },
     "duckdb": {
       "ok": true,
-      "ms": 3.38,
+      "ms": 3.99,
       "rows": 5,
       "error": null
     }
@@ -2004,13 +2004,13 @@
     "sql": "SELECT name, row_number() OVER (ORDER BY salary DESC) AS rn FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.78,
+      "ms": 0.74,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.51,
+      "ms": 11.57,
       "rows": 8,
       "error": null
     }
@@ -2022,13 +2022,13 @@
     "sql": "SELECT name, rank() OVER (ORDER BY salary DESC) AS rk, dense_rank() OVER (ORDER BY salary DESC) AS dr FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.73,
+      "ms": 0.94,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.5,
+      "ms": 11.11,
       "rows": 8,
       "error": null
     }
@@ -2040,13 +2040,13 @@
     "sql": "SELECT name, dept, row_number() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.66,
+      "ms": 1.01,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.43,
+      "ms": 12.6,
       "rows": 8,
       "error": null
     }
@@ -2058,13 +2058,13 @@
     "sql": "SELECT id, salary, lag(salary) OVER (ORDER BY id) AS prev FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 1.02,
+      "ms": 0.96,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 10.28,
+      "ms": 10.88,
       "rows": 8,
       "error": null
     }
@@ -2076,13 +2076,13 @@
     "sql": "SELECT id, salary, lead(salary) OVER (ORDER BY id) AS nxt FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.74,
+      "ms": 0.81,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.69,
+      "ms": 10.06,
       "rows": 8,
       "error": null
     }
@@ -2094,13 +2094,13 @@
     "sql": "SELECT id, sum(salary) OVER (ORDER BY id) AS rs FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 1.55,
+      "ms": 0.68,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.72,
+      "ms": 10.08,
       "rows": 8,
       "error": null
     }
@@ -2118,7 +2118,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.11,
+      "ms": 9.79,
       "rows": 8,
       "error": null
     }
@@ -2130,13 +2130,13 @@
     "sql": "SELECT id, avg(salary) OVER (ORDER BY id RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS r FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 0.14,
+      "ms": 0.15,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected RPAREN after OVER clause, got 'RANGE'"
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.26,
+      "ms": 8.62,
       "rows": 8,
       "error": null
     }
@@ -2148,13 +2148,13 @@
     "sql": "SELECT name, ntile(3) OVER (ORDER BY salary) AS bucket FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.62,
+      "ms": 0.78,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.67,
+      "ms": 7.72,
       "rows": 8,
       "error": null
     }
@@ -2166,13 +2166,13 @@
     "sql": "SELECT id, first_value(salary) OVER (ORDER BY id) AS fv, last_value(salary) OVER (ORDER BY id) AS lv FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.79,
+      "ms": 0.7,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.55,
+      "ms": 8.79,
       "rows": 8,
       "error": null
     }
@@ -2184,13 +2184,13 @@
     "sql": "SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' UNION SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.88,
+      "ms": 0.97,
       "rows": 9,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 14.81,
+      "ms": 16.4,
       "rows": 4,
       "error": null
     }
@@ -2202,13 +2202,13 @@
     "sql": "SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' UNION ALL SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 1.01,
+      "ms": 1.13,
       "rows": 12,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 10.61,
+      "ms": 13.77,
       "rows": 12,
       "error": null
     }
@@ -2220,13 +2220,13 @@
     "sql": "SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' INTERSECT SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.89,
+      "ms": 1.17,
       "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 16.3,
+      "ms": 16.06,
       "rows": 3,
       "error": null
     }
@@ -2238,13 +2238,13 @@
     "sql": "SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' EXCEPT SELECT dept FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/departments.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 1.12,
+      "ms": 1.1,
       "rows": 0,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 17.11,
+      "ms": 13.91,
       "rows": 0,
       "error": null
     }
@@ -2256,13 +2256,13 @@
     "sql": "SELECT [1, 2, 3] AS l",
     "slothdb": {
       "ok": false,
-      "ms": 0.19,
+      "ms": 0.17,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '[' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 6.94,
+      "ms": 0.76,
       "rows": 1,
       "error": null
     }
@@ -2274,13 +2274,13 @@
     "sql": "SELECT [10,20,30][2] AS x",
     "slothdb": {
       "ok": false,
-      "ms": 0.09,
+      "ms": 0.08,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '[' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.83,
+      "ms": 0.75,
       "rows": 1,
       "error": null
     }
@@ -2292,13 +2292,13 @@
     "sql": "SELECT len([1,2,3,4]) AS n",
     "slothdb": {
       "ok": false,
-      "ms": 0.13,
+      "ms": 0.17,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '[' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.93,
+      "ms": 27.64,
       "rows": 1,
       "error": null
     }
@@ -2310,13 +2310,13 @@
     "sql": "SELECT list_contains([1,2,3], 2) AS b",
     "slothdb": {
       "ok": false,
-      "ms": 0.1,
+      "ms": 0.12,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '[' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.01,
+      "ms": 0.86,
       "rows": 1,
       "error": null
     }
@@ -2334,7 +2334,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 3.28,
+      "ms": 6.58,
       "rows": 1,
       "error": null
     }
@@ -2346,13 +2346,13 @@
     "sql": "SELECT list_transform([1,2,3], x -> x*x) AS l",
     "slothdb": {
       "ok": false,
-      "ms": 0.11,
+      "ms": 0.17,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '[' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.77,
+      "ms": 1.92,
       "rows": 1,
       "error": null
     }
@@ -2364,13 +2364,13 @@
     "sql": "SELECT unnest([1,2,3]) AS x",
     "slothdb": {
       "ok": false,
-      "ms": 0.2,
+      "ms": 0.12,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '[' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.95,
+      "ms": 0.89,
       "rows": 3,
       "error": null
     }
@@ -2382,7 +2382,7 @@
     "sql": "SELECT {'a': 1, 'b': 'two'} AS s",
     "slothdb": {
       "ok": false,
-      "ms": 0.1,
+      "ms": 0.09,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '{' in expression"
     },
@@ -2400,13 +2400,13 @@
     "sql": "SELECT ({'a': 1, 'b': 2}).a AS x",
     "slothdb": {
       "ok": false,
-      "ms": 0.15,
+      "ms": 0.1,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '{' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.36,
+      "ms": 0.73,
       "rows": 1,
       "error": null
     }
@@ -2418,13 +2418,13 @@
     "sql": "SELECT MAP {'k1': 1, 'k2': 2} AS m",
     "slothdb": {
       "ok": false,
-      "ms": 0.07,
+      "ms": 0.08,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '{' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.78,
+      "ms": 1.32,
       "rows": 1,
       "error": null
     }
@@ -2436,13 +2436,13 @@
     "sql": "SELECT json_extract('{\"a\":1,\"b\":2}', '$.b') AS x",
     "slothdb": {
       "ok": false,
-      "ms": 0.18,
+      "ms": 0.15,
       "rows": 0,
       "error": "Query failed: Not Implemented Error: Function execution for: JSON_EXTRACT"
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.23,
+      "ms": 1.88,
       "rows": 1,
       "error": null
     }
@@ -2460,7 +2460,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.4,
+      "ms": 1.43,
       "rows": 1,
       "error": null
     }
@@ -2472,7 +2472,7 @@
     "sql": "SELECT count(*) FROM (SELECT json_extract('[1,2,3]', '$') x) WHERE x IS NOT NULL",
     "slothdb": {
       "ok": false,
-      "ms": 0.12,
+      "ms": 0.1,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected identifier for table name, got '('"
     },
@@ -2490,13 +2490,13 @@
     "sql": "SELECT to_json([1,2,3]) AS s",
     "slothdb": {
       "ok": false,
-      "ms": 0.13,
+      "ms": 0.1,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '[' in expression"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.97,
+      "ms": 0.68,
       "rows": 1,
       "error": null
     }
@@ -2508,13 +2508,13 @@
     "sql": "SELECT count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 0.58,
+      "ms": 0.67,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.28,
+      "ms": 7.79,
       "rows": 1,
       "error": null
     }
@@ -2526,13 +2526,13 @@
     "sql": "SELECT count(*) FROM read_csv('C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv')",
     "slothdb": {
       "ok": true,
-      "ms": 0.66,
+      "ms": 0.67,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.51,
+      "ms": 8.48,
       "rows": 1,
       "error": null
     }
@@ -2544,13 +2544,13 @@
     "sql": "SELECT count(*) FROM read_csv('C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv', header=true)",
     "slothdb": {
       "ok": true,
-      "ms": 0.62,
+      "ms": 0.82,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.45,
+      "ms": 7.15,
       "rows": 1,
       "error": null
     }
@@ -2562,13 +2562,13 @@
     "sql": "SELECT count(*) FROM 'C:/Users/soura/Documents/lightdb/real-life-testing/sales_10m.parquet'",
     "slothdb": {
       "ok": true,
-      "ms": 106410.16,
+      "ms": 135365.06,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 186.14,
+      "ms": 219.51,
       "rows": 1,
       "error": null
     }
@@ -2580,13 +2580,13 @@
     "sql": "SELECT count(*) FROM read_parquet('C:/Users/soura/Documents/lightdb/real-life-testing/sales_10m.parquet')",
     "slothdb": {
       "ok": true,
-      "ms": 6.67,
+      "ms": 6.69,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 3.91,
+      "ms": 9.8,
       "rows": 1,
       "error": null
     }
@@ -2598,13 +2598,13 @@
     "sql": "SELECT count(*) FROM 'C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.json'",
     "slothdb": {
       "ok": true,
-      "ms": 6139.54,
+      "ms": 7123.08,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 303.1,
+      "ms": 334.47,
       "rows": 1,
       "error": null
     }
@@ -2616,13 +2616,13 @@
     "sql": "SELECT count(*) FROM read_json('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.json')",
     "slothdb": {
       "ok": true,
-      "ms": 321.83,
+      "ms": 354.29,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 266.76,
+      "ms": 281.34,
       "rows": 1,
       "error": null
     }
@@ -2634,13 +2634,13 @@
     "sql": "SELECT count(*) FROM read_avro('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.avro')",
     "slothdb": {
       "ok": true,
-      "ms": 335.95,
+      "ms": 350.16,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 3133.38,
+      "ms": 3498.09,
       "rows": 1,
       "error": null
     }
@@ -2652,13 +2652,13 @@
     "sql": "CREATE TABLE t1 (id INTEGER, name VARCHAR) ; INSERT INTO t1 VALUES (1, 'a'), (2, 'b') ; SELECT count(*) FROM t1",
     "slothdb": {
       "ok": true,
-      "ms": 3.4,
+      "ms": 5.89,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 20.38,
+      "ms": 24.9,
       "rows": 1,
       "error": null
     }
@@ -2670,13 +2670,13 @@
     "sql": "CREATE TABLE t2 AS SELECT * FROM range(5) AS r(i) ; SELECT count(*) FROM t2",
     "slothdb": {
       "ok": false,
-      "ms": 3.41,
+      "ms": 4.75,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '(' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 3.03,
+      "ms": 3.3,
       "rows": 1,
       "error": null
     }
@@ -2688,13 +2688,13 @@
     "sql": "CREATE VIEW v1 AS SELECT 42 AS x ; SELECT * FROM v1",
     "slothdb": {
       "ok": true,
-      "ms": 0.99,
+      "ms": 0.91,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 3.51,
+      "ms": 1.39,
       "rows": 1,
       "error": null
     }
@@ -2712,7 +2712,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.76,
+      "ms": 1.65,
       "rows": 0,
       "error": null
     }
@@ -2730,7 +2730,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 3.71,
+      "ms": 4.0,
       "rows": 0,
       "error": null
     }
@@ -2742,13 +2742,13 @@
     "sql": "CREATE TABLE t5 (id INT, v INT) ; INSERT INTO t5 VALUES (1, 10), (2, 20) ; UPDATE t5 SET v = v * 2 ; SELECT sum(v) FROM t5",
     "slothdb": {
       "ok": true,
-      "ms": 0.9,
+      "ms": 0.78,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 16.43,
+      "ms": 16.62,
       "rows": 1,
       "error": null
     }
@@ -2760,13 +2760,13 @@
     "sql": "CREATE TABLE t6 (id INT) ; INSERT INTO t6 VALUES (1),(2),(3) ; DELETE FROM t6 WHERE id = 2 ; SELECT count(*) FROM t6",
     "slothdb": {
       "ok": true,
-      "ms": 0.39,
+      "ms": 0.5,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 5.92,
+      "ms": 4.54,
       "rows": 1,
       "error": null
     }
@@ -2778,13 +2778,13 @@
     "sql": "CREATE TABLE t7 (id INT PRIMARY KEY, name VARCHAR)",
     "slothdb": {
       "ok": true,
-      "ms": 0.07,
+      "ms": 0.06,
       "rows": 0,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 2.53,
+      "ms": 2.83,
       "rows": 0,
       "error": null
     }
@@ -2796,13 +2796,13 @@
     "sql": "BEGIN ; CREATE TABLE t8 (id INT) ; INSERT INTO t8 VALUES (1) ; COMMIT ; SELECT count(*) FROM t8",
     "slothdb": {
       "ok": true,
-      "ms": 0.68,
+      "ms": 0.3,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 3.95,
+      "ms": 3.38,
       "rows": 1,
       "error": null
     }
@@ -2814,13 +2814,13 @@
     "sql": "SHOW TABLES",
     "slothdb": {
       "ok": true,
-      "ms": 0.1,
-      "rows": 9,
+      "ms": 0.49,
+      "rows": 8,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 43.56,
+      "ms": 54.41,
       "rows": 8,
       "error": null
     }
@@ -2832,13 +2832,13 @@
     "sql": "DESCRIBE SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": true,
-      "ms": 1.23,
+      "ms": 1.76,
       "rows": 6,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 49.6,
+      "ms": 53.61,
       "rows": 6,
       "error": null
     }
@@ -2850,13 +2850,13 @@
     "sql": "EXPLAIN SELECT * FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 0.46,
+      "ms": 0.49,
       "rows": 0,
       "error": "Query failed: Binder Error: Table '__FILE__' not found"
     },
     "duckdb": {
       "ok": true,
-      "ms": 9.19,
+      "ms": 7.21,
       "rows": 1,
       "error": null
     }
@@ -2868,13 +2868,13 @@
     "sql": "EXPLAIN ANALYZE SELECT count(*) FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 0.09,
+      "ms": 0.08,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token 'ANALYZE' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 7.5,
+      "ms": 8.73,
       "rows": 1,
       "error": null
     }
@@ -2886,13 +2886,13 @@
     "sql": "SELECT ts, avg(amount) OVER (PARTITION BY region ORDER BY ts ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS ma FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/ts_sales.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 0.18,
+      "ms": 0.55,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected RPAREN after OVER clause, got 'ROWS'"
     },
     "duckdb": {
       "ok": true,
-      "ms": 64.07,
+      "ms": 37.49,
       "rows": 90,
       "error": null
     }
@@ -2903,14 +2903,14 @@
     "name": "yoy_lag",
     "sql": "WITH t AS (SELECT region, sum(amount) AS s FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/ts_sales.csv' GROUP BY region) SELECT region, s, lag(s) OVER (ORDER BY region) FROM t",
     "slothdb": {
-      "ok": false,
-      "ms": 0.18,
-      "rows": 0,
-      "error": "Query failed: Binder Error: Table '__FILE__' not found"
+      "ok": true,
+      "ms": 2.21,
+      "rows": 3,
+      "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 24.9,
+      "ms": 23.09,
       "rows": 3,
       "error": null
     }
@@ -2922,13 +2922,13 @@
     "sql": "SELECT * FROM (SELECT name, dept, salary, row_number() OVER (PARTITION BY dept ORDER BY salary DESC) rn FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv') WHERE rn <= 2",
     "slothdb": {
       "ok": false,
-      "ms": 0.15,
+      "ms": 0.17,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected identifier for table name, got '('"
     },
     "duckdb": {
       "ok": true,
-      "ms": 8.64,
+      "ms": 9.41,
       "rows": 5,
       "error": null
     }
@@ -2940,13 +2940,13 @@
     "sql": "SELECT name, salary, salary*100.0/sum(salary) OVER () AS pct FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv'",
     "slothdb": {
       "ok": false,
-      "ms": 1.15,
+      "ms": 1.1,
       "rows": 0,
       "error": "Query failed: Not Implemented Error: Expression executor for type"
     },
     "duckdb": {
       "ok": true,
-      "ms": 12.39,
+      "ms": 15.05,
       "rows": 8,
       "error": null
     }
@@ -2964,7 +2964,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 36.92,
+      "ms": 35.06,
       "rows": 30,
       "error": null
     }
@@ -2976,13 +2976,13 @@
     "sql": "SELECT a.* FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' a WHERE NOT EXISTS (SELECT 1 FROM 'C:/Users/soura/Documents/lightdb/sloth-test/data/employees.csv' b WHERE b.dept = a.dept AND b.salary > a.salary)",
     "slothdb": {
       "ok": false,
-      "ms": 1.09,
+      "ms": 0.88,
       "rows": 0,
-      "error": "Query failed: Binder Error: Table '__FILE__' not found"
+      "error": "Query failed: Binder Error: Table 'a' not found"
     },
     "duckdb": {
       "ok": true,
-      "ms": 22.5,
+      "ms": 19.23,
       "rows": 3,
       "error": null
     }
@@ -3000,7 +3000,7 @@
     },
     "duckdb": {
       "ok": true,
-      "ms": 7.82,
+      "ms": 6.3,
       "rows": 1,
       "error": null
     }
@@ -3012,13 +3012,13 @@
     "sql": "SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS t(id, name)",
     "slothdb": {
       "ok": false,
-      "ms": 0.1,
+      "ms": 0.16,
       "rows": 0,
       "error": "Query failed: Parser Error: Expected identifier for table name, got '('"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.89,
+      "ms": 0.9,
       "rows": 2,
       "error": null
     }
@@ -3030,13 +3030,13 @@
     "sql": "SELECT count(*) FROM range(100)",
     "slothdb": {
       "ok": false,
-      "ms": 0.09,
+      "ms": 0.1,
       "rows": 0,
       "error": "Query failed: Parser Error: Unexpected token '(' at start of statement"
     },
     "duckdb": {
       "ok": true,
-      "ms": 0.87,
+      "ms": 0.92,
       "rows": 1,
       "error": null
     }
@@ -3048,13 +3048,13 @@
     "sql": "SELECT count(*) FROM generate_series(1, 10)",
     "slothdb": {
       "ok": true,
-      "ms": 0.76,
+      "ms": 0.98,
       "rows": 1,
       "error": null
     },
     "duckdb": {
       "ok": true,
-      "ms": 1.27,
+      "ms": 1.01,
       "rows": 1,
       "error": null
     }
