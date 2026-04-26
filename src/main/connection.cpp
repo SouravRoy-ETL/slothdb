@@ -56,6 +56,17 @@ static void BulkLoadRows(DataTable &storage, const std::vector<LogicalType> &typ
 // preserved so format detection still works). Returns the input unchanged for
 // local paths. s3:// is rewritten to virtual-host HTTPS - anonymous read of
 // public buckets. No SigV4 / credentials yet.
+// Stable, per-URL temp-file name so repeated queries against the same
+// remote file reuse the cached download instead of re-fetching the whole
+// payload every query. Hashes the URL to keep filenames bounded and
+// safe on Windows. The first query on a URL still pays the full
+// download cost; every subsequent query uses the cached file.
+//
+// Cache is process-temp-dir scoped — it persists across queries within
+// a process and is reaped naturally by OS temp-dir cleanup. No staleness
+// check yet: if the remote file changes, the user must `pip install
+// --force-reinstall` or delete the temp file (TODO: HTTP Range request
+// the footer + ETag check before reuse).
 static std::string ResolveRemoteFile(const std::string &path_or_url) {
     bool is_http  = path_or_url.rfind("http://", 0)  == 0;
     bool is_https = path_or_url.rfind("https://", 0) == 0;
@@ -74,14 +85,26 @@ static std::string ResolveRemoteFile(const std::string &path_or_url) {
         ext = clean.substr(dot);
     }
 
-    auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
-    auto tmp = std::filesystem::temp_directory_path() /
-               ("slothdb_remote_" + std::to_string(ts) + ext);
+    // Stable filename keyed on a 64-bit FNV-1a hash of the URL.
+    uint64_t h = 14695981039346656037ULL;
+    for (char c : url) { h ^= static_cast<unsigned char>(c); h *= 1099511628211ULL; }
+    char hbuf[32];
+    std::snprintf(hbuf, sizeof(hbuf), "%016llx",
+                  static_cast<unsigned long long>(h));
 
-    if (!HTTPClient::DownloadToFile(url, tmp.string())) {
+    auto tmp = std::filesystem::temp_directory_path() /
+               (std::string("slothdb_remote_") + hbuf + ext);
+    auto tmp_str = tmp.string();
+
+    // Reuse cached download if present.
+    if (std::filesystem::exists(tmp) && std::filesystem::file_size(tmp) > 0) {
+        return tmp_str;
+    }
+
+    if (!HTTPClient::DownloadToFile(url, tmp_str)) {
         throw IOException(ErrorCode::FILE_NOT_FOUND, "Failed to download: " + url);
     }
-    return tmp.string();
+    return tmp_str;
 }
 
 Connection::Connection(Database &database) : db_(database) {}
@@ -1052,7 +1075,15 @@ QueryResult Connection::Query(const std::string &sql) {
                 switch (e->GetExpressionType()) {
                 case ET::SUBQUERY: {
                     auto *sq = static_cast<SubqueryExpression *>(e);
-                    if (sq->subquery) walk_select_for_files(*sq->subquery);
+                    if (sq->subquery) {
+                        // Materialise the subquery's FROM tree (file refs
+                        // inside (SELECT ... FROM 'file.csv')), then
+                        // recurse for any deeper subqueries / CTEs.
+                        for (auto *n = sq->subquery->from_table.get(); n; n = n->right.get()) {
+                            materialize_nested_file(*n);
+                        }
+                        walk_select_for_files(*sq->subquery);
+                    }
                     walk_expr_for_files(sq->child.get());
                     break;
                 }
@@ -1102,11 +1133,22 @@ QueryResult Connection::Query(const std::string &sql) {
                 }
             };
 
-            walk_select_for_files = [&](SelectStatement &s) {
-                // FROM tree (root + JOIN right chain).
+            // Walk the FROM tree of a NESTED select. Materialises any
+            // bare-string-literal file ref via the simple BulkLoad path
+            // — fine for nested contexts because they're typically much
+            // smaller than the outer query and only need correctness,
+            // not the full streaming/pushdown machinery.
+            auto walk_from_tree = [&](SelectStatement &s) {
                 for (auto *node = s.from_table.get(); node; node = node->right.get()) {
                     materialize_nested_file(*node);
                 }
+            };
+
+            walk_select_for_files = [&](SelectStatement &s) {
+                // Skip the OUTER from_table — run_preprocess below handles
+                // it via the streaming-aware code path. Walker only fixes
+                // up nested file refs (inside CTEs, subqueries) that the
+                // existing top-level handler can't see.
                 for (auto &e : s.select_list) walk_expr_for_files(e.get());
                 walk_expr_for_files(s.where_clause.get());
                 for (auto &e : s.group_by) walk_expr_for_files(e.get());
@@ -1116,10 +1158,17 @@ QueryResult Connection::Query(const std::string &sql) {
                 walk_expr_for_files(s.limit.get());
                 walk_expr_for_files(s.offset.get());
                 for (auto &cte : s.ctes) {
-                    if (cte.query) walk_select_for_files(*cte.query);
+                    if (cte.query) {
+                        walk_from_tree(*cte.query);
+                        walk_select_for_files(*cte.query);
+                    }
                 }
                 if (s.set_right) walk_select_for_files(*s.set_right);
             };
+            // For SubqueryExpressions visited by walk_expr_for_files, the
+            // SUBQUERY case there calls walk_select_for_files on the inner
+            // SelectStatement — but we also need to materialise the inner
+            // FROM tree first. Handled by patching walk_expr_for_files.
 
             walk_select_for_files(outer_sel);
             // ----------------------------------------------------------
@@ -1628,10 +1677,17 @@ QueryResult Connection::Query(const std::string &sql) {
                         BulkLoadRows(*storage, col_types, rows);
                         temp_tables.push_back(tbl_name);
                     } else if (sel.from_table->table_name == "READ_PARQUET") {
-                        ParquetReader reader(file_path);
-                        auto col_names = reader.GetColumnNames();
-                        auto col_types = reader.GetColumnTypes();
-                        auto rows = reader.ReadAll();
+                        // Use the same streaming setup as the explicit
+                        // read_parquet() table-function form: parse the
+                        // footer to get the schema, stash a shared reader
+                        // on the catalog entry so PhysicalParquetScan can
+                        // stream column chunks at execution time.
+                        // BulkLoadRows would materialise the entire file
+                        // into memory — way slower than streaming, and
+                        // for HTTPS URLs that's a 132s vs 5s gap.
+                        auto reader_sp = std::make_shared<ParquetReader>(file_path);
+                        auto col_names = reader_sp->GetColumnNames();
+                        auto col_types = reader_sp->GetColumnTypes();
 
                         std::string tbl_name = sel.from_table->alias.empty()
                             ? ("__auto_file_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
@@ -1645,7 +1701,8 @@ QueryResult Connection::Query(const std::string &sql) {
                         auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
                         auto storage = std::make_shared<DataTable>(col_types);
                         entry.SetStorage(storage);
-                        BulkLoadRows(*storage, col_types, rows);
+                        entry.SetParquetPath(file_path);
+                        entry.SetCachedParquetReader(std::move(reader_sp));
                         temp_tables.push_back(tbl_name);
                     }
                 }
