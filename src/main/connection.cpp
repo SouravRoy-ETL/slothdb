@@ -982,9 +982,12 @@ QueryResult Connection::Query(const std::string &sql) {
                 auto ext = file_path.substr(file_path.find_last_of('.') + 1);
                 for (auto &c : ext) c = static_cast<char>(std::tolower(c));
 
-                std::string tbl_name = tref.alias.empty()
-                    ? ("__nested_file_" + std::to_string(++preproc_uid) + "__")
-                    : tref.alias;
+                // Always use an auto-generated name. Using tref.alias here
+                // collided with CTE names ("WITH t AS (SELECT ... FROM
+                // 'file.csv' AS t) ..." would try to create catalog table
+                // 't' twice — once for the file ref, once for the CTE).
+                std::string tbl_name =
+                    "__nested_file_" + std::to_string(++preproc_uid) + "__";
 
                 if (ext == "csv" || ext == "tsv") {
                     char delim = (ext == "tsv") ? '\t' : ',';
@@ -1729,6 +1732,13 @@ QueryResult Connection::Query(const std::string &sql) {
                         cte_cols.emplace_back(base_sel.result_names[i], base_sel.result_types[i]);
 
                     auto &entry = db_.GetCatalog().CreateTable(cte.name, cte_cols);
+                    // Push for cleanup BEFORE the iteration runs. If binding
+                    // or planning the recursive case throws, the table still
+                    // gets dropped by the TableCleanupGuard on this query's
+                    // exit. Without this, a failed recursive CTE leaves the
+                    // catalog table in place and the next query that uses
+                    // the same CTE name fails with "Table already exists".
+                    cte_tables.push_back(cte.name);
                     auto storage = std::make_shared<DataTable>(base_sel.result_types);
                     entry.SetStorage(storage);
 
@@ -1768,7 +1778,8 @@ QueryResult Connection::Query(const std::string &sql) {
 
                         if (!got_rows || storage->Count() == prev_count) break;
                     }
-                    cte_tables.push_back(cte.name);
+                    // (cte_tables.push_back already happened right after
+                    //  CreateTable above so a mid-iteration throw still cleans up.)
                 } else {
                     // Non-recursive CTE - pre-process read_csv in the inner SELECT.
                     auto cte_stmt = std::make_unique<SelectStatement>();
