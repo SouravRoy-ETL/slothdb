@@ -977,10 +977,12 @@ ParsedExprPtr Parser::ParsePrimary() {
         return std::make_unique<ConstantExpression>(tok.value, TokenType::STRING_LITERAL);
     }
 
-    // Keywords that can also be column names.
+    // Keywords that can also be column names or function names.
+    // KW_IF is here so `IF(c, t, f)` (DuckDB / MySQL ternary) is callable.
     if (CheckKeyword(TokenType::KW_GENERATE_SERIES) ||
         CheckKeyword(TokenType::KW_VIEW) || CheckKeyword(TokenType::KW_FILTER) ||
         CheckKeyword(TokenType::KW_SAMPLE) ||
+        CheckKeyword(TokenType::KW_IF) ||
         CheckKeyword(TokenType::KW_YEAR) || CheckKeyword(TokenType::KW_MONTH) ||
         CheckKeyword(TokenType::KW_DAY) || CheckKeyword(TokenType::KW_HOUR) ||
         CheckKeyword(TokenType::KW_MINUTE) || CheckKeyword(TokenType::KW_SECOND) ||

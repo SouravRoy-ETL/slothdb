@@ -591,12 +591,22 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     } else if (name == "CEIL" || name == "CEILING" || name == "FLOOR" ||
                name == "ROUND" || name == "SQRT" || name == "POWER" || name == "MOD") {
         return_type = LogicalType::DOUBLE();
-    } else if (name == "COALESCE") {
-        return_type = args.empty() ? LogicalType::SQLNULL() : args[0]->GetReturnType();
+    } else if (name == "COALESCE" || name == "IFNULL" || name == "NVL") {
+        // Return type comes from the first non-NULL-typed argument.
+        // (NULL literals carry SQLNULL type — skip them so a query like
+        // COALESCE(NULL, NULL, 3) still resolves to INTEGER.)
+        return_type = LogicalType::SQLNULL();
+        for (auto &a : args) {
+            if (a->GetReturnType().id() != LogicalTypeId::SQLNULL) {
+                return_type = a->GetReturnType();
+                break;
+            }
+        }
     } else if (name == "NULLIF") {
         return_type = args.empty() ? LogicalType::SQLNULL() : args[0]->GetReturnType();
-    } else if (name == "CASE") {
-        // Return type of CASE is the type of the first THEN expression.
+    } else if (name == "CASE" || name == "IF" || name == "IIF") {
+        // CASE(when, then, [when, then, ...] [else]) — return = type of
+        // first THEN. IF/IIF(cond, then, else) lay out args identically.
         return_type = args.size() >= 2 ? args[1]->GetReturnType() : LogicalType::SQLNULL();
     } else if (name == "IN" || name == "BETWEEN") {
         return_type = LogicalType::BOOLEAN();

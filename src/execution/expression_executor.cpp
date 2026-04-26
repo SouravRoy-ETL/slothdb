@@ -403,7 +403,9 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     auto &name = expr.function_name;
 
     // CASE(when1, then1, when2, then2, ..., [else])
-    if (name == "CASE") {
+    // IF(c, t, f) and IIF(c, t, f) reach the executor with the same arg
+    // layout (cond, then, else) so we route them through this path.
+    if (name == "CASE" || name == "IF" || name == "IIF") {
         for (idx_t i = 0; i < count; i++) {
             bool matched = false;
             // Arguments: pairs of (when, then), optional last else.
@@ -1073,7 +1075,9 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 
     // ---- Null handling functions ----
 
-    if (name == "COALESCE") {
+    // IFNULL(a, b) and NVL(a, b) reach this dispatcher with the same arg
+    // layout as COALESCE — route them to the same loop.
+    if (name == "COALESCE" || name == "IFNULL" || name == "NVL") {
         for (idx_t i = 0; i < count; i++) {
             bool found = false;
             for (auto &arg : expr.arguments) {
