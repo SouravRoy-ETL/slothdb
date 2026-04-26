@@ -1,55 +1,55 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1584 396" width="1584" height="396">
-  <!-- Minimalistic LinkedIn banner — DuckDB-style.
-       Solid brand-color field with subtle data-flow pattern. No text,
-       no stats, no logo. The mascot lives in the profile-picture slot
-       above the banner, so the banner just sets the brand colour. -->
+  <!-- LinkedIn banner: solid brand-purple field with a faint floating
+       DuckDB-style pipe-syntax SQL query as the watermark texture. No
+       wordmark, no stats, no logo — those live in the profile picture
+       and About fields above/below the banner. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0"   stop-color="#7C5CE6"/>
       <stop offset="0.5" stop-color="#8B6CF0"/>
       <stop offset="1"   stop-color="#7C5CE6"/>
     </linearGradient>
-    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#A78BFA" stop-opacity="0"/>
-      <stop offset="0.5" stop-color="#A78BFA" stop-opacity="0.45"/>
-      <stop offset="1" stop-color="#A78BFA" stop-opacity="0"/>
-    </linearGradient>
   </defs>
 
   <rect x="0" y="0" width="1584" height="396" fill="url(#bg)"/>
 
-  <!-- Faint flow paths suggesting data movement. Same idea as DuckDB's
-       yellow banner has subtle yellow flow lines — keep it whisper-quiet
-       so the profile picture overlay reads cleanly on top. -->
-  <g fill="none" stroke="url(#line)" stroke-width="2.5" stroke-linecap="round">
-    <path d="M -50 90 Q 300 60, 600 110 T 1200 90 T 1700 110"/>
-    <path d="M -50 160 Q 250 200, 500 170 T 1000 200 T 1700 175"/>
-    <path d="M -50 230 Q 320 210, 660 250 T 1280 230 T 1700 250"/>
-    <path d="M -50 305 Q 280 340, 580 305 T 1100 335 T 1700 305"/>
+  <!-- Floating pipe-syntax query, scattered like the DuckDB hero backdrop. -->
+  <g font-family="ui-monospace, 'Cascadia Mono', 'Fira Code', Consolas, monospace"
+     font-weight="500" fill="#FFFFFF" opacity="0.20" font-size="20"
+     letter-spacing="0.5">
+    <text x="80"   y="80">FROM 'sales.parquet'</text>
+    <text x="120"  y="120">|&gt; WHERE region = 'US'</text>
+    <text x="900"  y="80">|&gt; GROUP BY product</text>
+    <text x="940"  y="120">|&gt; SELECT product, SUM(revenue) AS total</text>
+    <text x="120"  y="280">|&gt; ORDER BY total DESC</text>
+    <text x="160"  y="320">|&gt; LIMIT 10</text>
   </g>
 
-  <!-- Tiny node dots on the flow paths, like packet markers. -->
-  <g fill="#A78BFA" opacity="0.35">
-    <circle cx="180"  cy="98"  r="3"/>
-    <circle cx="420"  cy="86"  r="3"/>
-    <circle cx="760"  cy="105" r="3"/>
-    <circle cx="1100" cy="92"  r="3"/>
-    <circle cx="1380" cy="100" r="3"/>
+  <!-- Highlighted keyword run (slightly more visible) for visual rhythm. -->
+  <g font-family="ui-monospace, 'Cascadia Mono', 'Fira Code', Consolas, monospace"
+     font-weight="700" fill="#FFFFFF" opacity="0.32" font-size="20"
+     letter-spacing="0.5">
+    <text x="80"   y="80">FROM</text>
+    <text x="120"  y="120">|&gt; WHERE</text>
+    <text x="900"  y="80">|&gt; GROUP BY</text>
+    <text x="940"  y="120">|&gt; SELECT</text>
+    <text x="120"  y="280">|&gt; ORDER BY</text>
+    <text x="160"  y="320">|&gt; LIMIT</text>
+  </g>
 
-    <circle cx="240"  cy="188" r="3"/>
-    <circle cx="540"  cy="178" r="3"/>
-    <circle cx="880"  cy="195" r="3"/>
-    <circle cx="1240" cy="185" r="3"/>
+  <!-- Subtle horizontal flow lines connecting the query lines, very faint. -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="1.2" stroke-linecap="round" opacity="0.10">
+    <path d="M 80 100 Q 500 90, 900 100"/>
+    <path d="M 120 140 Q 540 145, 940 140"/>
+    <path d="M 940 160 Q 600 200, 120 260"/>
+    <path d="M 120 300 Q 200 320, 160 340"/>
+  </g>
 
-    <circle cx="160"  cy="222" r="3"/>
-    <circle cx="500"  cy="240" r="3"/>
-    <circle cx="820"  cy="248" r="3"/>
-    <circle cx="1180" cy="232" r="3"/>
-    <circle cx="1460" cy="245" r="3"/>
-
-    <circle cx="220"  cy="328" r="3"/>
-    <circle cx="600"  cy="312" r="3"/>
-    <circle cx="940"  cy="320" r="3"/>
-    <circle cx="1320" cy="328" r="3"/>
+  <!-- A few small node dots on the flow paths. -->
+  <g fill="#FFFFFF" opacity="0.30">
+    <circle cx="500"  cy="92"  r="3"/>
+    <circle cx="540"  cy="142" r="3"/>
+    <circle cx="600"  cy="200" r="3"/>
+    <circle cx="200"  cy="318" r="3"/>
   </g>
 </svg>
