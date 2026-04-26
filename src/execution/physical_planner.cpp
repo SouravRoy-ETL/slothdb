@@ -991,11 +991,35 @@ public:
         if (!children.empty()) children[0]->SetRowLimit(n);
     }
 
+    // Detect SELECT * style identity projection: every output column is
+    // a plain BoundColumnRef pointing at the same input slot. When this
+    // holds, GetData becomes a passthrough — chunks flow from the child
+    // unchanged, no per-row ExpressionExecutor::Execute pass. Cuts the
+    // 10M-row `SELECT * FROM x ORDER BY y LIMIT 10` cost roughly in half.
+    bool IsIdentityProjection() const {
+        if (children.empty() || expressions_.size() != children[0]->GetTypes().size())
+            return false;
+        for (idx_t i = 0; i < expressions_.size(); i++) {
+            auto &e = expressions_[i];
+            if (!e) return false;
+            if (e->GetExpressionType() != BoundExpressionType::COLUMN_REF) return false;
+            auto &c = static_cast<BoundColumnRef &>(*e);
+            if (c.column_index != i) return false;
+        }
+        return true;
+    }
+
     void Init() override {
+        identity_passthrough_ = IsIdentityProjection();
         for (auto &child : children) child->Init();
     }
 
     bool GetData(DataChunk &result) override {
+        if (identity_passthrough_) {
+            // Pass-through: no expression evaluation, no per-row copy —
+            // child fills `result` directly.
+            return children[0]->GetData(result);
+        }
         DataChunk input;
         if (!children.empty()) {
             input.Initialize(children[0]->GetTypes());
@@ -1016,6 +1040,7 @@ public:
 
 private:
     std::vector<BoundExprPtr> expressions_;
+    bool identity_passthrough_ = false;
 };
 
 class PhysicalOrderBy : public PhysicalOperator {
@@ -1104,15 +1129,141 @@ private:
             T key;
             std::vector<Value> row;
         };
-        // For ASC: we want the smallest values; heap top should be the
-        // LARGEST seen so far (the worst candidate). cmp(a,b) returns
-        // true when a comes BEFORE b in output order — heap top is the
-        // one for which cmp(other, top) is true for all others.
         auto cmp = [ascending](const HeapEntry &a, const HeapEntry &b) {
             return ascending ? a.key < b.key : a.key > b.key;
         };
-        std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)> pq(cmp);
 
+        // Parallel path: when the input chain ends in a Parquet scan,
+        // dispatch RunParallelRGs and let each thread maintain its own
+        // top-K heap directly on the typed RG buffers. Final merge is
+        // a small K-way merge of `nthreads` heaps. Skips the sequential
+        // single-threaded chunk-consumption loop entirely.
+        //
+        // Unwrap through identity projections (SELECT * shape) so the
+        // common LIMIT -> ORDER_BY -> PROJECTION -> SCAN tree gets the
+        // parallel path. Non-identity projections block this — falls
+        // back to sequential.
+        PhysicalParquetScan *pq_scan = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+        if (!pq_scan) {
+            if (auto *proj = dynamic_cast<PhysicalProjection *>(children[0].get())) {
+                if (proj->IsIdentityProjection() && !proj->children.empty()) {
+                    pq_scan = dynamic_cast<PhysicalParquetScan *>(proj->children[0].get());
+                }
+            }
+        }
+        if (pq_scan) {
+            constexpr int MAX_THREADS = 8;
+            using Heap = std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)>;
+            std::vector<Heap> heaps;
+            heaps.reserve(MAX_THREADS);
+            for (int i = 0; i < MAX_THREADS; i++) heaps.emplace_back(cmp);
+            std::array<std::mutex, MAX_THREADS> mus;
+
+            // Project columns: every output column (heap stores full row).
+            idx_t ncols = pq_scan->GetTypes().size();
+            std::vector<bool> need(ncols, true);
+            pq_scan->SetNeededOutputs(need);
+
+            pq_scan->Init();
+            pq_scan->SetRGConsumer(
+                [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {
+                    int slot = tid % MAX_THREADS;
+                    auto &heap = heaps[slot];
+                    std::lock_guard<std::mutex> lk(mus[slot]);
+                    idx_t nrows = pq_scan->RowGroupSize(rg_idx);
+                    const auto &kcol = work.cols[key_col];
+                    if (!kcol.decoded) return;
+                    bool key_all_valid = kcol.all_valid;
+                    const T *kdata = nullptr;
+                    if constexpr (std::is_same_v<T, int64_t>) kdata = reinterpret_cast<const T *>(kcol.i64_data.data());
+                    else if constexpr (std::is_same_v<T, int32_t>) kdata = reinterpret_cast<const T *>(kcol.i32_data.data());
+                    else if constexpr (std::is_same_v<T, double>)  kdata = reinterpret_cast<const T *>(kcol.f64_data.data());
+                    else if constexpr (std::is_same_v<T, float>)   kdata = reinterpret_cast<const T *>(kcol.f32_data.data());
+                    if (!kdata) return;
+
+                    auto materialise_row = [&](idx_t row_i) -> std::vector<Value> {
+                        std::vector<Value> row;
+                        row.reserve(work.cols.size());
+                        for (idx_t c = 0; c < work.cols.size(); c++) {
+                            const auto &col = work.cols[c];
+                            if (!col.decoded) {
+                                if (row_i < work.cols_fallback[c].size())
+                                    row.push_back(work.cols_fallback[c][row_i]);
+                                else row.push_back(Value());
+                                continue;
+                            }
+                            bool valid = col.all_valid || (row_i < col.validity.size() && col.validity[row_i]);
+                            if (!valid) { row.push_back(Value()); continue; }
+                            switch (col.type.id()) {
+                            case LogicalTypeId::BIGINT:  row.push_back(Value::BIGINT(col.i64_data[row_i])); break;
+                            case LogicalTypeId::INTEGER: row.push_back(Value::INTEGER(col.i32_data[row_i])); break;
+                            case LogicalTypeId::DOUBLE:  row.push_back(Value::DOUBLE(col.f64_data[row_i])); break;
+                            case LogicalTypeId::FLOAT:   row.push_back(Value::FLOAT(col.f32_data[row_i])); break;
+                            case LogicalTypeId::BOOLEAN: row.push_back(Value::BOOLEAN(col.bool_data[row_i] != 0)); break;
+                            case LogicalTypeId::VARCHAR: {
+                                if (col.str_dict_encoded && row_i < col.str_dict_indices.size()) {
+                                    auto idx = col.str_dict_indices[row_i];
+                                    if (idx < col.str_dict_values.size())
+                                        row.push_back(Value::VARCHAR(col.str_dict_values[idx].GetString()));
+                                    else row.push_back(Value());
+                                } else if (row_i < col.str_data.size()) {
+                                    row.push_back(Value::VARCHAR(col.str_data[row_i].GetString()));
+                                } else row.push_back(Value());
+                                break;
+                            }
+                            default: row.push_back(Value()); break;
+                            }
+                        }
+                        return row;
+                    };
+
+                    for (idx_t i = 0; i < nrows; i++) {
+                        if (!key_all_valid && !(i < kcol.validity.size() && kcol.validity[i])) continue;
+                        T key = kdata[i];
+                        if (heap.size() < k) {
+                            HeapEntry e; e.key = key; e.row = materialise_row(i);
+                            heap.push(std::move(e));
+                        } else {
+                            bool wins = ascending ? (key < heap.top().key) : (key > heap.top().key);
+                            if (!wins) continue;
+                            HeapEntry e; e.key = key; e.row = materialise_row(i);
+                            heap.pop();
+                            heap.push(std::move(e));
+                        }
+                    }
+                });
+            pq_scan->RunParallelRGs(0);
+
+            // Merge per-thread heaps into a single top-K.
+            Heap merged(cmp);
+            for (auto &h : heaps) {
+                while (!h.empty()) {
+                    auto &e = const_cast<HeapEntry &>(h.top());
+                    if (merged.size() < k) {
+                        HeapEntry tmp; tmp.key = e.key; tmp.row = std::move(e.row);
+                        merged.push(std::move(tmp));
+                    } else {
+                        bool wins = ascending ? (e.key < merged.top().key) : (e.key > merged.top().key);
+                        if (wins) {
+                            HeapEntry tmp; tmp.key = e.key; tmp.row = std::move(e.row);
+                            merged.pop();
+                            merged.push(std::move(tmp));
+                        }
+                    }
+                    h.pop();
+                }
+            }
+            sorted_rows_.reserve(merged.size());
+            while (!merged.empty()) {
+                sorted_rows_.push_back(std::move(const_cast<HeapEntry &>(merged.top()).row));
+                merged.pop();
+            }
+            std::reverse(sorted_rows_.begin(), sorted_rows_.end());
+            return;
+        }
+
+        // Sequential fallback for non-Parquet inputs.
+        std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)> pq(cmp);
         DataChunk chunk;
         while (true) {
             chunk.Initialize(children[0]->GetTypes());
@@ -1134,7 +1285,7 @@ private:
                     pq.push(std::move(e));
                 } else {
                     bool wins = ascending ? (key < pq.top().key) : (key > pq.top().key);
-                    if (!wins) continue;  // hot path: skip full materialisation
+                    if (!wins) continue;
                     HeapEntry e; e.key = key;
                     e.row.reserve(chunk.ColumnCount());
                     for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
