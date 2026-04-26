@@ -1305,8 +1305,23 @@ private:
             }
 
             std::vector<std::vector<Value>> output_rows(winners.size());
-            for (auto &kv : rg_to_winner_indices) {
-                idx_t rg = kv.first;
+
+            // Pass 2: decode each unique RG with full projection in
+            // PARALLEL — typically 1-3 RGs but each is a 9-column read,
+            // so concurrency wins. Plus only the columns referenced by
+            // the winner indices actually need plucking.
+            std::vector<uint32_t> unique_rgs;
+            unique_rgs.reserve(rg_to_winner_indices.size());
+            for (auto &kv : rg_to_winner_indices) unique_rgs.push_back(kv.first);
+
+            unsigned int p2_threads = std::thread::hardware_concurrency();
+            if (p2_threads == 0) p2_threads = 4;
+            if (p2_threads > 8) p2_threads = 8;
+            if (p2_threads > unique_rgs.size())
+                p2_threads = static_cast<unsigned int>(unique_rgs.size());
+
+            auto materialise_for_rg = [&](uint32_t rg_idx_u) {
+                idx_t rg = rg_idx_u;
                 std::vector<ParquetColumnData> rg_cols(ncols);
                 std::vector<std::vector<Value>> rg_fallback(ncols);
                 for (idx_t c = 0; c < ncols; c++) {
@@ -1314,7 +1329,7 @@ private:
                         rg_fallback[c] = reader->ReadColumn(rg, c);
                     }
                 }
-                for (size_t out_idx : kv.second) {
+                for (size_t out_idx : rg_to_winner_indices[rg_idx_u]) {
                     auto &winner = winners[out_idx];
                     idx_t row_i = winner.row_idx;
                     std::vector<Value> row;
@@ -1350,6 +1365,24 @@ private:
                     }
                     output_rows[out_idx] = std::move(row);
                 }
+            };
+
+            if (p2_threads <= 1 || unique_rgs.size() == 1) {
+                for (auto rg_u : unique_rgs) materialise_for_rg(rg_u);
+            } else {
+                std::atomic<size_t> next2{0};
+                std::vector<std::thread> ts2;
+                ts2.reserve(p2_threads);
+                for (unsigned int t = 0; t < p2_threads; t++) {
+                    ts2.emplace_back([&] {
+                        while (true) {
+                            size_t idx = next2.fetch_add(1, std::memory_order_relaxed);
+                            if (idx >= unique_rgs.size()) return;
+                            materialise_for_rg(unique_rgs[idx]);
+                        }
+                    });
+                }
+                for (auto &t : ts2) if (t.joinable()) t.join();
             }
 
             sorted_rows_ = std::move(output_rows);
@@ -2758,6 +2791,33 @@ private:
         // Fast path: QUALIFY ROW_NUMBER() OVER (... ORDER BY X) = 1.
         // Just reduce each partition to its argmin/argmax row - no sort.
         TryTop1Qualify(ref_win, qwin);
+
+        // Eager parallel per-partition sort.
+        // Lazy sort serialised the cost of N partitions × M rows into the
+        // single-threaded emit loop. With multiple partitions (PARTITION BY
+        // region — typically 3-50) and a meaningful row count, sorting
+        // them concurrently before emit cuts the total wall time
+        // proportionally to min(num_partitions, threads).
+        if (input_.total >= 200000 && partitions_.size() >= 2 &&
+            !use_fallback_) {
+            unsigned int nthreads = std::thread::hardware_concurrency();
+            if (nthreads == 0) nthreads = 4;
+            if (nthreads > 8) nthreads = 8;
+            if (nthreads > partitions_.size()) nthreads = static_cast<unsigned int>(partitions_.size());
+            std::atomic<idx_t> next{0};
+            std::vector<std::thread> ts;
+            ts.reserve(nthreads);
+            for (unsigned int t = 0; t < nthreads; t++) {
+                ts.emplace_back([&] {
+                    while (true) {
+                        idx_t p = next.fetch_add(1, std::memory_order_relaxed);
+                        if (p >= partitions_.size()) return;
+                        SortOnePartition(p);
+                    }
+                });
+            }
+            for (auto &t : ts) if (t.joinable()) t.join();
+        }
     }
 
     void TryTop1Qualify(BoundWindowExpression *ref_win, BoundWindowExpression *qwin) {
@@ -4583,35 +4643,184 @@ private:
                 fused_pq->SetRGConsumer(
                     [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {
                         idx_t nrows = fused_pq->RowGroupSize(rg_idx);
-                        int64_t local = 0;
-                        for (idx_t i = 0; i < nrows; i++) {
-                            bool keep = true;
-                            for (auto &p : fused_count_preds) {
-                                const auto &col = work.cols[p.col_idx];
-                                if (!col.decoded) { keep = false; break; }
-                                double v = 0;
-                                bool valid = col.all_valid || col.validity[i];
-                                if (!valid) { keep = false; break; }
-                                switch (col.type.id()) {
-                                case LogicalTypeId::BIGINT:  v = (double)col.i64_data[i]; break;
-                                case LogicalTypeId::INTEGER: v = (double)col.i32_data[i]; break;
-                                case LogicalTypeId::DOUBLE:  v = col.f64_data[i]; break;
-                                case LogicalTypeId::FLOAT:   v = (double)col.f32_data[i]; break;
-                                default: keep = false; break;
+                        // Hoist per-predicate column pointers + type + op
+                        // outside the row loop. Inner loop is a tight
+                        // typed-array compare; the compiler auto-vectorises
+                        // this with SSE/AVX (or the scalar version is at
+                        // least branch-free per row).
+                        struct CompiledPred {
+                            const int64_t *i64;
+                            const int32_t *i32;
+                            const double  *f64;
+                            const float   *f32;
+                            const uint8_t *validity;  // null when all valid
+                            LogicalTypeId type;
+                            SimpleCmpOp op;
+                            double dval;
+                            int64_t  ival;       // pre-converted for int paths
+                        };
+                        std::vector<CompiledPred> cps(fused_count_preds.size());
+                        bool any_unsupported = false;
+                        for (size_t pi = 0; pi < fused_count_preds.size(); pi++) {
+                            auto &p = fused_count_preds[pi];
+                            auto &cp = cps[pi];
+                            const auto &col = work.cols[p.col_idx];
+                            if (!col.decoded) { any_unsupported = true; break; }
+                            cp.type = col.type.id();
+                            cp.op = p.op;
+                            cp.dval = p.dval;
+                            cp.ival = static_cast<int64_t>(p.dval);
+                            cp.validity = col.all_valid ? nullptr : col.validity.data();
+                            cp.i64 = (cp.type == LogicalTypeId::BIGINT)  ? col.i64_data.data() : nullptr;
+                            cp.i32 = (cp.type == LogicalTypeId::INTEGER) ? col.i32_data.data() : nullptr;
+                            cp.f64 = (cp.type == LogicalTypeId::DOUBLE)  ? col.f64_data.data() : nullptr;
+                            cp.f32 = (cp.type == LogicalTypeId::FLOAT)   ? col.f32_data.data() : nullptr;
+                            if (!cp.i64 && !cp.i32 && !cp.f64 && !cp.f32) any_unsupported = true;
+                        }
+                        if (any_unsupported) {
+                            // Fall back to legacy path for this RG.
+                            int64_t local = 0;
+                            for (idx_t i = 0; i < nrows; i++) {
+                                bool keep = true;
+                                for (auto &p : fused_count_preds) {
+                                    const auto &col = work.cols[p.col_idx];
+                                    if (!col.decoded) { keep = false; break; }
+                                    double v = 0;
+                                    bool valid = col.all_valid || col.validity[i];
+                                    if (!valid) { keep = false; break; }
+                                    switch (col.type.id()) {
+                                    case LogicalTypeId::BIGINT:  v = (double)col.i64_data[i]; break;
+                                    case LogicalTypeId::INTEGER: v = (double)col.i32_data[i]; break;
+                                    case LogicalTypeId::DOUBLE:  v = col.f64_data[i]; break;
+                                    case LogicalTypeId::FLOAT:   v = (double)col.f32_data[i]; break;
+                                    default: keep = false; break;
+                                    }
+                                    if (!keep) break;
+                                    bool ok = false;
+                                    switch (p.op) {
+                                    case SimpleCmpOp::LT: ok = (v <  p.dval); break;
+                                    case SimpleCmpOp::LE: ok = (v <= p.dval); break;
+                                    case SimpleCmpOp::GT: ok = (v >  p.dval); break;
+                                    case SimpleCmpOp::GE: ok = (v >= p.dval); break;
+                                    case SimpleCmpOp::EQ: ok = (v == p.dval); break;
+                                    case SimpleCmpOp::NE: ok = (v != p.dval); break;
+                                    }
+                                    if (!ok) { keep = false; break; }
                                 }
-                                if (!keep) break;
-                                bool ok = false;
-                                switch (p.op) {
-                                case SimpleCmpOp::LT: ok = (v <  p.dval); break;
-                                case SimpleCmpOp::LE: ok = (v <= p.dval); break;
-                                case SimpleCmpOp::GT: ok = (v >  p.dval); break;
-                                case SimpleCmpOp::GE: ok = (v >= p.dval); break;
-                                case SimpleCmpOp::EQ: ok = (v == p.dval); break;
-                                case SimpleCmpOp::NE: ok = (v != p.dval); break;
-                                }
-                                if (!ok) { keep = false; break; }
+                                if (keep) ++local;
                             }
-                            if (keep) ++local;
+                            tl_match[tid % MAX_THREADS].fetch_add(local, std::memory_order_relaxed);
+                            return;
+                        }
+
+                        // Fast path: hoisted predicate metadata, tight loops.
+                        // For the single-predicate case (very common) we
+                        // dispatch to a per-(type, op) specialised body so
+                        // the compiler can auto-vectorise the inner loop.
+                        int64_t local = 0;
+                        if (cps.size() == 1 && !cps[0].validity) {
+                            // Single-pred, no nulls: the fully-typed,
+                            // branch-free hot loop. Auto-vectorisable.
+                            auto &cp = cps[0];
+                            #define LOOP(arr, cmp, lit) do { \
+                                for (idx_t i = 0; i < nrows; i++) \
+                                    if ((arr)[i] cmp (lit)) ++local; \
+                            } while (0)
+                            if (cp.type == LogicalTypeId::BIGINT) {
+                                int64_t lit = cp.ival;
+                                switch (cp.op) {
+                                case SimpleCmpOp::LT: LOOP(cp.i64, <,  lit); break;
+                                case SimpleCmpOp::LE: LOOP(cp.i64, <=, lit); break;
+                                case SimpleCmpOp::GT: LOOP(cp.i64, >,  lit); break;
+                                case SimpleCmpOp::GE: LOOP(cp.i64, >=, lit); break;
+                                case SimpleCmpOp::EQ: LOOP(cp.i64, ==, lit); break;
+                                case SimpleCmpOp::NE: LOOP(cp.i64, !=, lit); break;
+                                }
+                            } else if (cp.type == LogicalTypeId::INTEGER) {
+                                int32_t lit = static_cast<int32_t>(cp.ival);
+                                switch (cp.op) {
+                                case SimpleCmpOp::LT: LOOP(cp.i32, <,  lit); break;
+                                case SimpleCmpOp::LE: LOOP(cp.i32, <=, lit); break;
+                                case SimpleCmpOp::GT: LOOP(cp.i32, >,  lit); break;
+                                case SimpleCmpOp::GE: LOOP(cp.i32, >=, lit); break;
+                                case SimpleCmpOp::EQ: LOOP(cp.i32, ==, lit); break;
+                                case SimpleCmpOp::NE: LOOP(cp.i32, !=, lit); break;
+                                }
+                            } else if (cp.type == LogicalTypeId::DOUBLE) {
+                                double lit = cp.dval;
+                                switch (cp.op) {
+                                case SimpleCmpOp::LT: LOOP(cp.f64, <,  lit); break;
+                                case SimpleCmpOp::LE: LOOP(cp.f64, <=, lit); break;
+                                case SimpleCmpOp::GT: LOOP(cp.f64, >,  lit); break;
+                                case SimpleCmpOp::GE: LOOP(cp.f64, >=, lit); break;
+                                case SimpleCmpOp::EQ: LOOP(cp.f64, ==, lit); break;
+                                case SimpleCmpOp::NE: LOOP(cp.f64, !=, lit); break;
+                                }
+                            } else if (cp.type == LogicalTypeId::FLOAT) {
+                                float lit = static_cast<float>(cp.dval);
+                                switch (cp.op) {
+                                case SimpleCmpOp::LT: LOOP(cp.f32, <,  lit); break;
+                                case SimpleCmpOp::LE: LOOP(cp.f32, <=, lit); break;
+                                case SimpleCmpOp::GT: LOOP(cp.f32, >,  lit); break;
+                                case SimpleCmpOp::GE: LOOP(cp.f32, >=, lit); break;
+                                case SimpleCmpOp::EQ: LOOP(cp.f32, ==, lit); break;
+                                case SimpleCmpOp::NE: LOOP(cp.f32, !=, lit); break;
+                                }
+                            }
+                            #undef LOOP
+                        } else {
+                            // Multi-pred or has nulls: per-row check, but
+                            // still with hoisted column pointers/types.
+                            for (idx_t i = 0; i < nrows; i++) {
+                                bool keep = true;
+                                for (auto &cp : cps) {
+                                    if (cp.validity && !cp.validity[i]) { keep = false; break; }
+                                    bool ok = false;
+                                    if (cp.i64) {
+                                        int64_t v = cp.i64[i], lit = cp.ival;
+                                        switch (cp.op) {
+                                        case SimpleCmpOp::LT: ok = v <  lit; break;
+                                        case SimpleCmpOp::LE: ok = v <= lit; break;
+                                        case SimpleCmpOp::GT: ok = v >  lit; break;
+                                        case SimpleCmpOp::GE: ok = v >= lit; break;
+                                        case SimpleCmpOp::EQ: ok = v == lit; break;
+                                        case SimpleCmpOp::NE: ok = v != lit; break;
+                                        }
+                                    } else if (cp.i32) {
+                                        int32_t v = cp.i32[i]; int32_t lit = (int32_t)cp.ival;
+                                        switch (cp.op) {
+                                        case SimpleCmpOp::LT: ok = v <  lit; break;
+                                        case SimpleCmpOp::LE: ok = v <= lit; break;
+                                        case SimpleCmpOp::GT: ok = v >  lit; break;
+                                        case SimpleCmpOp::GE: ok = v >= lit; break;
+                                        case SimpleCmpOp::EQ: ok = v == lit; break;
+                                        case SimpleCmpOp::NE: ok = v != lit; break;
+                                        }
+                                    } else if (cp.f64) {
+                                        double v = cp.f64[i], lit = cp.dval;
+                                        switch (cp.op) {
+                                        case SimpleCmpOp::LT: ok = v <  lit; break;
+                                        case SimpleCmpOp::LE: ok = v <= lit; break;
+                                        case SimpleCmpOp::GT: ok = v >  lit; break;
+                                        case SimpleCmpOp::GE: ok = v >= lit; break;
+                                        case SimpleCmpOp::EQ: ok = v == lit; break;
+                                        case SimpleCmpOp::NE: ok = v != lit; break;
+                                        }
+                                    } else if (cp.f32) {
+                                        float v = cp.f32[i]; float lit = (float)cp.dval;
+                                        switch (cp.op) {
+                                        case SimpleCmpOp::LT: ok = v <  lit; break;
+                                        case SimpleCmpOp::LE: ok = v <= lit; break;
+                                        case SimpleCmpOp::GT: ok = v >  lit; break;
+                                        case SimpleCmpOp::GE: ok = v >= lit; break;
+                                        case SimpleCmpOp::EQ: ok = v == lit; break;
+                                        case SimpleCmpOp::NE: ok = v != lit; break;
+                                        }
+                                    }
+                                    if (!ok) { keep = false; break; }
+                                }
+                                if (keep) ++local;
+                            }
                         }
                         tl_match[tid % MAX_THREADS].fetch_add(local, std::memory_order_relaxed);
                     });
