@@ -18,6 +18,10 @@ option(SLOTHDB_EDGE "Edge/WASM minimal build (excludes Excel/Avro/Arrow/SQLite)"
 # to be initialised. Default OFF — the normal build stays at 8 MB and
 # doesn't pull the llama.cpp dependency.
 option(SLOTHDB_ASK_MODEL "Embed llama.cpp for .ask --model (local GGUF inference)" OFF)
+# SLOTHDB_BUILD_SHARED produces slothdb.dll/.so/.dylib alongside the static
+# archive. Required by the Python wheel (ctypes), Node bindings, and any
+# other dlopen consumer. Default OFF — the CLI exe links the static lib.
+option(SLOTHDB_BUILD_SHARED "Build shared slothdb library (for Python/dlopen consumers)" OFF)
 
 if(SLOTHDB_ASK_MODEL)
     if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")

@@ -24,7 +24,7 @@ import os
 import sys
 import platform
 
-__version__ = "0.1.6"
+__version__ = "0.1.8"
 
 
 def _find_library():
@@ -63,18 +63,35 @@ def _load_library():
     lib_path = _find_library()
 
     if lib_path is None:
-        # Try system path
+        # Last-ditch attempt at the OS loader's default search path.
         try:
             if platform.system() == "Windows":
                 return ctypes.CDLL("slothdb.dll")
             else:
                 return ctypes.CDLL("libslothdb.so")
         except OSError:
-            raise ImportError(
-                "Cannot find SlothDB library. Build from source:\n"
-                "  cmake -B build -DBUILD_SHARED_LIBS=ON\n"
-                "  cmake --build build --config Release"
-            )
+            pass
+
+        system = platform.system()
+        machine = platform.machine()
+        here = os.path.dirname(os.path.abspath(__file__))
+        raise ImportError(
+            f"SlothDB native library not found.\n"
+            f"  Platform: {system} {machine}, Python {sys.version.split()[0]}\n"
+            f"  Searched: {here} (and ../lib, ../build/src/Release)\n"
+            f"\n"
+            f"  This usually means pip installed a wheel that doesn't match\n"
+            f"  your platform. Try:\n"
+            f"    pip install --upgrade --force-reinstall slothdb\n"
+            f"\n"
+            f"  Or build from source:\n"
+            f"    git clone https://github.com/SouravRoy-ETL/slothdb\n"
+            f"    cd slothdb && cmake -B build -DSLOTHDB_BUILD_SHARED=ON\n"
+            f"    cmake --build build --config Release\n"
+            f"\n"
+            f"  If neither works, please file an issue with this error\n"
+            f"  message at https://github.com/SouravRoy-ETL/slothdb/issues"
+        )
 
     return ctypes.CDLL(lib_path)
 
@@ -147,12 +164,10 @@ class Connection:
 
     def _open(self):
         """Open the database connection using the C API."""
-        try:
-            self._lib = _load_library()
-        except ImportError:
-            # Fallback: use subprocess with slothdb_shell
-            self._lib = None
-            return
+        # Surface the load error to the caller. The previous behaviour
+        # silently swallowed ImportError and only raised a generic
+        # "library not loaded" later from sql() — useless for debugging.
+        self._lib = _load_library()
 
         # Set up C API function signatures
         lib = self._lib
@@ -190,9 +205,6 @@ class Connection:
 
     def sql(self, query):
         """Execute a SQL query and return results."""
-        if self._lib is None:
-            raise RuntimeError("SlothDB library not loaded")
-
         result_ptr = ctypes.c_void_p()
         status = self._lib.slothdb_query(
             self._conn, query.encode("utf-8"), ctypes.byref(result_ptr))

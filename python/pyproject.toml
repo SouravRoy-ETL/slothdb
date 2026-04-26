@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slothdb"
-version = "0.1.7"
+version = "0.1.8"
 description = "Embedded SQL OLAP engine for Python — query Parquet, CSV, JSON, Arrow, Avro, Excel, and SQLite files directly with SQL, in-process. Zero server, no import step."
 readme = "README.md"
 license = {text = "MIT"}
@@ -24,7 +24,9 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Intended Audience :: Information Technology",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Programming Language :: C++",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -46,3 +48,10 @@ Documentation = "https://github.com/SouravRoy-ETL/slothdb#readme"
 Changelog = "https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md"
 Source = "https://github.com/SouravRoy-ETL/slothdb"
 Issues = "https://github.com/SouravRoy-ETL/slothdb/issues"
+
+[tool.setuptools]
+packages = ["slothdb"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+slothdb = ["*.dll", "*.so", "*.dylib"]

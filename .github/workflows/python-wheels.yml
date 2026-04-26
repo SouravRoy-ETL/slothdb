@@ -1,0 +1,121 @@
+name: Python wheels
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build wheels for (e.g. v0.1.8)'
+        required: true
+        type: string
+      publish:
+        description: 'Publish to PyPI after building'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build wheel (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: win_amd64 }
+          - { os: ubuntu-24.04,   name: manylinux2014_x86_64 }
+          - { os: macos-13,       name: macosx_x86_64 }
+          - { os: macos-14,       name: macosx_arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          submodules: false
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      # Linux: build inside a manylinux2014 container so the .so links
+      # against an old enough glibc to install on most distros.
+      - name: Build shared lib (Linux manylinux)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD":/io -w /io quay.io/pypa/manylinux2014_x86_64 bash -c '
+            yum install -y cmake3 gcc-c++ make &&
+            cmake3 -B build -DSLOTHDB_BUILD_SHARED=ON -DSLOTHDB_BUILD_SHELL=OFF -DSLOTHDB_BUILD_TESTS=OFF -DSLOTHDB_ASK_MODEL=OFF -DCMAKE_BUILD_TYPE=Release &&
+            cmake3 --build build -j$(nproc) --target slothdb_shared &&
+            cp build/src/libslothdb.so python/slothdb/ &&
+            strip python/slothdb/libslothdb.so
+          '
+
+      - name: Build shared lib (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake -B build -DSLOTHDB_BUILD_SHARED=ON -DSLOTHDB_BUILD_SHELL=OFF -DSLOTHDB_BUILD_TESTS=OFF -DSLOTHDB_ASK_MODEL=OFF
+          cmake --build build --config Release -j --target slothdb_shared
+          cp build/src/Release/slothdb.dll python/slothdb/
+
+      - name: Build shared lib (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -B build -DSLOTHDB_BUILD_SHARED=ON -DSLOTHDB_BUILD_SHELL=OFF -DSLOTHDB_BUILD_TESTS=OFF -DSLOTHDB_ASK_MODEL=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j$(sysctl -n hw.ncpu) --target slothdb_shared
+          cp build/src/libslothdb.dylib python/slothdb/
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel python/
+
+      - name: Smoke-test wheel
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall python/dist/*.whl
+          python -c "import slothdb; db = slothdb.connect(); r = db.sql('SELECT 42 AS answer'); r.show()"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: python/dist/*.whl
+
+  sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Build sdist
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --sdist python/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: python/dist/*.tar.gz
+
+  publish:
+    # Tag pushes auto-publish. workflow_dispatch needs the publish flag
+    # checked, so a manual rebuild for testing doesn't accidentally upload.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
+    needs: [build, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # Trusted publishing (PyPI OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-all
+      - name: Flatten artifacts
+        run: |
+          mkdir -p dist
+          find dist-all -name '*.whl' -o -name '*.tar.gz' | xargs -I{} cp {} dist/
+          ls -la dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

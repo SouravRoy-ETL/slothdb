@@ -60,6 +60,32 @@ target_include_directories(slothdb_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# Shared library variant for Python ctypes / Node / dlopen consumers.
+# Compiles the same sources as a SHARED lib; WINDOWS_EXPORT_ALL_SYMBOLS
+# auto-exports every extern "C" symbol on MSVC (the C API has no
+# __declspec annotations, so without this the DLL would have zero exports).
+if(SLOTHDB_BUILD_SHARED AND NOT EMSCRIPTEN)
+    add_library(slothdb_shared SHARED ${SLOTHDB_SOURCES})
+    set_target_properties(slothdb_shared PROPERTIES
+        OUTPUT_NAME "slothdb"
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+        POSITION_INDEPENDENT_CODE ON
+    )
+    target_include_directories(slothdb_shared PUBLIC
+        ${CMAKE_SOURCE_DIR}/include
+    )
+    if(SLOTHDB_EDGE)
+        target_compile_definitions(slothdb_shared PUBLIC SLOTHDB_EDGE=1)
+    endif()
+    if(SLOTHDB_ASK_MODEL)
+        target_compile_definitions(slothdb_shared PUBLIC SLOTHDB_ASK_MODEL=1)
+        target_link_libraries(slothdb_shared PRIVATE llama)
+        target_include_directories(slothdb_shared PRIVATE
+            ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include
+            ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include)
+    endif()
+endif()
+
 # WASM playground build (try.slothdb.org). Produces slothdb.wasm + slothdb.js
 # via Emscripten + embind. Single-threaded. No HTTP.
 if(EMSCRIPTEN)
