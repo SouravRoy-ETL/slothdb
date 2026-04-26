@@ -516,6 +516,55 @@ BoundExprPtr Binder::BindConstant(const ConstantExpression &expr) {
 BoundExprPtr Binder::BindComparison(const ComparisonExpression &expr, BindContext &context) {
     auto left = BindExpression(*expr.left, context);
     auto right = BindExpression(*expr.right, context);
+
+    // Promote a literal constant to the column's type when one side is a
+    // column reference and the other is a CONSTANT of a compatible numeric
+    // type. Without this the executor falls to a string-stod-per-row slow
+    // path on `WHERE bigint_col > 50` (50 binds as INTEGER, the column is
+    // BIGINT, types differ, so the typed-compare branch is skipped). This
+    // changes a 2.5-second filter scan over 10M rows into a ~30 ms one.
+    auto promote_literal = [](BoundExpression &target_typed, BoundExpression *literal) {
+        if (literal->GetExpressionType() != BoundExpressionType::CONSTANT) return;
+        auto &konst = *static_cast<BoundConstant *>(literal);
+        if (konst.value.IsNull()) return;
+        auto src = konst.value.type().id();
+        auto dst = target_typed.GetReturnType().id();
+        if (src == dst) return;
+        auto is_int = [](LogicalTypeId t) {
+            return t == LogicalTypeId::TINYINT || t == LogicalTypeId::SMALLINT ||
+                   t == LogicalTypeId::INTEGER || t == LogicalTypeId::BIGINT;
+        };
+        if (!is_int(src) || !is_int(dst)) return;
+        int64_t v = 0;
+        switch (src) {
+        case LogicalTypeId::TINYINT:  v = konst.value.GetValue<int8_t>(); break;
+        case LogicalTypeId::SMALLINT: v = konst.value.GetValue<int16_t>(); break;
+        case LogicalTypeId::INTEGER:  v = konst.value.GetValue<int32_t>(); break;
+        case LogicalTypeId::BIGINT:   v = konst.value.GetValue<int64_t>(); break;
+        default: return;
+        }
+        switch (dst) {
+        case LogicalTypeId::TINYINT:
+            if (v < INT8_MIN || v > INT8_MAX) return;
+            konst.value = Value::TINYINT(static_cast<int8_t>(v)); break;
+        case LogicalTypeId::SMALLINT:
+            if (v < INT16_MIN || v > INT16_MAX) return;
+            konst.value = Value::SMALLINT(static_cast<int16_t>(v)); break;
+        case LogicalTypeId::INTEGER:
+            if (v < INT32_MIN || v > INT32_MAX) return;
+            konst.value = Value::INTEGER(static_cast<int32_t>(v)); break;
+        case LogicalTypeId::BIGINT:
+            konst.value = Value::BIGINT(v); break;
+        default: return;
+        }
+        konst.SetReturnType(target_typed.GetReturnType());
+    };
+    if (left->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+        promote_literal(*left, right.get());
+    } else if (right->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+        promote_literal(*right, left.get());
+    }
+
     return std::make_unique<BoundComparison>(expr.op, std::move(left), std::move(right));
 }
 

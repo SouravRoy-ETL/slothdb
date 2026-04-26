@@ -25,6 +25,7 @@
 #include <system_error>
 #include <thread>
 #include <type_traits>
+#include <array>
 #include <atomic>
 #include <unordered_map>
 #include <unordered_set>
@@ -3969,6 +3970,30 @@ private:
             auto *file_scan = dynamic_cast<PhysicalFileScan *>(children[0].get());
             auto *count_scan = dynamic_cast<PhysicalCountScan *>(children[0].get());
             auto *parquet_scan = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+
+            // === FUSED COUNT(*) WHERE simple_pred OVER PARQUET ===
+            // Detect the AGG -> FILTER -> PARQUET shape with a compileable
+            // predicate. Run RunParallelRGs against the scan, evaluate the
+            // predicate per row directly against the typed column buffers,
+            // and bump a per-thread match counter. Skips PhysicalFilter's
+            // per-row Vector::SetValue copies entirely.
+            PhysicalParquetScan *fused_pq = nullptr;
+            std::vector<SimplePredicate> fused_count_preds;
+            if (!parquet_scan && !file_scan && !count_scan) {
+                if (auto *flt = dynamic_cast<PhysicalFilter *>(children[0].get())) {
+                    if (!flt->children.empty()) {
+                        if (auto *pq2 = dynamic_cast<PhysicalParquetScan *>(flt->children[0].get())) {
+                            std::vector<SimplePredicate> tmp;
+                            if (flt->GetCondition() &&
+                                TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                                fused_pq = pq2;
+                                fused_count_preds = std::move(tmp);
+                            }
+                        }
+                    }
+                }
+            }
+
             if (file_scan) {
                 // Reuse the already-loaded reader - no second fread.
                 auto *r = file_scan->GetReader();
@@ -3978,6 +4003,60 @@ private:
             } else if (count_scan) {
                 state.count = static_cast<int64_t>(count_scan->GetRowCount());
                 total_rows_processed = count_scan->GetRowCount();
+            } else if (fused_pq) {
+                // Project only the columns the predicate references.
+                {
+                    idx_t nc = fused_pq->GetTypes().size();
+                    std::vector<bool> need(nc, false);
+                    for (auto &p : fused_count_preds) {
+                        if (p.col_idx < nc) need[p.col_idx] = true;
+                    }
+                    fused_pq->SetNeededOutputs(need);
+                }
+                fused_pq->Init();
+
+                constexpr int MAX_THREADS = 8;
+                std::array<std::atomic<int64_t>, MAX_THREADS> tl_match{};
+                fused_pq->SetRGConsumer(
+                    [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {
+                        idx_t nrows = fused_pq->RowGroupSize(rg_idx);
+                        int64_t local = 0;
+                        for (idx_t i = 0; i < nrows; i++) {
+                            bool keep = true;
+                            for (auto &p : fused_count_preds) {
+                                const auto &col = work.cols[p.col_idx];
+                                if (!col.decoded) { keep = false; break; }
+                                double v = 0;
+                                bool valid = col.all_valid || col.validity[i];
+                                if (!valid) { keep = false; break; }
+                                switch (col.type.id()) {
+                                case LogicalTypeId::BIGINT:  v = (double)col.i64_data[i]; break;
+                                case LogicalTypeId::INTEGER: v = (double)col.i32_data[i]; break;
+                                case LogicalTypeId::DOUBLE:  v = col.f64_data[i]; break;
+                                case LogicalTypeId::FLOAT:   v = (double)col.f32_data[i]; break;
+                                default: keep = false; break;
+                                }
+                                if (!keep) break;
+                                bool ok = false;
+                                switch (p.op) {
+                                case SimpleCmpOp::LT: ok = (v <  p.dval); break;
+                                case SimpleCmpOp::LE: ok = (v <= p.dval); break;
+                                case SimpleCmpOp::GT: ok = (v >  p.dval); break;
+                                case SimpleCmpOp::GE: ok = (v >= p.dval); break;
+                                case SimpleCmpOp::EQ: ok = (v == p.dval); break;
+                                case SimpleCmpOp::NE: ok = (v != p.dval); break;
+                                }
+                                if (!ok) { keep = false; break; }
+                            }
+                            if (keep) ++local;
+                        }
+                        tl_match[tid % MAX_THREADS].fetch_add(local, std::memory_order_relaxed);
+                    });
+                fused_pq->RunParallelRGs(0);
+                int64_t total = 0;
+                for (auto &c : tl_match) total += c.load(std::memory_order_relaxed);
+                state.count = total;
+                total_rows_processed = static_cast<idx_t>(total);
             } else if (parquet_scan) {
                 // Parquet COUNT(*) - read row count from footer metadata without
                 // decoding any column data.

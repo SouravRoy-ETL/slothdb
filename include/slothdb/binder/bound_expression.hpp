@@ -34,6 +34,9 @@ public:
 
     BoundExpressionType GetExpressionType() const { return type_; }
     const LogicalType &GetReturnType() const { return return_type_; }
+    // Used by the binder when promoting a literal to match the type of
+    // the column it's compared with (avoids stod-per-row in the executor).
+    void SetReturnType(LogicalType t) { return_type_ = std::move(t); }
 
     std::string alias;
 
