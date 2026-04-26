@@ -68,3 +68,6 @@ real-life-testing/test.csv
 
 # Local benchmark data (CSV/parquet files + external binaries)
 real-life-testing/
+
+# Personal benchmarking + reports — kept locally, not committed.
+sloth-test/
