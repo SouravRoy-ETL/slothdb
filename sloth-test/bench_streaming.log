@@ -1,0 +1,6 @@
+>> 18 benchmark queries × 3 runs each (cold + 2 warm)
+  parquet10m_count                 S=     0.6ms  D=     1.5ms   WIN (0.40x)
+  parquet10m_sum                   S=    41.8ms  D=    33.6ms   TIE (1.24x)
+  parquet10m_filter_count          S=  2480.5ms  D=    32.4ms   SLOW (76.56x)
+  parquet10m_groupby_sum           S=    84.8ms  D=    61.5ms   TIE (1.38x)
+  parquet10m_orderby_top10         S=  3679.8ms  D=    30.5ms   SLOW (120.65x)
