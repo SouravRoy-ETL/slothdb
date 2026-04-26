@@ -1152,23 +1152,45 @@ private:
             }
         }
         if (pq_scan) {
+            // Two-pass top-N for Parquet:
+            //
+            // Pass 1: project ONLY the order-by column. Per-RG worker reads
+            //   typed key array and maintains a heap of (key, rg_idx, row_idx)
+            //   tuples. Skips decoding the other 9+ columns entirely on the
+            //   ~10M-row hot path.
+            //
+            // Pass 2: from the merged top-K (rg_idx, row_idx) list, decode
+            //   each unique RG once with the full projection, then materialise
+            //   only the K winning rows into vector<Value>. K=10 winners
+            //   typically span 1-3 RGs, so this is ~3 RG decodes vs 80.
+            struct LightEntry {
+                T key;
+                uint32_t rg_idx;
+                uint32_t row_idx;
+            };
+            auto light_cmp = [ascending](const LightEntry &a, const LightEntry &b) {
+                return ascending ? a.key < b.key : a.key > b.key;
+            };
+
             constexpr int MAX_THREADS = 8;
-            using Heap = std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)>;
-            std::vector<Heap> heaps;
-            heaps.reserve(MAX_THREADS);
-            for (int i = 0; i < MAX_THREADS; i++) heaps.emplace_back(cmp);
+            using LightHeap = std::priority_queue<LightEntry,
+                std::vector<LightEntry>, decltype(light_cmp)>;
+            std::vector<LightHeap> light_heaps;
+            light_heaps.reserve(MAX_THREADS);
+            for (int i = 0; i < MAX_THREADS; i++) light_heaps.emplace_back(light_cmp);
             std::array<std::mutex, MAX_THREADS> mus;
 
-            // Project columns: every output column (heap stores full row).
+            // Pass 1: only the key column needs decoding.
             idx_t ncols = pq_scan->GetTypes().size();
-            std::vector<bool> need(ncols, true);
-            pq_scan->SetNeededOutputs(need);
+            std::vector<bool> need_key_only(ncols, false);
+            need_key_only[key_col] = true;
+            pq_scan->SetNeededOutputs(need_key_only);
 
             pq_scan->Init();
             pq_scan->SetRGConsumer(
                 [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {
                     int slot = tid % MAX_THREADS;
-                    auto &heap = heaps[slot];
+                    auto &heap = light_heaps[slot];
                     std::lock_guard<std::mutex> lk(mus[slot]);
                     idx_t nrows = pq_scan->RowGroupSize(rg_idx);
                     const auto &kcol = work.cols[key_col];
@@ -1181,84 +1203,102 @@ private:
                     else if constexpr (std::is_same_v<T, float>)   kdata = reinterpret_cast<const T *>(kcol.f32_data.data());
                     if (!kdata) return;
 
-                    auto materialise_row = [&](idx_t row_i) -> std::vector<Value> {
-                        std::vector<Value> row;
-                        row.reserve(work.cols.size());
-                        for (idx_t c = 0; c < work.cols.size(); c++) {
-                            const auto &col = work.cols[c];
-                            if (!col.decoded) {
-                                if (row_i < work.cols_fallback[c].size())
-                                    row.push_back(work.cols_fallback[c][row_i]);
-                                else row.push_back(Value());
-                                continue;
-                            }
-                            bool valid = col.all_valid || (row_i < col.validity.size() && col.validity[row_i]);
-                            if (!valid) { row.push_back(Value()); continue; }
-                            switch (col.type.id()) {
-                            case LogicalTypeId::BIGINT:  row.push_back(Value::BIGINT(col.i64_data[row_i])); break;
-                            case LogicalTypeId::INTEGER: row.push_back(Value::INTEGER(col.i32_data[row_i])); break;
-                            case LogicalTypeId::DOUBLE:  row.push_back(Value::DOUBLE(col.f64_data[row_i])); break;
-                            case LogicalTypeId::FLOAT:   row.push_back(Value::FLOAT(col.f32_data[row_i])); break;
-                            case LogicalTypeId::BOOLEAN: row.push_back(Value::BOOLEAN(col.bool_data[row_i] != 0)); break;
-                            case LogicalTypeId::VARCHAR: {
-                                if (col.str_dict_encoded && row_i < col.str_dict_indices.size()) {
-                                    auto idx = col.str_dict_indices[row_i];
-                                    if (idx < col.str_dict_values.size())
-                                        row.push_back(Value::VARCHAR(col.str_dict_values[idx].GetString()));
-                                    else row.push_back(Value());
-                                } else if (row_i < col.str_data.size()) {
-                                    row.push_back(Value::VARCHAR(col.str_data[row_i].GetString()));
-                                } else row.push_back(Value());
-                                break;
-                            }
-                            default: row.push_back(Value()); break;
-                            }
-                        }
-                        return row;
-                    };
-
                     for (idx_t i = 0; i < nrows; i++) {
                         if (!key_all_valid && !(i < kcol.validity.size() && kcol.validity[i])) continue;
                         T key = kdata[i];
+                        LightEntry e{key, (uint32_t)rg_idx, (uint32_t)i};
                         if (heap.size() < k) {
-                            HeapEntry e; e.key = key; e.row = materialise_row(i);
-                            heap.push(std::move(e));
+                            heap.push(e);
                         } else {
                             bool wins = ascending ? (key < heap.top().key) : (key > heap.top().key);
-                            if (!wins) continue;
-                            HeapEntry e; e.key = key; e.row = materialise_row(i);
-                            heap.pop();
-                            heap.push(std::move(e));
+                            if (wins) { heap.pop(); heap.push(e); }
                         }
                     }
                 });
             pq_scan->RunParallelRGs(0);
 
             // Merge per-thread heaps into a single top-K.
-            Heap merged(cmp);
-            for (auto &h : heaps) {
+            LightHeap light_merged(light_cmp);
+            for (auto &h : light_heaps) {
                 while (!h.empty()) {
-                    auto &e = const_cast<HeapEntry &>(h.top());
-                    if (merged.size() < k) {
-                        HeapEntry tmp; tmp.key = e.key; tmp.row = std::move(e.row);
-                        merged.push(std::move(tmp));
-                    } else {
-                        bool wins = ascending ? (e.key < merged.top().key) : (e.key > merged.top().key);
-                        if (wins) {
-                            HeapEntry tmp; tmp.key = e.key; tmp.row = std::move(e.row);
-                            merged.pop();
-                            merged.push(std::move(tmp));
-                        }
+                    auto e = h.top(); h.pop();
+                    if (light_merged.size() < k) light_merged.push(e);
+                    else {
+                        bool wins = ascending ? (e.key < light_merged.top().key)
+                                              : (e.key > light_merged.top().key);
+                        if (wins) { light_merged.pop(); light_merged.push(e); }
                     }
-                    h.pop();
                 }
             }
-            sorted_rows_.reserve(merged.size());
-            while (!merged.empty()) {
-                sorted_rows_.push_back(std::move(const_cast<HeapEntry &>(merged.top()).row));
-                merged.pop();
+
+            // Drain into a flat vector sorted by output order, then group
+            // by rg_idx so we decode each RG only once.
+            std::vector<LightEntry> winners;
+            winners.reserve(light_merged.size());
+            while (!light_merged.empty()) { winners.push_back(light_merged.top()); light_merged.pop(); }
+            // light_merged drained worst-first → reverse for best-first.
+            std::reverse(winners.begin(), winners.end());
+
+            // Pass 2: decode each unique RG with the FULL projection
+            // (all output columns), then pluck the winning row indices.
+            std::vector<bool> need_all(ncols, true);
+            // Re-init the reader with full projection for the second pass.
+            // Use ReadRowGroupChunk-style read via the underlying ParquetReader.
+            auto *reader = pq_scan->GetReader();
+            ankerl::unordered_dense::map<uint32_t, std::vector<size_t>> rg_to_winner_indices;
+            for (size_t i = 0; i < winners.size(); i++) {
+                rg_to_winner_indices[winners[i].rg_idx].push_back(i);
             }
-            std::reverse(sorted_rows_.begin(), sorted_rows_.end());
+
+            std::vector<std::vector<Value>> output_rows(winners.size());
+            for (auto &kv : rg_to_winner_indices) {
+                idx_t rg = kv.first;
+                std::vector<ParquetColumnData> rg_cols(ncols);
+                std::vector<std::vector<Value>> rg_fallback(ncols);
+                for (idx_t c = 0; c < ncols; c++) {
+                    if (!reader->ReadColumnInto(rg, c, rg_cols[c])) {
+                        rg_fallback[c] = reader->ReadColumn(rg, c);
+                    }
+                }
+                for (size_t out_idx : kv.second) {
+                    auto &winner = winners[out_idx];
+                    idx_t row_i = winner.row_idx;
+                    std::vector<Value> row;
+                    row.reserve(ncols);
+                    for (idx_t c = 0; c < ncols; c++) {
+                        const auto &col = rg_cols[c];
+                        if (!col.decoded) {
+                            if (row_i < rg_fallback[c].size()) row.push_back(rg_fallback[c][row_i]);
+                            else row.push_back(Value());
+                            continue;
+                        }
+                        bool valid = col.all_valid || (row_i < col.validity.size() && col.validity[row_i]);
+                        if (!valid) { row.push_back(Value()); continue; }
+                        switch (col.type.id()) {
+                        case LogicalTypeId::BIGINT:  row.push_back(Value::BIGINT(col.i64_data[row_i])); break;
+                        case LogicalTypeId::INTEGER: row.push_back(Value::INTEGER(col.i32_data[row_i])); break;
+                        case LogicalTypeId::DOUBLE:  row.push_back(Value::DOUBLE(col.f64_data[row_i])); break;
+                        case LogicalTypeId::FLOAT:   row.push_back(Value::FLOAT(col.f32_data[row_i])); break;
+                        case LogicalTypeId::BOOLEAN: row.push_back(Value::BOOLEAN(col.bool_data[row_i] != 0)); break;
+                        case LogicalTypeId::VARCHAR: {
+                            if (col.str_dict_encoded && row_i < col.str_dict_indices.size()) {
+                                auto idx = col.str_dict_indices[row_i];
+                                if (idx < col.str_dict_values.size())
+                                    row.push_back(Value::VARCHAR(col.str_dict_values[idx].GetString()));
+                                else row.push_back(Value());
+                            } else if (row_i < col.str_data.size()) {
+                                row.push_back(Value::VARCHAR(col.str_data[row_i].GetString()));
+                            } else row.push_back(Value());
+                            break;
+                        }
+                        default: row.push_back(Value()); break;
+                        }
+                    }
+                    output_rows[out_idx] = std::move(row);
+                }
+            }
+
+            sorted_rows_ = std::move(output_rows);
             return;
         }
 
