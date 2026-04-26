@@ -296,9 +296,21 @@ std::vector<Token> Tokenizer::Tokenize() {
         switch (c) {
         case '(': tokens.push_back(Token(TokenType::LPAREN, "(", line_, tok_col)); break;
         case ')': tokens.push_back(Token(TokenType::RPAREN, ")", line_, tok_col)); break;
+        case '[': tokens.push_back(Token(TokenType::LBRACKET, "[", line_, tok_col)); break;
+        case ']': tokens.push_back(Token(TokenType::RBRACKET, "]", line_, tok_col)); break;
+        case '{': tokens.push_back(Token(TokenType::LBRACE, "{", line_, tok_col)); break;
+        case '}': tokens.push_back(Token(TokenType::RBRACE, "}", line_, tok_col)); break;
         case ',': tokens.push_back(Token(TokenType::COMMA, ",", line_, tok_col)); break;
         case ';': tokens.push_back(Token(TokenType::SEMICOLON, ";", line_, tok_col)); break;
         case '.': tokens.push_back(Token(TokenType::DOT, ".", line_, tok_col)); break;
+        case ':':
+            if (!IsAtEnd() && Peek() == ':') {
+                Advance();
+                tokens.push_back(Token(TokenType::DOUBLE_COLON, "::", line_, tok_col));
+            } else {
+                tokens.push_back(Token(TokenType::COLON, ":", line_, tok_col));
+            }
+            break;
         case '+': tokens.push_back(Token(TokenType::PLUS, "+", line_, tok_col)); break;
         case '-': tokens.push_back(Token(TokenType::MINUS, "-", line_, tok_col)); break;
         case '*': tokens.push_back(Token(TokenType::STAR, "*", line_, tok_col)); break;
@@ -376,9 +388,15 @@ const char *TokenTypeToString(TokenType type) {
     case TokenType::LESS_EQUALS: return "LESS_EQUALS";
     case TokenType::GREATER_EQUALS: return "GREATER_EQUALS";
     case TokenType::PIPE: return "PIPE";
+    case TokenType::DOUBLE_COLON: return "DOUBLE_COLON";
     case TokenType::LPAREN: return "LPAREN";
     case TokenType::RPAREN: return "RPAREN";
+    case TokenType::LBRACKET: return "LBRACKET";
+    case TokenType::RBRACKET: return "RBRACKET";
+    case TokenType::LBRACE: return "LBRACE";
+    case TokenType::RBRACE: return "RBRACE";
     case TokenType::COMMA: return "COMMA";
+    case TokenType::COLON: return "COLON";
     case TokenType::SEMICOLON: return "SEMICOLON";
     case TokenType::DOT: return "DOT";
     case TokenType::END_OF_FILE: return "EOF";

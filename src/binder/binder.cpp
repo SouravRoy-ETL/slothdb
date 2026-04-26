@@ -204,6 +204,26 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         result->has_aggregation = true;
     }
 
+    // GROUP BY ALL: derive group keys from non-aggregate, non-window
+    // entries in the SELECT list. Top-level aggregate-function detection
+    // only — nested aggregates like `sum(x) + 1` are not yet handled.
+    if (stmt.group_by_all && result->group_by.empty()) {
+        for (size_t i = 0; i < stmt.select_list.size() && i < result->select_list.size(); i++) {
+            const auto &bound = result->select_list[i];
+            bool is_aggregated = false;
+            if (bound->GetExpressionType() == BoundExpressionType::FUNCTION) {
+                auto *fn = static_cast<const BoundFunction *>(bound.get());
+                if (fn->is_aggregate) is_aggregated = true;
+            }
+            if (bound->GetExpressionType() == BoundExpressionType::WINDOW) {
+                is_aggregated = true;
+            }
+            if (is_aggregated) continue;
+            result->group_by.push_back(BindExpression(*stmt.select_list[i], context));
+        }
+        if (!result->group_by.empty()) result->has_aggregation = true;
+    }
+
     // Bind HAVING.
     if (stmt.having_clause) {
         result->having_clause = BindExpression(*stmt.having_clause, context);

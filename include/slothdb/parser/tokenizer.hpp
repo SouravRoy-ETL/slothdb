@@ -26,11 +26,17 @@ enum class TokenType : uint8_t {
     LESS_EQUALS,    // <=
     GREATER_EQUALS, // >=
     PIPE,           // ||  (string concat)
+    DOUBLE_COLON,   // ::  (Postgres-style cast)
 
     // Punctuation
     LPAREN,         // (
     RPAREN,         // )
+    LBRACKET,       // [   (list literal, list index)
+    RBRACKET,       // ]
+    LBRACE,         // {   (struct/map literal)
+    RBRACE,         // }
     COMMA,          // ,
+    COLON,          // :   (struct/map key:value)
     SEMICOLON,      // ;
     DOT,            // .
 

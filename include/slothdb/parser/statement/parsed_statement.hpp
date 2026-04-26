@@ -74,6 +74,10 @@ public:
     std::unique_ptr<TableRef> from_table;
     ParsedExprPtr where_clause;
     std::vector<ParsedExprPtr> group_by;
+    // GROUP BY ALL — DuckDB shorthand for "group by every non-aggregate
+    // entry in the SELECT list". Resolved in the binder after select_list
+    // is bound, since aggregate detection needs the bound function info.
+    bool group_by_all = false;
     ParsedExprPtr having_clause;
     ParsedExprPtr qualify_clause;   // Snowflake-style QUALIFY
     std::vector<OrderByItem> order_by;

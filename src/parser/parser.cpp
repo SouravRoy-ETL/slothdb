@@ -369,9 +369,15 @@ ParsedStmtPtr Parser::ParseSelectStatement() {
     // GROUP BY
     if (MatchKeyword(TokenType::KW_GROUP)) {
         Expect(TokenType::KW_BY, "after GROUP");
-        do {
-            stmt->group_by.push_back(ParseExpression());
-        } while (Match(TokenType::COMMA));
+        // DuckDB-style "GROUP BY ALL": defer expansion to the binder once
+        // we know which select-list entries are aggregates.
+        if (MatchKeyword(TokenType::KW_ALL)) {
+            stmt->group_by_all = true;
+        } else {
+            do {
+                stmt->group_by.push_back(ParseExpression());
+            } while (Match(TokenType::COMMA));
+        }
     }
 
     // HAVING
@@ -824,7 +830,13 @@ ParsedExprPtr Parser::ParseUnary() {
         auto child = ParseUnary();
         return std::make_unique<UnaryMinusExpression>(std::move(child));
     }
-    return ParsePrimary();
+    auto expr = ParsePrimary();
+    // Postgres-style postfix cast: expr :: TYPE  (chains: expr :: A :: B).
+    while (Match(TokenType::DOUBLE_COLON)) {
+        auto type_name = ParseTypeName();
+        expr = std::make_unique<CastExpression>(std::move(expr), type_name);
+    }
+    return expr;
 }
 
 ParsedExprPtr Parser::ParsePrimary() {
