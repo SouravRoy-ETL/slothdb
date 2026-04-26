@@ -4,20 +4,20 @@
     "sql": "SELECT count(*) FROM read_parquet('C:/Users/soura/Documents/lightdb/real-life-testing/sales_10m.parquet')",
     "slothdb": {
       "ok": true,
-      "median_ms": 0.6,
+      "median_ms": 1.5,
       "all_ms": [
-        1.1,
-        0.6,
-        0.6
+        2.9,
+        1.5,
+        1.4
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 1.5,
+      "median_ms": 4.6,
       "all_ms": [
-        2.4,
-        1.4,
-        1.5
+        6.7,
+        4.4,
+        4.6
       ]
     }
   },
@@ -26,20 +26,20 @@
     "sql": "SELECT sum(quantity) FROM read_parquet('C:/Users/soura/Documents/lightdb/real-life-testing/sales_10m.parquet')",
     "slothdb": {
       "ok": true,
-      "median_ms": 41.8,
+      "median_ms": 125.7,
       "all_ms": [
-        41.8,
-        41.8,
-        44.6
+        128.5,
+        125.7,
+        117.1
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 33.6,
+      "median_ms": 89.5,
       "all_ms": [
-        34.4,
-        33.4,
-        33.6
+        89.5,
+        90.1,
+        78.2
       ]
     }
   },
@@ -48,20 +48,20 @@
     "sql": "SELECT count(*) FROM read_parquet('C:/Users/soura/Documents/lightdb/real-life-testing/sales_10m.parquet') WHERE quantity > 50",
     "slothdb": {
       "ok": true,
-      "median_ms": 2480.5,
+      "median_ms": 145.1,
       "all_ms": [
-        2061.5,
-        2480.5,
-        2621.0
+        150.5,
+        144.8,
+        145.1
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 32.4,
+      "median_ms": 88.9,
       "all_ms": [
-        31.6,
-        32.4,
-        32.4
+        86.2,
+        88.9,
+        92.5
       ]
     }
   },
@@ -70,20 +70,20 @@
     "sql": "SELECT region, sum(quantity) AS q FROM read_parquet('C:/Users/soura/Documents/lightdb/real-life-testing/sales_10m.parquet') GROUP BY region",
     "slothdb": {
       "ok": true,
-      "median_ms": 84.8,
+      "median_ms": 215.3,
       "all_ms": [
-        84.8,
-        86.5,
-        84.4
+        215.3,
+        222.1,
+        211.6
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 61.5,
+      "median_ms": 147.3,
       "all_ms": [
-        61.7,
-        61.2,
-        61.5
+        159.8,
+        147.3,
+        140.8
       ]
     }
   },
@@ -92,20 +92,20 @@
     "sql": "SELECT * FROM read_parquet('C:/Users/soura/Documents/lightdb/real-life-testing/sales_10m.parquet') ORDER BY quantity DESC LIMIT 10",
     "slothdb": {
       "ok": true,
-      "median_ms": 3679.8,
+      "median_ms": 1004.1,
       "all_ms": [
-        3679.8,
-        3645.8,
-        3757.8
+        1004.1,
+        959.7,
+        1029.8
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 30.5,
+      "median_ms": 32.3,
       "all_ms": [
-        27.1,
-        30.5,
-        33.3
+        30.1,
+        32.3,
+        37.8
       ]
     }
   },
@@ -114,20 +114,20 @@
     "sql": "SELECT region, quantity, row_number() OVER (PARTITION BY region ORDER BY quantity DESC) AS rn FROM read_parquet('C:/Users/soura/Documents/lightdb/real-life-testing/sales_10m.parquet')",
     "slothdb": {
       "ok": true,
-      "median_ms": 54047.4,
+      "median_ms": 69936.2,
       "all_ms": [
-        54047.4,
-        54284.8,
-        53257.9
+        73754.2,
+        69936.2,
+        67634.3
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 8681.3,
+      "median_ms": 11487.4,
       "all_ms": [
-        8681.3,
-        9052.2,
-        8559.0
+        11244.2,
+        13977.1,
+        11487.4
       ]
     }
   },
@@ -136,20 +136,20 @@
     "sql": "SELECT count(*) FROM read_csv('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.csv')",
     "slothdb": {
       "ok": true,
-      "median_ms": 14.2,
+      "median_ms": 24.8,
       "all_ms": [
-        57.0,
-        14.2,
-        14.0
+        29.6,
+        24.8,
+        23.0
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 155.6,
+      "median_ms": 237.6,
       "all_ms": [
-        155.6,
-        152.9,
-        159.9
+        230.0,
+        237.6,
+        255.5
       ]
     }
   },
@@ -158,20 +158,20 @@
     "sql": "SELECT sum(quantity) FROM read_csv('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.csv')",
     "slothdb": {
       "ok": true,
-      "median_ms": 50.4,
+      "median_ms": 94.7,
       "all_ms": [
-        52.5,
-        49.5,
-        50.4
+        85.0,
+        94.7,
+        131.2
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 173.6,
+      "median_ms": 271.1,
       "all_ms": [
-        173.7,
-        173.5,
-        173.6
+        328.0,
+        271.1,
+        237.0
       ]
     }
   },
@@ -180,20 +180,20 @@
     "sql": "SELECT count(*) FROM read_csv('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.csv') WHERE quantity > 50",
     "slothdb": {
       "ok": true,
-      "median_ms": 368.6,
+      "median_ms": 356.1,
       "all_ms": [
-        368.4,
-        379.3,
-        368.6
+        414.5,
+        356.1,
+        280.6
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 156.0,
+      "median_ms": 267.1,
       "all_ms": [
-        156.0,
-        158.6,
-        154.3
+        337.4,
+        238.4,
+        267.1
       ]
     }
   },
@@ -202,20 +202,20 @@
     "sql": "SELECT region, sum(quantity) AS q FROM read_csv('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.csv') GROUP BY region",
     "slothdb": {
       "ok": true,
-      "median_ms": 69.4,
+      "median_ms": 100.0,
       "all_ms": [
-        69.4,
-        67.5,
-        71.7
+        120.9,
+        100.0,
+        94.6
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 178.0,
+      "median_ms": 250.0,
       "all_ms": [
-        178.0,
-        179.5,
-        171.5
+        235.5,
+        253.5,
+        250.0
       ]
     }
   },
@@ -224,20 +224,20 @@
     "sql": "SELECT * FROM read_csv('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.csv') ORDER BY quantity DESC LIMIT 10",
     "slothdb": {
       "ok": true,
-      "median_ms": 504.5,
+      "median_ms": 274.8,
       "all_ms": [
-        503.8,
-        504.5,
-        504.7
+        274.8,
+        270.9,
+        279.3
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 200.1,
+      "median_ms": 373.6,
       "all_ms": [
-        200.1,
-        197.9,
-        201.1
+        373.6,
+        447.0,
+        329.3
       ]
     }
   },
@@ -246,20 +246,20 @@
     "sql": "SELECT region, quantity, row_number() OVER (PARTITION BY region ORDER BY quantity DESC) AS rn FROM read_csv('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.csv')",
     "slothdb": {
       "ok": true,
-      "median_ms": 5182.4,
+      "median_ms": 6598.8,
       "all_ms": [
-        5109.4,
-        5182.4,
-        5507.0
+        6682.4,
+        5432.8,
+        6598.8
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 1003.8,
+      "median_ms": 1522.9,
       "all_ms": [
-        1127.6,
-        1003.8,
-        981.9
+        1522.9,
+        1731.1,
+        1324.1
       ]
     }
   },
@@ -268,20 +268,20 @@
     "sql": "SELECT count(*) FROM read_avro('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.avro')",
     "slothdb": {
       "ok": true,
-      "median_ms": 118.8,
+      "median_ms": 135.3,
       "all_ms": [
-        124.3,
-        115.5,
-        118.8
+        135.3,
+        132.4,
+        140.4
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 676.4,
+      "median_ms": 953.2,
       "all_ms": [
-        832.5,
-        676.4,
-        669.7
+        953.2,
+        834.9,
+        1110.3
       ]
     }
   },
@@ -290,20 +290,20 @@
     "sql": "SELECT sum(quantity) FROM read_avro('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.avro')",
     "slothdb": {
       "ok": true,
-      "median_ms": 136.1,
+      "median_ms": 140.4,
       "all_ms": [
-        140.2,
-        136.1,
-        120.0
+        146.3,
+        140.4,
+        138.0
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 694.9,
+      "median_ms": 788.2,
       "all_ms": [
-        945.0,
-        656.8,
-        694.9
+        788.2,
+        1175.8,
+        753.3
       ]
     }
   },
@@ -312,20 +312,20 @@
     "sql": "SELECT count(*) FROM read_avro('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.avro') WHERE quantity > 50",
     "slothdb": {
       "ok": true,
-      "median_ms": 321.5,
+      "median_ms": 161.9,
       "all_ms": [
-        321.5,
-        317.8,
-        325.8
+        157.1,
+        161.9,
+        191.4
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 748.3,
+      "median_ms": 1161.4,
       "all_ms": [
-        688.9,
-        977.0,
-        748.3
+        771.0,
+        1161.4,
+        1622.2
       ]
     }
   },
@@ -334,20 +334,20 @@
     "sql": "SELECT region, sum(quantity) AS q FROM read_avro('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.avro') GROUP BY region",
     "slothdb": {
       "ok": true,
-      "median_ms": 162.5,
+      "median_ms": 188.3,
       "all_ms": [
-        148.5,
-        170.0,
-        162.5
+        188.3,
+        198.2,
+        180.7
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 728.8,
+      "median_ms": 816.5,
       "all_ms": [
-        893.1,
-        728.8,
-        685.6
+        874.1,
+        814.1,
+        816.5
       ]
     }
   },
@@ -356,20 +356,20 @@
     "sql": "SELECT * FROM read_avro('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.avro') ORDER BY quantity DESC LIMIT 10",
     "slothdb": {
       "ok": true,
-      "median_ms": 322.6,
+      "median_ms": 147.9,
       "all_ms": [
-        322.6,
-        322.9,
-        318.2
+        143.0,
+        147.9,
+        148.5
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 651.8,
+      "median_ms": 889.2,
       "all_ms": [
-        895.1,
-        644.5,
-        651.8
+        808.4,
+        889.2,
+        1324.0
       ]
     }
   },
@@ -378,20 +378,20 @@
     "sql": "SELECT region, quantity, row_number() OVER (PARTITION BY region ORDER BY quantity DESC) AS rn FROM read_avro('C:/Users/soura/Documents/lightdb/real-life-testing/sales_1m.avro')",
     "slothdb": {
       "ok": true,
-      "median_ms": 4963.4,
+      "median_ms": 6954.4,
       "all_ms": [
-        4963.4,
-        5007.6,
-        4747.7
+        6954.4,
+        7356.6,
+        5658.6
       ]
     },
     "duckdb": {
       "ok": true,
-      "median_ms": 1500.0,
+      "median_ms": 2251.8,
       "all_ms": [
-        1392.6,
-        1667.1,
-        1500.0
+        2077.9,
+        2251.8,
+        2410.0
       ]
     }
   }
