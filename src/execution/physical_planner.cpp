@@ -332,7 +332,9 @@ public:
         idx_t num_cols = static_cast<idx_t>(GetTypes().size());
 
         // Advance to next RG if the current one is fully drained (or none yet).
-        if (!current_work_ || chunks_in_current_ >= current_rg_size_) {
+        // Loop here so a pruned RG (skipped by zone-map filter) advances
+        // immediately to the next without GetData returning empty.
+        while (!current_work_ || chunks_in_current_ >= current_rg_size_) {
             if (next_emit_ >= num_rgs_) return false;
 
             if (workers_.empty()) {
@@ -348,8 +350,11 @@ public:
                 // Wake any worker throttled by max_ahead - one slot just freed.
                 slot_free_cv_.notify_all();
             }
-            current_rg_size_ = static_cast<idx_t>(
-                reader_sp_->GetMeta().row_groups[next_emit_].num_rows);
+            // Pruned RGs contribute zero rows. Set size=0 and loop so we
+            // pick up the next RG without paying the per-call return cost.
+            current_rg_size_ = (current_work_ && current_work_->pruned) ? 0
+                : static_cast<idx_t>(
+                    reader_sp_->GetMeta().row_groups[next_emit_].num_rows);
             chunks_in_current_ = 0;
             next_emit_++;
         }
@@ -392,10 +397,30 @@ public:
     const std::string &GetFilePath() const { return file_path_; }
     ParquetReader *GetReader() { return reader_sp_.get(); }
 
+    // Single-column comparison pushed down from a WHERE filter. Used to
+    // skip whole row groups whose min/max statistics prove no row in the
+    // group could satisfy the predicate. Caller is still responsible for
+    // running the full WHERE on rows from groups that ARE scanned —
+    // pushdown is conservative ("might match" is true unless stats prove
+    // otherwise), so the PhysicalFilter above this scan stays correct.
+    struct PushdownFilter {
+        idx_t column_index;
+        std::string op;   // "=", "<", "<=", ">", ">="
+        Value value;
+    };
+    void SetPushdownFilters(std::vector<PushdownFilter> f) {
+        pushdown_filters_ = std::move(f);
+    }
+
     // One fully decoded row group - what the worker threads produce.
     struct RGWork {
         std::vector<ParquetColumnData> cols;
         std::vector<std::vector<Value>> cols_fallback;
+        // True when DecodeRowGroup short-circuited because every pushdown
+        // filter proved the RG can't contain any matching row. Consumers
+        // that look at this flag (GetData) emit zero rows for this RG and
+        // advance to the next.
+        bool pruned = false;
     };
 
     // Pull the next decoded row group in file order; returns nullptr at EOF.
@@ -461,10 +486,27 @@ public:
 
 private:
 
+    // Returns true if any pushdown filter proves this row group cannot
+    // contain any matching row (zone-map skip). Returns false if all
+    // filters either don't apply or the stats say "might match".
+    bool IsRowGroupPruned(idx_t rg) const {
+        if (pushdown_filters_.empty()) return false;
+        for (auto &f : pushdown_filters_) {
+            if (!reader_sp_->RowGroupMightMatch(rg, f.column_index, f.op, f.value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Decode a single row group into an RGWork. Safe to call from any thread
     // (reads from the read-only mmap'd file_data_).
     std::unique_ptr<RGWork> DecodeRowGroup(idx_t rg) {
         auto work = std::make_unique<RGWork>();
+        if (IsRowGroupPruned(rg)) {
+            work->pruned = true;
+            return work;
+        }
         idx_t num_cols = static_cast<idx_t>(GetTypes().size());
         work->cols.resize(num_cols);
         work->cols_fallback.resize(num_cols);
@@ -481,6 +523,13 @@ private:
     // keep a persistent per-thread RGWork to avoid per-RG buffer alloc churn -
     // the typed column vectors retain their capacity across row groups.
     void DecodeRowGroupInto(idx_t rg, RGWork &work) {
+        if (IsRowGroupPruned(rg)) {
+            work.pruned = true;
+            for (auto &c : work.cols) c.Clear();
+            for (auto &v : work.cols_fallback) v.clear();
+            return;
+        }
+        work.pruned = false;
         idx_t num_cols = static_cast<idx_t>(GetTypes().size());
         if (work.cols.size() != num_cols) work.cols.resize(num_cols);
         if (work.cols_fallback.size() != num_cols) work.cols_fallback.resize(num_cols);
@@ -513,6 +562,9 @@ private:
             if (rg >= num_rgs_) return;
 
             if (consumer_mode_) {
+                // Cheap zone-map check before decode — pruned RGs cost
+                // metadata reads only, not column-chunk decoding.
+                if (IsRowGroupPruned(rg)) continue;
                 DecodeRowGroupInto(rg, consumer_work);
                 if (rg_consumer_) rg_consumer_(consumer_work, rg, thread_id);
                 // consumer_work retains its buffer capacity; the NEXT RG's
@@ -606,6 +658,7 @@ private:
     std::shared_ptr<ParquetReader> cached_reader_;
     std::vector<bool> skip_str_data_; // per-column hint
     std::vector<bool> projection_;
+    std::vector<PushdownFilter> pushdown_filters_; // zone-map row-group skip
 
     // Parallel decode state.
     idx_t num_rgs_ = 0;
@@ -6240,11 +6293,75 @@ PhysicalOpPtr PhysicalPlanner::PlanGet(const LogicalGet &op) {
     return std::make_unique<PhysicalTableScan>(op.table);
 }
 
+// Try to extract simple `column OP literal` predicates from a bound
+// expression. Walks AND-chains and accepts =, <, <=, >, >= on a column
+// vs. a constant. Anything else (OR, function calls, between, IN) is
+// silently skipped — the FILTER above the scan still runs the full
+// condition for correctness, this only adds row-group skip hints.
+static void ExtractParquetPushdownFilters(
+    const BoundExpression &expr,
+    std::vector<PhysicalParquetScan::PushdownFilter> &out) {
+    if (expr.GetExpressionType() == BoundExpressionType::CONJUNCTION) {
+        auto &c = static_cast<const BoundConjunction &>(expr);
+        if (c.op == "AND") {
+            ExtractParquetPushdownFilters(*c.left, out);
+            ExtractParquetPushdownFilters(*c.right, out);
+        }
+        return;
+    }
+    if (expr.GetExpressionType() != BoundExpressionType::COMPARISON) return;
+    auto &cmp = static_cast<const BoundComparison &>(expr);
+
+    // Normalise so column is on the left.
+    const BoundExpression *l = cmp.left.get();
+    const BoundExpression *r = cmp.right.get();
+    std::string op = cmp.op;
+    if (l->GetExpressionType() != BoundExpressionType::COLUMN_REF &&
+        r->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+        std::swap(l, r);
+        // Flip the operator — `5 > col` becomes `col < 5`.
+        if (op == "<") op = ">";
+        else if (op == ">") op = "<";
+        else if (op == "<=") op = ">=";
+        else if (op == ">=") op = "<=";
+    }
+    if (l->GetExpressionType() != BoundExpressionType::COLUMN_REF) return;
+    if (r->GetExpressionType() != BoundExpressionType::CONSTANT) return;
+    if (op != "=" && op != "==" && op != "<" && op != "<=" && op != ">" && op != ">=") return;
+
+    auto &col = static_cast<const BoundColumnRef &>(*l);
+    auto &konst = static_cast<const BoundConstant &>(*r);
+    out.push_back({col.column_index, op == "==" ? "=" : op, konst.value});
+}
+
 PhysicalOpPtr PhysicalPlanner::PlanFilter(const LogicalFilter &op) {
     auto &mutable_op = const_cast<LogicalFilter &>(op);
+
+    // Capture a non-owning view of the condition before std::move so we
+    // can extract pushdown filters from it. The PhysicalFilter takes
+    // ownership of the original expression — extraction reads only.
+    std::vector<PhysicalParquetScan::PushdownFilter> pushdown;
+    if (mutable_op.condition) {
+        ExtractParquetPushdownFilters(*mutable_op.condition, pushdown);
+    }
+
     auto result = std::make_unique<PhysicalFilter>(
         std::move(mutable_op.condition), op.GetTypes());
-    result->children.push_back(Plan(*op.children[0]));
+    auto child = Plan(*op.children[0]);
+
+    // If our immediate child is a Parquet scan (or a Projection over one),
+    // hand it the pushdown filters. The filter itself stays in place; the
+    // scan just skips entire row groups whose stats prove no row matches.
+    if (!pushdown.empty()) {
+        PhysicalParquetScan *pq = dynamic_cast<PhysicalParquetScan *>(child.get());
+        if (!pq && child->GetOperatorType() == PhysicalOperatorType::PROJECTION
+                && !child->children.empty()) {
+            pq = dynamic_cast<PhysicalParquetScan *>(child->children[0].get());
+        }
+        if (pq) pq->SetPushdownFilters(std::move(pushdown));
+    }
+
+    result->children.push_back(std::move(child));
     return result;
 }
 

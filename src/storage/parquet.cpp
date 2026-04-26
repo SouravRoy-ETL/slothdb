@@ -239,15 +239,15 @@ void ParseStatistics(ThriftRd &r, ParqColMetaFull &m) {
             r.pos += l; m.has_stats = true;
             break;
         }
-        case 5: { // min_value (preferred)
+        case 5: { // max_value (preferred over deprecated `max`)
             uint64_t l = r.VarU64();
-            m.min_bytes.assign(reinterpret_cast<const char*>(&r.data[r.pos]), l);
+            m.max_bytes.assign(reinterpret_cast<const char*>(&r.data[r.pos]), l);
             r.pos += l; m.has_stats = true;
             break;
         }
-        case 6: { // max_value (preferred)
+        case 6: { // min_value (preferred over deprecated `min`)
             uint64_t l = r.VarU64();
-            m.max_bytes.assign(reinterpret_cast<const char*>(&r.data[r.pos]), l);
+            m.min_bytes.assign(reinterpret_cast<const char*>(&r.data[r.pos]), l);
             r.pos += l; m.has_stats = true;
             break;
         }
@@ -969,6 +969,57 @@ void ParquetReader::ReadMetadata() {
                     meta_.column_types.push_back(lt);
                 }
                 meta_.row_groups.clear();
+                // Decode raw min/max bytes from a Parquet column-stats blob
+                // into a typed Value matching the column's logical type.
+                // Returns true on success (stats reconstructed); false if
+                // the type isn't supported for pushdown — caller should
+                // mark has_stats=false.
+                auto decode_stat = [](const std::string &bytes,
+                                       LogicalTypeId type_id,
+                                       Value &out) -> bool {
+                    switch (type_id) {
+                    case LogicalTypeId::BOOLEAN:
+                        if (bytes.size() < 1) return false;
+                        out = Value::BOOLEAN(bytes[0] != 0);
+                        return true;
+                    case LogicalTypeId::INTEGER: {
+                        if (bytes.size() < 4) return false;
+                        int32_t v;
+                        std::memcpy(&v, bytes.data(), 4);
+                        out = Value::INTEGER(v);
+                        return true;
+                    }
+                    case LogicalTypeId::BIGINT:
+                    case LogicalTypeId::DATE:
+                    case LogicalTypeId::TIMESTAMP:
+                    case LogicalTypeId::TIME: {
+                        if (bytes.size() < 8) return false;
+                        int64_t v;
+                        std::memcpy(&v, bytes.data(), 8);
+                        out = Value::BIGINT(v);
+                        return true;
+                    }
+                    case LogicalTypeId::FLOAT: {
+                        if (bytes.size() < 4) return false;
+                        float v;
+                        std::memcpy(&v, bytes.data(), 4);
+                        out = Value::DOUBLE(v);
+                        return true;
+                    }
+                    case LogicalTypeId::DOUBLE: {
+                        if (bytes.size() < 8) return false;
+                        double v;
+                        std::memcpy(&v, bytes.data(), 8);
+                        out = Value::DOUBLE(v);
+                        return true;
+                    }
+                    case LogicalTypeId::VARCHAR:
+                        out = Value::VARCHAR(bytes);
+                        return true;
+                    default:
+                        return false;
+                    }
+                };
                 for (auto &rg_in : pmeta.row_groups) {
                     ParquetRowGroup rg;
                     rg.num_rows = rg_in.num_rows;
@@ -985,6 +1036,19 @@ void ParquetReader::ReadMetadata() {
                         col.total_uncompressed_size = col_in.total_uncompressed_size;
                         col.total_compressed_size = col_in.total_compressed_size;
                         col.dict_page_offset = col_in.dict_page_offset;
+                        // Carry stats over from the Thrift parser (col_in.min_bytes
+                        // / max_bytes) by decoding raw bytes into typed Values.
+                        // Without this, RowGroupMightMatch always returned true
+                        // and zone-map pruning was a no-op.
+                        if (col_in.has_stats) {
+                            Value min_v, max_v;
+                            if (decode_stat(col_in.min_bytes, col.slothdb_type.id(), min_v) &&
+                                decode_stat(col_in.max_bytes, col.slothdb_type.id(), max_v)) {
+                                col.has_stats = true;
+                                col.min_value = std::move(min_v);
+                                col.max_value = std::move(max_v);
+                            }
+                        }
                         rg.columns.push_back(std::move(col));
                     }
                     meta_.row_groups.push_back(std::move(rg));
@@ -1934,6 +1998,64 @@ std::vector<std::vector<Value>> ParquetReader::ReadAll() {
     return all_rows;
 }
 
+// Coerce `v` to match the type of `target` for cross-type comparisons.
+// Value::operator< returns false on type mismatch, so without this
+// step `BIGINT(200) < INTEGER(999)` is false and zone-map pruning
+// silently fails. Returns false if the coercion isn't safe.
+static bool CoerceForCompare(const Value &v, const Value &target, Value &out) {
+    if (v.type() == target.type()) { out = v; return true; }
+    auto tid = target.type().id();
+    // Numeric promotion via bigint / double.
+    auto vid = v.type().id();
+    auto is_int = [](LogicalTypeId i) {
+        return i == LogicalTypeId::TINYINT || i == LogicalTypeId::SMALLINT ||
+               i == LogicalTypeId::INTEGER || i == LogicalTypeId::BIGINT;
+    };
+    auto is_float = [](LogicalTypeId i) {
+        return i == LogicalTypeId::FLOAT || i == LogicalTypeId::DOUBLE;
+    };
+    if (is_int(vid) && is_int(tid)) {
+        int64_t i = 0;
+        switch (vid) {
+        case LogicalTypeId::TINYINT:  i = v.GetValue<int8_t>(); break;
+        case LogicalTypeId::SMALLINT: i = v.GetValue<int16_t>(); break;
+        case LogicalTypeId::INTEGER:  i = v.GetValue<int32_t>(); break;
+        case LogicalTypeId::BIGINT:   i = v.GetValue<int64_t>(); break;
+        default: return false;
+        }
+        switch (tid) {
+        case LogicalTypeId::TINYINT:
+            if (i < INT8_MIN || i > INT8_MAX) return false;
+            out = Value::TINYINT(static_cast<int8_t>(i)); return true;
+        case LogicalTypeId::SMALLINT:
+            if (i < INT16_MIN || i > INT16_MAX) return false;
+            out = Value::SMALLINT(static_cast<int16_t>(i)); return true;
+        case LogicalTypeId::INTEGER:
+            if (i < INT32_MIN || i > INT32_MAX) return false;
+            out = Value::INTEGER(static_cast<int32_t>(i)); return true;
+        case LogicalTypeId::BIGINT:
+            out = Value::BIGINT(i); return true;
+        default: return false;
+        }
+    }
+    if ((is_int(vid) || is_float(vid)) && is_float(tid)) {
+        double d = 0.0;
+        switch (vid) {
+        case LogicalTypeId::TINYINT:  d = v.GetValue<int8_t>(); break;
+        case LogicalTypeId::SMALLINT: d = v.GetValue<int16_t>(); break;
+        case LogicalTypeId::INTEGER:  d = v.GetValue<int32_t>(); break;
+        case LogicalTypeId::BIGINT:   d = static_cast<double>(v.GetValue<int64_t>()); break;
+        case LogicalTypeId::FLOAT:    d = v.GetValue<float>(); break;
+        case LogicalTypeId::DOUBLE:   d = v.GetValue<double>(); break;
+        default: return false;
+        }
+        if (tid == LogicalTypeId::FLOAT) out = Value::FLOAT(static_cast<float>(d));
+        else out = Value::DOUBLE(d);
+        return true;
+    }
+    return false;
+}
+
 bool ParquetReader::RowGroupMightMatch(idx_t rg_idx, idx_t col_idx,
                                         const std::string &op, const Value &val) const {
     if (rg_idx >= meta_.row_groups.size()) return false;
@@ -1942,17 +2064,22 @@ bool ParquetReader::RowGroupMightMatch(idx_t rg_idx, idx_t col_idx,
     auto &col = rg.columns[col_idx];
     if (!col.has_stats) return true;
 
+    // Coerce the literal to the column's stat type so cross-type
+    // comparisons don't silently bypass the zone-map check.
+    Value v;
+    if (!CoerceForCompare(val, col.min_value, v)) return true;
+
     // Use zone map logic.
     if (op == "=" || op == "==") {
-        return !(val < col.min_value) && !(col.max_value < val);
+        return !(v < col.min_value) && !(col.max_value < v);
     } else if (op == ">") {
-        return !(col.max_value < val) && !(col.max_value == val);
+        return !(col.max_value < v) && !(col.max_value == v);
     } else if (op == ">=") {
-        return !(col.max_value < val);
+        return !(col.max_value < v);
     } else if (op == "<") {
-        return !(val < col.min_value) && !(col.min_value == val);
+        return !(v < col.min_value) && !(col.min_value == v);
     } else if (op == "<=") {
-        return !(val < col.min_value);
+        return !(v < col.min_value);
     }
     return true;
 }
