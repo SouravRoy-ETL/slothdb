@@ -1,6 +1,7 @@
 #include "slothdb/execution/physical_planner.hpp"
 #include "slothdb/execution/expression_executor.hpp"
 #include "slothdb/common/exception.hpp"
+#include "slothdb/common/parallel.hpp"
 #include "slothdb/common/string_util.hpp"
 #ifndef SLOTHDB_EDGE
 #include "slothdb/storage/arrow_ipc.hpp"
@@ -484,8 +485,7 @@ public:
         // Lazy-start: ignore any slot-mode workers; consumer-mode runs its own.
         StopWorkers();
         unsigned int nt = (unsigned int)num_threads_hint;
-        if (nt == 0) nt = std::thread::hardware_concurrency();
-        if (nt == 0) nt = 4;
+        if (nt == 0) nt = HWThreads();
         if (nt > 8) nt = 8;
         if (num_rgs_ == 0) nt = 0;
         else if ((idx_t)nt > num_rgs_) nt = static_cast<unsigned int>(num_rgs_);
@@ -493,11 +493,16 @@ public:
         next_decode_.store(0);
         stop_.store(false);
         consumer_mode_ = true;
-        for (unsigned int t = 0; t < nt; t++) {
-            workers_.emplace_back([this, t] { WorkerLoop((int)t); });
+        if (nt <= 1) {
+            // Single-threaded (incl. WASM without pthreads): run inline.
+            if (nt == 1) WorkerLoop(0);
+        } else {
+            for (unsigned int t = 0; t < nt; t++) {
+                workers_.emplace_back([this, t] { WorkerLoop((int)t); });
+            }
+            for (auto &t : workers_) if (t.joinable()) t.join();
+            workers_.clear();
         }
-        for (auto &t : workers_) if (t.joinable()) t.join();
-        workers_.clear();
         consumer_mode_ = false;
         return (int)nt;
     }
@@ -611,8 +616,7 @@ private:
 
     void SpawnWorkers() {
         workers_spawned_ = true;
-        unsigned int nt = std::thread::hardware_concurrency();
-        if (nt == 0) nt = 4;
+        unsigned int nt = HWThreads();
         if (nt > 8) nt = 8;
         // effective_num_rgs_ shrinks for row-limit-pushdown queries; no
         // point spawning more workers than RGs we'll actually decode.
@@ -620,6 +624,9 @@ private:
         if (budget <= 1) nt = 0;
         else if ((idx_t)nt > budget) nt = static_cast<unsigned int>(budget);
         stop_.store(false);
+        // nt <= 1: skip spawn. The slot-mode caller path checks
+        // `workers_.empty()` and decodes inline (see GetNextWork).
+        if (nt <= 1) return;
         for (unsigned int t = 0; t < nt; t++) {
             workers_.emplace_back([this] { WorkerLoop(); });
         }
@@ -1440,8 +1447,7 @@ private:
                 }
             }
 
-            unsigned int p2_threads = std::thread::hardware_concurrency();
-            if (p2_threads == 0) p2_threads = 4;
+            unsigned int p2_threads = HWThreads();
             if (p2_threads > 8) p2_threads = 8;
             if (p2_threads > units.size())
                 p2_threads = static_cast<unsigned int>(units.size());
@@ -2972,23 +2978,26 @@ private:
         // proportionally to min(num_partitions, threads).
         if (input_.total >= 200000 && partitions_.size() >= 2 &&
             !use_fallback_) {
-            unsigned int nthreads = std::thread::hardware_concurrency();
-            if (nthreads == 0) nthreads = 4;
+            unsigned int nthreads = HWThreads();
             if (nthreads > 8) nthreads = 8;
             if (nthreads > partitions_.size()) nthreads = static_cast<unsigned int>(partitions_.size());
-            std::atomic<idx_t> next{0};
-            std::vector<std::thread> ts;
-            ts.reserve(nthreads);
-            for (unsigned int t = 0; t < nthreads; t++) {
-                ts.emplace_back([&] {
-                    while (true) {
-                        idx_t p = next.fetch_add(1, std::memory_order_relaxed);
-                        if (p >= partitions_.size()) return;
-                        SortOnePartition(p);
-                    }
-                });
+            if (nthreads > 1) {
+                std::atomic<idx_t> next{0};
+                std::vector<std::thread> ts;
+                ts.reserve(nthreads);
+                for (unsigned int t = 0; t < nthreads; t++) {
+                    ts.emplace_back([&] {
+                        while (true) {
+                            idx_t p = next.fetch_add(1, std::memory_order_relaxed);
+                            if (p >= partitions_.size()) return;
+                            SortOnePartition(p);
+                        }
+                    });
+                }
+                for (auto &t : ts) if (t.joinable()) t.join();
+            } else {
+                for (idx_t p = 0; p < partitions_.size(); p++) SortOnePartition(p);
             }
-            for (auto &t : ts) if (t.joinable()) t.join();
         }
         DBG("ParallelSort");
 #undef DBG
@@ -3878,8 +3887,8 @@ private:
             char delim = file_scan_for_group->GetDelimiter();
             size_t data_size = total_size - data_start;
 
-            unsigned int num_threads = std::thread::hardware_concurrency();
-            if (num_threads == 0 || num_threads > 8) num_threads = 4;
+            unsigned int num_threads = HWThreads();
+            if (num_threads > 8) num_threads = 4;
             if (data_size < 16 * 1024 * 1024) num_threads = 1;
 
             // Compute per-thread byte ranges aligned to line boundaries.
@@ -3906,9 +3915,7 @@ private:
 
             auto projection = file_scan_for_group->GetProjection();
 
-            std::vector<std::thread> threads;
-            for (unsigned int t = 0; t < num_threads; t++) {
-                threads.emplace_back([&, t]() {
+            auto worker_fn = [&](unsigned int t) {
                     auto &ts = tstates[t];
                     FastCSVReader thread_reader(buffer, ranges[t], ranges[t + 1], delim);
                     DataChunk chunk;
@@ -4009,9 +4016,16 @@ private:
                             }
                         }
                     }
-                });
+                };
+            if (num_threads > 1) {
+                std::vector<std::thread> threads;
+                threads.reserve(num_threads);
+                for (unsigned int t = 0; t < num_threads; t++)
+                    threads.emplace_back(worker_fn, t);
+                for (auto &th : threads) th.join();
+            } else {
+                worker_fn(0);
             }
-            for (auto &th : threads) th.join();
 
             // Merge per-thread states.
             std::unordered_map<int64_t, std::vector<AggState>> int_groups;
@@ -4104,8 +4118,8 @@ private:
             auto types = children[0]->GetTypes();
 
             // Determine number of threads based on file size.
-            unsigned int num_threads = std::thread::hardware_concurrency();
-            if (num_threads == 0 || num_threads > 16) num_threads = 8;
+            unsigned int num_threads = HWThreads();
+            if (num_threads > 16) num_threads = 8;
             size_t data_size = total_size - data_start;
             if (data_size < 4 * 1024 * 1024) num_threads = 1;
 
@@ -4127,9 +4141,7 @@ private:
             };
             std::vector<ThreadState> tstates(num_threads);
 
-            std::vector<std::thread> threads;
-            for (unsigned int t = 0; t < num_threads; t++) {
-                threads.emplace_back([&, t]() {
+            auto worker_fn2 = [&](unsigned int t) {
                     auto &ts = tstates[t];
                     size_t pos = ranges[t];
                     size_t end = ranges[t + 1];
@@ -4252,9 +4264,16 @@ private:
                             }
                         }
                     }
-                });
+                };
+            if (num_threads > 1) {
+                std::vector<std::thread> threads;
+                threads.reserve(num_threads);
+                for (unsigned int t = 0; t < num_threads; t++)
+                    threads.emplace_back(worker_fn2, t);
+                for (auto &th : threads) th.join();
+            } else {
+                worker_fn2(0);
             }
-            for (auto &th : threads) th.join();
 
             // Merge per-thread states.
             std::unordered_map<int64_t, std::vector<AggState>> int_groups;
@@ -5192,8 +5211,8 @@ private:
                 char delim = fs->GetDelimiter();
                 size_t data_size = total_size - data_start;
 
-                unsigned int nt = std::thread::hardware_concurrency();
-                if (nt == 0 || nt > 8) nt = 4;
+                unsigned int nt = HWThreads();
+                if (nt > 8) nt = 4;
                 if (data_size < 16 * 1024 * 1024) nt = 1;
 
                 std::vector<size_t> ranges(nt + 1);
@@ -5209,9 +5228,7 @@ private:
                 std::vector<std::vector<AggState>> tstates(nt);
                 std::vector<idx_t> trows(nt, 0);
 
-                std::vector<std::thread> threads;
-                for (unsigned int t = 0; t < nt; t++) {
-                    threads.emplace_back([&, t]() {
+                auto worker_fn3 = [&](unsigned int t) {
                         auto &local = tstates[t];
                         local.resize(num_aggs);
                         FastCSVReader thread_reader(buf, ranges[t], ranges[t + 1], delim);
@@ -5256,9 +5273,16 @@ private:
                                 }
                             }
                         }
-                    });
+                    };
+                if (nt > 1) {
+                    std::vector<std::thread> threads;
+                    threads.reserve(nt);
+                    for (unsigned int t = 0; t < nt; t++)
+                        threads.emplace_back(worker_fn3, t);
+                    for (auto &th : threads) th.join();
+                } else {
+                    worker_fn3(0);
                 }
-                for (auto &th : threads) th.join();
 
                 // Merge thread-local states.
                 for (auto &local : tstates) {
@@ -6735,8 +6759,7 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
             size_t data_start = reader->GetPos();
             size_t data_size = total_size - data_start;
 
-            unsigned int nt = std::thread::hardware_concurrency();
-            if (nt == 0) nt = 4;
+            unsigned int nt = HWThreads();
             if (nt > 8) nt = 8;
             std::vector<size_t> ranges(nt + 1);
             ranges[0] = data_start;
@@ -6757,9 +6780,7 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
             auto types = probe->GetTypes();
             auto projection = fs->GetProjection(); // copy once
 
-            std::vector<std::thread> threads;
-            for (unsigned int t = 0; t < nt; t++) {
-                threads.emplace_back([&, t]() {
+            auto worker_fn4 = [&](unsigned int t) {
                     FastCSVReader tr(buffer, ranges[t], ranges[t + 1], delim);
                     DataChunk chunk;
                     chunk.Initialize(types);
@@ -6857,9 +6878,16 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
                             }
                         }
                     }
-                });
+                };
+            if (nt > 1) {
+                std::vector<std::thread> threads;
+                threads.reserve(nt);
+                for (unsigned int t = 0; t < nt; t++)
+                    threads.emplace_back(worker_fn4, t);
+                for (auto &th : threads) th.join();
+            } else {
+                worker_fn4(0);
             }
-            for (auto &th : threads) th.join();
 
             // Merge thread-local into final states_by_gidx.
             for (unsigned int t = 0; t < nt; t++) {

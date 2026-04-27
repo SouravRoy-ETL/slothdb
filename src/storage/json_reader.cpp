@@ -4,6 +4,7 @@
 #include "slothdb/common/types/data_chunk.hpp"
 #include "slothdb/common/types/string_type.hpp"
 #include "slothdb/common/exception.hpp"
+#include "slothdb/common/parallel.hpp"
 #include <sstream>
 #include <algorithm>
 #include <charconv>
@@ -815,8 +816,7 @@ void JSONReader::ParallelParseToPerThread(
     // For small files stay serial - thread spawn overhead would dominate.
     const char *data = buf;
     size_t total = sz;
-    unsigned int nt = std::thread::hardware_concurrency();
-    if (nt == 0) nt = 4;
+    unsigned int nt = HWThreads();
     if (nt > 8) nt = 8;
     if (total < 2 * 1024 * 1024) nt = 1;
 

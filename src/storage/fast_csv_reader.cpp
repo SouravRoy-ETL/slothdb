@@ -6,6 +6,7 @@
 #include "slothdb/storage/fast_csv_reader.hpp"
 #include "slothdb/storage/data_table.hpp"
 #include "slothdb/common/exception.hpp"
+#include "slothdb/common/parallel.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <thread>
@@ -435,22 +436,26 @@ idx_t FastCSVReader::CountRows() {
     }
 
     // Parallel: split across threads.
-    unsigned int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0 || num_threads > 16) num_threads = 8;
+    unsigned int num_threads = HWThreads();
+    if (num_threads > 16) num_threads = 8;
     if (num_threads > total_bytes / (1024 * 1024)) num_threads = 1;
 
-    std::vector<std::thread> threads;
     std::vector<idx_t> partial(num_threads, 0);
     size_t chunk = total_bytes / num_threads;
-
-    for (unsigned int t = 0; t < num_threads; t++) {
+    auto count_one = [&](unsigned int t) {
         const char *s = start + t * chunk;
         const char *e = (t == num_threads - 1) ? end : (start + (t + 1) * chunk);
-        threads.emplace_back([s, e, t, &partial]() {
-            partial[t] = CountNewlinesRange(s, e);
-        });
+        partial[t] = CountNewlinesRange(s, e);
+    };
+    if (num_threads > 1) {
+        std::vector<std::thread> threads;
+        threads.reserve(num_threads);
+        for (unsigned int t = 0; t < num_threads; t++)
+            threads.emplace_back(count_one, t);
+        for (auto &th : threads) th.join();
+    } else {
+        count_one(0);
     }
-    for (auto &th : threads) th.join();
 
     idx_t total = 0;
     for (auto c : partial) total += c;
@@ -704,8 +709,7 @@ void FastCSVReader::ReadIntoChunks(std::vector<DataChunk> &out,
     size_t range = end - start;
 
     // Small inputs (< ~2 MB) - single-threaded; parallel overhead dominates.
-    unsigned int nt = (range < 2 * 1024 * 1024) ? 1u : std::thread::hardware_concurrency();
-    if (nt == 0) nt = 1;
+    unsigned int nt = (range < 2 * 1024 * 1024) ? 1u : HWThreads();
     if (nt > 8) nt = 8;
     if (range < 256 * 1024 * nt) nt = 1;
 
