@@ -99,9 +99,11 @@ jobs:
           path: python/dist/*.tar.gz
 
   publish:
-    # Tag pushes auto-publish. workflow_dispatch needs the publish flag
-    # checked, so a manual rebuild for testing doesn't accidentally upload.
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
+    # Manual publishes only. Tag pushes still trigger the build + sdist
+    # jobs above (so the artifacts are exercised), but the upload to PyPI
+    # only runs when workflow_dispatch is invoked with publish: true.
+    # Run the workflow from the Actions tab and tick "Publish to PyPI".
+    if: github.event.inputs.publish == 'true'
     needs: [build, sdist]
     runs-on: ubuntu-latest
     environment: pypi
