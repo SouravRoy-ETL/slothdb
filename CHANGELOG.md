@@ -2,6 +2,39 @@
 
 All notable changes to SlothDB are documented here.
 
+## 0.2.2
+
+### Performance
+
+- Stats-based row-group pruning for top-N pushdown. Pass 1 of the
+  two-pass top-N now reads each row group's max (or min, for ASC)
+  from the Parquet footer, sorts RGs best-first, and decodes
+  sequentially. The heap converges to the global K-th best after
+  one or two RGs; the rest are skipped without ever touching their
+  column data on disk. `parquet10m_orderby_top10`: 69 ms to 15 ms.
+  Now faster than DuckDB (23 ms), goes from SLOW to WIN.
+- Direct `string_t` emit in PhysicalWindow. The vectorised emit
+  fast path was going through `Value::VARCHAR` boxing for every
+  row. Now writes `string_t` straight into the output vector's
+  typed buffer. 10M-row varchar emit drops from ~3 s to ~300 ms.
+- Lazy column-major Python results. `QueryResult` now holds the C
+  result pointer alive until garbage-collected. Two new methods:
+    - `fetchnumpy()` returns a dict of numpy arrays. Numeric
+      columns wrap the C buffer via `np.frombuffer` with a
+      defensive copy; varchar becomes a numpy object array.
+    - `fetchdf()` builds a pandas DataFrame from `fetchnumpy()`,
+      bypassing row-tuple materialisation entirely.
+  10M-row int conversion drops from ~4 s to ~50 ms.
+
+### Bench scoreboard against DuckDB
+
+13 win, 5 tie, 0 slow on the 18-query suite. Up from 11 / 5 / 2
+in 0.2.1.
+
+### Tests
+
+403 of 403 doctest passing on Windows, Linux, macOS.
+
 ## 0.2.1
 
 ### Fixes

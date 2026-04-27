@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slothdb"
-version = "0.2.1"
+version = "0.2.2"
 description = "Embedded SQL OLAP engine for Python — query Parquet, CSV, JSON, Arrow, Avro, Excel, and SQLite files directly with SQL, in-process. Zero server, no import step."
 readme = "README.md"
 license = {text = "MIT"}
