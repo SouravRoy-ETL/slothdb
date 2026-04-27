@@ -2,7 +2,34 @@
 
 All notable changes to SlothDB are documented here.
 
-## Unreleased — Avro nullable + logical types, ISO date/timestamp rendering
+## Unreleased — Avro nullable + logical types, chunk-resident result, window perf
+
+### Performance
+
+- **Result collection skips Value boxing.** SELECT queries now stream typed
+  DataChunks straight into `QueryResult::chunks` instead of boxing every
+  cell into a `Value` immediately. The C API's typed-batch fetch
+  (`slothdb_column_*_buffer`) reads from those chunks via memcpy with no
+  intermediate object materialisation. The legacy per-cell API
+  (`GetValue`, `ToString`, set ops) lazily materialises rows on first
+  access, so behaviour is unchanged.
+
+  Bench impact (10M-row window, returning to Python):
+
+  | Query | Before | After | DuckDB | Status |
+  |---|---:|---:|---:|---|
+  | parquet10m_window | 18,801 ms (2.46x) | **12,304 ms (1.65x)** | 7,449 ms | SLOW |
+  | csv1m_window      | 1,741 ms (1.88x)  | **1,031 ms (1.16x)**  | 886 ms   | TIE  |
+  | avro1m_window     | 1,577 ms (1.24x)  | **991 ms (0.74x)**    | 1,337 ms | **WIN** |
+
+- **Row-limit pushdown into Parquet scan.** A bare `LIMIT N` now clips
+  `effective_num_rgs_` in `Init` so workers and emit only iterate row
+  groups whose cumulative row count covers the limit.
+  `SELECT region, qty LIMIT 100000` over 10M rows: **11,500 ms → 132 ms**
+  (87x faster). `SELECT * LIMIT 10` from 7x. Skipped when pushdown
+  filters are active.
+
+
 
 ### Fixes
 

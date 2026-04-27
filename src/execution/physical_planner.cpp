@@ -2725,6 +2725,18 @@ private:
     }
 
     void Setup() {
+#if 0 // SLOTHDB_DBG_WINDOW
+        auto _dbg_t0 = std::chrono::high_resolution_clock::now();
+        auto _dbg_step = [&](const char *what) {
+            auto t = std::chrono::high_resolution_clock::now();
+            auto ms = std::chrono::duration_cast<std::chrono::microseconds>(t - _dbg_t0).count() / 1000.0;
+            fprintf(stderr, "[win] %-26s %.1f ms\n", what, ms);
+            _dbg_t0 = t;
+        };
+#define DBG(s) _dbg_step(s)
+#else
+#define DBG(s) ((void)0)
+#endif
         // Column pruning: push projection mask down to file scan so we skip
         // parsing columns not referenced by SELECT or QUALIFY.
         idx_t num_cols = children[0]->GetTypes().size();
@@ -2740,6 +2752,7 @@ private:
             }
         }
         ReadInput();
+        DBG("ReadInput");
         if (input_.total == 0) return;
 
         // Collect all window expressions (from SELECT and QUALIFY).
@@ -2800,9 +2813,9 @@ private:
             return;
         }
 
-        BuildPartitions(*ref_win);
+        BuildPartitions(*ref_win); DBG("BuildPartitions");
         partition_sorted_.assign(partitions_.size(), false);
-        PrepareSortKeys(*ref_win);
+        PrepareSortKeys(*ref_win); DBG("PrepareSortKeys");
 
         select_win_info_.resize(select_list_.size());
         for (idx_t col = 0; col < select_list_.size(); col++) {
@@ -2843,6 +2856,8 @@ private:
             }
             for (auto &t : ts) if (t.joinable()) t.join();
         }
+        DBG("ParallelSort");
+#undef DBG
     }
 
     void TryTop1Qualify(BoundWindowExpression *ref_win, BoundWindowExpression *qwin) {

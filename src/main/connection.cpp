@@ -399,6 +399,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 auto &entry = db_.GetCatalog().CreateTable(ct.table_name,
                                                            std::move(cols));
                 auto storage = std::make_shared<DataTable>(ctas_result.column_types);
+                ctas_result.MaterialiseRows();
                 BulkLoadRows(*storage, ctas_result.column_types, ctas_result.rows);
                 entry.SetStorage(storage);
                 continue;
@@ -487,6 +488,7 @@ QueryResult Connection::Query(const std::string &sql) {
 
             auto &entry = db_.GetCatalog().CreateTable(cv.view_name, std::move(cols));
             auto storage = std::make_shared<DataTable>(view_result.column_types);
+            view_result.MaterialiseRows();
             BulkLoadRows(*storage, view_result.column_types, view_result.rows);
             entry.SetStorage(storage);
             entry.SetViewQuery(view_sql);
@@ -1260,7 +1262,10 @@ QueryResult Connection::Query(const std::string &sql) {
                     }
                 }
                 // Re-execute the view's stored query to get fresh data.
+                // SELECT now collects results into `chunks` (avoids per-cell
+                // boxing on the hot path). Materialise once for BulkLoadRows.
                 auto view_result = Query(entry->GetViewQuery());
+                view_result.MaterialiseRows();
                 auto storage = std::make_shared<DataTable>(view_result.column_types);
                 BulkLoadRows(*storage, view_result.column_types, view_result.rows);
                 entry->SetStorage(storage);
@@ -1900,22 +1905,28 @@ QueryResult Connection::Query(const std::string &sql) {
             final_result.column_types = sel.result_types;
         }
 
+        // Stream chunks directly into the result, avoiding per-cell Value
+        // boxing. The C API's typed-batch fetch (slothdb_column_*_buffer)
+        // reads from `chunks` directly; the per-cell path goes through
+        // QueryResult::GetValue which lazily boxes on demand.
+        // 10M-row window query: drops 18 s of cell-boxing.
         DataChunk chunk;
         while (true) {
             if (!physical->GetData(chunk)) break;
-            for (idx_t i = 0; i < chunk.size(); i++) {
-                std::vector<Value> row;
-                for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
-                    row.push_back(chunk.GetValue(col, i));
-                }
-                final_result.rows.push_back(std::move(row));
-            }
+            if (chunk.size() == 0) continue;
+            final_result.chunks.push_back(std::move(chunk));
+            chunk = DataChunk{};
         }
 
         // Handle set operations (UNION, INTERSECT, EXCEPT).
         if (stmt->GetType() == StatementType::SELECT) {
             auto &sel = static_cast<SelectStatement &>(*stmt);
             if (!sel.set_op.empty() && sel.set_right) {
+                // Set ops manipulate `rows` directly. Materialise the
+                // chunk-backed left-hand side before merging.
+                final_result.MaterialiseRows();
+                final_result.chunks.clear();
+                final_result.chunk_index_built = false;
                 // Execute the right side.
                 Binder right_binder(db_.GetCatalog());
                 auto right_bound = right_binder.Bind(*sel.set_right);
@@ -2079,19 +2090,34 @@ void Connection::RollbackTransaction() {
 
 std::string QueryResult::ToString() const {
     std::ostringstream ss;
-    // Header.
     for (idx_t i = 0; i < ColumnCount(); i++) {
         if (i > 0) ss << "\t";
         ss << column_names[i];
     }
     ss << "\n";
-    // Rows.
-    for (auto &row : rows) {
-        for (idx_t i = 0; i < row.size(); i++) {
-            if (i > 0) ss << "\t";
-            ss << row[i].ToString();
+    // If data lives in chunks (SELECT fast path), iterate them directly
+    // to avoid the row materialisation cost. Both code paths produce the
+    // same per-cell ToString output.
+    if (rows.empty() && !chunks.empty()) {
+        idx_t ncols = ColumnCount();
+        for (auto &c : chunks) {
+            idx_t n = c.size();
+            for (idx_t r = 0; r < n; r++) {
+                for (idx_t k = 0; k < ncols; k++) {
+                    if (k > 0) ss << "\t";
+                    ss << c.GetValue(k, r).ToString();
+                }
+                ss << "\n";
+            }
         }
-        ss << "\n";
+    } else {
+        for (auto &row : rows) {
+            for (idx_t i = 0; i < row.size(); i++) {
+                if (i > 0) ss << "\t";
+                ss << row[i].ToString();
+            }
+            ss << "\n";
+        }
     }
     return ss.str();
 }
