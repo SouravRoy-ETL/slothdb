@@ -1318,11 +1318,11 @@ private:
             // light_merged drained worst-first → reverse for best-first.
             std::reverse(winners.begin(), winners.end());
 
-            // Pass 2: decode each unique RG with the FULL projection
-            // (all output columns), then pluck the winning row indices.
-            std::vector<bool> need_all(ncols, true);
-            // Re-init the reader with full projection for the second pass.
-            // Use ReadRowGroupChunk-style read via the underlying ParquetReader.
+            // Pass 2: decode each unique RG with full projection.
+            // Parallelised at (rg, col) granularity rather than (rg) so a
+            // single-RG winner set still uses every available core.
+            // Skips the key column on the second pass since we already
+            // have those values in the winners list from pass 1.
             auto *reader = pq_scan->GetReader();
             ankerl::unordered_dense::map<uint32_t, std::vector<size_t>> rg_to_winner_indices;
             for (size_t i = 0; i < winners.size(); i++) {
@@ -1331,69 +1331,46 @@ private:
 
             std::vector<std::vector<Value>> output_rows(winners.size());
 
-            // Pass 2: decode each unique RG with full projection in
-            // PARALLEL — typically 1-3 RGs but each is a 9-column read,
-            // so concurrency wins. Plus only the columns referenced by
-            // the winner indices actually need plucking.
             std::vector<uint32_t> unique_rgs;
             unique_rgs.reserve(rg_to_winner_indices.size());
             for (auto &kv : rg_to_winner_indices) unique_rgs.push_back(kv.first);
 
+            ankerl::unordered_dense::map<uint32_t, size_t> rg_to_local;
+            for (size_t i = 0; i < unique_rgs.size(); i++)
+                rg_to_local[unique_rgs[i]] = i;
+
+            // Per-(rg, col) decoded buffers. Indexed by [local_rg_idx][col].
+            std::vector<std::vector<ParquetColumnData>> rg_cols(unique_rgs.size(),
+                std::vector<ParquetColumnData>(ncols));
+            std::vector<std::vector<std::vector<Value>>> rg_fallback(unique_rgs.size(),
+                std::vector<std::vector<Value>>(ncols));
+
+            // Build the (rg, col) work list. Skip the key column.
+            struct DecodeUnit { uint32_t rg; idx_t col; };
+            std::vector<DecodeUnit> units;
+            units.reserve(unique_rgs.size() * (ncols - 1));
+            for (auto rg_u : unique_rgs) {
+                for (idx_t c = 0; c < ncols; c++) {
+                    if (c == key_col) continue;
+                    units.push_back({rg_u, c});
+                }
+            }
+
             unsigned int p2_threads = std::thread::hardware_concurrency();
             if (p2_threads == 0) p2_threads = 4;
             if (p2_threads > 8) p2_threads = 8;
-            if (p2_threads > unique_rgs.size())
-                p2_threads = static_cast<unsigned int>(unique_rgs.size());
+            if (p2_threads > units.size())
+                p2_threads = static_cast<unsigned int>(units.size());
 
-            auto materialise_for_rg = [&](uint32_t rg_idx_u) {
-                idx_t rg = rg_idx_u;
-                std::vector<ParquetColumnData> rg_cols(ncols);
-                std::vector<std::vector<Value>> rg_fallback(ncols);
-                for (idx_t c = 0; c < ncols; c++) {
-                    if (!reader->ReadColumnInto(rg, c, rg_cols[c])) {
-                        rg_fallback[c] = reader->ReadColumn(rg, c);
-                    }
-                }
-                for (size_t out_idx : rg_to_winner_indices[rg_idx_u]) {
-                    auto &winner = winners[out_idx];
-                    idx_t row_i = winner.row_idx;
-                    std::vector<Value> row;
-                    row.reserve(ncols);
-                    for (idx_t c = 0; c < ncols; c++) {
-                        const auto &col = rg_cols[c];
-                        if (!col.decoded) {
-                            if (row_i < rg_fallback[c].size()) row.push_back(rg_fallback[c][row_i]);
-                            else row.push_back(Value());
-                            continue;
-                        }
-                        bool valid = col.all_valid || (row_i < col.validity.size() && col.validity[row_i]);
-                        if (!valid) { row.push_back(Value()); continue; }
-                        switch (col.type.id()) {
-                        case LogicalTypeId::BIGINT:  row.push_back(Value::BIGINT(col.i64_data[row_i])); break;
-                        case LogicalTypeId::INTEGER: row.push_back(Value::INTEGER(col.i32_data[row_i])); break;
-                        case LogicalTypeId::DOUBLE:  row.push_back(Value::DOUBLE(col.f64_data[row_i])); break;
-                        case LogicalTypeId::FLOAT:   row.push_back(Value::FLOAT(col.f32_data[row_i])); break;
-                        case LogicalTypeId::BOOLEAN: row.push_back(Value::BOOLEAN(col.bool_data[row_i] != 0)); break;
-                        case LogicalTypeId::VARCHAR: {
-                            if (col.str_dict_encoded && row_i < col.str_dict_indices.size()) {
-                                auto idx = col.str_dict_indices[row_i];
-                                if (idx < col.str_dict_values.size())
-                                    row.push_back(Value::VARCHAR(col.str_dict_values[idx].GetString()));
-                                else row.push_back(Value());
-                            } else if (row_i < col.str_data.size()) {
-                                row.push_back(Value::VARCHAR(col.str_data[row_i].GetString()));
-                            } else row.push_back(Value());
-                            break;
-                        }
-                        default: row.push_back(Value()); break;
-                        }
-                    }
-                    output_rows[out_idx] = std::move(row);
+            auto decode_unit = [&](const DecodeUnit &u) {
+                size_t local = rg_to_local[u.rg];
+                if (!reader->ReadColumnInto(u.rg, u.col, rg_cols[local][u.col])) {
+                    rg_fallback[local][u.col] = reader->ReadColumn(u.rg, u.col);
                 }
             };
 
-            if (p2_threads <= 1 || unique_rgs.size() == 1) {
-                for (auto rg_u : unique_rgs) materialise_for_rg(rg_u);
+            if (p2_threads <= 1 || units.size() == 1) {
+                for (auto &u : units) decode_unit(u);
             } else {
                 std::atomic<size_t> next2{0};
                 std::vector<std::thread> ts2;
@@ -1402,12 +1379,67 @@ private:
                     ts2.emplace_back([&] {
                         while (true) {
                             size_t idx = next2.fetch_add(1, std::memory_order_relaxed);
-                            if (idx >= unique_rgs.size()) return;
-                            materialise_for_rg(unique_rgs[idx]);
+                            if (idx >= units.size()) return;
+                            decode_unit(units[idx]);
                         }
                     });
                 }
                 for (auto &t : ts2) if (t.joinable()) t.join();
+            }
+
+            // Pluck winning rows. Cheap, sequential. Reuses key from
+            // pass 1 for the order-by column.
+            auto box_typed = [](const ParquetColumnData &col, idx_t row_i) -> Value {
+                if (!col.decoded) return Value();
+                bool valid = col.all_valid || (row_i < col.validity.size() && col.validity[row_i]);
+                if (!valid) return Value();
+                switch (col.type.id()) {
+                case LogicalTypeId::BIGINT:  return Value::BIGINT(col.i64_data[row_i]);
+                case LogicalTypeId::INTEGER: return Value::INTEGER(col.i32_data[row_i]);
+                case LogicalTypeId::DOUBLE:  return Value::DOUBLE(col.f64_data[row_i]);
+                case LogicalTypeId::FLOAT:   return Value::FLOAT(col.f32_data[row_i]);
+                case LogicalTypeId::BOOLEAN: return Value::BOOLEAN(col.bool_data[row_i] != 0);
+                case LogicalTypeId::VARCHAR:
+                    if (col.str_dict_encoded && row_i < col.str_dict_indices.size()) {
+                        auto idx = col.str_dict_indices[row_i];
+                        if (idx < col.str_dict_values.size())
+                            return Value::VARCHAR(col.str_dict_values[idx].GetString());
+                        return Value();
+                    }
+                    if (row_i < col.str_data.size())
+                        return Value::VARCHAR(col.str_data[row_i].GetString());
+                    return Value();
+                default: return Value();
+                }
+            };
+            for (size_t out_idx = 0; out_idx < winners.size(); out_idx++) {
+                auto &winner = winners[out_idx];
+                size_t local = rg_to_local[winner.rg_idx];
+                idx_t row_i = winner.row_idx;
+                std::vector<Value> row;
+                row.reserve(ncols);
+                for (idx_t c = 0; c < ncols; c++) {
+                    if (c == key_col) {
+                        // Use the key value already captured during pass 1.
+                        if constexpr (std::is_same_v<T, int64_t>)
+                            row.push_back(Value::BIGINT(winner.key));
+                        else if constexpr (std::is_same_v<T, int32_t>)
+                            row.push_back(Value::INTEGER(winner.key));
+                        else if constexpr (std::is_same_v<T, double>)
+                            row.push_back(Value::DOUBLE(winner.key));
+                        else if constexpr (std::is_same_v<T, float>)
+                            row.push_back(Value::FLOAT(winner.key));
+                        continue;
+                    }
+                    auto &cd = rg_cols[local][c];
+                    if (cd.decoded) {
+                        row.push_back(box_typed(cd, row_i));
+                    } else {
+                        auto &fb = rg_fallback[local][c];
+                        row.push_back(row_i < fb.size() ? fb[row_i] : Value());
+                    }
+                }
+                output_rows[out_idx] = std::move(row);
             }
 
             sorted_rows_ = std::move(output_rows);

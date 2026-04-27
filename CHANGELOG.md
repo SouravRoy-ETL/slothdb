@@ -2,46 +2,76 @@
 
 All notable changes to SlothDB are documented here.
 
-## Unreleased — Avro nullable + logical types, chunk-resident result, window perf
-
-### Performance
-
-- **Result collection skips Value boxing.** SELECT queries now stream typed
-  DataChunks straight into `QueryResult::chunks` instead of boxing every
-  cell into a `Value` immediately. The C API's typed-batch fetch
-  (`slothdb_column_*_buffer`) reads from those chunks via memcpy with no
-  intermediate object materialisation. The legacy per-cell API
-  (`GetValue`, `ToString`, set ops) lazily materialises rows on first
-  access, so behaviour is unchanged.
-
-  Bench impact (10M-row window, returning to Python):
-
-  | Query | Before | After | DuckDB | Status |
-  |---|---:|---:|---:|---|
-  | parquet10m_window | 18,801 ms (2.46x) | **12,304 ms (1.65x)** | 7,449 ms | SLOW |
-  | csv1m_window      | 1,741 ms (1.88x)  | **1,031 ms (1.16x)**  | 886 ms   | TIE  |
-  | avro1m_window     | 1,577 ms (1.24x)  | **991 ms (0.74x)**    | 1,337 ms | **WIN** |
-
-- **Row-limit pushdown into Parquet scan.** A bare `LIMIT N` now clips
-  `effective_num_rgs_` in `Init` so workers and emit only iterate row
-  groups whose cumulative row count covers the limit.
-  `SELECT region, qty LIMIT 100000` over 10M rows: **11,500 ms → 132 ms**
-  (87x faster). `SELECT * LIMIT 10` from 7x. Skipped when pushdown
-  filters are active.
-
-
+## 0.2.1
 
 ### Fixes
 
-- **Avro reader misaligned every nullable column** (issue #5). Fields declared as `["null", T]` unions ship with a 1-byte union index prefix on every value. The reader was skipping that byte, so for `["null", {"type":"long","logicalType":"timestamp-millis"}]` the index byte would get parsed as the value, corrupting every subsequent column. Now reads the union index, treats index 0 as null, and propagates that into the chunk's validity mask.
-- **Avro logical types (`timestamp-millis`, `timestamp-micros`, `date`, `time-millis`, `time-micros`).** The schema parser now recognises logical-type wrappers — both directly (`{"type":"long","logicalType":"timestamp-millis"}`) and inside unions. `timestamp-millis` is rescaled from milliseconds to microseconds at decode time so it lines up with SlothDB's internal TIMESTAMP representation.
-- **`max(timestamp_col)` / `max(date_col)` returned the first row.** The aggregate's fast-path comparator (`ReadDouble`) only handled INTEGER/BIGINT/FLOAT/DOUBLE; for TIMESTAMP/DATE/TIME/TIMESTAMP_TZ it always returned 0.0, so every comparison after the first was `0 > 0`. The first row was effectively the running max forever. Added the date/time logical types to both the comparator and the group-key builder.
-- **DATE/TIMESTAMP/TIME values now render as ISO-8601 strings.** `Value::ToString` was producing raw integers (days, microseconds) for these types. Now formats `DATE` as `YYYY-MM-DD`, `TIMESTAMP` as `YYYY-MM-DD HH:MM:SS[.uuuuuu]`, and `TIME` as `HH:MM:SS[.uuuuuu]`, using a date-conversion routine that doesn't go through `gmtime` (reentrant, identical across platforms). `Vector::GetValue` no longer drops the LogicalType for DATE/TIMESTAMP/TIME, so aggregate results keep their typing through the planner. The C API surfaces these types as VARCHAR so Python's varchar fast path picks them up.
+- Avro reader misaligned every nullable column (issue #5). Fields
+  declared as `["null", T]` unions ship with a 1-byte union index
+  prefix on every value. The reader was skipping that byte, so for
+  `["null", {"type":"long","logicalType":"timestamp-millis"}]` the
+  index byte was being read as the long value and every subsequent
+  column drifted. The reader now reads the union index, treats index 0
+  as null, and propagates that into the chunk validity mask.
+- Avro logical types: `timestamp-millis`, `timestamp-micros`, `date`,
+  `time-millis`, `time-micros`. The schema parser now recognises
+  logical-type wrappers, both directly
+  (`{"type":"long","logicalType":"timestamp-millis"}`) and inside
+  unions. timestamp-millis is rescaled from milliseconds to
+  microseconds at decode time to match SlothDB's internal TIMESTAMP
+  representation.
+- `max(timestamp_col)` and `max(date_col)` returned the first row.
+  The aggregate fast-path comparator only handled INTEGER, BIGINT,
+  FLOAT, DOUBLE. For TIMESTAMP, DATE, TIME, TIMESTAMP_TZ it returned
+  0.0 always, so every row past the first compared as `0 > 0` and
+  the first row was the running max forever. Added the date and time
+  logical types to both the comparator and the group-key builder.
+- DATE, TIMESTAMP, TIME now render as ISO-8601 strings. `Value::ToString`
+  was producing raw integers (days, microseconds). DATE now formats as
+  `YYYY-MM-DD`, TIMESTAMP as `YYYY-MM-DD HH:MM:SS[.uuuuuu]`, TIME as
+  `HH:MM:SS[.uuuuuu]`. The date conversion is reentrant and avoids
+  `gmtime`. `Vector::GetValue` no longer drops the LogicalType for
+  these types so aggregates keep their typing through the planner.
+
+### Performance
+
+- Chunk-resident QueryResult. SELECT queries now stream typed
+  DataChunks straight into `QueryResult::chunks` instead of boxing
+  every cell into a Value during result collection. The C API typed
+  batch fetch (`slothdb_column_*_buffer`) reads from those chunks via
+  memcpy with no intermediate object materialisation. The legacy
+  per-cell API (`GetValue`, `ToString`, set ops) lazily materialises
+  rows on first access so behaviour is unchanged.
+
+  Bench impact, 10M-row window queries returning to Python:
+
+  | Query             | Before     | After      | DuckDB    |
+  |---|---:|---:|---:|
+  | parquet10m_window | 18,801 ms  | 12,304 ms  | 7,449 ms  |
+  | csv1m_window      | 1,741 ms   | 1,031 ms   | 886 ms    |
+  | avro1m_window     | 1,577 ms   | 991 ms     | 1,337 ms  |
+
+- Row-limit pushdown into Parquet scan. A bare `LIMIT N` now clips
+  `effective_num_rgs_` in `Init` so workers and the emit loop only
+  iterate row groups whose cumulative row count covers the limit.
+  `SELECT region, qty FROM file LIMIT 100000` over 10M rows:
+  11,500 ms to 132 ms (87x faster). `SELECT * LIMIT 10` 7x faster.
+  Skipped when pushdown filters are active.
+- Two-pass top-N pass 2 parallelism. Pass 2 now decodes column
+  chunks at `(rg, col)` granularity rather than `(rg)`, so a single-RG
+  winner set still uses every available core. The key column is no
+  longer re-decoded since pass 1 already captured those values.
+  `parquet10m_orderby_top10`: 83 ms to 69 ms.
 
 ### Tests
 
 - New `sloth-test/test_avro_repro.py` reproduces issue #5 end-to-end.
-- New `sloth-test/test_format_smoke.py` runs SELECT / COUNT / MAX / WHERE / ORDER BY +LIMIT across CSV, JSON, Parquet, SQLite, Avro, and a CSV+JSON join. 22/22 passing. (Arrow IPC is skipped — the reader uses a SlothDB-bespoke on-disk format, not the Apache Arrow Flatbuffers IPC format that pyarrow emits; pre-existing limitation, not a regression.)
+- New `sloth-test/test_format_smoke.py` runs SELECT, COUNT, MAX,
+  WHERE, ORDER BY+LIMIT across CSV, JSON, Parquet, SQLite, Avro, and
+  a CSV+JSON join. 22 of 22 passing. (Arrow IPC is skipped: the
+  reader uses a SlothDB-bespoke on-disk format, not the Apache Arrow
+  Flatbuffers IPC format that pyarrow emits. Pre-existing limitation,
+  not a regression.)
 
 ## 0.2.0 — performance overhaul, predicate + top-N pushdown, typed Python batch fetch
 
