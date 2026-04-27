@@ -2,6 +2,18 @@
 
 All notable changes to SlothDB are documented here.
 
+## 0.2.3
+
+### Bug fixes
+
+- `read_parquet('dir/*.parquet')` and bare `FROM 'dir/*.parquet'`
+  now expand globs and read every matching shard, instead of
+  failing with `IO Error: Cannot open Parquet`. Single-file paths
+  keep the streaming PhysicalParquetScan fast path; multi-file
+  globs bulk-load matching shards into an in-memory table after
+  validating column counts match the first file. Fixes #6 (WASM
+  playground couldn't read multi-file Parquet datasets).
+
 ## 0.2.2
 
 ### Performance

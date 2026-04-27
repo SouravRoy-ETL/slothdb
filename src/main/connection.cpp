@@ -1412,33 +1412,69 @@ QueryResult Connection::Query(const std::string &sql) {
                 StringUtil::Upper(sel.from_table->table_name) == "READ_PARQUET") {
                 auto &args = sel.from_table->function_args;
                 if (!args.empty() && args[0]->GetExpressionType() == ExpressionType::CONSTANT) {
-                    auto file_path = ResolveRemoteFile(static_cast<ConstantExpression &>(*args[0]).value);
-
-                    // Open just to read the footer metadata (cheap). We stash
-                    // the reader on the catalog entry so PhysicalParquetScan
-                    // can reuse it instead of re-parsing the Thrift footer at
-                    // execution time - this path is hit once per query and
-                    // saves ~10-20ms per query.
-                    auto reader_sp = std::make_shared<ParquetReader>(file_path);
-                    auto col_names = reader_sp->GetColumnNames();
-                    auto col_types = reader_sp->GetColumnTypes();
+                    auto raw_path = static_cast<ConstantExpression &>(*args[0]).value;
+                    bool has_glob = raw_path.find('*') != std::string::npos ||
+                                    raw_path.find('?') != std::string::npos;
 
                     std::string tbl_name = sel.from_table->alias.empty()
                         ? ("__read_parquet_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                     sel.from_table->table_name = tbl_name;
                     sel.from_table->is_table_function = false;
 
-                    std::vector<ColumnDefinition> cols;
-                    for (size_t i = 0; i < col_names.size(); i++)
-                        cols.emplace_back(col_names[i], col_types[i]);
+                    if (has_glob) {
+                        // Multi-file glob: PhysicalParquetScan only handles
+                        // a single file, so we bulk-load all matches into
+                        // an in-memory DataTable and let PhysicalTableScan
+                        // serve the read. Schema is taken from the first
+                        // file; subsequent files must have the same column
+                        // count.
+                        auto files = FileGlob::Glob(raw_path);
+                        if (files.empty()) throw IOException("No files matching: " + raw_path);
+                        ParquetReader first(files[0]);
+                        auto col_names = first.GetColumnNames();
+                        auto col_types = first.GetColumnTypes();
 
-                    if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
-                    auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
-                    auto storage = std::make_shared<DataTable>(col_types);
-                    entry.SetStorage(storage);
-                    entry.SetParquetPath(file_path);
-                    entry.SetCachedParquetReader(std::move(reader_sp));
-                    temp_tables.push_back(tbl_name);
+                        std::vector<ColumnDefinition> cols;
+                        for (size_t i = 0; i < col_names.size(); i++)
+                            cols.emplace_back(col_names[i], col_types[i]);
+                        if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
+                        auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
+                        auto storage = std::make_shared<DataTable>(col_types);
+                        entry.SetStorage(storage);
+
+                        BulkLoadRows(*storage, col_types, first.ReadAll());
+                        for (size_t i = 1; i < files.size(); i++) {
+                            ParquetReader r(files[i]);
+                            if (r.GetColumnTypes().size() != col_types.size())
+                                throw IOException("Schema mismatch in glob: " +
+                                    files[i] + " column count differs from " + files[0]);
+                            BulkLoadRows(*storage, col_types, r.ReadAll());
+                        }
+                        temp_tables.push_back(tbl_name);
+                    } else {
+                        auto file_path = ResolveRemoteFile(raw_path);
+
+                        // Open just to read the footer metadata (cheap). We stash
+                        // the reader on the catalog entry so PhysicalParquetScan
+                        // can reuse it instead of re-parsing the Thrift footer at
+                        // execution time - this path is hit once per query and
+                        // saves ~10-20ms per query.
+                        auto reader_sp = std::make_shared<ParquetReader>(file_path);
+                        auto col_names = reader_sp->GetColumnNames();
+                        auto col_types = reader_sp->GetColumnTypes();
+
+                        std::vector<ColumnDefinition> cols;
+                        for (size_t i = 0; i < col_names.size(); i++)
+                            cols.emplace_back(col_names[i], col_types[i]);
+
+                        if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
+                        auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
+                        auto storage = std::make_shared<DataTable>(col_types);
+                        entry.SetStorage(storage);
+                        entry.SetParquetPath(file_path);
+                        entry.SetCachedParquetReader(std::move(reader_sp));
+                        temp_tables.push_back(tbl_name);
+                    }
                 }
             }
 
@@ -1682,33 +1718,59 @@ QueryResult Connection::Query(const std::string &sql) {
                         BulkLoadRows(*storage, col_types, rows);
                         temp_tables.push_back(tbl_name);
                     } else if (sel.from_table->table_name == "READ_PARQUET") {
-                        // Use the same streaming setup as the explicit
-                        // read_parquet() table-function form: parse the
-                        // footer to get the schema, stash a shared reader
-                        // on the catalog entry so PhysicalParquetScan can
-                        // stream column chunks at execution time.
-                        // BulkLoadRows would materialise the entire file
-                        // into memory — way slower than streaming, and
-                        // for HTTPS URLs that's a 132s vs 5s gap.
-                        auto reader_sp = std::make_shared<ParquetReader>(file_path);
-                        auto col_names = reader_sp->GetColumnNames();
-                        auto col_types = reader_sp->GetColumnTypes();
-
+                        bool has_glob = file_path.find('*') != std::string::npos ||
+                                        file_path.find('?') != std::string::npos;
                         std::string tbl_name = sel.from_table->alias.empty()
                             ? ("__auto_file_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
                         sel.from_table->table_name = tbl_name;
                         sel.from_table->is_table_function = false;
 
-                        std::vector<ColumnDefinition> cols;
-                        for (size_t i = 0; i < col_names.size(); i++)
-                            cols.emplace_back(col_names[i], col_types[i]);
-                        if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
-                        auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
-                        auto storage = std::make_shared<DataTable>(col_types);
-                        entry.SetStorage(storage);
-                        entry.SetParquetPath(file_path);
-                        entry.SetCachedParquetReader(std::move(reader_sp));
-                        temp_tables.push_back(tbl_name);
+                        if (has_glob) {
+                            auto files = FileGlob::Glob(file_path);
+                            if (files.empty()) throw IOException("No files matching: " + file_path);
+                            ParquetReader first(files[0]);
+                            auto col_names = first.GetColumnNames();
+                            auto col_types = first.GetColumnTypes();
+                            std::vector<ColumnDefinition> cols;
+                            for (size_t i = 0; i < col_names.size(); i++)
+                                cols.emplace_back(col_names[i], col_types[i]);
+                            if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
+                            auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
+                            auto storage = std::make_shared<DataTable>(col_types);
+                            entry.SetStorage(storage);
+                            BulkLoadRows(*storage, col_types, first.ReadAll());
+                            for (size_t i = 1; i < files.size(); i++) {
+                                ParquetReader r(files[i]);
+                                if (r.GetColumnTypes().size() != col_types.size())
+                                    throw IOException("Schema mismatch in glob: " +
+                                        files[i] + " column count differs from " + files[0]);
+                                BulkLoadRows(*storage, col_types, r.ReadAll());
+                            }
+                            temp_tables.push_back(tbl_name);
+                        } else {
+                            // Use the same streaming setup as the explicit
+                            // read_parquet() table-function form: parse the
+                            // footer to get the schema, stash a shared reader
+                            // on the catalog entry so PhysicalParquetScan can
+                            // stream column chunks at execution time.
+                            // BulkLoadRows would materialise the entire file
+                            // into memory — way slower than streaming, and
+                            // for HTTPS URLs that's a 132s vs 5s gap.
+                            auto reader_sp = std::make_shared<ParquetReader>(file_path);
+                            auto col_names = reader_sp->GetColumnNames();
+                            auto col_types = reader_sp->GetColumnTypes();
+
+                            std::vector<ColumnDefinition> cols;
+                            for (size_t i = 0; i < col_names.size(); i++)
+                                cols.emplace_back(col_names[i], col_types[i]);
+                            if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
+                            auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));
+                            auto storage = std::make_shared<DataTable>(col_types);
+                            entry.SetStorage(storage);
+                            entry.SetParquetPath(file_path);
+                            entry.SetCachedParquetReader(std::move(reader_sp));
+                            temp_tables.push_back(tbl_name);
+                        }
                     }
                 }
             }
