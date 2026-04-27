@@ -1251,61 +1251,146 @@ private:
                 return ascending ? a.key < b.key : a.key > b.key;
             };
 
-            constexpr int MAX_THREADS = 8;
             using LightHeap = std::priority_queue<LightEntry,
                 std::vector<LightEntry>, decltype(light_cmp)>;
-            std::vector<LightHeap> light_heaps;
-            light_heaps.reserve(MAX_THREADS);
-            for (int i = 0; i < MAX_THREADS; i++) light_heaps.emplace_back(light_cmp);
-            std::array<std::mutex, MAX_THREADS> mus;
 
             // Pass 1: only the key column needs decoding.
             idx_t ncols = pq_scan->GetTypes().size();
-            std::vector<bool> need_key_only(ncols, false);
-            need_key_only[key_col] = true;
-            pq_scan->SetNeededOutputs(need_key_only);
 
+            // Stats-based row-group ordering. Read each RG's max (or min,
+            // for ASC) for the key column from the Thrift footer. Sort
+            // RGs best-first so the heap converges to the true top-K
+            // after a handful of decodes; subsequent RGs whose max can't
+            // beat the current K-th best are skipped without ever
+            // touching their column data on disk.
+            //
+            // Falls back to the original parallel-decode-everything path
+            // when stats are missing for the column.
             pq_scan->Init();
-            pq_scan->SetRGConsumer(
-                [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {
-                    int slot = tid % MAX_THREADS;
-                    auto &heap = light_heaps[slot];
-                    std::lock_guard<std::mutex> lk(mus[slot]);
-                    idx_t nrows = pq_scan->RowGroupSize(rg_idx);
-                    const auto &kcol = work.cols[key_col];
-                    if (!kcol.decoded) return;
-                    bool key_all_valid = kcol.all_valid;
+            auto *reader = pq_scan->GetReader();
+            const auto &meta = reader->GetMeta();
+            idx_t num_rgs = meta.row_groups.size();
+
+            struct RGEntry { T order_key; idx_t rg_idx; bool has_stats; };
+            std::vector<RGEntry> rg_order;
+            rg_order.reserve(num_rgs);
+            bool all_have_stats = true;
+            for (idx_t rg = 0; rg < num_rgs; rg++) {
+                if (key_col >= meta.row_groups[rg].columns.size()) {
+                    all_have_stats = false;
+                    rg_order.push_back({T{}, rg, false});
+                    continue;
+                }
+                auto &cmeta = meta.row_groups[rg].columns[key_col];
+                if (!cmeta.has_stats) {
+                    all_have_stats = false;
+                    rg_order.push_back({T{}, rg, false});
+                    continue;
+                }
+                T key;
+                try {
+                    if (ascending) key = cmeta.min_value.GetValue<T>();
+                    else           key = cmeta.max_value.GetValue<T>();
+                } catch (...) {
+                    all_have_stats = false;
+                    rg_order.push_back({T{}, rg, false});
+                    continue;
+                }
+                rg_order.push_back({key, rg, true});
+            }
+
+            LightHeap light_merged(light_cmp);
+
+            if (all_have_stats) {
+                // Sort: best RG first. For DESC, that's max desc.
+                std::sort(rg_order.begin(), rg_order.end(),
+                    [ascending](const RGEntry &a, const RGEntry &b) {
+                        return ascending ? a.order_key < b.order_key
+                                         : a.order_key > b.order_key;
+                    });
+                // Sequential decode in priority order with early break.
+                for (auto &re : rg_order) {
+                    if (light_merged.size() >= k) {
+                        T cur_thr = light_merged.top().key;
+                        bool beats = ascending ? (re.order_key < cur_thr)
+                                               : (re.order_key > cur_thr);
+                        if (!beats) break;  // remaining RGs can't beat threshold
+                    }
+                    ParquetColumnData kcol;
+                    if (!reader->ReadColumnInto(re.rg_idx, key_col, kcol)) continue;
+                    idx_t nrows = pq_scan->RowGroupSize(re.rg_idx);
                     const T *kdata = nullptr;
                     if constexpr (std::is_same_v<T, int64_t>) kdata = reinterpret_cast<const T *>(kcol.i64_data.data());
                     else if constexpr (std::is_same_v<T, int32_t>) kdata = reinterpret_cast<const T *>(kcol.i32_data.data());
                     else if constexpr (std::is_same_v<T, double>)  kdata = reinterpret_cast<const T *>(kcol.f64_data.data());
                     else if constexpr (std::is_same_v<T, float>)   kdata = reinterpret_cast<const T *>(kcol.f32_data.data());
-                    if (!kdata) return;
-
+                    if (!kdata) continue;
+                    bool key_all_valid = kcol.all_valid;
                     for (idx_t i = 0; i < nrows; i++) {
                         if (!key_all_valid && !(i < kcol.validity.size() && kcol.validity[i])) continue;
                         T key = kdata[i];
-                        LightEntry e{key, (uint32_t)rg_idx, (uint32_t)i};
-                        if (heap.size() < k) {
-                            heap.push(e);
+                        LightEntry e{key, (uint32_t)re.rg_idx, (uint32_t)i};
+                        if (light_merged.size() < k) {
+                            light_merged.push(e);
                         } else {
-                            bool wins = ascending ? (key < heap.top().key) : (key > heap.top().key);
-                            if (wins) { heap.pop(); heap.push(e); }
+                            bool wins = ascending ? (key < light_merged.top().key)
+                                                  : (key > light_merged.top().key);
+                            if (wins) { light_merged.pop(); light_merged.push(e); }
                         }
                     }
-                });
-            pq_scan->RunParallelRGs(0);
+                }
+            } else {
+                // No stats available for this column. Fall back to the
+                // parallel-decode-everything path: per-thread heaps, no
+                // pruning, merge at end.
+                constexpr int MAX_THREADS = 8;
+                std::vector<LightHeap> light_heaps;
+                light_heaps.reserve(MAX_THREADS);
+                for (int i = 0; i < MAX_THREADS; i++) light_heaps.emplace_back(light_cmp);
+                std::array<std::mutex, MAX_THREADS> mus;
+                std::vector<bool> need_key_only(ncols, false);
+                need_key_only[key_col] = true;
+                pq_scan->SetNeededOutputs(need_key_only);
+                pq_scan->Init();
+                pq_scan->SetRGConsumer(
+                    [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {
+                        int slot = tid % MAX_THREADS;
+                        auto &heap = light_heaps[slot];
+                        std::lock_guard<std::mutex> lk(mus[slot]);
+                        idx_t nrows = pq_scan->RowGroupSize(rg_idx);
+                        const auto &kcol = work.cols[key_col];
+                        if (!kcol.decoded) return;
+                        bool key_all_valid = kcol.all_valid;
+                        const T *kdata = nullptr;
+                        if constexpr (std::is_same_v<T, int64_t>) kdata = reinterpret_cast<const T *>(kcol.i64_data.data());
+                        else if constexpr (std::is_same_v<T, int32_t>) kdata = reinterpret_cast<const T *>(kcol.i32_data.data());
+                        else if constexpr (std::is_same_v<T, double>)  kdata = reinterpret_cast<const T *>(kcol.f64_data.data());
+                        else if constexpr (std::is_same_v<T, float>)   kdata = reinterpret_cast<const T *>(kcol.f32_data.data());
+                        if (!kdata) return;
 
-            // Merge per-thread heaps into a single top-K.
-            LightHeap light_merged(light_cmp);
-            for (auto &h : light_heaps) {
-                while (!h.empty()) {
-                    auto e = h.top(); h.pop();
-                    if (light_merged.size() < k) light_merged.push(e);
-                    else {
-                        bool wins = ascending ? (e.key < light_merged.top().key)
-                                              : (e.key > light_merged.top().key);
-                        if (wins) { light_merged.pop(); light_merged.push(e); }
+                        for (idx_t i = 0; i < nrows; i++) {
+                            if (!key_all_valid && !(i < kcol.validity.size() && kcol.validity[i])) continue;
+                            T key = kdata[i];
+                            LightEntry e{key, (uint32_t)rg_idx, (uint32_t)i};
+                            if (heap.size() < k) {
+                                heap.push(e);
+                            } else {
+                                bool wins = ascending ? (key < heap.top().key) : (key > heap.top().key);
+                                if (wins) { heap.pop(); heap.push(e); }
+                            }
+                        }
+                    });
+                pq_scan->RunParallelRGs(0);
+                for (auto &h : light_heaps) {
+                    while (!h.empty()) {
+                        auto e = h.top(); h.pop();
+                        if (light_merged.size() < k) {
+                            light_merged.push(e);
+                        } else {
+                            bool wins = ascending ? (e.key < light_merged.top().key)
+                                                  : (e.key > light_merged.top().key);
+                            if (wins) { light_merged.pop(); light_merged.push(e); }
+                        }
                     }
                 }
             }
@@ -1315,7 +1400,7 @@ private:
             std::vector<LightEntry> winners;
             winners.reserve(light_merged.size());
             while (!light_merged.empty()) { winners.push_back(light_merged.top()); light_merged.pop(); }
-            // light_merged drained worst-first → reverse for best-first.
+            // light_merged drained worst-first; reverse for best-first.
             std::reverse(winners.begin(), winners.end());
 
             // Pass 2: decode each unique RG with full projection.
@@ -1323,7 +1408,6 @@ private:
             // single-RG winner set still uses every available core.
             // Skips the key column on the second pass since we already
             // have those values in the winners list from pass 1.
-            auto *reader = pq_scan->GetReader();
             ankerl::unordered_dense::map<uint32_t, std::vector<size_t>> rg_to_winner_indices;
             for (size_t i = 0; i < winners.size(); i++) {
                 rg_to_winner_indices[winners[i].rg_idx].push_back(i);
