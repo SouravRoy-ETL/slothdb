@@ -1,5 +1,6 @@
 #include "slothdb/storage/parquet.hpp"
 #include "slothdb/common/exception.hpp"
+#include "miniz.h"
 #include <cstring>
 #include <cstdint>
 #include <algorithm>
@@ -534,7 +535,85 @@ struct RleDecoder {
     }
 };
 
-// Decompress a page body (copy if uncompressed, Snappy expand otherwise).
+// Skip the gzip header (RFC 1952) and return a pointer to the start of
+// the raw deflate stream, or nullptr on malformed header. miniz doesn't
+// support the gzip wrapper directly (only raw deflate or zlib), so we
+// peel the wrapper here and feed the deflate body to mz_inflate with
+// windowBits = -15 (raw mode).
+const uint8_t *SkipGzipHeader(const uint8_t *in, size_t in_size, size_t &consumed) {
+    if (in_size < 10) return nullptr;
+    if (in[0] != 0x1F || in[1] != 0x8B || in[2] != 0x08) return nullptr; // bad magic / non-deflate
+    uint8_t flg = in[3];
+    size_t p = 10;
+    if (flg & 0x04) { // FEXTRA
+        if (p + 2 > in_size) return nullptr;
+        uint16_t xlen = uint16_t(in[p]) | (uint16_t(in[p + 1]) << 8);
+        p += 2 + xlen;
+        if (p > in_size) return nullptr;
+    }
+    if (flg & 0x08) { // FNAME (zero-terminated)
+        while (p < in_size && in[p] != 0) p++;
+        if (p >= in_size) return nullptr;
+        p++;
+    }
+    if (flg & 0x10) { // FCOMMENT (zero-terminated)
+        while (p < in_size && in[p] != 0) p++;
+        if (p >= in_size) return nullptr;
+        p++;
+    }
+    if (flg & 0x02) { // FHCRC
+        p += 2;
+        if (p > in_size) return nullptr;
+    }
+    consumed = p;
+    return in + p;
+}
+
+// Decompress a Parquet GZIP page. The Parquet GZIP codec wraps a raw
+// deflate stream in the standard RFC 1952 gzip envelope; we strip the
+// header (and ignore the 8-byte trailer, which miniz simply doesn't
+// read past the deflate end-of-stream marker) and call mz_inflate in
+// raw mode.
+bool GzipDecompress(const uint8_t *in, size_t in_size, size_t uncompressed_size,
+                    std::vector<uint8_t> &out) {
+    out.resize(uncompressed_size);
+    if (uncompressed_size == 0) return true;
+    size_t hdr = 0;
+    const uint8_t *body = SkipGzipHeader(in, in_size, hdr);
+    if (!body) return false;
+    size_t body_size = in_size - hdr;
+    // 8-byte trailer (CRC32 + ISIZE) is past the deflate end-of-stream
+    // marker; mz_inflate stops at the marker so we don't need to trim.
+    mz_stream strm{};
+    if (mz_inflateInit2(&strm, -MZ_DEFAULT_WINDOW_BITS) != MZ_OK) return false;
+    strm.next_in = const_cast<uint8_t *>(body);
+    strm.avail_in = static_cast<mz_uint32>(body_size);
+    strm.next_out = out.data();
+    strm.avail_out = static_cast<mz_uint32>(uncompressed_size);
+    int rc = mz_inflate(&strm, MZ_FINISH);
+    mz_inflateEnd(&strm);
+    return rc == MZ_STREAM_END && strm.total_out == uncompressed_size;
+}
+
+// Map a Parquet CompressionCodec ID to a human-readable name for error
+// messages. Mirrors the Parquet Thrift enum.
+const char *CodecName(int32_t codec) {
+    switch (codec) {
+    case 0: return "UNCOMPRESSED";
+    case 1: return "SNAPPY";
+    case 2: return "GZIP";
+    case 3: return "LZO";
+    case 4: return "BROTLI";
+    case 5: return "LZ4";
+    case 6: return "ZSTD";
+    case 7: return "LZ4_RAW";
+    default: return "UNKNOWN";
+    }
+}
+
+// Decompress a page body. Parquet codecs we handle: UNCOMPRESSED (0),
+// SNAPPY (1), GZIP (2). LZO (3) / BROTLI (4) / LZ4 (5) / ZSTD (6) /
+// LZ4_RAW (7) are not yet supported.
 bool DecompressPage(int32_t codec, const uint8_t *in, size_t compressed_size, size_t uncompressed_size,
                     std::vector<uint8_t> &out) {
     if (codec == 0) {
@@ -543,6 +622,9 @@ bool DecompressPage(int32_t codec, const uint8_t *in, size_t compressed_size, si
     }
     if (codec == 1) {
         return SnappyDecompress(in, compressed_size, out);
+    }
+    if (codec == 2) {
+        return GzipDecompress(in, compressed_size, uncompressed_size, out);
     }
     return false; // unsupported
 }
@@ -1381,7 +1463,9 @@ static std::vector<Value> ReadColumnChunkStd(const uint8_t *file_base, size_t fi
                 if (!DecompressPage(meta.codec, body, body_size,
                                      static_cast<size_t>(hdr.uncompressed_page_size), decompressed)) {
                     throw IOException(ErrorCode::CORRUPT_DATA,
-                                      "Unsupported Parquet compression codec: " + std::to_string(meta.codec));
+                        std::string("Unsupported Parquet compression codec: ") +
+                        CodecName(meta.codec) + " (" + std::to_string(meta.codec) +
+                        "). Supported: UNCOMPRESSED, SNAPPY, GZIP.");
                 }
                 body = decompressed.data();
                 body_size = decompressed.size();
@@ -1411,7 +1495,9 @@ static std::vector<Value> ReadColumnChunkStd(const uint8_t *file_base, size_t fi
             if (!DecompressPage(meta.codec, body, body_size,
                                  static_cast<size_t>(hdr.uncompressed_page_size), decompressed)) {
                 throw IOException(ErrorCode::CORRUPT_DATA,
-                                  "Parquet decompression failed (codec=" + std::to_string(meta.codec) + ")");
+                    std::string("Parquet decompression failed: codec ") +
+                    CodecName(meta.codec) + " (" + std::to_string(meta.codec) +
+                    "). Supported: UNCOMPRESSED, SNAPPY, GZIP.");
             }
             body = decompressed.data();
             body_size = decompressed.size();
@@ -1823,8 +1909,9 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     if (col_idx >= rg.columns.size()) return false;
     auto &cmeta = rg.columns[col_idx];
 
-    // Only UNCOMPRESSED (0) or SNAPPY (1) pages.
-    if (cmeta.codec != 0 && cmeta.codec != 1) return false;
+    // Codecs supported by DecompressPage: UNCOMPRESSED (0), SNAPPY (1),
+    // GZIP (2). Anything else falls back to the slow column-decode path.
+    if (cmeta.codec != 0 && cmeta.codec != 1 && cmeta.codec != 2) return false;
 
     const idx_t total_rows = static_cast<idx_t>(cmeta.num_values);
     out.type = cmeta.slothdb_type;
