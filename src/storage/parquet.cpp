@@ -1,6 +1,7 @@
 #include "slothdb/storage/parquet.hpp"
 #include "slothdb/common/exception.hpp"
 #include "miniz.h"
+#include "zstd.h"
 #include <cstring>
 #include <cstdint>
 #include <algorithm>
@@ -611,8 +612,20 @@ const char *CodecName(int32_t codec) {
     }
 }
 
+// Decompress a Parquet ZSTD page using the vendored libzstd. Sized from
+// the page header's uncompressed_size; ZSTD_decompress is the simple
+// single-shot API and writes exactly that many bytes on success.
+bool ZstdDecompress(const uint8_t *in, size_t in_size, size_t uncompressed_size,
+                    std::vector<uint8_t> &out) {
+    out.resize(uncompressed_size);
+    if (uncompressed_size == 0) return true;
+    size_t got = ZSTD_decompress(out.data(), uncompressed_size, in, in_size);
+    if (ZSTD_isError(got)) return false;
+    return got == uncompressed_size;
+}
+
 // Decompress a page body. Parquet codecs we handle: UNCOMPRESSED (0),
-// SNAPPY (1), GZIP (2). LZO (3) / BROTLI (4) / LZ4 (5) / ZSTD (6) /
+// SNAPPY (1), GZIP (2), ZSTD (6). LZO (3) / BROTLI (4) / LZ4 (5) /
 // LZ4_RAW (7) are not yet supported.
 bool DecompressPage(int32_t codec, const uint8_t *in, size_t compressed_size, size_t uncompressed_size,
                     std::vector<uint8_t> &out) {
@@ -625,6 +638,9 @@ bool DecompressPage(int32_t codec, const uint8_t *in, size_t compressed_size, si
     }
     if (codec == 2) {
         return GzipDecompress(in, compressed_size, uncompressed_size, out);
+    }
+    if (codec == 6) {
+        return ZstdDecompress(in, compressed_size, uncompressed_size, out);
     }
     return false; // unsupported
 }
@@ -1465,7 +1481,7 @@ static std::vector<Value> ReadColumnChunkStd(const uint8_t *file_base, size_t fi
                     throw IOException(ErrorCode::CORRUPT_DATA,
                         std::string("Unsupported Parquet compression codec: ") +
                         CodecName(meta.codec) + " (" + std::to_string(meta.codec) +
-                        "). Supported: UNCOMPRESSED, SNAPPY, GZIP.");
+                        "). Supported: UNCOMPRESSED, SNAPPY, GZIP, ZSTD.");
                 }
                 body = decompressed.data();
                 body_size = decompressed.size();
@@ -1497,7 +1513,7 @@ static std::vector<Value> ReadColumnChunkStd(const uint8_t *file_base, size_t fi
                 throw IOException(ErrorCode::CORRUPT_DATA,
                     std::string("Parquet decompression failed: codec ") +
                     CodecName(meta.codec) + " (" + std::to_string(meta.codec) +
-                    "). Supported: UNCOMPRESSED, SNAPPY, GZIP.");
+                    "). Supported: UNCOMPRESSED, SNAPPY, GZIP, ZSTD.");
             }
             body = decompressed.data();
             body_size = decompressed.size();
@@ -1910,8 +1926,8 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     auto &cmeta = rg.columns[col_idx];
 
     // Codecs supported by DecompressPage: UNCOMPRESSED (0), SNAPPY (1),
-    // GZIP (2). Anything else falls back to the slow column-decode path.
-    if (cmeta.codec != 0 && cmeta.codec != 1 && cmeta.codec != 2) return false;
+    // GZIP (2), ZSTD (6). Anything else falls back to the slow path.
+    if (cmeta.codec != 0 && cmeta.codec != 1 && cmeta.codec != 2 && cmeta.codec != 6) return false;
 
     const idx_t total_rows = static_cast<idx_t>(cmeta.num_values);
     out.type = cmeta.slothdb_type;

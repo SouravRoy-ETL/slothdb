@@ -56,6 +56,40 @@ else()
     )
 endif()
 
+# Vendored zstd: decompression-only subset for Parquet ZSTD codec (#7).
+# Only lib/common/ and lib/decompress/ are compiled. Compress, dictBuilder,
+# legacy, deprecated are excluded. The amd64 .S asm (huf_decompress_amd64.S)
+# is also excluded; ZSTD_DISABLE_ASM is defined so the C fallback runs.
+set(SLOTHDB_ZSTD_DIR ${CMAKE_SOURCE_DIR}/third_party/zstd/lib)
+set(SLOTHDB_ZSTD_SOURCES
+    ${SLOTHDB_ZSTD_DIR}/common/debug.c
+    ${SLOTHDB_ZSTD_DIR}/common/entropy_common.c
+    ${SLOTHDB_ZSTD_DIR}/common/error_private.c
+    ${SLOTHDB_ZSTD_DIR}/common/fse_decompress.c
+    ${SLOTHDB_ZSTD_DIR}/common/pool.c
+    ${SLOTHDB_ZSTD_DIR}/common/threading.c
+    ${SLOTHDB_ZSTD_DIR}/common/xxhash.c
+    ${SLOTHDB_ZSTD_DIR}/common/zstd_common.c
+    ${SLOTHDB_ZSTD_DIR}/decompress/huf_decompress.c
+    ${SLOTHDB_ZSTD_DIR}/decompress/zstd_ddict.c
+    ${SLOTHDB_ZSTD_DIR}/decompress/zstd_decompress.c
+    ${SLOTHDB_ZSTD_DIR}/decompress/zstd_decompress_block.c
+)
+add_library(slothdb_zstd STATIC ${SLOTHDB_ZSTD_SOURCES})
+target_include_directories(slothdb_zstd PUBLIC ${SLOTHDB_ZSTD_DIR})
+target_compile_definitions(slothdb_zstd PRIVATE
+    ZSTD_DISABLE_ASM=1
+    ZSTD_MULTITHREAD=0
+)
+if(MSVC)
+    target_compile_options(slothdb_zstd PRIVATE /w)
+else()
+    target_compile_options(slothdb_zstd PRIVATE -w)
+endif()
+set_target_properties(slothdb_zstd PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(slothdb_lib PRIVATE slothdb_zstd)
+target_include_directories(slothdb_lib PRIVATE ${SLOTHDB_ZSTD_DIR})
+
 target_include_directories(slothdb_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
@@ -74,6 +108,8 @@ if(SLOTHDB_BUILD_SHARED AND NOT EMSCRIPTEN)
     target_include_directories(slothdb_shared PUBLIC
         ${CMAKE_SOURCE_DIR}/include
     )
+    target_link_libraries(slothdb_shared PRIVATE slothdb_zstd)
+    target_include_directories(slothdb_shared PRIVATE ${SLOTHDB_ZSTD_DIR})
     if(SLOTHDB_EDGE)
         target_compile_definitions(slothdb_shared PUBLIC SLOTHDB_EDGE=1)
     endif()
