@@ -45,9 +45,26 @@ private:
     std::string path_;
     std::vector<std::string> column_names_;
     std::vector<LogicalType> column_types_;
-    std::vector<std::string> avro_types_;  // Avro type names.
+    std::vector<std::string> avro_types_;  // Avro primitive type names.
+    // Per-column nullable flag — true when the schema field is a
+    // ["null", T] (or [T, "null"]) union. The wire format for these
+    // fields prefixes every value with a 1-byte union index (0=null,
+    // 1=value). Skipping that byte was the cause of issue #5.
+    std::vector<uint8_t> avro_nullable_;
+    // Per-column scale for logical types. 0 = no logical type.
+    // 1000 = Avro timestamp-millis (multiply long-millis by 1000 to
+    // convert to SlothDB's microsecond TIMESTAMP).
+    std::vector<int64_t> avro_ts_scale_;
     std::vector<std::vector<Value>> rows_;
     bool parsed_ = false;
+
+    // Helper: extract avro_type / nullable / ts_scale + logical-type
+    // shaped column type from a single field's schema fragment.
+    void ParseFieldSchema(const std::string &field_schema,
+                          std::string &out_avro_type,
+                          bool &out_nullable,
+                          int64_t &out_ts_scale,
+                          LogicalType &out_logical_type);
 };
 
 } // namespace slothdb

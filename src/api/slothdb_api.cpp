@@ -126,6 +126,15 @@ slothdb_type slothdb_column_type(slothdb_result *result, uint64_t col) {
     case LogicalTypeId::FLOAT: return SLOTHDB_TYPE_FLOAT;
     case LogicalTypeId::DOUBLE: return SLOTHDB_TYPE_DOUBLE;
     case LogicalTypeId::VARCHAR: return SLOTHDB_TYPE_VARCHAR;
+    // Surface DATE/TIME/TIMESTAMP to clients as VARCHAR so they get
+    // ISO-formatted strings ("2026-03-15", "2026-03-15 12:34:56") via
+    // the existing varchar buffer path. Without this, Python falls
+    // through to the slow per-cell path (still correct, just slower).
+    case LogicalTypeId::DATE:
+    case LogicalTypeId::TIMESTAMP:
+    case LogicalTypeId::TIMESTAMP_TZ:
+    case LogicalTypeId::TIME:
+        return SLOTHDB_TYPE_VARCHAR;
     default: return SLOTHDB_TYPE_INVALID;
     }
 }

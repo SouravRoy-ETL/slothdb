@@ -127,6 +127,20 @@ Value Vector::GetValue(idx_t index) const {
         return Value();
     }
 
+    // Logical-type-aware path: keep DATE/TIMESTAMP/TIME annotated
+    // so ToString renders ISO strings instead of raw integers.
+    switch (type_.id()) {
+    case LogicalTypeId::DATE:
+        return Value::DATE(GetData<int32_t>()[index]);
+    case LogicalTypeId::TIMESTAMP:
+    case LogicalTypeId::TIMESTAMP_TZ:
+        return Value::TIMESTAMP(GetData<int64_t>()[index]);
+    case LogicalTypeId::TIME:
+        return Value::TIME(GetData<int64_t>()[index]);
+    default:
+        break;
+    }
+
     auto physical = type_.GetInternalType();
     switch (physical) {
     case PhysicalType::BOOL:

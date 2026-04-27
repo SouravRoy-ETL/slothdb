@@ -3542,8 +3542,14 @@ private:
         auto *validity = &vec.GetValidity();
         if (!validity->RowIsValid(row)) return 0.0;
         switch (tid) {
-        case LogicalTypeId::INTEGER: return static_cast<double>(reinterpret_cast<const int32_t *>(vec.GetData())[row]);
-        case LogicalTypeId::BIGINT:  return static_cast<double>(reinterpret_cast<const int64_t *>(vec.GetData())[row]);
+        case LogicalTypeId::INTEGER:
+        case LogicalTypeId::DATE:
+            return static_cast<double>(reinterpret_cast<const int32_t *>(vec.GetData())[row]);
+        case LogicalTypeId::BIGINT:
+        case LogicalTypeId::TIMESTAMP:
+        case LogicalTypeId::TIMESTAMP_TZ:
+        case LogicalTypeId::TIME:
+            return static_cast<double>(reinterpret_cast<const int64_t *>(vec.GetData())[row]);
         case LogicalTypeId::DOUBLE:  return reinterpret_cast<const double *>(vec.GetData())[row];
         case LogicalTypeId::FLOAT:   return static_cast<double>(reinterpret_cast<const float *>(vec.GetData())[row]);
         default: return 0.0;
@@ -3555,8 +3561,14 @@ private:
         auto tid = vec.GetType().id();
         if (!vec.GetValidity().RowIsValid(row)) { key += "NULL|"; return; }
         switch (tid) {
-        case LogicalTypeId::INTEGER: key += std::to_string(reinterpret_cast<const int32_t *>(vec.GetData())[row]); break;
-        case LogicalTypeId::BIGINT:  key += std::to_string(reinterpret_cast<const int64_t *>(vec.GetData())[row]); break;
+        case LogicalTypeId::INTEGER:
+        case LogicalTypeId::DATE:
+            key += std::to_string(reinterpret_cast<const int32_t *>(vec.GetData())[row]); break;
+        case LogicalTypeId::BIGINT:
+        case LogicalTypeId::TIMESTAMP:
+        case LogicalTypeId::TIMESTAMP_TZ:
+        case LogicalTypeId::TIME:
+            key += std::to_string(reinterpret_cast<const int64_t *>(vec.GetData())[row]); break;
         case LogicalTypeId::DOUBLE:  key += std::to_string(reinterpret_cast<const double *>(vec.GetData())[row]); break;
         case LogicalTypeId::VARCHAR: {
             auto &s = reinterpret_cast<const string_t *>(vec.GetData())[row];

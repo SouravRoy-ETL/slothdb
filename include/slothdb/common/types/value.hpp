@@ -51,6 +51,13 @@ public:
     static Value VARCHAR(const char *val);
     static Value BLOB(const std::string &val);
     static Value LIST(std::vector<Value> values, LogicalType child_type);
+    // Date / time / timestamp: physically int32 / int64. These preserve
+    // the LogicalType so ToString() can render ISO strings instead of
+    // raw integers — without them, every aggregation (max/min/group-by)
+    // dropped the date/timestamp annotation and rendered as microseconds.
+    static Value DATE(int32_t days_since_epoch);
+    static Value TIMESTAMP(int64_t micros_since_epoch);
+    static Value TIME(int64_t micros_since_midnight);
 
     bool IsNull() const { return is_null_; }
     const LogicalType &type() const { return type_; }
