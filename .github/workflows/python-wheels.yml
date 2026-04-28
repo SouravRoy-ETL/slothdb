@@ -22,13 +22,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, name: win_amd64 }
-          - { os: ubuntu-24.04,   name: manylinux2014_x86_64 }
+          - { os: windows-latest, name: win_amd64,            platform: win_amd64 }
+          # Linux must be tagged manylinux2014, not linux_x86_64 - PyPI
+          # rejects bare linux_* tags because they don't say which glibc.
+          - { os: ubuntu-24.04,   name: manylinux2014_x86_64, platform: manylinux2014_x86_64 }
           # Single universal2 wheel covers both Intel and Apple Silicon
           # in one artifact. The macos-13 (Intel-only) GitHub-hosted
           # runners have unreliable capacity and routinely queue
           # indefinitely, so we cross-build on macos-14 instead.
-          - { os: macos-14,       name: macosx_universal2 }
+          - { os: macos-14,       name: macosx_universal2,    platform: macosx-11.0-universal2 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -76,9 +78,12 @@ jobs:
       - name: Build wheel
         shell: bash
         env:
-          # Tag the macOS wheel as macosx_11_0_universal2 so pip serves
-          # it to both Intel and Apple Silicon users from one file.
-          _PYTHON_HOST_PLATFORM: ${{ runner.os == 'macOS' && 'macosx-11.0-universal2' || '' }}
+          # Force the wheel platform tag explicitly per matrix row so
+          # we get manylinux2014_x86_64 (not linux_x86_64, which PyPI
+          # rejects) on Linux, win_amd64 on Windows, and the universal2
+          # tag on macOS. Wheel converts the dashes to underscores in
+          # the filename automatically.
+          _PYTHON_HOST_PLATFORM: ${{ matrix.platform }}
           ARCHFLAGS: ${{ runner.os == 'macOS' && '-arch x86_64 -arch arm64' || '' }}
         run: |
           python -m pip install --upgrade pip build
