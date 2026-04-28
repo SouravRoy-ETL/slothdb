@@ -6,9 +6,9 @@
 
 <p>SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. <b>Up to 5x faster</b> where it counts.</p>
 
-<p>
+<p align="center">
   <a href="https://discord.gg/XJWyGmX5G">
-    <img src="assets/discord-cta.svg" alt="Join the SlothDB Discord" width="320">
+    <img src="assets/discord-cta.svg" alt="Join the SlothDB Discord" width="340">
   </a>
 </p>
 

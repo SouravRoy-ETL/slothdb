@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://discord.gg/XJWyGmX5G">
-    <img src="https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/assets/discord-cta.svg" alt="Join the SlothDB Discord" width="320">
+    <img src="https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/assets/discord-cta.svg" alt="Join the SlothDB Discord" width="340">
   </a>
 </p>
 

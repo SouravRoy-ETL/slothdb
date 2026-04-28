@@ -1,12 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="360" height="64" viewBox="0 0 360 64" role="img" aria-label="Join the SlothDB Discord">
+<svg xmlns="http://www.w3.org/2000/svg" width="380" height="72" viewBox="0 0 380 72" role="img" aria-label="Join the SlothDB Discord">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="btnbg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#5865F2"/>
       <stop offset="100%" stop-color="#4752C4"/>
     </linearGradient>
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18"/>
       <stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="s_bg" cx="0.5" cy="0.4" r="0.65">
+      <stop offset="0"   stop-color="#9275F0"/>
+      <stop offset="0.6" stop-color="#7C5CE6"/>
+      <stop offset="1"   stop-color="#5B3FCF"/>
+    </radialGradient>
+    <linearGradient id="s_fur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E5C9A1"/>
+      <stop offset="1" stop-color="#B68F62"/>
+    </linearGradient>
+    <linearGradient id="s_face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F4DDB9"/>
+      <stop offset="1" stop-color="#E5C9A1"/>
     </linearGradient>
     <filter id="shadow" x="-10%" y="-10%" width="120%" height="140%">
       <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
@@ -16,20 +29,40 @@
     </filter>
   </defs>
 
-  <rect x="2" y="2" width="356" height="60" rx="14" ry="14" fill="url(#bg)" filter="url(#shadow)"/>
-  <rect x="2" y="2" width="356" height="30" rx="14" ry="14" fill="url(#sheen)"/>
+  <!-- Button background -->
+  <rect x="2" y="2" width="376" height="68" rx="16" ry="16" fill="url(#btnbg)" filter="url(#shadow)"/>
+  <rect x="2" y="2" width="376" height="34" rx="16" ry="16" fill="url(#sheen)"/>
 
-  <!-- Discord mark, scaled and offset; original viewBox is 0 0 71 55 -->
-  <g transform="translate(22 18) scale(0.50)" fill="#ffffff">
-    <path d="M60.105 4.898A58.55 58.55 0 0 0 45.653.5a.22.22 0 0 0-.232.111c-.6 1.07-1.275 2.471-1.745 3.572-5.876-.88-11.72-.88-17.476 0-.47-1.125-1.16-2.501-1.764-3.572a.227.227 0 0 0-.232-.11c-5.072.872-9.918 2.392-14.452 4.397a.22.22 0 0 0-.094.078C.319 18.737-1.327 32.144.13 45.39a.244.244 0 0 0 .093.166c6.073 4.46 11.955 7.167 17.729 8.962a.23.23 0 0 0 .249-.082 41.997 41.997 0 0 0 3.627-5.9.225.225 0 0 0-.123-.312 38.876 38.876 0 0 1-5.539-2.64.227.227 0 0 1-.022-.376c.372-.279.745-.569 1.1-.862a.221.221 0 0 1 .23-.031c11.62 5.305 24.198 5.305 35.681 0a.221.221 0 0 1 .234.029c.355.292.728.585 1.103.864a.227.227 0 0 1-.02.375 36.49 36.49 0 0 1-5.541 2.638.227.227 0 0 0-.121.315 47.23 47.23 0 0 0 3.624 5.897.225.225 0 0 0 .25.084c5.801-1.795 11.683-4.502 17.756-8.962a.227.227 0 0 0 .093-.164c1.741-15.317-2.918-28.612-12.353-40.412a.18.18 0 0 0-.093-.079Zm-36.378 32.43c-3.497 0-6.378-3.211-6.378-7.156s2.825-7.157 6.378-7.157c3.581 0 6.435 3.24 6.378 7.157 0 3.945-2.825 7.156-6.378 7.156Zm23.59 0c-3.498 0-6.379-3.211-6.379-7.156s2.825-7.157 6.378-7.157c3.582 0 6.435 3.24 6.379 7.157 0 3.945-2.797 7.156-6.378 7.156Z"/>
+  <!-- SlothDB mascot. 56x56, vertically centred at y=8 (top) to y=64 (bottom). -->
+  <g transform="translate(10 8) scale(0.109375)">
+    <circle cx="256" cy="256" r="256" fill="url(#s_bg)"/>
+    <circle cx="256" cy="256" r="244" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="2"/>
+    <ellipse cx="256" cy="270" rx="170" ry="160" fill="url(#s_fur)"/>
+    <ellipse cx="118" cy="190" rx="34" ry="42" fill="url(#s_fur)" transform="rotate(-18 118 190)"/>
+    <ellipse cx="394" cy="190" rx="34" ry="42" fill="url(#s_fur)" transform="rotate(18 394 190)"/>
+    <ellipse cx="256" cy="282" rx="138" ry="132" fill="url(#s_face)"/>
+    <ellipse cx="200" cy="262" rx="42" ry="34" fill="#3D2817" transform="rotate(-12 200 262)"/>
+    <ellipse cx="312" cy="262" rx="42" ry="34" fill="#3D2817" transform="rotate(12 312 262)"/>
+    <path d="M 168 262 Q 200 248, 232 262" stroke="#1A0F08" stroke-width="6" stroke-linecap="round" fill="none"/>
+    <path d="M 280 262 Q 312 248, 344 262" stroke="#1A0F08" stroke-width="6" stroke-linecap="round" fill="none"/>
+    <circle cx="200" cy="265" r="2.5" fill="#1A0F08"/>
+    <circle cx="312" cy="265" r="2.5" fill="#1A0F08"/>
+    <path d="M 248 322 L 264 322 L 256 336 Z" fill="#3D2817"/>
+    <ellipse cx="256" cy="322" rx="11" ry="6" fill="#3D2817"/>
+    <path d="M 232 358 Q 256 372, 280 358" stroke="#3D2817" stroke-width="5" stroke-linecap="round" fill="none"/>
+    <ellipse cx="170" cy="328" rx="14" ry="8" fill="#E8A88E" opacity="0.4"/>
+    <ellipse cx="342" cy="328" rx="14" ry="8" fill="#E8A88E" opacity="0.4"/>
   </g>
 
-  <text x="80" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#ffffff" letter-spacing="0.3">JOIN THE</text>
-  <text x="80" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="800" fill="#ffffff">SlothDB Discord</text>
+  <!-- Text. Two-line block visually centred against the 56px mascot:
+       'JOIN THE' baseline at y=30, 'SlothDB Discord' baseline at y=52,
+       gives a vertical midpoint of y=36 which matches the button centre. -->
+  <text x="80" y="30" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#ffffff" letter-spacing="1">JOIN THE</text>
+  <text x="80" y="52" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="800" fill="#ffffff">SlothDB Discord</text>
 
-  <!-- Right arrow -->
-  <g transform="translate(322 26)" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M0 6 L14 6"/>
-    <path d="M9 1 L14 6 L9 11"/>
+  <!-- Right arrow, vertically centred on the button (y=36). -->
+  <g transform="translate(338 30)" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 0 6 L 14 6"/>
+    <path d="M 9 1 L 14 6 L 9 11"/>
   </g>
 </svg>
