@@ -1,0 +1,8 @@
+name = "slothdb-cors-proxy"
+main = "worker.js"
+compatibility_date = "2026-04-28"
+
+# Optional: restrict which upstream hosts the proxy will fetch.
+# Comma-separated. Leave empty for an open proxy (not recommended).
+# [vars]
+# ALLOWED_HOSTS = "apshare1.s3.eu-west-1.amazonaws.com,huggingface.co,raw.githubusercontent.com"

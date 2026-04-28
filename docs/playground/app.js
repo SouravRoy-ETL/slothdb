@@ -3,13 +3,13 @@
 //
 // BUILD_VERSION - bump on every rebuild/push so browsers refetch the
 // wasm / js / css / cm bundle instead of serving the cached prior version.
-const BUILD_VERSION = '20260428-3';
+const BUILD_VERSION = '20260428-4';
 
-import createSlothDB from './slothdb.js?v=20260428-3';
+import createSlothDB from './slothdb.js?v=20260428-4';
 import {
     EditorView, basicSetup, keymap, EditorState,
     indentWithTab, sql, oneDark,
-} from './vendor/cm.js?v=20260428-3';
+} from './vendor/cm.js?v=20260428-4';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
@@ -394,10 +394,19 @@ function localPathForUrl(url) {
     return p;
 }
 
-// Public CORS proxies tried in order when a direct fetch fails because
-// the origin doesn't return Access-Control-Allow-Origin. Both stream
-// binary bodies. They're third-party, so URLs you fetch through them
-// are visible to the proxy operator - host your own for production.
+// Browser fetch is gated by CORS. Hosts that don't send
+// Access-Control-Allow-Origin are unreachable from the playground
+// unless we route through a proxy that does.
+//
+// Strategy:
+//   1. Try direct fetch. Works for any host with permissive CORS
+//      (Hugging Face, AWS Open Data, raw.githubusercontent.com, ...).
+//   2. If a self-hosted proxy is configured (window.SLOTHDB_CORS_PROXY),
+//      retry through it. See cloudflare/cors-proxy/ for a 60-line Worker
+//      you can deploy in 60 seconds.
+//   3. As a last resort try a couple of public proxies. They reliably
+//      fail on files larger than ~10 MB - we keep them only because
+//      they sometimes work for small JSON / CSV samples.
 const CORS_PROXIES = [
     (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
     (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
@@ -410,22 +419,49 @@ async function fetchWithFallback(url) {
         throw new Error(`HTTP ${r.status} ${r.statusText}`);
     } catch (e) {
         const why = e?.message || String(e);
-        log(`  direct fetch blocked (${why}); trying CORS proxy…`, 'warn');
-        let lastErr = e;
-        for (const mk of CORS_PROXIES) {
+        const tried = [];
+
+        // 1. Self-hosted proxy if configured.
+        const userProxy = window.SLOTHDB_CORS_PROXY;
+        if (typeof userProxy === 'string' && userProxy.length) {
+            log(`  direct fetch blocked (${why}); trying configured proxy…`, 'warn');
             try {
-                const r = await fetch(mk(url));
+                const r = await fetch(userProxy + encodeURIComponent(url));
                 if (r.ok) {
-                    log(`  proxy ok: ${new URL(mk(url)).host}`, 'ok');
+                    log(`  proxy ok: ${new URL(userProxy).host}`, 'ok');
                     return r;
                 }
-                lastErr = new Error(`proxy HTTP ${r.status}`);
-            } catch (pe) { lastErr = pe; }
+                tried.push(`self-host: HTTP ${r.status}`);
+            } catch (pe) { tried.push(`self-host: ${pe?.message || pe}`); }
+        } else {
+            log(`  direct fetch blocked (${why})`, 'warn');
         }
+
+        // 2. Public proxies (best effort, often fail on big files).
+        for (const mk of CORS_PROXIES) {
+            const proxyUrl = mk(url);
+            const host = new URL(proxyUrl).host;
+            try {
+                const r = await fetch(proxyUrl);
+                if (r.ok) {
+                    log(`  public proxy ok: ${host}`, 'ok');
+                    return r;
+                }
+                tried.push(`${host}: HTTP ${r.status}`);
+            } catch (pe) { tried.push(`${host}: ${pe?.message || pe}`); }
+        }
+
+        const setupHint = userProxy
+            ? ''
+            : '\n  Tip: deploy cloudflare/cors-proxy (60-line Worker, 1 min) and set ' +
+              'window.SLOTHDB_CORS_PROXY in index.html to route blocked fetches through it.';
         throw new Error(
-            `Could not fetch ${url}. Direct fetch was blocked (likely CORS) ` +
-            `and the public proxies also failed (${lastErr?.message || lastErr}). ` +
-            `Workaround: download the file once and drag it into the playground.`
+            `Could not fetch ${url}.\n  ` +
+            `The host doesn't allow browser fetches (no CORS), and public proxies failed: ` +
+            `${tried.join('; ') || 'no proxies tried'}.\n  ` +
+            `Workarounds: (a) use the SlothDB CLI which has no CORS restriction, ` +
+            `(b) download the file once and drag it into the playground, ` +
+            `(c) ask the bucket owner to enable CORS.${setupHint}`
         );
     }
 }
