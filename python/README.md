@@ -9,12 +9,19 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/XJWyGmX5G">
+    <img src="https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/assets/discord-cta.svg" alt="Join the SlothDB Discord" width="320">
+  </a>
+</p>
+
+<p align="center">
   <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white" alt="PyPI"></a>
   <a href="https://pepy.tech/project/slothdb"><img src="https://static.pepy.tech/badge/slothdb" alt="Downloads"></a>
   <a href="https://pepy.tech/project/slothdb"><img src="https://static.pepy.tech/badge/slothdb/month" alt="Downloads/month"></a>
   <a href="https://pypi.org/project/slothdb/"><img src="https://img.shields.io/pypi/pyversions/slothdb" alt="Python versions"></a>
   <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://peerpush.net/p/slothdb"><img src="https://peerpush.net/p/slothdb/badge.png" alt="PeerPush"></a>
 </p>
 
 <p align="center">
@@ -92,9 +99,14 @@ df = db.sql("SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region").fetc
 
 1M-row dataset, warm cache, 5-run median. [Full 15-query table + methodology →](https://github.com/SouravRoy-ETL/slothdb#performance)
 
+## Community
+
+There's a Discord: **[discord.gg/XJWyGmX5G](https://discord.gg/XJWyGmX5G)**. Bug reports, install help, weird query plans, "is this slower than it should be", feature ideas - any of it. The maintainer reads everything. GitHub issues are still the canonical tracker; the server is for the questions that come before you file one.
+
 ## Links
 
 - **Source**: https://github.com/SouravRoy-ETL/slothdb
+- **Discord**: https://discord.gg/XJWyGmX5G
 - **Changelog**: https://github.com/SouravRoy-ETL/slothdb/blob/main/CHANGELOG.md
 - **Issues**: https://github.com/SouravRoy-ETL/slothdb/issues
 - **SQL reference**: https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/DOCUMENTATION.md
