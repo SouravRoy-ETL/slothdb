@@ -6,13 +6,18 @@
 
 <p>SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. <b>Up to 5x faster</b> where it counts.</p>
 
+<p>
+  <a href="https://discord.gg/XJWyGmX5G">
+    <img src="assets/discord-cta.svg" alt="Join the SlothDB Discord" width="320">
+  </a>
+</p>
+
 [![PyPI](https://img.shields.io/pypi/v/slothdb?color=3775A9&logo=pypi&logoColor=white&cacheSeconds=60)](https://pypi.org/project/slothdb/)
 [![npm](https://img.shields.io/npm/v/@slothdb/wasm?color=CB3837&logo=npm&label=npm)](https://www.npmjs.com/package/@slothdb/wasm)
 [![PyPI downloads](https://static.pepy.tech/badge/slothdb)](https://pepy.tech/project/slothdb)
 [![npm downloads](https://img.shields.io/npm/dt/@slothdb/wasm?label=npm%20downloads&color=CB3837)](https://www.npmjs.com/package/@slothdb/wasm)
 [![CI](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg)](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/XJWyGmX5G)
 [![Stars](https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social)](https://github.com/SouravRoy-ETL/slothdb)
 [![PeerPush](https://peerpush.net/p/slothdb/badge.png)](https://peerpush.net/p/slothdb)
 

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="64" viewBox="0 0 360 64" role="img" aria-label="Join the SlothDB Discord">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5865F2"/>
+      <stop offset="100%" stop-color="#4752C4"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
+      <feOffset dy="2"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect x="2" y="2" width="356" height="60" rx="14" ry="14" fill="url(#bg)" filter="url(#shadow)"/>
+  <rect x="2" y="2" width="356" height="30" rx="14" ry="14" fill="url(#sheen)"/>
+
+  <!-- Discord mark, scaled and offset; original viewBox is 0 0 71 55 -->
+  <g transform="translate(22 18) scale(0.50)" fill="#ffffff">
+    <path d="M60.105 4.898A58.55 58.55 0 0 0 45.653.5a.22.22 0 0 0-.232.111c-.6 1.07-1.275 2.471-1.745 3.572-5.876-.88-11.72-.88-17.476 0-.47-1.125-1.16-2.501-1.764-3.572a.227.227 0 0 0-.232-.11c-5.072.872-9.918 2.392-14.452 4.397a.22.22 0 0 0-.094.078C.319 18.737-1.327 32.144.13 45.39a.244.244 0 0 0 .093.166c6.073 4.46 11.955 7.167 17.729 8.962a.23.23 0 0 0 .249-.082 41.997 41.997 0 0 0 3.627-5.9.225.225 0 0 0-.123-.312 38.876 38.876 0 0 1-5.539-2.64.227.227 0 0 1-.022-.376c.372-.279.745-.569 1.1-.862a.221.221 0 0 1 .23-.031c11.62 5.305 24.198 5.305 35.681 0a.221.221 0 0 1 .234.029c.355.292.728.585 1.103.864a.227.227 0 0 1-.02.375 36.49 36.49 0 0 1-5.541 2.638.227.227 0 0 0-.121.315 47.23 47.23 0 0 0 3.624 5.897.225.225 0 0 0 .25.084c5.801-1.795 11.683-4.502 17.756-8.962a.227.227 0 0 0 .093-.164c1.741-15.317-2.918-28.612-12.353-40.412a.18.18 0 0 0-.093-.079Zm-36.378 32.43c-3.497 0-6.378-3.211-6.378-7.156s2.825-7.157 6.378-7.157c3.581 0 6.435 3.24 6.378 7.157 0 3.945-2.825 7.156-6.378 7.156Zm23.59 0c-3.498 0-6.379-3.211-6.379-7.156s2.825-7.157 6.378-7.157c3.582 0 6.435 3.24 6.379 7.157 0 3.945-2.797 7.156-6.378 7.156Z"/>
+  </g>
+
+  <text x="80" y="32" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#ffffff" letter-spacing="0.3">JOIN THE</text>
+  <text x="80" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="800" fill="#ffffff">SlothDB Discord</text>
+
+  <!-- Right arrow -->
+  <g transform="translate(322 26)" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M0 6 L14 6"/>
+    <path d="M9 1 L14 6 L9 11"/>
+  </g>
+</svg>

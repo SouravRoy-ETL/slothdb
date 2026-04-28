@@ -3,13 +3,13 @@
 //
 // BUILD_VERSION - bump on every rebuild/push so browsers refetch the
 // wasm / js / css / cm bundle instead of serving the cached prior version.
-const BUILD_VERSION = '20260428-1';
+const BUILD_VERSION = '20260428-2';
 
-import createSlothDB from './slothdb.js?v=20260428-1';
+import createSlothDB from './slothdb.js?v=20260428-2';
 import {
     EditorView, basicSetup, keymap, EditorState,
     indentWithTab, sql, oneDark,
-} from './vendor/cm.js?v=20260428-1';
+} from './vendor/cm.js?v=20260428-2';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
@@ -370,34 +370,87 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-function runQuery() {
+// Pre-fetch any http(s) URLs that appear as quoted file paths in SQL,
+// write them into MEMFS at /data/<sanitized>, and return the rewritten
+// SQL with each URL replaced by its local path. The WASM build has no
+// HTTP client, so this is the only path that lets `FROM 'https://...'`
+// work in the browser.
+const REMOTE_CACHE = new Map(); // url -> /data/<name>
+
+function localPathForUrl(url) {
+    if (REMOTE_CACHE.has(url)) return REMOTE_CACHE.get(url);
+    let name;
+    try {
+        const u = new URL(url);
+        name = u.pathname.split('/').filter(Boolean).pop() || 'remote';
+    } catch (_) {
+        name = 'remote';
+    }
+    name = name.replace(/[^A-Za-z0-9._-]/g, '_');
+    let p = '/data/' + name;
+    let i = 1;
+    while ([...REMOTE_CACHE.values()].includes(p)) p = `/data/${i++}_${name}`;
+    REMOTE_CACHE.set(url, p);
+    return p;
+}
+
+async function prefetchRemotes(sqlText) {
+    const re = /'(https?:\/\/[^']+)'/gi;
+    const urls = new Set();
+    let m;
+    while ((m = re.exec(sqlText)) !== null) urls.add(m[1]);
+    if (!urls.size) return sqlText;
+
+    try { mod.FS.mkdir('/data'); } catch (_) {}
+
+    for (const url of urls) {
+        const local = localPathForUrl(url);
+        let exists = false;
+        try { mod.FS.stat(local); exists = true; } catch (_) {}
+        if (exists) continue;
+        log(`Fetching ${url}…`);
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText} fetching ${url}`);
+        const buf = new Uint8Array(await r.arrayBuffer());
+        mod.FS.writeFile(local, buf);
+        log(`  -> ${local} (${formatBytes(buf.byteLength)})`, 'ok');
+    }
+    let rewritten = sqlText;
+    for (const url of urls) {
+        const local = REMOTE_CACHE.get(url);
+        rewritten = rewritten.split(`'${url}'`).join(`'${local}'`);
+    }
+    return rewritten;
+}
+
+async function runQuery() {
     if (!mod) return;
     const sqlText = editor.state.doc.toString().trim();
     if (!sqlText) return;
     setStatus('running…', 'ok');
     $('#run').disabled = true;
-    setTimeout(() => {
-        try {
-            const stmts = sqlText.split(/;\s*(?:\r?\n|$)/).map((s) => s.trim()).filter(Boolean);
-            let res;
-            for (const s of stmts) {
-                const json = mod.runQuery(s);
-                res = JSON.parse(json);
-                if (res.error) break;
-            }
-            sortState = { col: -1, dir: 1 };
-            renderResult(res);
-            pushHistory(sqlText, res);
-            setStatus(res.error ? 'error' : 'ready', res.error ? 'err' : 'ok');
-            log(res.error ? `Error: ${res.error}` : `Query OK, ${res.rowCount} row${res.rowCount === 1 ? '' : 's'} in ${res.ms.toFixed(1)} ms.`,
-                res.error ? 'err' : 'ok');
-        } catch (e) {
-            renderResult({ error: String(e), ms: 0 });
-            setStatus('error', 'err');
-        } finally {
-            $('#run').disabled = false;
+    try {
+        const sqlToRun = await prefetchRemotes(sqlText);
+        const stmts = sqlToRun.split(/;\s*(?:\r?\n|$)/).map((s) => s.trim()).filter(Boolean);
+        let res;
+        for (const s of stmts) {
+            const json = mod.runQuery(s);
+            res = JSON.parse(json);
+            if (res.error) break;
         }
-    }, 10);
+        sortState = { col: -1, dir: 1 };
+        renderResult(res);
+        pushHistory(sqlText, res);
+        setStatus(res.error ? 'error' : 'ready', res.error ? 'err' : 'ok');
+        log(res.error ? `Error: ${res.error}` : `Query OK, ${res.rowCount} row${res.rowCount === 1 ? '' : 's'} in ${res.ms.toFixed(1)} ms.`,
+            res.error ? 'err' : 'ok');
+    } catch (e) {
+        renderResult({ error: String(e?.message || e), ms: 0 });
+        setStatus('error', 'err');
+        log(`Error: ${e?.message || e}`, 'err');
+    } finally {
+        $('#run').disabled = false;
+    }
 }
 
 // ────────────────────────────────────────────────────────────
