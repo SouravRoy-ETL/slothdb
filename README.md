@@ -12,10 +12,11 @@
 [![npm downloads](https://img.shields.io/npm/dt/@slothdb/wasm?label=npm%20downloads&color=CB3837)](https://www.npmjs.com/package/@slothdb/wasm)
 [![CI](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg)](https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/XJWyGmX5G)
 [![Stars](https://img.shields.io/github/stars/SouravRoy-ETL/slothdb?style=social)](https://github.com/SouravRoy-ETL/slothdb)
 [![PeerPush](https://peerpush.net/p/slothdb/badge.png)](https://peerpush.net/p/slothdb)
 
-[Website](https://slothdb.org) · [**Playground**](https://slothdb.org/playground/) · [Blog](https://slothdb.org/blog/compiling-a-database-to-wasm.html) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
+[Website](https://slothdb.org) · [**Playground**](https://slothdb.org/playground/) · [**Discord**](https://discord.gg/XJWyGmX5G) · [Blog](https://slothdb.org/blog/compiling-a-database-to-wasm.html) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
 
 <br>
 
@@ -436,6 +437,10 @@ ctest --test-dir build -C Release    # 403 tests
 | `-DSLOTHDB_BUILD_TESTS=ON` | Build test suite |
 | `-DSLOTHDB_SANITIZERS=ON` | Enable ASan/UBSan |
 | `-DSLOTHDB_EDGE=ON` | Edge / WASM minimal build - strips Excel / Avro / Arrow IPC / SQLite readers. Target: sub-1 MB WASM for Cloudflare Workers. See [docs/EDGE_BUILD.md](docs/EDGE_BUILD.md) |
+
+## Community
+
+There's a Discord: **[discord.gg/XJWyGmX5G](https://discord.gg/XJWyGmX5G)**. Bug reports, install help, weird query plans, "is this slower than it should be", feature ideas - any of it. I'm the maintainer, I read everything. GitHub issues are still the canonical tracker; the server is for the questions that come before you file one.
 
 ## Contributing
 
