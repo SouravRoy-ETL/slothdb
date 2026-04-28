@@ -3,13 +3,13 @@
 //
 // BUILD_VERSION - bump on every rebuild/push so browsers refetch the
 // wasm / js / css / cm bundle instead of serving the cached prior version.
-const BUILD_VERSION = '20260428-2';
+const BUILD_VERSION = '20260428-3';
 
-import createSlothDB from './slothdb.js?v=20260428-2';
+import createSlothDB from './slothdb.js?v=20260428-3';
 import {
     EditorView, basicSetup, keymap, EditorState,
     indentWithTab, sql, oneDark,
-} from './vendor/cm.js?v=20260428-2';
+} from './vendor/cm.js?v=20260428-3';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
@@ -394,6 +394,42 @@ function localPathForUrl(url) {
     return p;
 }
 
+// Public CORS proxies tried in order when a direct fetch fails because
+// the origin doesn't return Access-Control-Allow-Origin. Both stream
+// binary bodies. They're third-party, so URLs you fetch through them
+// are visible to the proxy operator - host your own for production.
+const CORS_PROXIES = [
+    (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+];
+
+async function fetchWithFallback(url) {
+    try {
+        const r = await fetch(url);
+        if (r.ok) return r;
+        throw new Error(`HTTP ${r.status} ${r.statusText}`);
+    } catch (e) {
+        const why = e?.message || String(e);
+        log(`  direct fetch blocked (${why}); trying CORS proxy…`, 'warn');
+        let lastErr = e;
+        for (const mk of CORS_PROXIES) {
+            try {
+                const r = await fetch(mk(url));
+                if (r.ok) {
+                    log(`  proxy ok: ${new URL(mk(url)).host}`, 'ok');
+                    return r;
+                }
+                lastErr = new Error(`proxy HTTP ${r.status}`);
+            } catch (pe) { lastErr = pe; }
+        }
+        throw new Error(
+            `Could not fetch ${url}. Direct fetch was blocked (likely CORS) ` +
+            `and the public proxies also failed (${lastErr?.message || lastErr}). ` +
+            `Workaround: download the file once and drag it into the playground.`
+        );
+    }
+}
+
 async function prefetchRemotes(sqlText) {
     const re = /'(https?:\/\/[^']+)'/gi;
     const urls = new Set();
@@ -409,8 +445,7 @@ async function prefetchRemotes(sqlText) {
         try { mod.FS.stat(local); exists = true; } catch (_) {}
         if (exists) continue;
         log(`Fetching ${url}…`);
-        const r = await fetch(url);
-        if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText} fetching ${url}`);
+        const r = await fetchWithFallback(url);
         const buf = new Uint8Array(await r.arrayBuffer());
         mod.FS.writeFile(local, buf);
         log(`  -> ${local} (${formatBytes(buf.byteLength)})`, 'ok');
