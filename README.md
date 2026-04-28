@@ -79,20 +79,29 @@ const { columns, rows } = db.query("SELECT 1 AS n");
 
 ---
 
-## What's new in 0.1.7
+## What's new in 0.2.3
 
-- **`.ask` pipeline.** Rules parser in every build (catalog intents, COUNT/SUM/AVG/GROUP BY/TOP-N, file-source CREATE/view; sub-10 ms, no model). Optional local Qwen2.5-Coder fallback under `-DSLOTHDB_ASK_MODEL=ON`: 0.5B (~310 MB) and 1.5B (~986 MB) tiers lazy-downloaded in parallel on first use. Deterministic keyword router picks the tier per question. Speaks 29 natural languages. Post-processor auto-quotes multi-word identifiers, normalizes snake_case to schema casing, and refuses SQL that references columns not in the schema. Auto-runs by default; `SLOTHDB_ASK_CONFIRM=1` restores the `[Y/n]` prompt. [docs/ASK.md](docs/ASK.md).
-- **CREATE TABLE AS SELECT**, including from files: `CREATE [OR REPLACE] TABLE sales AS SELECT * FROM 'sales.csv'`. Fixed a wide-VARCHAR heap-corruption bug in the materialization path (same bug class DuckDB hit pre-1.0.2).
-- **SHOW TABLES / DESCRIBE / SHOW DATABASES** in the SQL parser (DuckDB / MySQL / ClickHouse common shape). `DESCRIBE 'file.parquet'` peeks a file's schema without importing - ClickHouse-style.
-- **Catalog-introspection C API**: five new functions (`slothdb_table_count`, `_name`, `_column_count`, `_column_name`, `_column_type`) enumerate tables + columns from any binding.
-- **Shell polish**: ASCII-only output (no more cp437 `ΓåÆ` on Windows cmd), richer `.help`, interactive `.ask` sub-REPL with a tiered banner. Pasted paths with invisible BIDI marks (Windows "Copy as path") are silently stripped.
-- **Benchmark table** includes the 1.04× Parquet SUM tie instead of hiding it. Headline remains 3.9× on the 5-query warm batch; 16-query suite median 1.70× (range 1.04×-5.43×).
+- **GZIP and ZSTD Parquet decode.** miniz handles codec=2 with a hand-rolled RFC 1952 header peel (the gzip wrapper miniz refuses by default). Vendored libzstd 1.5.6, decompression-only subset, adds about 50 KB to the binary and unblocks codec=6 files written by Spark / pyarrow / parquet-mr defaults.
+- **`read_parquet` glob in the browser.** `SELECT * FROM '/data/shard_*.parquet'` fans out across every match in the playground's MEMFS instead of failing with "Cannot open Parquet". Same path the native CLI has had for a while.
+- **Single-threaded WASM stops crashing on GROUP BY.** `std::thread` spawn is now routed through a `HWThreads()` helper that returns 1 under `__EMSCRIPTEN__ && !__EMSCRIPTEN_PTHREADS__` and runs the worker inline.
+- **HTTPS Parquet from the browser playground.** Tiny Cloudflare Worker proxy ([cloudflare/cors-proxy/](cloudflare/cors-proxy/), 60 lines, free-tier-friendly) routes around CORS for buckets that don't set `Access-Control-Allow-Origin`. `FROM 'https://host/file.parquet'` works in the playground for any host.
+- **Discord server.** [discord.gg/XJWyGmX5G](https://discord.gg/XJWyGmX5G). Bug reports, weird query plans, perf threads, anything.
 
 403 tests, 131,513 assertions, green on Windows / Linux / macOS.
 
-### Previously in 0.1.6
+### Previously in 0.2.0 - 0.2.2
 
-JOIN hot path: 138 ms vs 540 ms on the 5-query warm batch. `CREATE LIVE VIEW` with incremental CSV append. Edge build (`-DSLOTHDB_EDGE=ON`) for sub-MB WASM bundles under Cloudflare Workers' 1 MB cap. `DESCRIBE`, `PRAGMA table_info`, `VARCHAR(n)` enforcement. Full notes in [CHANGELOG.md](CHANGELOG.md).
+- **Top-N pushdown for `ORDER BY ... LIMIT N` on Parquet.** Bounded-heap operator instead of full sort then truncate. 10M-row `ORDER BY q DESC LIMIT 10`: 420,344 ms to 119 ms.
+- **Predicate pushdown via row-group stats.** Filters that don't intersect a row group's min/max skip the whole group. Selective queries on big files get the I/O reduction without an index.
+- **HTTP Range requests for Parquet.** Reader pulls the footer, then only the bytes for the row groups it actually needs. No full-file download for most queries.
+- **Typed batch C API.** New `slothdb_column_int32_buffer / int64_buffer / double_buffer / varchar_buffer / validity_buffer`. The Python wrapper reads one buffer per column instead of two ctypes calls per cell. SELECT 2 columns x 10M rows: 46 s to 16 s.
+- **Direct `string_t` emit + lazy `QueryResult`.** Result chunks stay alive until the user pulls them; `fetchnumpy()` and `fetchdf()` skip the per-cell `Value` boxing entirely.
+- **`.ask` natural-language sub-REPL.** Rules parser in every build (sub-10 ms, no model). Optional local Qwen2.5-Coder GGUF fallback under `-DSLOTHDB_ASK_MODEL=ON`: 0.5B and 1.5B tiers picked by a deterministic keyword router. 29 languages. Generated SQL is shown before it runs. [docs/ASK.md](docs/ASK.md).
+- **JOIN hot path.** 138 ms vs 540 ms on the 5-query warm batch (1M x 1K) - typed int64 hash, parallel CSV pre-parse, build-side projection pushdown, COUNT(\*)-over-JOIN fused into the aggregate.
+- **`CREATE LIVE VIEW`** with incremental CSV append. Useful when a dashboard tails a log that keeps growing.
+- **Edge build** (`-DSLOTHDB_EDGE=ON`) for sub-MB WASM bundles under Cloudflare Workers' 1 MB cap.
+
+Per-commit history with bench deltas in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -210,8 +219,8 @@ df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
 
 | Platform | Command |
 |----------|---------|
-| Ubuntu / Debian | `sudo dpkg -i slothdb_0.1.7_amd64.deb` ([download](https://github.com/SouravRoy-ETL/slothdb/releases/latest)) |
-| Fedora / RHEL | `sudo rpm -i slothdb-0.1.7.rpm` (build from [spec](packaging/rpm/slothdb.spec)) |
+| Ubuntu / Debian | grab the latest `.deb` from [releases](https://github.com/SouravRoy-ETL/slothdb/releases/latest), then `sudo dpkg -i slothdb_*.deb` |
+| Fedora / RHEL | grab the latest `.rpm` from [releases](https://github.com/SouravRoy-ETL/slothdb/releases/latest), then `sudo rpm -i slothdb-*.rpm` (or build from [spec](packaging/rpm/slothdb.spec)) |
 | Arch Linux | `makepkg -si` ([PKGBUILD](packaging/arch/PKGBUILD)) |
 | macOS (Homebrew) | `brew install --build-from-source packaging/homebrew/slothdb.rb` |
 | Build from source | See [below](#build-from-source) |

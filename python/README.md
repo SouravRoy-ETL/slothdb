@@ -51,12 +51,12 @@ No server. No import step. No CREATE TABLE. Point SQL at files on disk.
 
 ## Why SlothDB?
 
-Same embedded model as DuckDB and SQLite — link it into your process, point SQL at files. Different defaults:
+Same embedded model as DuckDB and SQLite. You link it into your process and point SQL at files. Different defaults:
 
-- **7 file formats built in** — Parquet, CSV, JSON, Avro, Arrow, SQLite, Excel. DuckDB needs extensions for Avro and SQLite.
-- **1.1–8.6× faster than DuckDB** on a 1M-row benchmark across 15 queries. JSON parse is 8.6×, Avro SUM is 5.4×, CSV `COUNT(*)` is 5.1×. [Full numbers on GitHub →](https://github.com/SouravRoy-ETL/slothdb#performance)
-- **Stable C ABI** — extensions don't break across releases.
-- **~8 MB single binary**, fully self-contained.
+- **7 file formats built in** - Parquet, CSV, JSON, Avro, Arrow, SQLite, Excel. DuckDB needs extensions for Avro and SQLite.
+- **Faster than DuckDB on real workloads.** 5-query warm JOIN batch: 138 ms vs 540 ms (3.9x). Peak speedups: 5.43x on Avro SUM, 5.08x on CSV COUNT(\*), 2.83x on Parquet COUNT(\*). Median across the 16-query suite: 1.70x. [Full numbers on GitHub.](https://github.com/SouravRoy-ETL/slothdb#performance)
+- **Stable C ABI.** Numeric error codes don't shift between releases. Bindings built against 0.1.x keep working.
+- **~1-4 MB single binary**, fully self-contained.
 
 ## Quickstart
 
@@ -81,10 +81,13 @@ df = db.sql("SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region").fetc
 
 ## What's not production-ready yet
 
-- No multi-writer transactions (single-writer, crash-safe checkpoint).
-- No distributed execution — single-node embedded engine.
-- Some SQL corners still surprise you (open an [issue](https://github.com/SouravRoy-ETL/slothdb/issues)).
-- v0.1.5, ~6 months old. Treat as beta.
+- No multi-writer transactions (single writer, crash-safe checkpoint).
+- No distributed execution. Single-node embedded engine.
+- No secondary indexes. Scan-based execution; zone-map pruning helps on sorted data, but no B-tree / hash index for point lookups.
+- Window-function coverage is partial. Plain OVER / PARTITION BY works; `ROWS BETWEEN ...` frames and cumulative `SUM OVER (ORDER BY)` shapes have known gaps.
+- Authenticated S3 not implemented. `s3://` URLs work for anonymous public-bucket reads only.
+- Some SQL corners still surprise you. Open an [issue](https://github.com/SouravRoy-ETL/slothdb/issues) with a repro.
+- 0.2.x, about a year old. Treat as beta.
 
 ## Performance
 
