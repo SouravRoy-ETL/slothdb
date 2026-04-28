@@ -24,8 +24,11 @@ jobs:
         include:
           - { os: windows-latest, name: win_amd64 }
           - { os: ubuntu-24.04,   name: manylinux2014_x86_64 }
-          - { os: macos-13,       name: macosx_x86_64 }
-          - { os: macos-14,       name: macosx_arm64 }
+          # Single universal2 wheel covers both Intel and Apple Silicon
+          # in one artifact. The macos-13 (Intel-only) GitHub-hosted
+          # runners have unreliable capacity and routinely queue
+          # indefinitely, so we cross-build on macos-14 instead.
+          - { os: macos-14,       name: macosx_universal2 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -56,14 +59,27 @@ jobs:
           cmake --build build --config Release -j --target slothdb_shared
           cp build/src/Release/slothdb.dll python/slothdb/
 
-      - name: Build shared lib (macOS)
+      - name: Build shared lib (macOS, universal2)
         if: runner.os == 'macOS'
         run: |
-          cmake -B build -DSLOTHDB_BUILD_SHARED=ON -DSLOTHDB_BUILD_SHELL=OFF -DSLOTHDB_BUILD_TESTS=OFF -DSLOTHDB_ASK_MODEL=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake -B build \
+            -DSLOTHDB_BUILD_SHARED=ON -DSLOTHDB_BUILD_SHELL=OFF \
+            -DSLOTHDB_BUILD_TESTS=OFF -DSLOTHDB_ASK_MODEL=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
           cmake --build build -j$(sysctl -n hw.ncpu) --target slothdb_shared
+          # Confirm the dylib has both slices.
+          lipo -info build/src/libslothdb.dylib
           cp build/src/libslothdb.dylib python/slothdb/
 
       - name: Build wheel
+        shell: bash
+        env:
+          # Tag the macOS wheel as macosx_11_0_universal2 so pip serves
+          # it to both Intel and Apple Silicon users from one file.
+          _PYTHON_HOST_PLATFORM: ${{ runner.os == 'macOS' && 'macosx-11.0-universal2' || '' }}
+          ARCHFLAGS: ${{ runner.os == 'macOS' && '-arch x86_64 -arch arm64' || '' }}
         run: |
           python -m pip install --upgrade pip build
           python -m build --wheel python/
