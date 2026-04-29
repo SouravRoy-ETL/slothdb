@@ -3,6 +3,160 @@
 
 namespace slothdb {
 
+namespace {
+
+// Walks an expression tree and replaces any aggregate BoundFunction with a
+// BoundColumnRef pointing at the aggregate operator's output position. Each
+// hoisted aggregate is appended to `aggregates` (and its return type to
+// `agg_types`); the column ref is at `group_count + agg_idx`. Used so that
+// expressions like ROUND(AVG(x)), AVG(x)+1, and CAST(SUM(y) AS DOUBLE) get
+// their inner aggregate evaluated by the aggregate operator instead of the
+// scalar dispatcher (which doesn't know aggregates).
+void HoistAggregates(BoundExprPtr &expr,
+                     std::vector<BoundExprPtr> &aggregates,
+                     std::vector<LogicalType> &agg_types,
+                     idx_t group_count) {
+    if (!expr) return;
+    auto type = expr->GetExpressionType();
+
+    if (type == BoundExpressionType::FUNCTION) {
+        auto *fn = static_cast<BoundFunction *>(expr.get());
+        if (fn->is_aggregate) {
+            // Hoist this aggregate. Inner arguments are scalar (e.g.
+            // AVG(x*2)); they're evaluated inside the aggregate operator,
+            // not against the aggregate's output, so no rewrite needed.
+            idx_t internal_pos = group_count + agg_types.size();
+            auto ret = fn->GetReturnType();
+            agg_types.push_back(ret);
+            std::string name = fn->function_name;
+            aggregates.push_back(std::move(expr));
+            expr = std::make_unique<BoundColumnRef>(name, internal_pos, ret);
+            return;
+        }
+        // Non-aggregate function: recurse into args.
+        for (auto &arg : fn->arguments) HoistAggregates(arg, aggregates, agg_types, group_count);
+        return;
+    }
+    if (type == BoundExpressionType::ARITHMETIC) {
+        auto *a = static_cast<BoundArithmetic *>(expr.get());
+        HoistAggregates(a->left, aggregates, agg_types, group_count);
+        HoistAggregates(a->right, aggregates, agg_types, group_count);
+        return;
+    }
+    if (type == BoundExpressionType::COMPARISON) {
+        auto *a = static_cast<BoundComparison *>(expr.get());
+        HoistAggregates(a->left, aggregates, agg_types, group_count);
+        HoistAggregates(a->right, aggregates, agg_types, group_count);
+        return;
+    }
+    if (type == BoundExpressionType::CONJUNCTION) {
+        auto *a = static_cast<BoundConjunction *>(expr.get());
+        HoistAggregates(a->left, aggregates, agg_types, group_count);
+        HoistAggregates(a->right, aggregates, agg_types, group_count);
+        return;
+    }
+    if (type == BoundExpressionType::NEGATION) {
+        auto *a = static_cast<BoundNegation *>(expr.get());
+        HoistAggregates(a->child, aggregates, agg_types, group_count);
+        return;
+    }
+    if (type == BoundExpressionType::IS_NULL) {
+        auto *a = static_cast<BoundIsNull *>(expr.get());
+        HoistAggregates(a->child, aggregates, agg_types, group_count);
+        return;
+    }
+    if (type == BoundExpressionType::UNARY_MINUS) {
+        auto *a = static_cast<BoundUnaryMinus *>(expr.get());
+        HoistAggregates(a->child, aggregates, agg_types, group_count);
+        return;
+    }
+    if (type == BoundExpressionType::CAST) {
+        auto *a = static_cast<BoundCast *>(expr.get());
+        HoistAggregates(a->child, aggregates, agg_types, group_count);
+        return;
+    }
+    // COLUMN_REF, CONSTANT, STAR, WINDOW, SUBQUERY: leave alone.
+}
+
+// Walks an expression tree and rewrites any source-schema BoundColumnRef that
+// matches a GROUP BY column to the aggregate's group-output position. Stops
+// at aggregate-internal column refs (those produced by HoistAggregates already
+// address agg-internal schema and must not be remapped).
+void RemapGroupColumns(BoundExprPtr &expr,
+                       const std::vector<BoundExprPtr> &groups) {
+    if (!expr) return;
+    auto type = expr->GetExpressionType();
+
+    if (type == BoundExpressionType::COLUMN_REF) {
+        auto &cref = static_cast<BoundColumnRef &>(*expr);
+        // Skip refs already in agg-internal schema. We mark those by giving
+        // them column_index >= groups.size() during hoist, but agg outputs
+        // could collide with source col_idx. Cheaper signal: hoisted refs
+        // carry the function name; group remap targets source col names.
+        // To keep it simple: only remap if we find a matching source idx
+        // among the groups, and the ref is within source-schema range.
+        for (idx_t gi = 0; gi < groups.size(); gi++) {
+            if (!groups[gi]) continue;
+            if (groups[gi]->GetExpressionType() != BoundExpressionType::COLUMN_REF) continue;
+            auto &g_col = static_cast<BoundColumnRef &>(*groups[gi]);
+            if (g_col.column_index == cref.column_index &&
+                g_col.column_name == cref.column_name) {
+                cref.column_index = gi;
+                return;
+            }
+        }
+        return;
+    }
+    if (type == BoundExpressionType::FUNCTION) {
+        auto *fn = static_cast<BoundFunction *>(expr.get());
+        // Aggregate args were evaluated inside the aggregate operator
+        // against the SOURCE schema; leave their column refs alone.
+        if (fn->is_aggregate) return;
+        for (auto &arg : fn->arguments) RemapGroupColumns(arg, groups);
+        return;
+    }
+    if (type == BoundExpressionType::ARITHMETIC) {
+        auto *a = static_cast<BoundArithmetic *>(expr.get());
+        RemapGroupColumns(a->left, groups);
+        RemapGroupColumns(a->right, groups);
+        return;
+    }
+    if (type == BoundExpressionType::COMPARISON) {
+        auto *a = static_cast<BoundComparison *>(expr.get());
+        RemapGroupColumns(a->left, groups);
+        RemapGroupColumns(a->right, groups);
+        return;
+    }
+    if (type == BoundExpressionType::CONJUNCTION) {
+        auto *a = static_cast<BoundConjunction *>(expr.get());
+        RemapGroupColumns(a->left, groups);
+        RemapGroupColumns(a->right, groups);
+        return;
+    }
+    if (type == BoundExpressionType::NEGATION) {
+        auto *a = static_cast<BoundNegation *>(expr.get());
+        RemapGroupColumns(a->child, groups);
+        return;
+    }
+    if (type == BoundExpressionType::IS_NULL) {
+        auto *a = static_cast<BoundIsNull *>(expr.get());
+        RemapGroupColumns(a->child, groups);
+        return;
+    }
+    if (type == BoundExpressionType::UNARY_MINUS) {
+        auto *a = static_cast<BoundUnaryMinus *>(expr.get());
+        RemapGroupColumns(a->child, groups);
+        return;
+    }
+    if (type == BoundExpressionType::CAST) {
+        auto *a = static_cast<BoundCast *>(expr.get());
+        RemapGroupColumns(a->child, groups);
+        return;
+    }
+}
+
+} // namespace
+
 LogicalOpPtr Planner::Plan(const BoundStatement &stmt) {
     switch (stmt.GetType()) {
     case BoundStatementType::SELECT:
@@ -65,13 +219,19 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
     }
 
     // 3. Aggregation or Projection.
+    //
+    // Both the aggregation path and the plain-projection path defer the
+    // projection until AFTER ORDER BY. That way:
+    //  - For plain queries, ORDER BY reads source schema (otherwise a
+    //    narrower projection would crash on a source col_idx).
+    //  - For aggregate queries, ORDER BY reads aggregate-internal schema
+    //    [groups..., aggregates...] so `ORDER BY ROUND(AVG(salary))`
+    //    works after we hoist the aggregate. ORDER BY by alias re-binds
+    //    the original select-list expression in the binder, so it gets
+    //    the same hoist+remap treatment and addresses agg-internal
+    //    schema correctly.
+    std::unique_ptr<LogicalProjection> deferred_projection;
     if (stmt.has_aggregation) {
-        // The aggregate operator emits rows in [groups..., aggregates...]
-        // order regardless of how the user wrote the SELECT list. To give
-        // back the user's order (e.g. `SELECT COUNT(*), k ... GROUP BY k`
-        // where the aggregate comes before the group column), we build a
-        // Projection above the aggregate that picks columns out of the
-        // aggregate's internal schema in SELECT-list order.
         std::vector<BoundExprPtr> groups;
         for (auto &g : mutable_stmt.group_by) {
             groups.push_back(std::move(g));
@@ -88,49 +248,19 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
         proj_exprs.reserve(mutable_stmt.select_list.size());
 
         for (auto &expr : mutable_stmt.select_list) {
-            bool handled = false;
-            if (expr && expr->GetExpressionType() == BoundExpressionType::FUNCTION) {
-                auto *fn = static_cast<BoundFunction *>(expr.get());
-                if (fn->is_aggregate) {
-                    idx_t internal_pos = group_types.size() + agg_types.size();
-                    auto ret = fn->GetReturnType();
-                    agg_types.push_back(ret);
-                    proj_exprs.push_back(std::make_unique<BoundColumnRef>(
-                        fn->function_name, internal_pos, ret));
-                    aggregates.push_back(std::move(expr));
-                    handled = true;
-                }
-            }
-            if (!handled && expr &&
-                expr->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                // Must be a reference to a GROUP BY column; locate its
-                // position in the aggregate's internal schema.
-                auto &cref = static_cast<BoundColumnRef &>(*expr);
-                idx_t group_idx = INVALID_INDEX;
-                for (idx_t gi = 0; gi < groups.size(); gi++) {
-                    if (groups[gi] &&
-                        groups[gi]->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                        auto &g_col = static_cast<BoundColumnRef &>(*groups[gi]);
-                        if (g_col.column_index == cref.column_index) {
-                            group_idx = gi;
-                            break;
-                        }
-                    }
-                }
-                if (group_idx != INVALID_INDEX) {
-                    proj_exprs.push_back(std::make_unique<BoundColumnRef>(
-                        cref.column_name, group_idx, cref.GetReturnType()));
-                    handled = true;
-                }
-            }
-            if (!handled) {
-                // Fallback for shapes we don't yet classify (constants or
-                // composite expressions in the select list). Forward the
-                // expression unchanged - the projection evaluates it against
-                // the aggregate's output, which won't be meaningful for
-                // non-trivial cases but preserves prior behavior.
-                proj_exprs.push_back(std::move(expr));
-            }
+            // Two-pass rewrite: hoist aggregates anywhere in the tree
+            // (handles ROUND(AVG(x)), AVG(x)+1, CAST(SUM(y) AS DOUBLE)...),
+            // then remap remaining source column refs that match a GROUP BY.
+            HoistAggregates(expr, aggregates, agg_types, group_types.size());
+            RemapGroupColumns(expr, groups);
+            proj_exprs.push_back(std::move(expr));
+        }
+
+        // Same treatment for ORDER BY expressions so they read the same
+        // aggregate-internal schema as the projection does.
+        for (auto &item : mutable_stmt.order_by) {
+            HoistAggregates(item.expression, aggregates, agg_types, group_types.size());
+            RemapGroupColumns(item.expression, groups);
         }
 
         std::vector<LogicalType> agg_internal_types = group_types;
@@ -140,11 +270,10 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
         auto agg = std::make_unique<LogicalAggregate>(
             std::move(groups), std::move(aggregates), std::move(agg_internal_types));
         agg->children.push_back(std::move(plan));
+        plan = std::move(agg);
 
-        auto proj = std::make_unique<LogicalProjection>(
+        deferred_projection = std::make_unique<LogicalProjection>(
             std::move(proj_exprs), stmt.result_types);
-        proj->children.push_back(std::move(agg));
-        plan = std::move(proj);
     } else if (stmt.has_window) {
         // Window function evaluation.
         auto window = std::make_unique<LogicalWindow>(
@@ -153,21 +282,14 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
             stmt.result_types);
         window->children.push_back(std::move(plan));
         plan = std::move(window);
-    }
-    // For plain-projection queries we DEFER the projection until after
-    // ORDER BY. The ORDER BY expressions bind against source-schema column
-    // indices (the binder rewrites aliases back to their select-list
-    // expression but keeps source col_idx), so sorting on the projected
-    // output would read the wrong column - or crash when the projected
-    // width is narrower than the bound col_idx.
-    std::unique_ptr<LogicalProjection> deferred_projection;
-    if (!stmt.has_aggregation && !stmt.has_window) {
+    } else {
         deferred_projection = std::make_unique<LogicalProjection>(
             std::move(mutable_stmt.select_list), stmt.result_types);
     }
 
     // 4. ORDER BY - placed before the deferred projection so col_idx
-    // refers to source schema.
+    // refers to either source schema (plain queries) or aggregate-internal
+    // schema (aggregate queries with hoisted aggregates).
     if (!stmt.order_by.empty()) {
         auto order = std::make_unique<LogicalOrderBy>(
             std::move(mutable_stmt.order_by), plan->GetTypes());

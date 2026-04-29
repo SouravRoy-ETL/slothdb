@@ -1175,6 +1175,16 @@ private:
     // Compare(a, b) returns true if `a` should come before `b` in the
     // final OUTPUT order. Used both as the std::sort comparator and as
     // the priority_queue ordering function.
+    //
+    // For ORDER BY by plain column ref this reads `a[col_idx]` directly.
+    // For ORDER BY by expression (`ORDER BY ROUND(AVG(salary))`,
+    // `ORDER BY x + y`) the expression evaluator can't be invoked here
+    // cheaply per comparison, so callers must precompute `sort_keys_`
+    // (one Value per ORDER BY clause per row) and the comparator
+    // dispatches on `sort_keys_[idx]` instead. To keep the call sites
+    // simple, when sort_keys_ is populated, callers sort an `idx_perm_`
+    // vector via LessIdx; the std::vector<Value> overload is preserved
+    // for the all-column-ref fast path.
     bool Less(const std::vector<Value> &a, const std::vector<Value> &b) const {
         for (auto &order : orders_) {
             idx_t col_idx = 0;
@@ -1190,6 +1200,52 @@ private:
             if (vb < va) return !order.ascending;
         }
         return false;
+    }
+
+    // Compare two precomputed key rows. Used when at least one ORDER BY
+    // expression is a non-trivial scalar (function, arithmetic, cast).
+    bool LessKeys(const std::vector<Value> &ka, const std::vector<Value> &kb) const {
+        for (size_t k_i = 0; k_i < orders_.size(); k_i++) {
+            auto &va = ka[k_i];
+            auto &vb = kb[k_i];
+            if (va.IsNull() && vb.IsNull()) continue;
+            if (va.IsNull()) return !orders_[k_i].ascending;
+            if (vb.IsNull()) return orders_[k_i].ascending;
+            if (va < vb) return orders_[k_i].ascending;
+            if (vb < va) return !orders_[k_i].ascending;
+        }
+        return false;
+    }
+
+    // True iff every ORDER BY clause is a plain column reference. The
+    // hot CollectFull / CollectTopN paths use this to skip expression
+    // evaluation entirely.
+    bool AllOrderByAreColumnRefs() const {
+        for (auto &o : orders_) {
+            if (o.expression->GetExpressionType() != BoundExpressionType::COLUMN_REF) return false;
+        }
+        return true;
+    }
+
+    // Evaluate every ORDER BY expression on the given input chunk and
+    // append per-row keys to `out_keys`. One Value per ORDER BY clause.
+    void EvaluateOrderKeys(DataChunk &chunk,
+                           std::vector<std::vector<Value>> &out_keys) const {
+        std::vector<Vector> key_vecs;
+        key_vecs.reserve(orders_.size());
+        for (auto &o : orders_) {
+            Vector v(o.expression->GetReturnType(), chunk.size());
+            ExpressionExecutor::Execute(*o.expression, chunk, v, chunk.size());
+            key_vecs.push_back(std::move(v));
+        }
+        for (idx_t i = 0; i < chunk.size(); i++) {
+            std::vector<Value> key;
+            key.reserve(orders_.size());
+            for (idx_t k_i = 0; k_i < orders_.size(); k_i++) {
+                key.push_back(key_vecs[k_i].GetValue(i));
+            }
+            out_keys.push_back(std::move(key));
+        }
     }
 
     void CollectAll() {
@@ -1624,14 +1680,17 @@ private:
             std::vector<Value> row;
         };
         // Collect order-key column indices once (constant across rows).
+        // For non-trivial ORDER BY expressions (e.g. ROUND(AVG(x))) the
+        // column-index path doesn't apply, so we evaluate the expression
+        // on each chunk via ExpressionExecutor and extract keys from the
+        // result vector instead.
+        bool simple = AllOrderByAreColumnRefs();
         std::vector<idx_t> key_cols;
-        key_cols.reserve(orders_.size());
-        for (auto &o : orders_) {
-            idx_t ci = 0;
-            if (o.expression->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                ci = static_cast<BoundColumnRef &>(*o.expression).column_index;
+        if (simple) {
+            key_cols.reserve(orders_.size());
+            for (auto &o : orders_) {
+                key_cols.push_back(static_cast<BoundColumnRef &>(*o.expression).column_index);
             }
-            key_cols.push_back(ci);
         }
 
         auto less_keys = [this](const OrderKey &a, const OrderKey &b) {
@@ -1655,11 +1714,28 @@ private:
         while (true) {
             chunk.Initialize(children[0]->GetTypes());
             if (!children[0]->GetData(chunk)) break;
+            // For non-trivial ORDER BY expressions, evaluate them on the
+            // whole chunk up front, then extract per-row keys cheaply.
+            std::vector<Vector> expr_key_vecs;
+            if (!simple) {
+                expr_key_vecs.reserve(orders_.size());
+                for (auto &o : orders_) {
+                    Vector v(o.expression->GetReturnType(), chunk.size());
+                    ExpressionExecutor::Execute(*o.expression, chunk, v, chunk.size());
+                    expr_key_vecs.push_back(std::move(v));
+                }
+            }
             for (idx_t i = 0; i < chunk.size(); i++) {
                 // Build the key (cheap — only the ORDER BY columns).
                 OrderKey row_key;
-                row_key.values.reserve(key_cols.size());
-                for (idx_t kc : key_cols) row_key.values.push_back(chunk.GetValue(kc, i));
+                row_key.values.reserve(orders_.size());
+                if (simple) {
+                    for (idx_t kc : key_cols) row_key.values.push_back(chunk.GetValue(kc, i));
+                } else {
+                    for (idx_t k_i = 0; k_i < orders_.size(); k_i++) {
+                        row_key.values.push_back(expr_key_vecs[k_i].GetValue(i));
+                    }
+                }
 
                 if (pq.size() < k) {
                     HeapEntry e;
@@ -1695,9 +1771,12 @@ private:
 
     void CollectFull() {
         DataChunk chunk;
+        bool simple = AllOrderByAreColumnRefs();
+        std::vector<std::vector<Value>> keys; // populated only when !simple
         while (true) {
             chunk.Initialize(children[0]->GetTypes());
             if (!children[0]->GetData(chunk)) break;
+            if (!simple) EvaluateOrderKeys(chunk, keys);
             for (idx_t i = 0; i < chunk.size(); i++) {
                 std::vector<Value> row;
                 for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
@@ -1706,10 +1785,23 @@ private:
                 sorted_rows_.push_back(std::move(row));
             }
         }
-        std::sort(sorted_rows_.begin(), sorted_rows_.end(),
-            [this](const std::vector<Value> &a, const std::vector<Value> &b) {
-                return Less(a, b);
-            });
+        if (simple) {
+            std::sort(sorted_rows_.begin(), sorted_rows_.end(),
+                [this](const std::vector<Value> &a, const std::vector<Value> &b) {
+                    return Less(a, b);
+                });
+        } else {
+            // Sort an index permutation by precomputed keys, then
+            // permute sorted_rows_ in one pass.
+            std::vector<idx_t> perm(sorted_rows_.size());
+            for (idx_t i = 0; i < perm.size(); i++) perm[i] = i;
+            std::sort(perm.begin(), perm.end(),
+                [&](idx_t a, idx_t b) { return LessKeys(keys[a], keys[b]); });
+            std::vector<std::vector<Value>> reordered;
+            reordered.reserve(sorted_rows_.size());
+            for (auto i : perm) reordered.push_back(std::move(sorted_rows_[i]));
+            sorted_rows_ = std::move(reordered);
+        }
     }
 
     std::vector<BoundOrderBy> orders_;

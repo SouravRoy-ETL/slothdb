@@ -128,3 +128,85 @@ TEST_CASE("Aggregation - empty table") {
     CHECK(result.RowCount() == 1);
     CHECK(result.GetValue(0, 0).GetValue<int64_t>() == 0);
 }
+
+// Regression: ROUND(AVG(x)) used to throw "Function execution for: AVG"
+// because the planner only hoisted top-level aggregate calls. Anything
+// nested inside a scalar wrapper (ROUND, CAST, arithmetic) fell through
+// and AVG hit the scalar dispatcher.
+TEST_CASE("Aggregation - nested aggregate inside scalar function") {
+    Database db;
+    Connection conn(db);
+    setup_employees(conn);
+
+    auto result = conn.Query(
+        "SELECT dept, ROUND(AVG(salary)) AS avg_s "
+        "FROM emp GROUP BY dept ORDER BY avg_s DESC");
+    CHECK(result.RowCount() == 3);
+    // Engineering: round((100+120)/2)=110; Eve(Marketing)=95; Sales=85.
+    CHECK(result.GetValue(0, 0).GetValue<std::string>() == "Engineering");
+    CHECK(result.GetValue(0, 1).GetValue<double>() == doctest::Approx(110.0));
+    CHECK(result.GetValue(1, 0).GetValue<std::string>() == "Marketing");
+    CHECK(result.GetValue(1, 1).GetValue<double>() == doctest::Approx(95.0));
+    CHECK(result.GetValue(2, 0).GetValue<std::string>() == "Sales");
+    CHECK(result.GetValue(2, 1).GetValue<double>() == doctest::Approx(85.0));
+}
+
+TEST_CASE("Aggregation - aggregate with arithmetic literal") {
+    Database db;
+    Connection conn(db);
+    setup_employees(conn);
+
+    auto result = conn.Query(
+        "SELECT dept, AVG(salary) + 1 AS bumped "
+        "FROM emp GROUP BY dept ORDER BY bumped DESC");
+    CHECK(result.RowCount() == 3);
+    CHECK(result.GetValue(0, 1).GetValue<double>() == doctest::Approx(111.0));
+    CHECK(result.GetValue(1, 1).GetValue<double>() == doctest::Approx(96.0));
+    CHECK(result.GetValue(2, 1).GetValue<double>() == doctest::Approx(86.0));
+}
+
+TEST_CASE("Aggregation - two aggregates dividing each other") {
+    Database db;
+    Connection conn(db);
+    setup_employees(conn);
+
+    auto result = conn.Query(
+        "SELECT dept, SUM(salary) / COUNT(*) AS per_head "
+        "FROM emp GROUP BY dept ORDER BY per_head DESC");
+    CHECK(result.RowCount() == 3);
+    // Engineering 220/2 = 110, Marketing 95/1 = 95, Sales 170/2 = 85.
+    CHECK(result.GetValue(0, 0).GetValue<std::string>() == "Engineering");
+    CHECK(result.GetValue(1, 0).GetValue<std::string>() == "Marketing");
+    CHECK(result.GetValue(2, 0).GetValue<std::string>() == "Sales");
+}
+
+TEST_CASE("Aggregation - cast of aggregate") {
+    Database db;
+    Connection conn(db);
+    setup_employees(conn);
+
+    auto result = conn.Query(
+        "SELECT dept, CAST(SUM(salary) AS DOUBLE) AS s_sum "
+        "FROM emp GROUP BY dept ORDER BY s_sum DESC");
+    CHECK(result.RowCount() == 3);
+    CHECK(result.GetValue(0, 1).GetValue<double>() == doctest::Approx(220.0));
+}
+
+// Regression: ORDER BY by aggregate alias used to silently sort by col 0.
+TEST_CASE("Aggregation - ORDER BY aggregate alias") {
+    Database db;
+    Connection conn(db);
+    setup_employees(conn);
+
+    auto result = conn.Query(
+        "SELECT dept, COUNT(*) AS cnt FROM emp GROUP BY dept ORDER BY cnt DESC, dept");
+    CHECK(result.RowCount() == 3);
+    // Engineering=2 and Sales=2 tie on cnt; tie-break dept ASC -> Engineering, Sales.
+    // Marketing=1 last.
+    CHECK(result.GetValue(0, 0).GetValue<std::string>() == "Engineering");
+    CHECK(result.GetValue(0, 1).GetValue<int64_t>() == 2);
+    CHECK(result.GetValue(1, 0).GetValue<std::string>() == "Sales");
+    CHECK(result.GetValue(1, 1).GetValue<int64_t>() == 2);
+    CHECK(result.GetValue(2, 0).GetValue<std::string>() == "Marketing");
+    CHECK(result.GetValue(2, 1).GetValue<int64_t>() == 1);
+}

@@ -305,12 +305,85 @@ void ExpressionExecutor::ArithmeticTyped(const std::string &op, Vector &left, Ve
     }
 }
 
+// Cast a numeric Vector to `target_type` if its current type doesn't match.
+// Returns the original Vector by-move if no cast is needed; otherwise builds
+// a new Vector of target_type with converted values. Falls back to Value
+// boxing for uncommon conversions; the typed branches are inlined for the
+// hot int32/int64 -> double path that hits whenever a numeric literal is
+// mixed with a DOUBLE-typed aggregate (e.g. AVG(x) + 1, AVG(x)/COUNT(*)).
+static Vector CoerceVector(Vector &&src, const LogicalType &target_type, idx_t count) {
+    if (src.GetType().id() == target_type.id()) return std::move(src);
+    Vector out(target_type, count);
+    auto src_id = src.GetType().id();
+    auto dst_id = target_type.id();
+
+    auto copy_validity = [&]() {
+        for (idx_t i = 0; i < count; i++) {
+            if (!src.GetValidity().RowIsValid(i)) out.GetValidity().SetInvalid(i);
+        }
+    };
+
+    if (dst_id == LogicalTypeId::DOUBLE) {
+        auto *o = out.GetData<double>();
+        if (src_id == LogicalTypeId::INTEGER) {
+            auto *s = src.GetData<int32_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<double>(s[i]);
+            copy_validity(); return out;
+        }
+        if (src_id == LogicalTypeId::BIGINT) {
+            auto *s = src.GetData<int64_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<double>(s[i]);
+            copy_validity(); return out;
+        }
+        if (src_id == LogicalTypeId::FLOAT) {
+            auto *s = src.GetData<float>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<double>(s[i]);
+            copy_validity(); return out;
+        }
+    } else if (dst_id == LogicalTypeId::BIGINT) {
+        auto *o = out.GetData<int64_t>();
+        if (src_id == LogicalTypeId::INTEGER) {
+            auto *s = src.GetData<int32_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<int64_t>(s[i]);
+            copy_validity(); return out;
+        }
+    } else if (dst_id == LogicalTypeId::FLOAT) {
+        auto *o = out.GetData<float>();
+        if (src_id == LogicalTypeId::INTEGER) {
+            auto *s = src.GetData<int32_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<float>(s[i]);
+            copy_validity(); return out;
+        }
+        if (src_id == LogicalTypeId::BIGINT) {
+            auto *s = src.GetData<int64_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<float>(s[i]);
+            copy_validity(); return out;
+        }
+    }
+    // Fallback: per-row boxed conversion.
+    for (idx_t i = 0; i < count; i++) {
+        if (!src.GetValidity().RowIsValid(i)) {
+            out.GetValidity().SetInvalid(i); continue;
+        }
+        out.SetValue(i, src.GetValue(i));
+    }
+    return out;
+}
+
 void ExpressionExecutor::ExecuteArithmetic(const BoundArithmetic &expr, DataChunk &input,
                                             Vector &result, idx_t count) {
     Vector left(expr.left->GetReturnType(), count);
     Vector right(expr.right->GetReturnType(), count);
     Execute(*expr.left, input, left, count);
     Execute(*expr.right, input, right, count);
+
+    // Promote operands to result type so ArithmeticTyped<T> below reads the
+    // right physical layout. Without this, mixing AVG (DOUBLE) with an
+    // INTEGER literal turns into a reinterpret-cast on raw int bytes.
+    if (expr.op != "%" && expr.op != "||") {
+        left = CoerceVector(std::move(left), result.GetType(), count);
+        right = CoerceVector(std::move(right), result.GetType(), count);
+    }
 
     // Handle % modulo for integers.
     if (expr.op == "%") {
