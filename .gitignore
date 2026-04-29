@@ -71,3 +71,4 @@ real-life-testing/
 
 # Personal benchmarking + reports — kept locally, not committed.
 sloth-test/
+_private/
