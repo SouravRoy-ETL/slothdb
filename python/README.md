@@ -49,6 +49,13 @@ df = db.sql("SELECT region, SUM(revenue) FROM 'sales.parquet' GROUP BY region").
 
 No server. No import step. No CREATE TABLE. Point SQL at files on disk.
 
+## What's new in 0.2.5
+
+- Nested aggregates work everywhere. `ROUND(AVG(x))`, `AVG(x) + 1`, `SUM(x) / COUNT(*)`, `CAST(SUM(y) AS DOUBLE)` and similar shapes that wrap an aggregate inside a scalar function or arithmetic used to throw "Function execution for: AVG". Fixed.
+- `ORDER BY` by aggregate alias works. `SELECT region, COUNT(*) AS cnt ... ORDER BY cnt DESC` no longer silently sorts by column 0.
+- Arithmetic type promotion fixed. `AVG(x) + 1` no longer drops the `+1` and `AVG(x) / COUNT(*)` no longer returns `inf`.
+- 408 unit tests, 131,537 assertions, green on Windows, Linux, macOS.
+
 ## Why SlothDB?
 
 Same embedded model as DuckDB and SQLite. You link it into your process and point SQL at files. Different defaults:

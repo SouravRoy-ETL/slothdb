@@ -79,6 +79,15 @@ const { columns, rows } = db.query("SELECT 1 AS n");
 
 ---
 
+## What's new in 0.2.5
+
+- **Nested aggregates work everywhere.** `ROUND(AVG(x))`, `AVG(x) + 1`, `SUM(x) / COUNT(*)`, `CAST(SUM(y) AS DOUBLE)` and other shapes that wrap an aggregate inside a scalar function or arithmetic used to throw "Function execution for: AVG". The planner now walks the whole expression tree and hoists every aggregate it finds, no matter how deep, so you can write the SELECT list the way you'd write it in DuckDB or Postgres.
+- **`ORDER BY` by aggregate alias works.** `SELECT region, COUNT(*) AS cnt FROM ... GROUP BY region ORDER BY cnt DESC` used to default the sort to column 0 and silently sort by region. `PhysicalOrderBy` now precomputes per-row order keys via the expression executor whenever any clause isn't a plain column ref. Both the full-sort and top-N heap paths use the precomputed keys.
+- **Arithmetic type promotion fixed.** A pre-existing bug surfaced by the hoist: `AVG(x) + 1` would lose the `+1` and `AVG(x) / COUNT(*)` would return `inf`, both because the typed arithmetic kernel reinterpreted operand bytes instead of converting them. Now coerces both operands to the result type with typed fast paths (int to double, int to bigint, float to double).
+- **`bench/` directory at the repo root.** All 43 ClickBench queries verbatim from `ClickHouse/ClickBench` plus a 16-query mixed suite, behind a generic Python runner. Reproducible side-by-side timing against DuckDB. See [bench/README.md](bench/README.md).
+
+408 tests, 131,537 assertions, green on Windows / Linux / macOS.
+
 ## What's new in 0.2.3
 
 - **GZIP and ZSTD Parquet decode.** miniz handles codec=2 with a hand-rolled RFC 1952 header peel (the gzip wrapper miniz refuses by default). Vendored libzstd 1.5.6, decompression-only subset, adds about 50 KB to the binary and unblocks codec=6 files written by Spark / pyarrow / parquet-mr defaults.
@@ -86,8 +95,6 @@ const { columns, rows } = db.query("SELECT 1 AS n");
 - **Single-threaded WASM stops crashing on GROUP BY.** `std::thread` spawn is now routed through a `HWThreads()` helper that returns 1 under `__EMSCRIPTEN__ && !__EMSCRIPTEN_PTHREADS__` and runs the worker inline.
 - **HTTPS Parquet from the browser playground.** Tiny Cloudflare Worker proxy ([cloudflare/cors-proxy/](cloudflare/cors-proxy/), 60 lines, free-tier-friendly) routes around CORS for buckets that don't set `Access-Control-Allow-Origin`. `FROM 'https://host/file.parquet'` works in the playground for any host.
 - **Discord server.** [discord.gg/XJWyGmX5G](https://discord.gg/XJWyGmX5G). Bug reports, weird query plans, perf threads, anything.
-
-403 tests, 131,513 assertions, green on Windows / Linux / macOS.
 
 ### Previously in 0.2.0 - 0.2.2
 
