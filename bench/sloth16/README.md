@@ -34,9 +34,6 @@ python bench/run.py \
 ```
 
 The dataset has columns: `id, region, product, year, quantity, revenue, channel, ...`.
-Q5 (`WHERE region = 'EU'`) returns 0 rows on the synthetic dataset
-(regions are MEA/APAC/India/US-East/...). DuckDB skips it via parquet
-min/max stats; SlothDB doesn't yet prune string equalities, so the time
-gap there reflects a real (tracked) gap in string-stat pushdown rather
-than a fundamental engine difference. Pick a region that exists in your
-dataset for an apples-to-apples filter benchmark.
+Region values include APAC, EU-North, EU-South, India, LATAM, MEA, US-East,
+US-West, Canada, Australia. Q5 filters on `region = 'APAC'` (about 1M of
+the 10M rows). Edit the query if your dataset uses different values.

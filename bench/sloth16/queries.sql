@@ -14,7 +14,7 @@ SELECT MIN(revenue), MAX(revenue), AVG(revenue) FROM data;
 
 -- Block B: filtered point queries
 SELECT COUNT(*) FROM data WHERE year >= 2023;
-SELECT SUM(revenue) FROM data WHERE region = 'EU';
+SELECT SUM(revenue) FROM data WHERE region = 'APAC';
 
 -- Block C: simple GROUP BY
 SELECT region, COUNT(*), SUM(revenue) FROM data GROUP BY region ORDER BY region;
