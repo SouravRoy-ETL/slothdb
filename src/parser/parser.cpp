@@ -738,7 +738,7 @@ ParsedExprPtr Parser::ParseComparison() {
         return std::make_unique<ComparisonExpression>(op, std::move(left), std::move(right));
     }
 
-    // LIKE / ILIKE
+    // LIKE / ILIKE / NOT LIKE / NOT ILIKE
     if (MatchKeyword(TokenType::KW_LIKE)) {
         auto right = ParseAddSub();
         return std::make_unique<ComparisonExpression>("LIKE", std::move(left), std::move(right));
@@ -746,6 +746,20 @@ ParsedExprPtr Parser::ParseComparison() {
     if (MatchKeyword(TokenType::KW_ILIKE)) {
         auto right = ParseAddSub();
         return std::make_unique<ComparisonExpression>("ILIKE", std::move(left), std::move(right));
+    }
+    if (CheckKeyword(TokenType::KW_NOT) && pos_ + 1 < tokens_.size() &&
+        tokens_[pos_ + 1].type == TokenType::KW_LIKE) {
+        Advance(); // NOT
+        Advance(); // LIKE
+        auto right = ParseAddSub();
+        return std::make_unique<ComparisonExpression>("NOT LIKE", std::move(left), std::move(right));
+    }
+    if (CheckKeyword(TokenType::KW_NOT) && pos_ + 1 < tokens_.size() &&
+        tokens_[pos_ + 1].type == TokenType::KW_ILIKE) {
+        Advance(); // NOT
+        Advance(); // ILIKE
+        auto right = ParseAddSub();
+        return std::make_unique<ComparisonExpression>("NOT ILIKE", std::move(left), std::move(right));
     }
 
     // BETWEEN x AND y  ->  x >= low AND x <= high

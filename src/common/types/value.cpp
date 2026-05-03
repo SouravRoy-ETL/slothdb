@@ -161,6 +161,52 @@ Value Value::TIMESTAMP(int64_t micros) {
     return result;
 }
 
+// Days from civil 1970-01-01 to civil (y,m,d). Inverse of DaysToYMD above.
+// Algorithm by Howard Hinnant; valid for any proleptic Gregorian date.
+static int32_t DaysFromYMD(int y, unsigned m, unsigned d) {
+    y -= (m <= 2);
+    int era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = static_cast<unsigned>(y - era * 400);
+    unsigned doy = (153u * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + static_cast<int>(doe) - 719468;
+}
+
+bool Value::TryParseTimestampMicros(const char *s, size_t len, int64_t &out_micros) {
+    // Strict: 'YYYY-MM-DD HH:MM:SS' (19 chars) or with '.ffffff' suffix (1-6 digits).
+    if (len < 19) return false;
+    auto digit = [&](size_t i) { return s[i] >= '0' && s[i] <= '9'; };
+    static const size_t kDigitPos[] = {0,1,2,3, 5,6, 8,9, 11,12, 14,15, 17,18};
+    for (size_t i : kDigitPos)
+        if (!digit(i)) return false;
+    if (s[4] != '-' || s[7] != '-' || s[10] != ' ' || s[13] != ':' || s[16] != ':')
+        return false;
+    int y = (s[0]-'0')*1000 + (s[1]-'0')*100 + (s[2]-'0')*10 + (s[3]-'0');
+    unsigned mo = (s[5]-'0')*10 + (s[6]-'0');
+    unsigned d  = (s[8]-'0')*10 + (s[9]-'0');
+    unsigned hh = (s[11]-'0')*10 + (s[12]-'0');
+    unsigned mm = (s[14]-'0')*10 + (s[15]-'0');
+    unsigned ss = (s[17]-'0')*10 + (s[18]-'0');
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || hh > 23 || mm > 59 || ss > 59)
+        return false;
+    int64_t frac_us = 0;
+    if (len > 19) {
+        if (s[19] != '.') return false;
+        size_t fd = 0;
+        while (19 + 1 + fd < len && fd < 6 && digit(19 + 1 + fd)) {
+            frac_us = frac_us * 10 + (s[19 + 1 + fd] - '0');
+            fd++;
+        }
+        if (fd == 0 || 19 + 1 + fd != len) return false;
+        for (size_t i = fd; i < 6; i++) frac_us *= 10;
+    }
+    int64_t days = DaysFromYMD(y, mo, d);
+    int64_t secs = days * 86400 + static_cast<int64_t>(hh) * 3600
+                 + static_cast<int64_t>(mm) * 60 + static_cast<int64_t>(ss);
+    out_micros = secs * 1000000 + frac_us;
+    return true;
+}
+
 Value Value::TIME(int64_t micros) {
     Value result(micros);
     result.type_ = LogicalType::TIME();

@@ -30,6 +30,18 @@ endif()
 add_library(slothdb_lib STATIC ${SLOTHDB_SOURCES})
 set_target_properties(slothdb_lib PROPERTIES OUTPUT_NAME "slothdb")
 
+# Enable AVX2 codegen for the analytics core (parquet + planner). AVX2 has
+# been the practical x86 baseline since 2013 (Haswell+) — every CPU the
+# benchmark suite targets supports it. Lets MSVC auto-vectorize the SUM/AVG
+# inner loops to 256-bit and unlocks _mm256_cvtepi32_pd in physical_planner.
+if(NOT EMSCRIPTEN)
+    if(MSVC)
+        target_compile_options(slothdb_lib PRIVATE /arch:AVX2)
+    else()
+        target_compile_options(slothdb_lib PRIVATE -mavx2)
+    endif()
+endif()
+
 if(SLOTHDB_EDGE)
     target_compile_definitions(slothdb_lib PUBLIC SLOTHDB_EDGE=1)
 endif()

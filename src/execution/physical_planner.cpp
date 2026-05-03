@@ -31,6 +31,15 @@
 #include <unordered_map>
 #include <unordered_set>
 
+// AVX2 baseline (Haswell+, 2013). CMake adds /arch:AVX2 (MSVC) or -mavx2
+// to slothdb_lib so we can use 256-bit SIMD directly. Used by the FUSED
+// PARQUET FAST PATH's INT32 SUM hot loop (Q3 / AVG over 100M rows).
+// MSVC defines __AVX2__ when /arch:AVX2 is set.
+#if defined(__AVX2__)
+#include <immintrin.h>
+#define SLOTHDB_PP_HAS_AVX2 1
+#endif
+
 namespace slothdb {
 
 // Forward declarations - classes that reference each other across definitions.
@@ -52,7 +61,12 @@ enum class SimpleCmpOp { LT, LE, GT, GE, EQ, NE };
 struct SimplePredicate {
     idx_t col_idx;
     SimpleCmpOp op;
-    double dval;   // comparison value cast to double (numeric columns)
+    double dval;       // numeric form: comparison value cast to double
+    std::string sval;  // VARCHAR form: literal bytes (for EQ/NE: full literal;
+                       // for like_contains: bare needle with %s stripped)
+    bool str_form = false;
+    bool like_contains = false;  // VARCHAR LIKE '%literal%' (case-sensitive,
+                                 // no _, no escapes, exactly one %...%)
 };
 
 static bool ParseCmpOp(const std::string &s, SimpleCmpOp &out) {
@@ -91,8 +105,28 @@ static bool TryCompileSimplePredicate(const BoundExpression &e,
     auto &col = static_cast<const BoundColumnRef &>(*lhs);
     auto &con = static_cast<const BoundConstant &>(*rhs);
     auto tid = col.GetReturnType().id();
-    if (tid != LogicalTypeId::BIGINT && tid != LogicalTypeId::INTEGER &&
-        tid != LogicalTypeId::DOUBLE && tid != LogicalTypeId::FLOAT) return false;
+    // LIKE '%literal%' (case-sensitive, no _, no escapes) on a VARCHAR
+    // column. Stash the bare needle and route the row-loop through
+    // memmem/std::search instead of the per-row backtracker. ILIKE and
+    // NOT LIKE keep falling through to the legacy expression executor.
+    if (!swapped && cmp.op == "LIKE" && tid == LogicalTypeId::VARCHAR) {
+        if (con.value.IsNull()) return false;
+        if (con.value.type().id() != LogicalTypeId::VARCHAR) return false;
+        const auto &pat = con.value.GetValue<std::string>();
+        if (pat.size() < 2 || pat.front() != '%' || pat.back() != '%') return false;
+        std::string needle = pat.substr(1, pat.size() - 2);
+        for (char c : needle) {
+            if (c == '%' || c == '_' || c == '\\') return false;
+        }
+        SimplePredicate sp;
+        sp.col_idx = col.column_index;
+        sp.op = SimpleCmpOp::EQ;  // unused for LIKE; satisfies field init
+        sp.sval = std::move(needle);
+        sp.str_form = true;
+        sp.like_contains = true;
+        out.push_back(std::move(sp));
+        return true;
+    }
     SimpleCmpOp op;
     if (!ParseCmpOp(cmp.op, op)) return false;
     if (swapped) {
@@ -105,6 +139,24 @@ static bool TryCompileSimplePredicate(const BoundExpression &e,
         case SimpleCmpOp::EQ: case SimpleCmpOp::NE: break;
         }
     }
+    // VARCHAR EQ/NE against a string literal — supports the ClickBench
+    // shape `WHERE Col <> ''` (Q11/Q12/Q13/Q14/Q15/Q22) without falling
+    // back to the slow generic path. Other ops on VARCHAR (LIKE, range
+    // comparisons) stay unsupported here.
+    if (tid == LogicalTypeId::VARCHAR) {
+        if (op != SimpleCmpOp::EQ && op != SimpleCmpOp::NE) return false;
+        if (con.value.IsNull()) return false;
+        if (con.value.type().id() != LogicalTypeId::VARCHAR) return false;
+        SimplePredicate sp;
+        sp.col_idx = col.column_index;
+        sp.op = op;
+        sp.sval = con.value.GetValue<std::string>();
+        sp.str_form = true;
+        out.push_back(std::move(sp));
+        return true;
+    }
+    if (tid != LogicalTypeId::BIGINT && tid != LogicalTypeId::INTEGER &&
+        tid != LogicalTypeId::DOUBLE && tid != LogicalTypeId::FLOAT) return false;
     double d;
     try {
         auto vtid = con.value.type().id();
@@ -119,7 +171,11 @@ static bool TryCompileSimplePredicate(const BoundExpression &e,
         default: return false;
         }
     } catch (...) { return false; }
-    out.push_back({col.column_index, op, d});
+    SimplePredicate sp;
+    sp.col_idx = col.column_index;
+    sp.op = op;
+    sp.dval = d;
+    out.push_back(std::move(sp));
     return true;
 }
 
@@ -131,6 +187,25 @@ static inline bool EvalSimplePredicatesChunk(
     for (const auto &p : preds) {
         auto &v = chunk.GetVector(p.col_idx);
         if (!v.GetValidity().RowIsValid(r)) return false;
+        if (p.str_form) {
+            if (v.GetType().id() != LogicalTypeId::VARCHAR) return false;
+            const auto &s = v.GetData<string_t>()[r];
+            if (p.like_contains) {
+                const char *hs = s.GetData();
+                uint32_t hl = s.GetSize();
+                if (p.sval.empty()) continue;
+                if (hl < p.sval.size()) return false;
+                auto end = hs + hl;
+                if (std::search(hs, end, p.sval.begin(), p.sval.end()) == end) return false;
+                continue;
+            }
+            bool eq = (s.GetSize() == p.sval.size()) &&
+                      (p.sval.empty() ||
+                       std::memcmp(s.GetData(), p.sval.data(), p.sval.size()) == 0);
+            if (p.op == SimpleCmpOp::EQ) { if (!eq) return false; }
+            else                         { if (eq)  return false; }
+            continue;
+        }
         double val;
         switch (v.GetType().id()) {
         case LogicalTypeId::BIGINT:  val = static_cast<double>(v.GetData<int64_t>()[r]); break;
@@ -161,6 +236,39 @@ static inline bool EvalSimplePredicates(const std::vector<SimplePredicate> &pred
         const auto &c = cols[p.col_idx];
         if (!c.decoded) return false; // can't eval if column wasn't typed-decoded
         if (!c.all_valid && !c.validity[r]) return false;
+        if (p.str_form) {
+            if (c.type.id() != LogicalTypeId::VARCHAR) return false;
+            // Two layouts available: dict-encoded (str_dict_indices +
+            // str_dict_values) or expanded str_data. Prefer dict — one
+            // memcmp per dict entry vs one per row in the caller's loop
+            // is the same big-O here, but keeps the per-row work to a
+            // single load + compare.
+            const char *sd; uint32_t sl;
+            if (c.str_dict_encoded && !c.str_dict_indices.empty()) {
+                uint32_t di = c.str_dict_indices[r];
+                if (di >= c.str_dict_values.size()) return false;
+                sd = c.str_dict_values[di].GetData();
+                sl = c.str_dict_values[di].GetSize();
+            } else if (!c.str_data.empty()) {
+                sd = c.str_data[r].GetData();
+                sl = c.str_data[r].GetSize();
+            } else {
+                return false;
+            }
+            if (p.like_contains) {
+                if (p.sval.empty()) continue;
+                if (sl < p.sval.size()) return false;
+                auto end = sd + sl;
+                if (std::search(sd, end, p.sval.begin(), p.sval.end()) == end) return false;
+                continue;
+            }
+            bool eq = (sl == p.sval.size()) &&
+                      (p.sval.empty() ||
+                       std::memcmp(sd, p.sval.data(), p.sval.size()) == 0);
+            if (p.op == SimpleCmpOp::EQ) { if (!eq) return false; }
+            else                         { if (eq)  return false; }
+            continue;
+        }
         double v;
         switch (c.type.id()) {
         case LogicalTypeId::BIGINT:  v = static_cast<double>(c.i64_data[r]); break;
@@ -176,6 +284,98 @@ static inline bool EvalSimplePredicates(const std::vector<SimplePredicate> &pred
         case SimpleCmpOp::GE: if (!(v >= p.dval)) return false; break;
         case SimpleCmpOp::EQ: if (v != p.dval) return false; break;
         case SimpleCmpOp::NE: if (v == p.dval) return false; break;
+        }
+    }
+    return true;
+}
+
+// Build a per-row keep mask for a list of SimplePredicates over a row
+// group's column data. Returns true on success and fills `out_mask`
+// (size == nrows, 1 = keep, 0 = drop). Returns false if any predicate
+// can't be represented in the typed-vector form (mixed-page strings
+// without a dict, NULL handling required, unsupported op, missing
+// data). Auto-vectorizes — replaces per-row dispatch through
+// EvalSimplePredicates which costs ~30 cyc/row × 100M rows on Q8/Q11.
+static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
+                                       const std::vector<ParquetColumnData> &cols,
+                                       idx_t nrows,
+                                       std::vector<uint8_t> &out_mask) {
+    if (preds.empty()) return false;
+    for (auto &p : preds) {
+        if (p.col_idx >= cols.size()) return false;
+        const auto &c = cols[p.col_idx];
+        if (!c.decoded || !c.all_valid) return false;
+        if (p.str_form) {
+            if (c.type.id() != LogicalTypeId::VARCHAR) return false;
+            if (!c.str_dict_encoded || c.str_dict_indices.empty()) return false;
+            if (p.like_contains) continue;
+            if (p.op != SimpleCmpOp::EQ && p.op != SimpleCmpOp::NE) return false;
+        } else {
+            if (c.type.id() != LogicalTypeId::INTEGER &&
+                c.type.id() != LogicalTypeId::BIGINT) return false;
+        }
+    }
+    out_mask.assign(nrows, 1);
+    for (auto &p : preds) {
+        const auto &c = cols[p.col_idx];
+        if (p.str_form) {
+            // Precompute dict_match[d] once per dict entry (~thousands)
+            // instead of per row (~100M). The per-row inner loop becomes
+            // a single load + bitwise-and.
+            idx_t dsz = c.str_dict_values.size();
+            std::vector<uint8_t> dict_match(dsz, 0);
+            if (p.like_contains) {
+                const auto &needle = p.sval;
+                if (needle.empty()) {
+                    std::fill(dict_match.begin(), dict_match.end(), 1);
+                } else {
+                    for (idx_t di = 0; di < dsz; di++) {
+                        const auto &dv = c.str_dict_values[di];
+                        const char *hs = dv.GetData();
+                        uint32_t hl = dv.GetSize();
+                        if (hl < needle.size()) { dict_match[di] = 0; continue; }
+                        auto end = hs + hl;
+                        dict_match[di] =
+                            (std::search(hs, end, needle.begin(), needle.end()) != end)
+                                ? 1 : 0;
+                    }
+                }
+            } else {
+                for (idx_t di = 0; di < dsz; di++) {
+                    const auto &dv = c.str_dict_values[di];
+                    bool eq = (dv.GetSize() == p.sval.size()) &&
+                              (p.sval.empty() ||
+                               std::memcmp(dv.GetData(), p.sval.data(), p.sval.size()) == 0);
+                    dict_match[di] = ((p.op == SimpleCmpOp::EQ) ? eq : !eq) ? 1 : 0;
+                }
+            }
+            const uint32_t *idx_arr = c.str_dict_indices.data();
+            for (idx_t r = 0; r < nrows; r++) out_mask[r] &= dict_match[idx_arr[r]];
+        } else {
+            int64_t pv = (int64_t)p.dval;
+            auto ctid = c.type.id();
+            if (ctid == LogicalTypeId::INTEGER) {
+                const int32_t *arr = c.i32_data.data();
+                int32_t pv32 = (int32_t)pv;
+                switch (p.op) {
+                case SimpleCmpOp::EQ: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] == pv32); break;
+                case SimpleCmpOp::NE: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] != pv32); break;
+                case SimpleCmpOp::LT: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] <  pv32); break;
+                case SimpleCmpOp::LE: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] <= pv32); break;
+                case SimpleCmpOp::GT: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] >  pv32); break;
+                case SimpleCmpOp::GE: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] >= pv32); break;
+                }
+            } else { // BIGINT
+                const int64_t *arr = c.i64_data.data();
+                switch (p.op) {
+                case SimpleCmpOp::EQ: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] == pv); break;
+                case SimpleCmpOp::NE: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] != pv); break;
+                case SimpleCmpOp::LT: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] <  pv); break;
+                case SimpleCmpOp::LE: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] <= pv); break;
+                case SimpleCmpOp::GT: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] >  pv); break;
+                case SimpleCmpOp::GE: for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(arr[r] >= pv); break;
+                }
+            }
         }
     }
     return true;
@@ -1015,6 +1215,9 @@ public:
     PhysicalProjection(std::vector<BoundExprPtr> expressions, std::vector<LogicalType> types)
         : PhysicalOperator(PhysicalOperatorType::PROJECTION, std::move(types)),
           expressions_(std::move(expressions)) {}
+
+    // Exposed so multi-col GROUP BY fast path can peek through GROUP-BY-by-expr lift.
+    const std::vector<BoundExprPtr> &GetExpressions() const { return expressions_; }
 
     // Pass row-limit hints through. LIMIT -> PROJECTION -> ORDER_BY is a
     // common plan shape; without forwarding here, ORDER_BY does a full
@@ -3795,7 +3998,8 @@ private:
         std::string str_delim;
         bool bool_and = true;       // for BOOL_AND
         bool bool_or = false;       // for BOOL_OR
-        std::unordered_set<std::string> distinct_set; // for COUNT(DISTINCT)
+        std::unordered_set<std::string> distinct_set; // for COUNT(DISTINCT VARCHAR / mixed)
+        ankerl::unordered_dense::set<int64_t> distinct_int_set; // INT/BIGINT fast path
     };
 
     struct AggInfo {
@@ -3803,6 +4007,18 @@ private:
         idx_t col_idx;        // column index if simple column ref, else INVALID_INDEX
         bool is_count_star;
         bool is_distinct;
+        // Algebraic collapse: when the agg is SUM(col +/- const), share the
+        // base SUM(col) + COUNT_NON_NULL(col) scan and synthesize the per-
+        // agg result as `state.sum + offset * state.count` at emit. Q30's
+        // 90 SUM(ResolutionWidth + N) calls collapse to ONE scan instead
+        // of 90× per-row Value boxing in the generic agg path.
+        bool sum_with_offset = false;
+        double sum_offset = 0.0;
+        // Dedup: when multiple aggs target the same (col, name), only the
+        // first one (primary) runs the scan; the rest set `primary_idx`
+        // pointing to it and skip the inner loop. Emit reads from the
+        // primary's AggState. Drops Q30's 90 redundant column scans to 1.
+        idx_t primary_idx = INVALID_INDEX;
     };
 
     // Fused JOIN+aggregate hot-loop - defined out-of-class (needs full PhysicalHashJoin).
@@ -3871,9 +4087,76 @@ private:
             agg_infos[a].is_count_star = agg_expr.arguments.empty();
             agg_infos[a].is_distinct = agg_expr.is_distinct;
             agg_infos[a].col_idx = INVALID_INDEX;
-            if (!agg_expr.arguments.empty() &&
-                agg_expr.arguments[0]->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                agg_infos[a].col_idx = static_cast<BoundColumnRef &>(*agg_expr.arguments[0]).column_index;
+            if (!agg_expr.arguments.empty()) {
+                auto &arg = *agg_expr.arguments[0];
+                if (arg.GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                    agg_infos[a].col_idx = static_cast<BoundColumnRef &>(arg).column_index;
+                } else if (agg_infos[a].name == "SUM" && !agg_infos[a].is_distinct &&
+                           arg.GetExpressionType() == BoundExpressionType::ARITHMETIC) {
+                    // Detect SUM(col +/- const): share the base scan and
+                    // derive each result at emit. Accept (col OP const) or
+                    // (const + col); subtract is only valid as (col - const).
+                    auto &ar = static_cast<BoundArithmetic &>(arg);
+                    const BoundExpression *col_side = nullptr;
+                    const BoundExpression *con_side = nullptr;
+                    bool col_on_left = false;
+                    if (ar.left->GetExpressionType() == BoundExpressionType::COLUMN_REF &&
+                        ar.right->GetExpressionType() == BoundExpressionType::CONSTANT) {
+                        col_side = ar.left.get(); con_side = ar.right.get();
+                        col_on_left = true;
+                    } else if (ar.left->GetExpressionType() == BoundExpressionType::CONSTANT &&
+                               ar.right->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                        col_side = ar.right.get(); con_side = ar.left.get();
+                        col_on_left = false;
+                    }
+                    if (col_side && con_side && (ar.op == "+" || (ar.op == "-" && col_on_left))) {
+                        const auto &con = static_cast<const BoundConstant &>(*con_side);
+                        if (!con.value.IsNull()) {
+                            double off = 0.0;
+                            bool ok = true;
+                            try {
+                                switch (con.value.type().id()) {
+                                case LogicalTypeId::TINYINT:  off = (double)con.value.GetValue<int8_t>(); break;
+                                case LogicalTypeId::SMALLINT: off = (double)con.value.GetValue<int16_t>(); break;
+                                case LogicalTypeId::INTEGER:  off = (double)con.value.GetValue<int32_t>(); break;
+                                case LogicalTypeId::BIGINT:   off = (double)con.value.GetValue<int64_t>(); break;
+                                case LogicalTypeId::FLOAT:    off = (double)con.value.GetValue<float>(); break;
+                                case LogicalTypeId::DOUBLE:   off = con.value.GetValue<double>(); break;
+                                default: ok = false; break;
+                                }
+                            } catch (...) { ok = false; }
+                            if (ok) {
+                                if (ar.op == "-") off = -off;
+                                agg_infos[a].col_idx =
+                                    static_cast<const BoundColumnRef &>(*col_side).column_index;
+                                agg_infos[a].sum_with_offset = true;
+                                agg_infos[a].sum_offset = off;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Dedup: same (col, name, !is_distinct) → only the primary runs the
+        // scan. Q30 has 90 SUMs over the same column; without this, the
+        // FUSED PARQUET FAST PATH iterates the typed-numeric inner loop 90×
+        // per row group. SUM with offsets shares one base scan because
+        // emit synthesizes `sum + offset * count` per agg.
+        for (idx_t a = 0; a < num_aggs; a++) {
+            auto &info = agg_infos[a];
+            if (info.is_count_star) continue;
+            if (info.col_idx == INVALID_INDEX) continue;
+            if (info.is_distinct) continue;
+            if (info.name != "SUM" && info.name != "COUNT" &&
+                info.name != "AVG" && info.name != "MIN" && info.name != "MAX") continue;
+            for (idx_t b = 0; b < a; b++) {
+                auto &binfo = agg_infos[b];
+                if (binfo.is_count_star) continue;
+                if (binfo.col_idx != info.col_idx) continue;
+                if (binfo.is_distinct) continue;
+                if (binfo.name != info.name) continue;
+                info.primary_idx = b;
+                break;
             }
         }
 
@@ -3936,6 +4219,14 @@ private:
         // and the predicate compiles, apply it per-row inside the worker loop.
         std::vector<SimplePredicate> fused_preds;
         bool fused_has_filter = false;
+        // GROUP-BY-by-expr lift peek-through (T-204): planner inserts a
+        // PhysicalProjection that materializes lifted exprs as synthetic
+        // columns appended after `passthrough_w` source columns. Without
+        // this peek, the parallel worker can't see the underlying scan and
+        // we fall back to the per-row generic slow path.
+        idx_t lift_passthrough_w = 0;
+        std::vector<const BoundExpression *> lift_exprs;
+        bool lift_active = false;
         if (single_group_fast || multi_group_fast) {
             file_scan_for_group = dynamic_cast<PhysicalFileScan *>(children[0].get());
             if (!file_scan_for_group) {
@@ -3953,6 +4244,59 @@ private:
                     }
                 }
             }
+            if (!file_scan_for_group) {
+                if (auto *proj = dynamic_cast<PhysicalProjection *>(children[0].get())) {
+                    if (!proj->children.empty()) {
+                        PhysicalFileScan *inner_scan = nullptr;
+                        std::vector<SimplePredicate> tmp;
+                        bool tmp_has_filter = false;
+                        if (auto *fs_direct = dynamic_cast<PhysicalFileScan *>(proj->children[0].get())) {
+                            inner_scan = fs_direct;
+                        } else if (auto *flt = dynamic_cast<PhysicalFilter *>(proj->children[0].get())) {
+                            if (!flt->children.empty()) {
+                                if (auto *fs_under_flt = dynamic_cast<PhysicalFileScan *>(flt->children[0].get())) {
+                                    if (flt->GetCondition() &&
+                                        TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                                        inner_scan = fs_under_flt;
+                                        tmp_has_filter = true;
+                                    }
+                                }
+                            }
+                        }
+                        if (inner_scan) {
+                            const auto &exprs = proj->GetExpressions();
+                            idx_t source_w = inner_scan->GetTypes().size();
+                            bool ok = exprs.size() >= source_w;
+                            for (idx_t i = 0; ok && i < source_w; i++) {
+                                auto *e = exprs[i].get();
+                                if (!e || e->GetExpressionType() != BoundExpressionType::COLUMN_REF) {
+                                    ok = false; break;
+                                }
+                                if (static_cast<const BoundColumnRef &>(*e).column_index != i) {
+                                    ok = false; break;
+                                }
+                            }
+                            for (idx_t i = source_w; ok && i < exprs.size(); i++) {
+                                auto *e = exprs[i].get();
+                                if (!e || e->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                                    ok = false; break;
+                                }
+                            }
+                            if (ok) {
+                                file_scan_for_group = inner_scan;
+                                lift_passthrough_w = source_w;
+                                for (idx_t i = source_w; i < exprs.size(); i++)
+                                    lift_exprs.push_back(exprs[i].get());
+                                lift_active = true;
+                                if (tmp_has_filter) {
+                                    fused_preds = std::move(tmp);
+                                    fused_has_filter = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         // Parallel GROUP BY (single or multi col): activate for large files.
         PhysicalFileScan *parallel_scan = nullptr;
@@ -3964,9 +4308,58 @@ private:
             {
                 idx_t nc = file_scan_for_group->GetTypes().size();
                 std::vector<bool> need(nc, false);
-                for (idx_t gc : group_col_indices) if (gc < nc) need[gc] = true;
-                for (auto &info : agg_infos) if (info.col_idx != INVALID_INDEX && info.col_idx < nc) need[info.col_idx] = true;
-                for (auto &p : fused_preds) if (p.col_idx < nc) need[p.col_idx] = true;
+                if (lift_active) {
+                    // group_col_indices and agg col_idx live in POST-lift slot
+                    // space. Source-slot indices (< passthrough_w) need their
+                    // source column directly; lifted indices need every source
+                    // column referenced by the lifted expression tree.
+                    std::function<void(const BoundExpression &)> walk =
+                        [&](const BoundExpression &x) {
+                            if (x.GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                                auto &c = static_cast<const BoundColumnRef &>(x);
+                                if (c.column_index < nc) need[c.column_index] = true;
+                            } else if (x.GetExpressionType() == BoundExpressionType::COMPARISON) {
+                                auto &c = static_cast<const BoundComparison &>(x);
+                                walk(*c.left); walk(*c.right);
+                            } else if (x.GetExpressionType() == BoundExpressionType::ARITHMETIC) {
+                                auto &a = static_cast<const BoundArithmetic &>(x);
+                                walk(*a.left); walk(*a.right);
+                            } else if (x.GetExpressionType() == BoundExpressionType::FUNCTION) {
+                                auto &f = static_cast<const BoundFunction &>(x);
+                                for (auto &a : f.arguments) walk(*a);
+                            } else if (x.GetExpressionType() == BoundExpressionType::CAST) {
+                                auto &c = static_cast<const BoundCast &>(x);
+                                walk(*c.child);
+                            } else if (x.GetExpressionType() == BoundExpressionType::CONJUNCTION) {
+                                auto &c = static_cast<const BoundConjunction &>(x);
+                                walk(*c.left); walk(*c.right);
+                            } else if (x.GetExpressionType() == BoundExpressionType::NEGATION) {
+                                auto &n = static_cast<const BoundNegation &>(x);
+                                walk(*n.child);
+                            } else if (x.GetExpressionType() == BoundExpressionType::IS_NULL) {
+                                auto &n = static_cast<const BoundIsNull &>(x);
+                                walk(*n.child);
+                            } else if (x.GetExpressionType() == BoundExpressionType::UNARY_MINUS) {
+                                auto &u = static_cast<const BoundUnaryMinus &>(x);
+                                walk(*u.child);
+                            }
+                        };
+                    auto resolve = [&](idx_t post_idx) {
+                        if (post_idx < lift_passthrough_w) {
+                            if (post_idx < nc) need[post_idx] = true;
+                        } else {
+                            idx_t li = post_idx - lift_passthrough_w;
+                            if (li < lift_exprs.size() && lift_exprs[li]) walk(*lift_exprs[li]);
+                        }
+                    };
+                    for (idx_t gc : group_col_indices) resolve(gc);
+                    for (auto &info : agg_infos) if (info.col_idx != INVALID_INDEX) resolve(info.col_idx);
+                    for (auto &p : fused_preds) if (p.col_idx < nc) need[p.col_idx] = true;
+                } else {
+                    for (idx_t gc : group_col_indices) if (gc < nc) need[gc] = true;
+                    for (auto &info : agg_infos) if (info.col_idx != INVALID_INDEX && info.col_idx < nc) need[info.col_idx] = true;
+                    for (auto &p : fused_preds) if (p.col_idx < nc) need[p.col_idx] = true;
+                }
                 file_scan_for_group->SetProjection(need);
             }
             file_scan_for_group->Init(); // open reader + header if not already
@@ -3994,7 +4387,11 @@ private:
 
             bool multi_group = group_col_indices.size() > 1;
             idx_t group_col = group_col_indices[0];
-            auto types = children[0]->GetTypes();
+            // When lift is active the worker reads the inner scan's source
+            // types and materializes lifted columns separately per chunk.
+            auto types = lift_active ? file_scan_for_group->GetTypes()
+                                     : children[0]->GetTypes();
+            auto post_lift_types = children[0]->GetTypes();
 
             struct ThreadState {
                 std::unordered_map<int64_t, std::vector<AggState>> int_groups;
@@ -4012,6 +4409,16 @@ private:
                     FastCSVReader thread_reader(buffer, ranges[t], ranges[t + 1], delim);
                     DataChunk chunk;
                     chunk.Initialize(types);
+                    // Per-thread output buffers for lifted expressions, sized
+                    // to VECTOR_SIZE on first use. Only allocated when lift active.
+                    std::vector<std::unique_ptr<Vector>> lift_out;
+                    if (lift_active) {
+                        lift_out.reserve(lift_exprs.size());
+                        for (idx_t li = 0; li < lift_exprs.size(); li++) {
+                            lift_out.push_back(std::make_unique<Vector>(
+                                post_lift_types[lift_passthrough_w + li], VECTOR_SIZE));
+                        }
+                    }
 
                     while (true) {
                         chunk.Reset();
@@ -4020,7 +4427,28 @@ private:
                             : thread_reader.ReadChunkProjected(chunk, types, projection);
                         if (cnt == 0) break;
 
-                        auto &gvec = chunk.GetVector(group_col);
+                        if (lift_active) {
+                            for (idx_t li = 0; li < lift_exprs.size(); li++) {
+                                lift_out[li]->GetValidity().Reset();
+                                ExpressionExecutor::Execute(*lift_exprs[li], chunk,
+                                                            *lift_out[li], cnt);
+                            }
+                        }
+
+                        auto get_vec = [&](idx_t gci) -> Vector & {
+                            if (lift_active && gci >= lift_passthrough_w) {
+                                return *lift_out[gci - lift_passthrough_w];
+                            }
+                            return chunk.GetVector(gci);
+                        };
+                        auto get_value = [&](idx_t gci, idx_t i) -> Value {
+                            if (lift_active && gci >= lift_passthrough_w) {
+                                return lift_out[gci - lift_passthrough_w]->GetValue(i);
+                            }
+                            return chunk.GetValue(gci, i);
+                        };
+
+                        auto &gvec = get_vec(group_col);
                         auto gtid = gvec.GetType().id();
                         bool is_int = (gtid == LogicalTypeId::INTEGER || gtid == LogicalTypeId::BIGINT) && !multi_group;
 
@@ -4032,7 +4460,7 @@ private:
                                 // Concatenated string key for multi-col GROUP BY.
                                 std::string k;
                                 for (idx_t gci : group_col_indices) {
-                                    auto &v = chunk.GetVector(gci);
+                                    auto &v = get_vec(gci);
                                     auto tid = v.GetType().id();
                                     if (!v.GetValidity().RowIsValid(i)) { k += "\x01N"; }
                                     else if (tid == LogicalTypeId::INTEGER)
@@ -4052,7 +4480,7 @@ private:
                                     std::vector<Value> vals;
                                     vals.reserve(group_col_indices.size());
                                     for (idx_t gci : group_col_indices)
-                                        vals.push_back(chunk.GetValue(gci, i));
+                                        vals.push_back(get_value(gci, i));
                                     ts.str_keys_multi[k] = std::move(vals);
                                     it = ts.str_groups.emplace(std::move(k), std::vector<AggState>(num_aggs)).first;
                                 }
@@ -4063,7 +4491,7 @@ private:
                                     : (int64_t)reinterpret_cast<const int32_t *>(gvec.GetData())[i];
                                 auto it = ts.int_groups.find(k);
                                 if (it == ts.int_groups.end()) {
-                                    ts.int_keys[k] = chunk.GetValue(group_col, i);
+                                    ts.int_keys[k] = get_value(group_col, i);
                                     it = ts.int_groups.emplace(k, std::vector<AggState>(num_aggs)).first;
                                 }
                                 states_ptr = &it->second;
@@ -4072,7 +4500,7 @@ private:
                                 std::string k(s.GetData(), s.GetSize());
                                 auto it = ts.str_groups.find(k);
                                 if (it == ts.str_groups.end()) {
-                                    ts.str_keys[k] = chunk.GetValue(group_col, i);
+                                    ts.str_keys[k] = get_value(group_col, i);
                                     it = ts.str_groups.emplace(std::move(k), std::vector<AggState>(num_aggs)).first;
                                 }
                                 states_ptr = &it->second;
@@ -4085,7 +4513,7 @@ private:
                                 if (info.name == "COUNT" && info.is_count_star) {
                                     state.count++;
                                 } else if (info.col_idx != INVALID_INDEX) {
-                                    auto &vec = chunk.GetVector(info.col_idx);
+                                    auto &vec = get_vec(info.col_idx);
                                     if (vec.GetValidity().RowIsValid(i)) {
                                         if (info.name == "COUNT") {
                                             state.count++;
@@ -4625,9 +5053,23 @@ private:
                         } else { ac[a].col = nullptr; }
                     }
 
+                    // Vectorized per-RG keep mask when all preds reduce to
+                    // typed numeric or dict-encoded VARCHAR cmp. Drops the
+                    // ~30 cyc/row EvalSimplePredicates dispatch to a single
+                    // mask load. Q8 SELECT AdvEngineID, COUNT(*) WHERE
+                    // AdvEngineID <> 0 lives here.
+                    std::vector<uint8_t> typed_keep_mask;
+                    bool typed_keep_active = false;
+                    if (single_has_filter_fused) {
+                        typed_keep_active = BuildTypedKeepMask(single_preds, work.cols,
+                                                                nrows, typed_keep_mask);
+                    }
+
                     for (idx_t r = 0; r < nrows; r++) {
-                        if (single_has_filter_fused &&
-                            !EvalSimplePredicates(single_preds, work.cols, r)) continue;
+                        if (typed_keep_active) {
+                            if (!typed_keep_mask[r]) continue;
+                        } else if (single_has_filter_fused &&
+                                   !EvalSimplePredicates(single_preds, work.cols, r)) continue;
                         std::vector<AggState> *states_ptr = nullptr;
                         if (is_bigint || is_integer) {
                             int64_t k = is_bigint ? gi64[r] : (int64_t)gi32[r];
@@ -4940,6 +5382,80 @@ private:
                 fused_pq->SetRGConsumer(
                     [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {
                         idx_t nrows = fused_pq->RowGroupSize(rg_idx);
+                        // VARCHAR EQ/NE/LIKE preds: route through the
+                        // dict-amortised BuildTypedKeepMask. Sum the mask to
+                        // get the local count. Falls back to row-loop on
+                        // non-dict RGs.
+                        bool any_str = false;
+                        for (auto &p : fused_count_preds) if (p.str_form) { any_str = true; break; }
+                        if (any_str) {
+                            std::vector<uint8_t> mask;
+                            if (BuildTypedKeepMask(fused_count_preds, work.cols, nrows, mask)) {
+                                int64_t local = 0;
+                                for (idx_t i = 0; i < nrows; i++) local += mask[i];
+                                tl_match[tid % MAX_THREADS].fetch_add(local, std::memory_order_relaxed);
+                                return;
+                            }
+                            // Fallback row-loop. Handles RGs where typed
+                            // decode failed (cols_fallback Value-vector) so
+                            // correctness matches the slow ExpressionExecutor
+                            // path even on non-dict / mixed pages.
+                            int64_t local = 0;
+                            for (idx_t i = 0; i < nrows; i++) {
+                                bool keep = true;
+                                for (auto &p : fused_count_preds) {
+                                    const auto &col = work.cols[p.col_idx];
+                                    if (col.decoded) {
+                                        if (!col.all_valid && !col.validity[i]) { keep = false; break; }
+                                        if (p.str_form) {
+                                            const char *sd = nullptr; uint32_t sl = 0;
+                                            if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
+                                                uint32_t di = col.str_dict_indices[i];
+                                                if (di >= col.str_dict_values.size()) { keep = false; break; }
+                                                sd = col.str_dict_values[di].GetData();
+                                                sl = col.str_dict_values[di].GetSize();
+                                            } else if (!col.str_data.empty()) {
+                                                sd = col.str_data[i].GetData();
+                                                sl = col.str_data[i].GetSize();
+                                            } else { keep = false; break; }
+                                            if (p.like_contains) {
+                                                if (p.sval.empty()) continue;
+                                                if (sl < p.sval.size()) { keep = false; break; }
+                                                auto e = sd + sl;
+                                                if (std::search(sd, e, p.sval.begin(), p.sval.end()) == e) {
+                                                    keep = false; break;
+                                                }
+                                            } else {
+                                                bool eq = (sl == p.sval.size()) &&
+                                                          (p.sval.empty() ||
+                                                           std::memcmp(sd, p.sval.data(), p.sval.size()) == 0);
+                                                if (p.op == SimpleCmpOp::EQ) { if (!eq) { keep = false; break; } }
+                                                else                         { if (eq)  { keep = false; break; } }
+                                            }
+                                            continue;
+                                        }
+                                        keep = false; break;
+                                    }
+                                    if (p.col_idx >= work.cols_fallback.size()) { keep = false; break; }
+                                    const auto &vals = work.cols_fallback[p.col_idx];
+                                    if (i >= vals.size() || vals[i].IsNull()) { keep = false; break; }
+                                    if (!p.str_form) { keep = false; break; }
+                                    const auto &s = vals[i].GetValue<std::string>();
+                                    if (p.like_contains) {
+                                        if (!p.sval.empty() && s.find(p.sval) == std::string::npos) {
+                                            keep = false; break;
+                                        }
+                                    } else {
+                                        bool eq = (s == p.sval);
+                                        if (p.op == SimpleCmpOp::EQ) { if (!eq) { keep = false; break; } }
+                                        else                         { if (eq)  { keep = false; break; } }
+                                    }
+                                }
+                                if (keep) ++local;
+                            }
+                            tl_match[tid % MAX_THREADS].fetch_add(local, std::memory_order_relaxed);
+                            return;
+                        }
                         // Hoist per-predicate column pointers + type + op
                         // outside the row loop. Inner loop is a tight
                         // typed-array compare; the compiler auto-vectorises
@@ -5168,20 +5684,137 @@ private:
             // work is already tiny - 80 RGs × SUM is <10ms - so paying per-
             // query thread-pool teardown+spawn to parallelize it nets negative.
             if (auto *pq = dynamic_cast<PhysicalParquetScan *>(children[0].get())) {
-                idx_t rg_idx;
-                while (auto work = pq->PullNextRG(rg_idx)) {
+                // === STATS-ONLY FAST PATH ===
+                // When every agg is COUNT(*) / MIN(col) / MAX(col) and the
+                // column has per-RG min/max in the footer, fold from stats
+                // and skip the scan entirely. Q7 SELECT MIN(EventDate),
+                // MAX(EventDate) FROM hits answered in single-digit ms vs
+                // ~400 ms decode-and-scan.
+                bool stats_only = (num_aggs > 0);
+                for (idx_t a = 0; a < num_aggs && stats_only; a++) {
+                    auto &info = agg_infos[a];
+                    if (info.name == "COUNT" && info.is_count_star) continue;
+                    if ((info.name == "MIN" || info.name == "MAX") &&
+                        !info.is_distinct && info.col_idx != INVALID_INDEX) continue;
+                    stats_only = false;
+                }
+                if (stats_only) {
+                    pq->Init();
+                    auto *reader = pq->GetReader();
+                    const auto &meta = reader->GetMeta();
+                    bool all_stats = true;
+                    for (auto &rg : meta.row_groups) {
+                        for (idx_t a = 0; a < num_aggs && all_stats; a++) {
+                            auto &info = agg_infos[a];
+                            if (info.name != "MIN" && info.name != "MAX") continue;
+                            if (info.col_idx >= rg.columns.size() ||
+                                !rg.columns[info.col_idx].has_stats) {
+                                all_stats = false;
+                            }
+                        }
+                        if (!all_stats) break;
+                    }
+                    if (all_stats) {
+                        for (idx_t a = 0; a < num_aggs; a++) {
+                            auto &info = agg_infos[a];
+                            auto &state = states[a];
+                            if (info.name == "COUNT" && info.is_count_star) {
+                                state.count = meta.num_rows;
+                            } else if (info.name == "MIN") {
+                                for (auto &rg : meta.row_groups) {
+                                    const auto &v = rg.columns[info.col_idx].min_value;
+                                    if (v.IsNull()) continue;
+                                    if (!state.has_min || v < state.min_val) {
+                                        state.min_val = v;
+                                        state.has_min = true;
+                                    }
+                                }
+                            } else if (info.name == "MAX") {
+                                for (auto &rg : meta.row_groups) {
+                                    const auto &v = rg.columns[info.col_idx].max_value;
+                                    if (v.IsNull()) continue;
+                                    if (!state.has_max || state.max_val < v) {
+                                        state.max_val = v;
+                                        state.has_max = true;
+                                    }
+                                }
+                            }
+                        }
+                        total_rows_processed += static_cast<idx_t>(meta.num_rows);
+                        goto fused_parquet_stats_only_done;
+                    }
+                }
+                {
+                auto *meta_for_stats_p = pq->GetReader();
+                const ParquetFileMeta *meta_for_stats = meta_for_stats_p
+                    ? &meta_for_stats_p->GetMeta() : nullptr;
+                constexpr int MAX_THREADS = 8;
+                std::vector<std::vector<AggState>> tl_states(MAX_THREADS);
+                for (auto &v : tl_states) v.resize(num_aggs);
+                std::vector<idx_t> tl_rows(MAX_THREADS, 0);
+                pq->SetRGConsumer([&](const PhysicalParquetScan::RGWork &work,
+                                       idx_t rg_idx, int thread_id) {
+                    auto &lstates = tl_states[thread_id];
                     idx_t nrows = pq->RowGroupSize(rg_idx);
                     for (idx_t a = 0; a < num_aggs; a++) {
-                        auto &state = states[a];
+                        auto &state = lstates[a];
                         auto &info = agg_infos[a];
                         if (info.name == "COUNT" && info.is_count_star) {
                             state.count += static_cast<int64_t>(nrows);
                             continue;
                         }
                         if (info.col_idx == INVALID_INDEX) continue;
-                        const auto &col = work->cols[info.col_idx];
+                        // Skip duplicates: emit reads from the primary's
+                        // state and applies any per-agg offset. Critical
+                        // for Q30: 90 SUMs over the same column → 1 scan.
+                        if (info.primary_idx != INVALID_INDEX) continue;
+                        // Per-RG stats fold: when this column's min == max in
+                        // this RG (every row holds the same value), roll up
+                        // SUM/COUNT/MIN/MAX from the metadata directly and
+                        // skip the typed inner loop. Q3 SUM(AdvEngineID)
+                        // hits this constantly — most RGs are all-zero.
+                        if (meta_for_stats &&
+                            rg_idx < meta_for_stats->row_groups.size() &&
+                            info.col_idx < meta_for_stats->row_groups[rg_idx].columns.size()) {
+                            const auto &cmeta = meta_for_stats->row_groups[rg_idx].columns[info.col_idx];
+                            if (cmeta.has_stats && !cmeta.min_value.IsNull() &&
+                                !cmeta.max_value.IsNull() &&
+                                cmeta.min_value == cmeta.max_value) {
+                                auto vt = cmeta.min_value.type().id();
+                                if (vt == LogicalTypeId::BIGINT || vt == LogicalTypeId::INTEGER ||
+                                    vt == LogicalTypeId::DOUBLE || vt == LogicalTypeId::FLOAT) {
+                                    double dv = 0;
+                                    switch (vt) {
+                                    case LogicalTypeId::BIGINT:  dv = (double)cmeta.min_value.GetValue<int64_t>(); break;
+                                    case LogicalTypeId::INTEGER: dv = (double)cmeta.min_value.GetValue<int32_t>(); break;
+                                    case LogicalTypeId::DOUBLE:  dv = cmeta.min_value.GetValue<double>(); break;
+                                    case LogicalTypeId::FLOAT:   dv = (double)cmeta.min_value.GetValue<float>(); break;
+                                    default: break;
+                                    }
+                                    if (info.name == "SUM" || info.name == "AVG") {
+                                        state.sum += dv * static_cast<double>(nrows);
+                                        state.count += static_cast<int64_t>(nrows);
+                                        continue;
+                                    } else if (info.name == "COUNT") {
+                                        state.count += static_cast<int64_t>(nrows);
+                                        continue;
+                                    } else if (info.name == "MIN") {
+                                        if (!state.has_min || dv < state.sum_min) {
+                                            state.sum_min = dv; state.has_min = true;
+                                        }
+                                        continue;
+                                    } else if (info.name == "MAX") {
+                                        if (!state.has_max || dv > state.sum_max) {
+                                            state.sum_max = dv; state.has_max = true;
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        const auto &col = work.cols[info.col_idx];
                         if (!col.decoded) {
-                            const auto &vals = work->cols_fallback[info.col_idx];
+                            const auto &vals = work.cols_fallback[info.col_idx];
                             for (auto &v : vals) {
                                 if (v.IsNull()) continue;
                                 if (info.name == "COUNT") state.count++;
@@ -5216,10 +5849,59 @@ private:
                                         typename std::remove_pointer<decltype(arr)>::type>::type;
                             if (info.name == "SUM" || info.name == "AVG") {
                                 if (all_valid) {
-                                    double s = 0;
-                                    for (idx_t i = 0; i < nrows; i++) s += static_cast<double>(arr[i]);
-                                    state.sum += s;
+#ifdef SLOTHDB_PP_HAS_AVX2
+                                    if constexpr (std::is_same_v<T, int32_t>) {
+                                        // AVX2 INT32 SUM: 4 vector accumulators
+                                        // × 4 doubles each = 16-lane effective
+                                        // pipelining; _mm256_cvtepi32_pd
+                                        // promotes 4 int32 → 4 doubles per
+                                        // instruction. Q3 AVG(ResolutionWidth)
+                                        // and Q5 AVG over 100M rows live here.
+                                        __m256d acc0 = _mm256_setzero_pd();
+                                        __m256d acc1 = _mm256_setzero_pd();
+                                        __m256d acc2 = _mm256_setzero_pd();
+                                        __m256d acc3 = _mm256_setzero_pd();
+                                        idx_t i = 0;
+                                        for (; i + 16 <= nrows; i += 16) {
+                                            __m128i v0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(arr + i));
+                                            __m128i v1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(arr + i + 4));
+                                            __m128i v2 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(arr + i + 8));
+                                            __m128i v3 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(arr + i + 12));
+                                            acc0 = _mm256_add_pd(acc0, _mm256_cvtepi32_pd(v0));
+                                            acc1 = _mm256_add_pd(acc1, _mm256_cvtepi32_pd(v1));
+                                            acc2 = _mm256_add_pd(acc2, _mm256_cvtepi32_pd(v2));
+                                            acc3 = _mm256_add_pd(acc3, _mm256_cvtepi32_pd(v3));
+                                        }
+                                        __m256d sum = _mm256_add_pd(_mm256_add_pd(acc0, acc1),
+                                                                     _mm256_add_pd(acc2, acc3));
+                                        double tmp[4];
+                                        _mm256_storeu_pd(tmp, sum);
+                                        double s = (tmp[0] + tmp[1]) + (tmp[2] + tmp[3]);
+                                        for (; i < nrows; i++) s += static_cast<double>(arr[i]);
+                                        state.sum += s;
+                                        state.count += static_cast<int64_t>(nrows);
+                                    } else {
+#endif
+                                    // 4-lane parallel accumulators break the
+                                    // single-lane FP-add dependency chain so
+                                    // the CPU can issue 4 independent adds
+                                    // per cycle on the FP units. Without
+                                    // this, the SUM is bound by FP-add
+                                    // latency (~4 cycles), not throughput.
+                                    double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+                                    idx_t i = 0;
+                                    for (; i + 4 <= nrows; i += 4) {
+                                        s0 += static_cast<double>(arr[i]);
+                                        s1 += static_cast<double>(arr[i + 1]);
+                                        s2 += static_cast<double>(arr[i + 2]);
+                                        s3 += static_cast<double>(arr[i + 3]);
+                                    }
+                                    for (; i < nrows; i++) s0 += static_cast<double>(arr[i]);
+                                    state.sum += (s0 + s1) + (s2 + s3);
                                     state.count += static_cast<int64_t>(nrows);
+#ifdef SLOTHDB_PP_HAS_AVX2
+                                    }
+#endif
                                 } else {
                                     for (idx_t i = 0; i < nrows; i++) {
                                         if (col.validity[i]) {
@@ -5257,8 +5939,27 @@ private:
                         else if (tid == LogicalTypeId::INTEGER) run_numeric(col.i32_data.data());
                         else if (tid == LogicalTypeId::FLOAT)   run_numeric(col.f32_data.data());
                     }
-                    total_rows_processed += nrows;
+                    tl_rows[thread_id] += nrows;
+                });
+                int nt = pq->RunParallelRGs(0);
+                for (int t = 0; t < nt; t++) {
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        auto &d = states[a]; auto &s = tl_states[t][a];
+                        d.count += s.count;
+                        d.sum   += s.sum;
+                        if (s.has_min && (!d.has_min || s.sum_min < d.sum_min)) {
+                            d.sum_min = s.sum_min; d.has_min = true;
+                            if (!s.min_val.IsNull()) d.min_val = s.min_val;
+                        }
+                        if (s.has_max && (!d.has_max || s.sum_max > d.sum_max)) {
+                            d.sum_max = s.sum_max; d.has_max = true;
+                            if (!s.max_val.IsNull()) d.max_val = s.max_val;
+                        }
+                    }
+                    total_rows_processed += tl_rows[t];
                 }
+                }
+                fused_parquet_stats_only_done:;
             } else if ([&]() -> bool {
                 // === PARALLEL CSV SUM/COUNT/AVG/MIN/MAX (no GROUP BY) ===
                 // Also handles fused WHERE (AGG -> FILTER -> FILE_SCAN).
@@ -5455,9 +6156,818 @@ private:
                 }
                 total_rows_processed += chunk_size;
             }
+        } else if ([&]{
+            // === DISTINCT FAST PATH PRECHECK ===
+            // Match: ungrouped, single-col grouped, or two-col grouped;
+            // every agg is COUNT(DISTINCT col) on the SAME INT/BIGINT/
+            // VARCHAR column; child is parquet (or AGG -> FILTER ->
+            // PARQUET). The planner duplicates the agg when ORDER BY
+            // references its alias, so queries like Q9 produce two
+            // identical entries — that's why we accept >1 aggs as long
+            // as they all match.
+            if (group_col_indices.size() > 2) return false;
+            if (num_aggs < 1) return false;
+            for (auto &info : agg_infos) {
+                if (info.name != "COUNT") return false;
+                if (!info.is_distinct) return false;
+                if (info.col_idx == INVALID_INDEX) return false;
+                if (info.col_idx != agg_infos[0].col_idx) return false;
+            }
+            PhysicalParquetScan *p = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+            if (!p) {
+                if (auto *f = dynamic_cast<PhysicalFilter *>(children[0].get())) {
+                    if (!f->children.empty()) {
+                        p = dynamic_cast<PhysicalParquetScan *>(f->children[0].get());
+                        if (!p) return false;
+                        if (!f->GetCondition()) return false;
+                        // The filter must compile to SimplePredicate; otherwise
+                        // bypassing PhysicalFilter and calling pq->RunParallelRGs
+                        // directly would silently drop the WHERE clause. Q11's
+                        // `MobilePhoneModel <> ''` is VARCHAR, not yet supported
+                        // by TryCompileSimplePredicate at HEAD — fall through
+                        // to the slow generic path which honors the filter.
+                        std::vector<SimplePredicate> tmp;
+                        if (!TryCompileSimplePredicate(*f->GetCondition(), tmp))
+                            return false;
+                    } else {
+                        return false;
+                    }
+                }
+            }
+            if (!p) return false;
+            auto agg_t = p->GetTypes()[agg_infos[0].col_idx].id();
+            if (agg_t != LogicalTypeId::BIGINT && agg_t != LogicalTypeId::INTEGER &&
+                agg_t != LogicalTypeId::VARCHAR) return false;
+            for (auto gci : group_col_indices) {
+                auto group_t = p->GetTypes()[gci].id();
+                if (group_t != LogicalTypeId::INTEGER && group_t != LogicalTypeId::BIGINT &&
+                    group_t != LogicalTypeId::VARCHAR) return false;
+            }
+            return true;
+        }()) {
+            // === FAST PATH: COUNT(DISTINCT col) [+ optional GROUP BY g] over parquet ===
+            // Per-thread set / per-thread map<g, set>; parallel parquet
+            // decode; per-key disjoint parallel merge. The slow generic
+            // path Value::ToString()s every row into a std::unordered_set
+            // which is 50-100× slower on 100M-row scans. This restores the
+            // sub-2s wall on Q5/Q6/Q9/Q11.
+            PhysicalParquetScan *pq = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+            std::vector<SimplePredicate> dpd_preds;
+            bool dpd_has_filter = false;
+            if (!pq) {
+                auto *flt = dynamic_cast<PhysicalFilter *>(children[0].get());
+                pq = dynamic_cast<PhysicalParquetScan *>(flt->children[0].get());
+                std::vector<SimplePredicate> tmp;
+                if (TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                    dpd_preds = std::move(tmp);
+                    dpd_has_filter = true;
+                }
+            }
+            const idx_t num_group_cols = group_col_indices.size();
+            const bool has_group = num_group_cols >= 1;
+            const bool two_col_group = num_group_cols == 2;
+            const idx_t group_col = has_group ? group_col_indices[0] : 0;
+            const idx_t group_col2 = two_col_group ? group_col_indices[1] : 0;
+            const idx_t agg_col = agg_infos[0].col_idx;
+            const auto group_tid = has_group ? pq->GetTypes()[group_col].id()
+                                              : LogicalTypeId::INVALID;
+            const auto group_tid2 = two_col_group ? pq->GetTypes()[group_col2].id()
+                                                   : LogicalTypeId::INVALID;
+            const auto agg_tid = pq->GetTypes()[agg_col].id();
+
+            // Project group + agg + filter cols.
+            {
+                std::vector<bool> need(pq->GetTypes().size(), false);
+                for (auto gci : group_col_indices)
+                    if (gci < need.size()) need[gci] = true;
+                need[agg_col] = true;
+                for (auto &p : dpd_preds) if (p.col_idx < need.size()) need[p.col_idx] = true;
+                pq->SetNeededOutputs(need);
+            }
+            pq->Init();
+
+            constexpr int MAX_THREADS = 16;
+            const bool agg_is_varchar = (agg_tid == LogicalTypeId::VARCHAR);
+
+            // Per-thread state. Two layouts:
+            //   ungrouped INT     : tl_int_set[tid]            (one set per thread)
+            //   ungrouped VARCHAR : tl_str_set[tid]
+            //   grouped   INT     : tl_int_groups[tid] (map<g_int, set<int64>>)
+            //                       + tl_str_groups[tid] (map<g_str, set<int64>>)
+            //   grouped   VARCHAR : tl_int_str_groups[tid] / tl_str_str_groups[tid]
+            // VARCHAR distinct stores std::string copies (decoded data is
+            // owned by RGWork and reused across RGs, so we can't keep
+            // string_t pointers; copy by value at insert).
+            struct TLDistinct {
+                ankerl::unordered_dense::set<int64_t> int_set;
+                ankerl::unordered_dense::set<std::string> str_set;
+                // Radix mini-arrays: ungrouped-INT distinct path scatters by
+                // low 4 bits of ankerl hash so the merge phase needs no rehash.
+                std::array<std::vector<int64_t>, 16> scatter;
+                ankerl::unordered_dense::map<int64_t,
+                    ankerl::unordered_dense::set<int64_t>> int_g_int_d;
+                ankerl::unordered_dense::map<int64_t,
+                    ankerl::unordered_dense::set<std::string>> int_g_str_d;
+                std::unordered_map<std::string,
+                    ankerl::unordered_dense::set<int64_t>> str_g_int_d;
+                std::unordered_map<std::string,
+                    ankerl::unordered_dense::set<std::string>> str_g_str_d;
+                // 2-col grouped variant: composite key = bytewise concat of
+                // (col1 || \xFF || col2), with the original (Value, Value)
+                // pair stashed alongside for emit. Q12 lives here.
+                std::unordered_map<std::string,
+                    ankerl::unordered_dense::set<int64_t>> g2_int_d;
+                std::unordered_map<std::string,
+                    ankerl::unordered_dense::set<std::string>> g2_str_d;
+                std::unordered_map<std::string, std::vector<Value>> g2_key_parts;
+            };
+            static_assert(sizeof(TLDistinct) == 960,
+                "TLDistinct layout pinned: growing this struct shifts cache lines"
+                " and regresses Q7/Q8/Q30 (see memory feedback_struct_growth_cache_shifts.md)");
+            std::vector<TLDistinct> tls(MAX_THREADS);
+
+            // Q5 ingests ~6M UserIDs per thread; pre-reserve scatter mini-arrays
+            // so push_back stays branchless after first growth.
+            if (!has_group && !agg_is_varchar) {
+                for (auto &tl : tls)
+                    for (auto &arr : tl.scatter) arr.reserve(512 * 1024);
+            }
+
+            // Build a binary composite key from two column-row pairs. Used
+            // by the 2-col GROUP BY scan branch. The 0xFF separator can't
+            // occur in a UTF-8 string so it disambiguates `("a", "bc")`
+            // from `("ab", "c")`. Length-prefixed encoding is overkill
+            // when we only ever read this key as an opaque byte string.
+            auto build_g2_key = [](const auto &write_col1, const auto &write_col2) -> std::string {
+                std::string k;
+                k.reserve(64);
+                write_col1(k);
+                k.push_back('\xFF');
+                write_col2(k);
+                return k;
+            };
+            (void)build_g2_key;
+
+            pq->SetRGConsumer([&](const PhysicalParquetScan::RGWork &work,
+                                   idx_t rg_idx, int tid) {
+                if (work.pruned) return;
+                idx_t nrows = pq->RowGroupSize(rg_idx);
+                const auto &acol = work.cols[agg_col];
+                if (!acol.decoded) return;
+                auto &tl = tls[tid % MAX_THREADS];
+
+                std::vector<uint8_t> tk;
+                bool tk_active = false;
+                if (dpd_has_filter)
+                    tk_active = BuildTypedKeepMask(dpd_preds, work.cols, nrows, tk);
+                auto keep_row = [&](idx_t r) -> bool {
+                    if (!dpd_has_filter) return true;
+                    if (tk_active) return tk[r] != 0;
+                    return EvalSimplePredicates(dpd_preds, work.cols, r);
+                };
+
+                const int64_t *a_i64 = (acol.type.id() == LogicalTypeId::BIGINT)
+                                            ? acol.i64_data.data() : nullptr;
+                const int32_t *a_i32 = (acol.type.id() == LogicalTypeId::INTEGER)
+                                            ? acol.i32_data.data() : nullptr;
+                const string_t *a_str = (acol.type.id() == LogicalTypeId::VARCHAR &&
+                                         !acol.str_data.empty())
+                                            ? acol.str_data.data() : nullptr;
+                const uint32_t *a_dict_idx = (acol.type.id() == LogicalTypeId::VARCHAR &&
+                                              acol.str_dict_encoded &&
+                                              !acol.str_dict_indices.empty())
+                                                  ? acol.str_dict_indices.data() : nullptr;
+                const string_t *a_dict_val = a_dict_idx ? acol.str_dict_values.data()
+                                                          : nullptr;
+                idx_t a_dsz = a_dict_val ? acol.str_dict_values.size() : 0;
+
+                if (!has_group) {
+                    if (!agg_is_varchar) {
+                        ankerl::unordered_dense::hash<int64_t> H;
+                        if (a_i64) {
+                            for (idx_t r = 0; r < nrows; r++) {
+                                if (!keep_row(r)) continue;
+                                if (!acol.all_valid && !acol.validity[r]) continue;
+                                int64_t v = a_i64[r];
+                                tl.scatter[H(v) & 0xF].push_back(v);
+                            }
+                        } else if (a_i32) {
+                            for (idx_t r = 0; r < nrows; r++) {
+                                if (!keep_row(r)) continue;
+                                if (!acol.all_valid && !acol.validity[r]) continue;
+                                int64_t v = (int64_t)a_i32[r];
+                                tl.scatter[H(v) & 0xF].push_back(v);
+                            }
+                        }
+                    } else {
+                        // VARCHAR distinct. Dict-encoded path: hit the set
+                        // once per dict entry per RG instead of once per row.
+                        if (a_dict_idx) {
+                            std::vector<uint8_t> seen(a_dsz, 0);
+                            for (idx_t r = 0; r < nrows; r++) {
+                                if (!keep_row(r)) continue;
+                                if (!acol.all_valid && !acol.validity[r]) continue;
+                                uint32_t di = a_dict_idx[r];
+                                if (di >= a_dsz || seen[di]) continue;
+                                seen[di] = 1;
+                                tl.str_set.emplace(a_dict_val[di].GetData(),
+                                                    a_dict_val[di].GetSize());
+                            }
+                        } else if (a_str) {
+                            for (idx_t r = 0; r < nrows; r++) {
+                                if (!keep_row(r)) continue;
+                                if (!acol.all_valid && !acol.validity[r]) continue;
+                                tl.str_set.emplace(a_str[r].GetData(), a_str[r].GetSize());
+                            }
+                        }
+                    }
+                    return;
+                }
+                // 2-col GROUP BY variant. Q12 lives here: (MobilePhone INT,
+                // MobilePhoneModel VARCHAR). Composite string key per row;
+                // distinct UserID set per composite key. The original
+                // (Value, Value) pair is stashed once per new key for emit.
+                if (two_col_group) {
+                    const auto &gc1 = work.cols[group_col];
+                    const auto &gc2 = work.cols[group_col2];
+                    if (!gc1.decoded || !gc2.decoded) return;
+                    auto t1 = gc1.type.id(), t2 = gc2.type.id();
+                    const int32_t *g1_i32 = (t1 == LogicalTypeId::INTEGER) ? gc1.i32_data.data() : nullptr;
+                    const int64_t *g1_i64 = (t1 == LogicalTypeId::BIGINT)  ? gc1.i64_data.data() : nullptr;
+                    const uint32_t *g1_di = (t1 == LogicalTypeId::VARCHAR &&
+                                             gc1.str_dict_encoded &&
+                                             !gc1.str_dict_indices.empty())
+                                                ? gc1.str_dict_indices.data() : nullptr;
+                    const string_t *g1_dv = g1_di ? gc1.str_dict_values.data() : nullptr;
+                    idx_t g1_dsz = g1_dv ? gc1.str_dict_values.size() : 0;
+                    const string_t *g1_str = (t1 == LogicalTypeId::VARCHAR &&
+                                              !gc1.str_data.empty())
+                                                ? gc1.str_data.data() : nullptr;
+                    const int32_t *g2_i32 = (t2 == LogicalTypeId::INTEGER) ? gc2.i32_data.data() : nullptr;
+                    const int64_t *g2_i64 = (t2 == LogicalTypeId::BIGINT)  ? gc2.i64_data.data() : nullptr;
+                    const uint32_t *g2_di = (t2 == LogicalTypeId::VARCHAR &&
+                                             gc2.str_dict_encoded &&
+                                             !gc2.str_dict_indices.empty())
+                                                ? gc2.str_dict_indices.data() : nullptr;
+                    const string_t *g2_dv = g2_di ? gc2.str_dict_values.data() : nullptr;
+                    idx_t g2_dsz = g2_dv ? gc2.str_dict_values.size() : 0;
+                    const string_t *g2_str = (t2 == LogicalTypeId::VARCHAR &&
+                                              !gc2.str_data.empty())
+                                                ? gc2.str_data.data() : nullptr;
+
+                    auto append_int = [](std::string &k, int64_t v) {
+                        char buf[8];
+                        std::memcpy(buf, &v, 8);
+                        k.append(buf, 8);
+                    };
+                    auto append_col = [&](std::string &k, idx_t r,
+                                           LogicalTypeId tid,
+                                           const int64_t *i64, const int32_t *i32,
+                                           const uint32_t *di, const string_t *dv,
+                                           idx_t dsz, const string_t *str) -> bool {
+                        if (tid == LogicalTypeId::BIGINT)  { append_int(k, i64[r]); return true; }
+                        if (tid == LogicalTypeId::INTEGER) { append_int(k, (int64_t)i32[r]); return true; }
+                        if (tid == LogicalTypeId::VARCHAR) {
+                            const char *sd; uint32_t sl;
+                            if (di) {
+                                uint32_t d = di[r];
+                                if (d >= dsz) return false;
+                                sd = dv[d].GetData(); sl = dv[d].GetSize();
+                            } else if (str) {
+                                sd = str[r].GetData(); sl = str[r].GetSize();
+                            } else { return false; }
+                            k.append(sd, sl);
+                            return true;
+                        }
+                        return false;
+                    };
+                    auto value_for = [&](idx_t r, LogicalTypeId tid,
+                                          const int64_t *i64, const int32_t *i32,
+                                          const uint32_t *di, const string_t *dv,
+                                          idx_t dsz, const string_t *str) -> Value {
+                        if (tid == LogicalTypeId::BIGINT)  return Value::BIGINT(i64[r]);
+                        if (tid == LogicalTypeId::INTEGER) return Value::INTEGER(i32[r]);
+                        if (tid == LogicalTypeId::VARCHAR) {
+                            const char *sd = ""; uint32_t sl = 0;
+                            if (di) {
+                                uint32_t d = di[r];
+                                if (d < dsz) { sd = dv[d].GetData(); sl = dv[d].GetSize(); }
+                            } else if (str) {
+                                sd = str[r].GetData(); sl = str[r].GetSize();
+                            }
+                            return Value::VARCHAR(std::string(sd, sl));
+                        }
+                        return Value();
+                    };
+
+                    std::string k;
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (!keep_row(r)) continue;
+                        if (!acol.all_valid && !acol.validity[r]) continue;
+                        k.clear();
+                        if (!append_col(k, r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str)) continue;
+                        k.push_back('\xFF');
+                        if (!append_col(k, r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)) continue;
+                        if (!agg_is_varchar) {
+                            auto it = tl.g2_int_d.find(k);
+                            if (it == tl.g2_int_d.end()) {
+                                std::vector<Value> kv = {
+                                    value_for(r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str),
+                                    value_for(r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)};
+                                tl.g2_key_parts.emplace(k, std::move(kv));
+                                it = tl.g2_int_d.emplace(k,
+                                    ankerl::unordered_dense::set<int64_t>()).first;
+                            }
+                            it->second.insert(a_i64 ? a_i64[r] : (int64_t)a_i32[r]);
+                        } else {
+                            auto it = tl.g2_str_d.find(k);
+                            if (it == tl.g2_str_d.end()) {
+                                std::vector<Value> kv = {
+                                    value_for(r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str),
+                                    value_for(r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)};
+                                tl.g2_key_parts.emplace(k, std::move(kv));
+                                it = tl.g2_str_d.emplace(k,
+                                    ankerl::unordered_dense::set<std::string>()).first;
+                            }
+                            const char *sd; uint32_t sl;
+                            if (a_dict_idx) {
+                                uint32_t di = a_dict_idx[r];
+                                if (di >= a_dsz) continue;
+                                sd = a_dict_val[di].GetData(); sl = a_dict_val[di].GetSize();
+                            } else if (a_str) {
+                                sd = a_str[r].GetData(); sl = a_str[r].GetSize();
+                            } else continue;
+                            it->second.emplace(sd, sl);
+                        }
+                    }
+                    return;
+                }
+                // Grouped variant.
+                const auto &gcol = work.cols[group_col];
+                if (!gcol.decoded) return;
+                auto gtid = gcol.type.id();
+                bool gint = (gtid == LogicalTypeId::INTEGER || gtid == LogicalTypeId::BIGINT);
+                bool gstr = (gtid == LogicalTypeId::VARCHAR);
+                const int32_t *g_i32 = (gtid == LogicalTypeId::INTEGER)
+                                            ? gcol.i32_data.data() : nullptr;
+                const int64_t *g_i64 = (gtid == LogicalTypeId::BIGINT)
+                                            ? gcol.i64_data.data() : nullptr;
+                const uint32_t *g_dict_idx = (gtid == LogicalTypeId::VARCHAR &&
+                                              gcol.str_dict_encoded &&
+                                              !gcol.str_dict_indices.empty())
+                                                  ? gcol.str_dict_indices.data() : nullptr;
+                const string_t *g_dict_val = g_dict_idx ? gcol.str_dict_values.data()
+                                                          : nullptr;
+                idx_t g_dsz = g_dict_val ? gcol.str_dict_values.size() : 0;
+                const string_t *g_str = (gtid == LogicalTypeId::VARCHAR &&
+                                         !gcol.str_data.empty())
+                                            ? gcol.str_data.data() : nullptr;
+
+                // gint × int distinct
+                if (gint && !agg_is_varchar) {
+                    int64_t prev_g = 0;
+                    ankerl::unordered_dense::set<int64_t> *cached = nullptr;
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (!keep_row(r)) continue;
+                        if (!acol.all_valid && !acol.validity[r]) continue;
+                        int64_t gv = g_i64 ? g_i64[r] : (int64_t)g_i32[r];
+                        if (!cached || gv != prev_g) {
+                            cached = &tl.int_g_int_d[gv];
+                            prev_g = gv;
+                        }
+                        cached->insert(a_i64 ? a_i64[r] : (int64_t)a_i32[r]);
+                    }
+                    return;
+                }
+                // gint × str distinct
+                if (gint && agg_is_varchar) {
+                    int64_t prev_g = 0;
+                    ankerl::unordered_dense::set<std::string> *cached = nullptr;
+                    auto fetch_str = [&](idx_t r, const char *&out_d, uint32_t &out_l) -> bool {
+                        if (a_dict_idx) {
+                            uint32_t di = a_dict_idx[r];
+                            if (di >= a_dsz) return false;
+                            out_d = a_dict_val[di].GetData();
+                            out_l = a_dict_val[di].GetSize();
+                            return true;
+                        }
+                        if (a_str) {
+                            out_d = a_str[r].GetData();
+                            out_l = a_str[r].GetSize();
+                            return true;
+                        }
+                        return false;
+                    };
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (!keep_row(r)) continue;
+                        if (!acol.all_valid && !acol.validity[r]) continue;
+                        int64_t gv = g_i64 ? g_i64[r] : (int64_t)g_i32[r];
+                        if (!cached || gv != prev_g) {
+                            cached = &tl.int_g_str_d[gv];
+                            prev_g = gv;
+                        }
+                        const char *d; uint32_t l;
+                        if (!fetch_str(r, d, l)) continue;
+                        cached->emplace(d, l);
+                    }
+                    return;
+                }
+                // gstr × int distinct
+                if (gstr && !agg_is_varchar) {
+                    if (g_dict_idx) {
+                        std::vector<ankerl::unordered_dense::set<int64_t> *>
+                            di_to_set(g_dsz, nullptr);
+                        for (idx_t r = 0; r < nrows; r++) {
+                            if (!keep_row(r)) continue;
+                            if (!acol.all_valid && !acol.validity[r]) continue;
+                            uint32_t di = g_dict_idx[r];
+                            if (di >= g_dsz) continue;
+                            auto *sp = di_to_set[di];
+                            if (!sp) {
+                                std::string key(g_dict_val[di].GetData(),
+                                                g_dict_val[di].GetSize());
+                                sp = &tl.str_g_int_d[key];
+                                di_to_set[di] = sp;
+                            }
+                            sp->insert(a_i64 ? a_i64[r] : (int64_t)a_i32[r]);
+                        }
+                    } else if (g_str) {
+                        string_t prev_s; bool have_prev = false;
+                        ankerl::unordered_dense::set<int64_t> *cached = nullptr;
+                        for (idx_t r = 0; r < nrows; r++) {
+                            if (!keep_row(r)) continue;
+                            if (!acol.all_valid && !acol.validity[r]) continue;
+                            if (!have_prev || !(g_str[r] == prev_s)) {
+                                std::string key(g_str[r].GetData(), g_str[r].GetSize());
+                                cached = &tl.str_g_int_d[key];
+                                prev_s = g_str[r]; have_prev = true;
+                            }
+                            cached->insert(a_i64 ? a_i64[r] : (int64_t)a_i32[r]);
+                        }
+                    }
+                    return;
+                }
+                // gstr × str distinct (rare)
+                if (gstr && agg_is_varchar) {
+                    auto fetch_g = [&](idx_t r, std::string &out) -> bool {
+                        if (g_dict_idx) {
+                            uint32_t di = g_dict_idx[r];
+                            if (di >= g_dsz) return false;
+                            out.assign(g_dict_val[di].GetData(),
+                                       g_dict_val[di].GetSize());
+                            return true;
+                        }
+                        if (g_str) {
+                            out.assign(g_str[r].GetData(), g_str[r].GetSize());
+                            return true;
+                        }
+                        return false;
+                    };
+                    auto fetch_a_str = [&](idx_t r, std::string &out) -> bool {
+                        if (a_dict_idx) {
+                            uint32_t di = a_dict_idx[r];
+                            if (di >= a_dsz) return false;
+                            out.assign(a_dict_val[di].GetData(),
+                                       a_dict_val[di].GetSize());
+                            return true;
+                        }
+                        if (a_str) {
+                            out.assign(a_str[r].GetData(), a_str[r].GetSize());
+                            return true;
+                        }
+                        return false;
+                    };
+                    std::string g_buf, a_buf;
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (!keep_row(r)) continue;
+                        if (!acol.all_valid && !acol.validity[r]) continue;
+                        if (!fetch_g(r, g_buf)) continue;
+                        if (!fetch_a_str(r, a_buf)) continue;
+                        tl.str_g_str_d[g_buf].insert(a_buf);
+                    }
+                }
+            });
+            pq->RunParallelRGs(0);
+
+            // Merge phase.
+            auto emit_int_only = [&](int64_t cnt_total) {
+                std::string sk;
+                group_order.push_back(sk);
+                group_states[sk].resize(num_aggs);
+                for (auto &s : group_states[sk]) s.count = cnt_total;
+                group_keys[sk] = {};
+            };
+            if (!has_group) {
+                if (!agg_is_varchar) {
+                    // Scatter pre-partitioned by low 4 bits of the same ankerl
+                    // hash, so each shard ingests its mini-arrays without rehash.
+                    constexpr int NSHARDS = 16;
+                    std::array<size_t, NSHARDS> shard_sz{};
+                    std::vector<std::thread> mts;
+                    auto run_shard = [&](int s) {
+                        ankerl::unordered_dense::set<int64_t> out;
+                        out.reserve(512 * 1024);
+                        for (int t = 0; t < MAX_THREADS; t++) {
+                            for (int64_t v : tls[t].scatter[s]) out.insert(v);
+                        }
+                        shard_sz[s] = out.size();
+                    };
+                    for (int s = 1; s < NSHARDS; s++) mts.emplace_back(run_shard, s);
+                    run_shard(0);
+                    for (auto &m : mts) m.join();
+                    int64_t total = 0;
+                    for (int s = 0; s < NSHARDS; s++) total += (int64_t)shard_sz[s];
+                    emit_int_only(total);
+                } else {
+                    constexpr int NSHARDS = 16;
+                    std::array<ankerl::unordered_dense::set<std::string>, NSHARDS> dst;
+                    std::vector<std::thread> mts;
+                    auto run_shard = [&](int s) {
+                        ankerl::unordered_dense::hash<std::string_view> hasher;
+                        for (int t = 0; t < MAX_THREADS; t++) {
+                            for (const auto &v : tls[t].str_set) {
+                                if ((hasher(std::string_view(v)) & (NSHARDS - 1)) == (size_t)s)
+                                    dst[s].insert(v);
+                            }
+                        }
+                    };
+                    for (int s = 1; s < NSHARDS; s++) mts.emplace_back(run_shard, s);
+                    run_shard(0);
+                    for (auto &m : mts) m.join();
+                    int64_t total = 0;
+                    for (int s = 0; s < NSHARDS; s++) total += (int64_t)dst[s].size();
+                    emit_int_only(total);
+                }
+            } else if (two_col_group) {
+                // 2-col merge: composite key collected across threads, then
+                // per-key disjoint parallel union of the distinct sets.
+                std::unordered_map<std::string,
+                    ankerl::unordered_dense::set<int64_t>> merged_int;
+                std::unordered_map<std::string,
+                    ankerl::unordered_dense::set<std::string>> merged_str;
+                std::unordered_map<std::string, std::vector<Value>> merged_keys;
+                std::vector<std::string> all_keys;
+                for (int t = 0; t < MAX_THREADS; t++) {
+                    for (auto &kv : tls[t].g2_int_d) {
+                        if (merged_int.find(kv.first) == merged_int.end()) {
+                            merged_int[kv.first];
+                            all_keys.push_back(kv.first);
+                        }
+                    }
+                    for (auto &kv : tls[t].g2_str_d) {
+                        if (merged_str.find(kv.first) == merged_str.end()) {
+                            merged_str[kv.first];
+                            if (merged_int.find(kv.first) == merged_int.end())
+                                all_keys.push_back(kv.first);
+                        }
+                    }
+                    for (auto &kv : tls[t].g2_key_parts) {
+                        merged_keys.emplace(kv.first, kv.second);
+                    }
+                }
+                int merge_w = (int)std::min<size_t>(MAX_THREADS, all_keys.size());
+                if (merge_w < 1) merge_w = 1;
+                auto run = [&](int wi) {
+                    for (size_t i = wi; i < all_keys.size(); i += merge_w) {
+                        const std::string &key = all_keys[i];
+                        if (!agg_is_varchar) {
+                            auto &dst = merged_int[key];
+                            for (int t = 0; t < MAX_THREADS; t++) {
+                                auto it = tls[t].g2_int_d.find(key);
+                                if (it == tls[t].g2_int_d.end()) continue;
+                                if (dst.empty()) dst = std::move(it->second);
+                                else {
+                                    if (it->second.size() > dst.size()) std::swap(dst, it->second);
+                                    dst.insert(it->second.begin(), it->second.end());
+                                }
+                            }
+                        } else {
+                            auto &dst = merged_str[key];
+                            for (int t = 0; t < MAX_THREADS; t++) {
+                                auto it = tls[t].g2_str_d.find(key);
+                                if (it == tls[t].g2_str_d.end()) continue;
+                                if (dst.empty()) dst = std::move(it->second);
+                                else {
+                                    if (it->second.size() > dst.size()) std::swap(dst, it->second);
+                                    dst.insert(it->second.begin(), it->second.end());
+                                }
+                            }
+                        }
+                    }
+                };
+                if (merge_w == 1) run(0);
+                else {
+                    std::vector<std::thread> mts;
+                    for (int w = 0; w < merge_w; w++) mts.emplace_back([&, w]() { run(w); });
+                    for (auto &t : mts) t.join();
+                }
+                // Emit using composite keys for group_states / group_order;
+                // group_keys carries the original [Value, Value] pair.
+                if (!agg_is_varchar) {
+                    for (auto &kv : merged_int) {
+                        auto &states = group_states[kv.first];
+                        states.resize(num_aggs);
+                        int64_t cnt = (int64_t)kv.second.size();
+                        for (auto &s : states) s.count = cnt;
+                        group_keys[kv.first] = merged_keys[kv.first];
+                        group_order.push_back(kv.first);
+                    }
+                } else {
+                    for (auto &kv : merged_str) {
+                        auto &states = group_states[kv.first];
+                        states.resize(num_aggs);
+                        int64_t cnt = (int64_t)kv.second.size();
+                        for (auto &s : states) s.count = cnt;
+                        group_keys[kv.first] = merged_keys[kv.first];
+                        group_order.push_back(kv.first);
+                    }
+                }
+            } else {
+                // Grouped: collect unique group keys, partition across
+                // workers, each worker unions per-group sets for its keys.
+                if (group_tid != LogicalTypeId::VARCHAR) {
+                    ankerl::unordered_dense::map<int64_t,
+                        ankerl::unordered_dense::set<int64_t>> merged_int;
+                    ankerl::unordered_dense::map<int64_t,
+                        ankerl::unordered_dense::set<std::string>> merged_str;
+                    std::vector<int64_t> all_keys;
+                    for (int t = 0; t < MAX_THREADS; t++) {
+                        for (auto &kv : tls[t].int_g_int_d) {
+                            if (merged_int.emplace(kv.first,
+                                ankerl::unordered_dense::set<int64_t>()).second)
+                                all_keys.push_back(kv.first);
+                        }
+                        for (auto &kv : tls[t].int_g_str_d) {
+                            if (merged_str.emplace(kv.first,
+                                ankerl::unordered_dense::set<std::string>()).second &&
+                                merged_int.find(kv.first) == merged_int.end())
+                                all_keys.push_back(kv.first);
+                        }
+                    }
+                    int merge_w = (int)std::min<size_t>(MAX_THREADS, all_keys.size());
+                    if (merge_w < 1) merge_w = 1;
+                    auto run = [&](int wi) {
+                        for (size_t i = wi; i < all_keys.size(); i += merge_w) {
+                            int64_t key = all_keys[i];
+                            if (!agg_is_varchar) {
+                                auto &dst = merged_int[key];
+                                for (int t = 0; t < MAX_THREADS; t++) {
+                                    auto it = tls[t].int_g_int_d.find(key);
+                                    if (it == tls[t].int_g_int_d.end()) continue;
+                                    if (dst.empty()) dst = std::move(it->second);
+                                    else {
+                                        if (it->second.size() > dst.size()) std::swap(dst, it->second);
+                                        dst.insert(it->second.begin(), it->second.end());
+                                    }
+                                }
+                            } else {
+                                auto &dst = merged_str[key];
+                                for (int t = 0; t < MAX_THREADS; t++) {
+                                    auto it = tls[t].int_g_str_d.find(key);
+                                    if (it == tls[t].int_g_str_d.end()) continue;
+                                    if (dst.empty()) dst = std::move(it->second);
+                                    else {
+                                        if (it->second.size() > dst.size()) std::swap(dst, it->second);
+                                        dst.insert(it->second.begin(), it->second.end());
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    if (merge_w == 1) run(0);
+                    else {
+                        std::vector<std::thread> mts;
+                        for (int w = 0; w < merge_w; w++) mts.emplace_back([&, w]() { run(w); });
+                        for (auto &t : mts) t.join();
+                    }
+                    if (!agg_is_varchar) {
+                        for (auto &kv : merged_int) {
+                            std::string sk = std::to_string(kv.first);
+                            auto &states = group_states[sk];
+                            states.resize(num_aggs);
+                            int64_t cnt = (int64_t)kv.second.size();
+                            for (auto &s : states) s.count = cnt;
+                            group_keys[sk] = {(group_tid == LogicalTypeId::INTEGER)
+                                ? Value::INTEGER((int32_t)kv.first)
+                                : Value::BIGINT(kv.first)};
+                            group_order.push_back(sk);
+                        }
+                    } else {
+                        for (auto &kv : merged_str) {
+                            std::string sk = std::to_string(kv.first);
+                            auto &states = group_states[sk];
+                            states.resize(num_aggs);
+                            int64_t cnt = (int64_t)kv.second.size();
+                            for (auto &s : states) s.count = cnt;
+                            group_keys[sk] = {(group_tid == LogicalTypeId::INTEGER)
+                                ? Value::INTEGER((int32_t)kv.first)
+                                : Value::BIGINT(kv.first)};
+                            group_order.push_back(sk);
+                        }
+                    }
+                } else {
+                    // VARCHAR group key.
+                    std::unordered_map<std::string,
+                        ankerl::unordered_dense::set<int64_t>> merged_int;
+                    std::unordered_map<std::string,
+                        ankerl::unordered_dense::set<std::string>> merged_str;
+                    std::vector<std::string> all_keys;
+                    for (int t = 0; t < MAX_THREADS; t++) {
+                        for (auto &kv : tls[t].str_g_int_d) {
+                            if (merged_int.find(kv.first) == merged_int.end()) {
+                                merged_int[kv.first];
+                                all_keys.push_back(kv.first);
+                            }
+                        }
+                        for (auto &kv : tls[t].str_g_str_d) {
+                            if (merged_str.find(kv.first) == merged_str.end()) {
+                                merged_str[kv.first];
+                                if (merged_int.find(kv.first) == merged_int.end())
+                                    all_keys.push_back(kv.first);
+                            }
+                        }
+                    }
+                    int merge_w = (int)std::min<size_t>(MAX_THREADS, all_keys.size());
+                    if (merge_w < 1) merge_w = 1;
+                    auto run = [&](int wi) {
+                        for (size_t i = wi; i < all_keys.size(); i += merge_w) {
+                            const std::string &key = all_keys[i];
+                            if (!agg_is_varchar) {
+                                auto &dst = merged_int[key];
+                                for (int t = 0; t < MAX_THREADS; t++) {
+                                    auto it = tls[t].str_g_int_d.find(key);
+                                    if (it == tls[t].str_g_int_d.end()) continue;
+                                    if (dst.empty()) dst = std::move(it->second);
+                                    else {
+                                        if (it->second.size() > dst.size()) std::swap(dst, it->second);
+                                        dst.insert(it->second.begin(), it->second.end());
+                                    }
+                                }
+                            } else {
+                                auto &dst = merged_str[key];
+                                for (int t = 0; t < MAX_THREADS; t++) {
+                                    auto it = tls[t].str_g_str_d.find(key);
+                                    if (it == tls[t].str_g_str_d.end()) continue;
+                                    if (dst.empty()) dst = std::move(it->second);
+                                    else {
+                                        if (it->second.size() > dst.size()) std::swap(dst, it->second);
+                                        dst.insert(it->second.begin(), it->second.end());
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    if (merge_w == 1) run(0);
+                    else {
+                        std::vector<std::thread> mts;
+                        for (int w = 0; w < merge_w; w++) mts.emplace_back([&, w]() { run(w); });
+                        for (auto &t : mts) t.join();
+                    }
+                    if (!agg_is_varchar) {
+                        for (auto &kv : merged_int) {
+                            auto &states = group_states[kv.first];
+                            states.resize(num_aggs);
+                            int64_t cnt = (int64_t)kv.second.size();
+                            for (auto &s : states) s.count = cnt;
+                            group_keys[kv.first] = {Value::VARCHAR(kv.first)};
+                            group_order.push_back(kv.first);
+                        }
+                    } else {
+                        for (auto &kv : merged_str) {
+                            auto &states = group_states[kv.first];
+                            states.resize(num_aggs);
+                            int64_t cnt = (int64_t)kv.second.size();
+                            for (auto &s : states) s.count = cnt;
+                            group_keys[kv.first] = {Value::VARCHAR(kv.first)};
+                            group_order.push_back(kv.first);
+                        }
+                    }
+                }
+            }
         } else if (
             (void)0,
             [&]{
+                // FUSED PARQUET GENERIC GROUP BY: now handles is_distinct
+                // inline via AK::CountDistinctInt / CountDistinctStr in
+                // apply_aggs (typed per-state dedup sets) plus a union-
+                // based merge that recomputes count from set size, so
+                // cross-thread duplicates don't inflate the answer. Bail
+                // when COUNT(DISTINCT) targets an unsupported type.
+                for (auto &info : agg_infos) {
+                    if (!info.is_distinct) continue;
+                    if (info.col_idx == INVALID_INDEX) return false;
+                    auto t_p = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+                    if (!t_p) {
+                        if (auto *f = dynamic_cast<PhysicalFilter *>(children[0].get())) {
+                            if (!f->children.empty())
+                                t_p = dynamic_cast<PhysicalParquetScan *>(f->children[0].get());
+                        }
+                    }
+                    if (!t_p) return false;
+                    auto t = t_p->GetTypes()[info.col_idx].id();
+                    if (t != LogicalTypeId::BIGINT && t != LogicalTypeId::INTEGER &&
+                        t != LogicalTypeId::VARCHAR) return false;
+                }
                 PhysicalParquetScan *p = dynamic_cast<PhysicalParquetScan *>(children[0].get());
                 if (p) return true;
                 if (auto *f = dynamic_cast<PhysicalFilter *>(children[0].get())) {
@@ -5507,11 +7017,28 @@ private:
                 pq->SetSkipStrData(std::move(skip));
             }
 
-            enum class AK { CountStar, Count, Sum, Min, Max, Other };
+            enum class AK { CountStar, Count, Sum, Min, Max, CountDistinctInt, CountDistinctStr, Other };
             std::vector<AK> kinds(num_aggs);
             for (idx_t a = 0; a < num_aggs; a++) {
                 auto &info = agg_infos[a];
                 if (info.name == "COUNT" && info.is_count_star)   kinds[a] = AK::CountStar;
+                else if (info.name == "COUNT" && info.is_distinct) {
+                    // Choose distinct backing store by argument type so the
+                    // hot loop is a typed insert, not Value::ToString. Q10
+                    // SELECT ... COUNT(DISTINCT UserID) GROUP BY RegionID
+                    // lives here.
+                    if (info.col_idx != INVALID_INDEX) {
+                        auto t = pq->GetTypes()[info.col_idx].id();
+                        if (t == LogicalTypeId::BIGINT || t == LogicalTypeId::INTEGER)
+                            kinds[a] = AK::CountDistinctInt;
+                        else if (t == LogicalTypeId::VARCHAR)
+                            kinds[a] = AK::CountDistinctStr;
+                        else
+                            kinds[a] = AK::Other;
+                    } else {
+                        kinds[a] = AK::Other;
+                    }
+                }
                 else if (info.name == "COUNT")                     kinds[a] = AK::Count;
                 else if (info.name == "SUM" || info.name == "AVG") kinds[a] = AK::Sum;
                 else if (info.name == "MIN")                       kinds[a] = AK::Min;
@@ -5645,6 +7172,38 @@ private:
                         if (kinds[a] == AK::CountStar) { state.count++; continue; }
                         if (!acol.col || !acol.decoded) continue;
                         if (!acol.all_valid && !acol.col->validity[r]) continue;
+                        // Distinct paths: insert into the typed dedup set;
+                        // count++ only on new insert. The set itself is the
+                        // source of truth so the result emit doesn't need
+                        // to re-count.
+                        if (kinds[a] == AK::CountDistinctInt) {
+                            int64_t iv;
+                            if (acol.tid == LogicalTypeId::BIGINT)
+                                iv = acol.col->i64_data[r];
+                            else if (acol.tid == LogicalTypeId::INTEGER)
+                                iv = (int64_t)acol.col->i32_data[r];
+                            else continue;
+                            if (state.distinct_int_set.insert(iv).second)
+                                state.count++;
+                            continue;
+                        }
+                        if (kinds[a] == AK::CountDistinctStr) {
+                            if (acol.tid != LogicalTypeId::VARCHAR) continue;
+                            const char *sd; uint32_t sl;
+                            if (acol.col->str_dict_encoded &&
+                                !acol.col->str_dict_indices.empty()) {
+                                uint32_t di = acol.col->str_dict_indices[r];
+                                if (di >= acol.col->str_dict_values.size()) continue;
+                                sd = acol.col->str_dict_values[di].GetData();
+                                sl = acol.col->str_dict_values[di].GetSize();
+                            } else if (!acol.col->str_data.empty()) {
+                                sd = acol.col->str_data[r].GetData();
+                                sl = acol.col->str_data[r].GetSize();
+                            } else continue;
+                            if (state.distinct_set.emplace(sd, sl).second)
+                                state.count++;
+                            continue;
+                        }
                         double val = 0.0;
                         switch (acol.tid) {
                         case LogicalTypeId::DOUBLE:  val = acol.col->f64_data[r]; break;
@@ -5671,11 +7230,19 @@ private:
                     }
                 };
 
+                std::vector<uint8_t> multi_keep_mask;
+                bool multi_keep_active = false;
+                if (multi_has_filter)
+                    multi_keep_active = BuildTypedKeepMask(multi_preds, work.cols,
+                                                             nrows, multi_keep_mask);
+
                 if (rg_packable) {
                     // === PACKED uint64 key path ===
                     for (idx_t r = 0; r < nrows; r++) {
-                        if (multi_has_filter &&
-                            !EvalSimplePredicates(multi_preds, work.cols, r)) continue;
+                        if (multi_keep_active) {
+                            if (!multi_keep_mask[r]) continue;
+                        } else if (multi_has_filter &&
+                                   !EvalSimplePredicates(multi_preds, work.cols, r)) continue;
                         uint64_t pkey = 0;
                         for (size_t gi = 0; gi < group_col_indices.size(); gi++) {
                             auto &g = gcs[gi];
@@ -5712,8 +7279,10 @@ private:
                     std::string local_key;
                     local_key.reserve(128);
                     for (idx_t r = 0; r < nrows; r++) {
-                        if (multi_has_filter &&
-                            !EvalSimplePredicates(multi_preds, work.cols, r)) continue;
+                        if (multi_keep_active) {
+                            if (!multi_keep_mask[r]) continue;
+                        } else if (multi_has_filter &&
+                                   !EvalSimplePredicates(multi_preds, work.cols, r)) continue;
                         local_key.clear();
                         for (auto &g : gcs) {
                             if (g.i64) {
@@ -5782,9 +7351,37 @@ private:
             // thread dicts produce different uint64 packed keys for the same
             // logical group).
             auto merge_states_m = [&](std::vector<AggState> &dst,
-                                       const std::vector<AggState> &src) {
+                                       std::vector<AggState> &src) {
                 for (idx_t a = 0; a < num_aggs; a++) {
                     auto &d = dst[a]; auto &s = src[a];
+                    // Distinct aggs: union the typed dedup sets and
+                    // recompute count from union size; never add raw
+                    // counts (those would double-count cross-thread
+                    // duplicates).
+                    if (kinds[a] == AK::CountDistinctInt) {
+                        if (d.distinct_int_set.empty()) {
+                            d.distinct_int_set = std::move(s.distinct_int_set);
+                        } else if (!s.distinct_int_set.empty()) {
+                            if (s.distinct_int_set.size() > d.distinct_int_set.size())
+                                std::swap(d.distinct_int_set, s.distinct_int_set);
+                            d.distinct_int_set.insert(s.distinct_int_set.begin(),
+                                                      s.distinct_int_set.end());
+                        }
+                        d.count = (int64_t)d.distinct_int_set.size();
+                        continue;
+                    }
+                    if (kinds[a] == AK::CountDistinctStr) {
+                        if (d.distinct_set.empty()) {
+                            d.distinct_set = std::move(s.distinct_set);
+                        } else if (!s.distinct_set.empty()) {
+                            if (s.distinct_set.size() > d.distinct_set.size())
+                                std::swap(d.distinct_set, s.distinct_set);
+                            d.distinct_set.insert(s.distinct_set.begin(),
+                                                   s.distinct_set.end());
+                        }
+                        d.count = (int64_t)d.distinct_set.size();
+                        continue;
+                    }
                     d.count += s.count; d.sum += s.sum;
                     if (s.has_min && (!d.has_min || s.sum_min < d.sum_min)) {
                         d.sum_min = s.sum_min; d.has_min = true;
@@ -5816,30 +7413,60 @@ private:
                 }
                 return sk;
             };
+            // Cross-thread merge dominates Q10 wall - pre-register all
+            // content-keys in a sequential pass, then disjoint-partition
+            // by key for parallel state union.
+            struct MergeSrc { int t; uint64_t pkey; const std::string *sk_raw; };
+            std::unordered_map<std::string, std::vector<MergeSrc>> src_map;
+            std::vector<std::string> all_sks;
             for (int t = 0; t < nt; t++) {
                 auto &tl = tls[t];
                 for (uint64_t pkey : tl.packed_order) {
                     auto &kv = tl.packed_keys[pkey];
                     std::string sk = build_content_key(kv);
-                    auto it = group_states.find(sk);
-                    if (it == group_states.end()) {
+                    if (group_states.find(sk) == group_states.end()) {
                         group_keys[sk] = kv;
                         group_order.push_back(sk);
-                        it = group_states.emplace(sk, std::vector<AggState>(num_aggs)).first;
+                        group_states.emplace(sk, std::vector<AggState>(num_aggs));
+                        all_sks.push_back(sk);
                     }
-                    merge_states_m(it->second, tl.packed_groups[pkey]);
+                    src_map[sk].push_back({t, pkey, nullptr});
                 }
                 for (const auto &sk_raw : tl.str_order) {
                     auto &kv = tl.str_keys_map[sk_raw];
                     std::string sk = build_content_key(kv);
-                    auto it = group_states.find(sk);
-                    if (it == group_states.end()) {
+                    if (group_states.find(sk) == group_states.end()) {
                         group_keys[sk] = kv;
                         group_order.push_back(sk);
-                        it = group_states.emplace(sk, std::vector<AggState>(num_aggs)).first;
+                        group_states.emplace(sk, std::vector<AggState>(num_aggs));
+                        all_sks.push_back(sk);
                     }
-                    merge_states_m(it->second, tl.str_groups[sk_raw]);
+                    src_map[sk].push_back({t, 0, &sk_raw});
                 }
+            }
+            int merge_w = (int)std::min<size_t>((size_t)MAX_THREADS, all_sks.size());
+            if (merge_w < 1) merge_w = 1;
+            auto run_merge = [&](int wi) {
+                for (size_t i = wi; i < all_sks.size(); i += (size_t)merge_w) {
+                    const std::string &sk = all_sks[i];
+                    auto &dst = group_states.find(sk)->second;
+                    auto &srcs = src_map.find(sk)->second;
+                    for (auto &src : srcs) {
+                        if (src.sk_raw) {
+                            auto sit = tls[src.t].str_groups.find(*src.sk_raw);
+                            merge_states_m(dst, sit->second);
+                        } else {
+                            auto pit = tls[src.t].packed_groups.find(src.pkey);
+                            merge_states_m(dst, pit->second);
+                        }
+                    }
+                }
+            };
+            if (merge_w == 1) run_merge(0);
+            else {
+                std::vector<std::thread> mts;
+                for (int w = 0; w < merge_w; w++) mts.emplace_back([&, w]() { run_merge(w); });
+                for (auto &th : mts) th.join();
             }
         } else
 
@@ -5985,16 +7612,28 @@ private:
             for (idx_t a = 0; a < num_aggs; a++) {
                 auto &agg_expr = static_cast<BoundFunction &>(*aggregates_[a]);
                 auto name = StringUtil::Upper(agg_expr.function_name);
-                auto &state = states[a];
+                // Dedup: when primary_idx is set, emit reads from the
+                // primary's state (the only one populated by the scan)
+                // and applies this agg's own offset for the algebraic-
+                // collapse case.
+                idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
+                                      ? agg_infos[a].primary_idx : a;
+                auto &state = states[state_idx];
 
                 if (name == "COUNT") {
                     result_row.push_back(Value::BIGINT(state.count));
                 } else if (name == "SUM") {
+                    // Algebraic collapse: SUM(col +/- N) = SUM(col) + N*COUNT(col).
+                    // Q30's 90 SUMs over the same column reduce to ONE
+                    // scan; each agg's offset adjusts the emitted answer.
+                    double s = state.sum;
+                    if (agg_infos[a].sum_with_offset)
+                        s += agg_infos[a].sum_offset * (double)state.count;
                     auto ret_type = agg_expr.GetReturnType().id();
                     if (ret_type == LogicalTypeId::BIGINT) {
-                        result_row.push_back(Value::BIGINT(static_cast<int64_t>(state.sum)));
+                        result_row.push_back(Value::BIGINT(static_cast<int64_t>(s)));
                     } else {
-                        result_row.push_back(Value::DOUBLE(state.sum));
+                        result_row.push_back(Value::DOUBLE(s));
                     }
                 } else if (name == "AVG") {
                     if (state.count > 0) {

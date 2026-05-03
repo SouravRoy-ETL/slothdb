@@ -97,6 +97,23 @@ std::vector<LogicalType> CSVReader::DetectTypes(idx_t sample_size) {
             auto &f = fields[i];
             if (f.empty() || f == options_.null_string) continue;
 
+            // Try TIMESTAMP first: '2012-08-31 22:00:00' parses as 2012 via stoll
+            // (with garbage trail) and would otherwise be misclassified as BIGINT.
+            int64_t ts_micros;
+            if (Value::TryParseTimestampMicros(f.data(), f.size(), ts_micros)) {
+                if (types[i].id() == LogicalTypeId::VARCHAR ||
+                    types[i].id() == LogicalTypeId::TIMESTAMP) {
+                    types[i] = LogicalType::TIMESTAMP();
+                }
+                continue;
+            }
+            // Once promoted to TIMESTAMP, a non-timestamp non-empty row demotes
+            // to VARCHAR (mirrors how BIGINT/DOUBLE fall through to VARCHAR).
+            if (types[i].id() == LogicalTypeId::TIMESTAMP) {
+                types[i] = LogicalType::VARCHAR();
+                continue;
+            }
+
             // Try integer.
             try {
                 (void)std::stoll(f);
@@ -146,6 +163,12 @@ Value CSVReader::ConvertValue(const std::string &str, const LogicalType &type) {
             return Value::FLOAT(std::stof(str));
         case LogicalTypeId::BOOLEAN:
             return Value::BOOLEAN(str == "true" || str == "1" || str == "TRUE");
+        case LogicalTypeId::TIMESTAMP: {
+            int64_t micros;
+            if (Value::TryParseTimestampMicros(str.data(), str.size(), micros))
+                return Value::TIMESTAMP(micros);
+            return Value::VARCHAR(str);
+        }
         case LogicalTypeId::VARCHAR:
         default:
             return Value::VARCHAR(str);
@@ -221,6 +244,14 @@ void CSVReader::SetValueDirect(DataChunk &chunk, idx_t col, idx_t row,
         case LogicalTypeId::BOOLEAN:
             chunk.SetValue(col, row, Value::BOOLEAN(str == "true" || str == "1" || str == "TRUE"));
             return;
+        case LogicalTypeId::TIMESTAMP: {
+            int64_t micros;
+            if (Value::TryParseTimestampMicros(str.data(), str.size(), micros))
+                chunk.SetValue(col, row, Value::TIMESTAMP(micros));
+            else
+                chunk.SetValue(col, row, Value::VARCHAR(str));
+            return;
+        }
         default:
             chunk.SetValue(col, row, Value::VARCHAR(str));
             return;

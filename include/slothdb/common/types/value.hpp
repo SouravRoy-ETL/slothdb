@@ -59,6 +59,11 @@ public:
     static Value TIMESTAMP(int64_t micros_since_epoch);
     static Value TIME(int64_t micros_since_midnight);
 
+    // Parse 'YYYY-MM-DD HH:MM:SS[.ffffff]' into epoch microseconds. Returns
+    // false on any deviation from the strict shape; on success out_micros
+    // is the UTC epoch-microseconds value. Used by CSV type inference.
+    static bool TryParseTimestampMicros(const char *s, size_t len, int64_t &out_micros);
+
     bool IsNull() const { return is_null_; }
     const LogicalType &type() const { return type_; }
 

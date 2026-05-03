@@ -198,9 +198,33 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         result->where_clause = BindExpression(*stmt.where_clause, context);
     }
 
-    // Bind GROUP BY.
+    // Bind GROUP BY. Resolve select-list aliases first (e.g.
+    // `extract(minute FROM EventTime) AS m ... GROUP BY m`); ClickBench Q19
+    // depends on this. Mirrors the ORDER BY alias-resolution rule below.
     for (auto &expr : stmt.group_by) {
-        result->group_by.push_back(BindExpression(*expr, context));
+        bool resolved = false;
+        if (expr->GetExpressionType() == ExpressionType::COLUMN_REF) {
+            auto &col_ref = static_cast<ColumnRefExpression &>(*expr);
+            if (col_ref.table_name.empty()) {
+                auto ref_upper = StringUtil::Upper(col_ref.column_name);
+                for (idx_t i = 0; i < result->result_names.size(); i++) {
+                    if (StringUtil::Upper(result->result_names[i]) == ref_upper) {
+                        idx_t sl_idx = std::min<idx_t>(i, stmt.select_list.size() - 1);
+                        if (stmt.select_list[sl_idx]->GetExpressionType()
+                                == ExpressionType::STAR) {
+                            break; // fall through to normal binding
+                        }
+                        result->group_by.push_back(
+                            BindExpression(*stmt.select_list[sl_idx], context));
+                        resolved = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!resolved) {
+            result->group_by.push_back(BindExpression(*expr, context));
+        }
         result->has_aggregation = true;
     }
 
@@ -250,8 +274,9 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         if (item.expression->GetExpressionType() == ExpressionType::COLUMN_REF) {
             auto &col_ref = static_cast<ColumnRefExpression &>(*item.expression);
             if (col_ref.table_name.empty()) {
+                auto ref_upper = StringUtil::Upper(col_ref.column_name);
                 for (idx_t i = 0; i < result->result_names.size(); i++) {
-                    if (result->result_names[i] == col_ref.column_name) {
+                    if (StringUtil::Upper(result->result_names[i]) == ref_upper) {
                         // Map back to the select_list entry that produced
                         // this result-name. With a bare STAR at index 0,
                         // every expanded name maps to select_list[0] -
@@ -629,7 +654,7 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
     }
     // Scalar function return types.
-    else if (name == "LENGTH") {
+    else if (name == "LENGTH" || name == "STRLEN") {
         return_type = LogicalType::INTEGER();
     } else if (name == "UPPER" || name == "LOWER" || name == "TRIM" ||
                name == "LTRIM" || name == "RTRIM" || name == "REPLACE" ||

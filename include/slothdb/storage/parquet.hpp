@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace slothdb {
@@ -40,6 +42,11 @@ struct ParquetColumnMeta {
     int64_t total_uncompressed_size = 0;
     int64_t total_compressed_size = 0;
     int64_t dict_page_offset = -1; // -1 if column has no dictionary page
+    // Repetition type from the schema (flat schemas only):
+    // 0 = REQUIRED  (max_def_level = 0, no def_levels in data pages)
+    // 1 = OPTIONAL  (max_def_level = 1, single-bit def_levels)
+    // 2 = REPEATED  (not currently supported by the typed-decode path)
+    int32_t repetition_type = 1; // default OPTIONAL for backwards compat
 };
 
 struct ParquetRowGroup {
@@ -52,6 +59,10 @@ struct ParquetFileMeta {
     std::vector<ParquetRowGroup> row_groups;
     std::vector<std::string> column_names;
     std::vector<LogicalType> column_types;
+    // Per-leaf repetition type from the schema:
+    // 0=REQUIRED (max_def_level=0), 1=OPTIONAL (max_def_level=1), 2=REPEATED.
+    // Only populated for files parsed via the standard-Parquet thrift path.
+    std::vector<int32_t> column_repetition;
 };
 
 // ============================================================================
@@ -196,6 +207,11 @@ private:
     // Thrift parsing helpers.
     int32_t ReadThriftVarInt(const uint8_t *data, size_t &pos);
     int64_t ReadThriftVarInt64(const uint8_t *data, size_t &pos);
+    // Returns true iff the row group can be PROVABLY pruned for op="=" against
+    // an INT64 column by inspecting its dictionary page (literal absent from
+    // dict). Returns false on any unsupported case (degrade safely).
+    bool DictSkipPossible(idx_t rg_idx, idx_t col_idx,
+                          const std::string &op, const Value &val) const;
 
     std::string path_;
     ParquetFileMeta meta_;
@@ -212,6 +228,11 @@ private:
     bool owns_mmap_ = false;   // true if we created the mapping (must unmap in ~)
     bool owns_buffer_ = false; // true if we malloc'd a buffer (fread fallback)
     void *mmap_handle_ = nullptr; // Windows: HANDLE; POSIX: unused
+    // Per-(rg,col) sorted INT64 dictionary cache. Only populated for RGs we
+    // proved DON'T contain the queried literal — those are pruned and won't
+    // be revisited. Key = (rg_idx << 32) | col_idx.
+    mutable std::unordered_map<uint64_t, std::vector<int64_t>> int64_dict_cache_;
+    mutable std::mutex dict_cache_mu_;
 };
 
 } // namespace slothdb

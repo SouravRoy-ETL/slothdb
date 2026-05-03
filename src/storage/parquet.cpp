@@ -2,6 +2,7 @@
 #include "slothdb/common/exception.hpp"
 #include "miniz.h"
 #include "zstd.h"
+#include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <algorithm>
@@ -534,6 +535,51 @@ struct RleDecoder {
             }
         }
     }
+
+    // Bulk-extract up to n indices from whichever run is currently active. If the
+    // active run is bit-packed, peel values in a tight loop without re-checking
+    // mode each iteration. If RLE, splat the constant. Returns the number written
+    // (may be less than n when the run is exhausted; caller drains the next run).
+    int NextBatch(uint32_t *out, int n) {
+        if (mode == -1) {
+            if (!FetchRun()) return 0;
+        }
+        if (mode == 0) {
+            int take = (rle_count < (uint32_t)n) ? (int)rle_count : n;
+            for (int i = 0; i < take; i++) out[i] = rle_value;
+            rle_count -= (uint32_t)take;
+            if (rle_count == 0) mode = -1;
+            return take;
+        }
+        // mode == 1: bit-packed
+        int take = (bp_count < (uint32_t)n) ? (int)bp_count : n;
+        uint32_t mask = (bit_width >= 32) ? 0xFFFFFFFFu : ((1u << bit_width) - 1u);
+        int bw = bit_width;
+        uint64_t buf = bitbuf;
+        int bib = bits_in_buf;
+        size_t pp = pos;
+        const uint8_t *pd = p;
+        size_t psz = size;
+        for (int i = 0; i < take; i++) {
+            // Refill: pull bytes until we have at least bw bits queued in `buf`.
+            while (bib < bw) {
+                if (pp >= psz) {
+                    bitbuf = buf; bits_in_buf = bib; pos = pp; bp_count -= (uint32_t)i;
+                    if (bp_count == 0) mode = -1;
+                    return i;
+                }
+                buf |= uint64_t(pd[pp++]) << bib;
+                bib += 8;
+            }
+            out[i] = static_cast<uint32_t>(buf & mask);
+            buf >>= bw;
+            bib -= bw;
+        }
+        bitbuf = buf; bits_in_buf = bib; pos = pp;
+        bp_count -= (uint32_t)take;
+        if (bp_count == 0) mode = -1;
+        return take;
+    }
 };
 
 // Skip the gzip header (RFC 1952) and return a pointer to the start of
@@ -613,13 +659,30 @@ const char *CodecName(int32_t codec) {
 }
 
 // Decompress a Parquet ZSTD page using the vendored libzstd. Sized from
-// the page header's uncompressed_size; ZSTD_decompress is the simple
-// single-shot API and writes exactly that many bytes on success.
+// the page header's uncompressed_size; ZSTD_decompressDCtx reuses a
+// thread-local context so each call skips the implicit context allocation
+// that ZSTD_decompress performs internally. Saves ~1-2us per page; on a
+// 100M-row column with hundreds of pages per RG this compounds to a few
+// percent on ZSTD-bound queries (Q3, Q4, Q6).
 bool ZstdDecompress(const uint8_t *in, size_t in_size, size_t uncompressed_size,
                     std::vector<uint8_t> &out) {
     out.resize(uncompressed_size);
     if (uncompressed_size == 0) return true;
-    size_t got = ZSTD_decompress(out.data(), uncompressed_size, in, in_size);
+    struct DCtxHolder {
+        ZSTD_DCtx *ctx = nullptr;
+        DCtxHolder() : ctx(ZSTD_createDCtx()) {}
+        ~DCtxHolder() { if (ctx) ZSTD_freeDCtx(ctx); }
+    };
+    static thread_local DCtxHolder holder;
+    if (!holder.ctx) {
+        // First-call recovery: thread_local ctor failed to allocate the
+        // context (very rare). Fall back to the simple API.
+        size_t got = ZSTD_decompress(out.data(), uncompressed_size, in, in_size);
+        if (ZSTD_isError(got)) return false;
+        return got == uncompressed_size;
+    }
+    size_t got = ZSTD_decompressDCtx(holder.ctx, out.data(), uncompressed_size,
+                                      in, in_size);
     if (ZSTD_isError(got)) return false;
     return got == uncompressed_size;
 }
@@ -1065,6 +1128,7 @@ void ParquetReader::ReadMetadata() {
                     default: lt = LogicalType::VARCHAR(); break;
                     }
                     meta_.column_types.push_back(lt);
+                    meta_.column_repetition.push_back(pmeta.schema[i].repetition_type);
                 }
                 meta_.row_groups.clear();
                 // Decode raw min/max bytes from a Parquet column-stats blob
@@ -1134,6 +1198,8 @@ void ParquetReader::ReadMetadata() {
                         col.total_uncompressed_size = col_in.total_uncompressed_size;
                         col.total_compressed_size = col_in.total_compressed_size;
                         col.dict_page_offset = col_in.dict_page_offset;
+                        col.repetition_type = c < meta_.column_repetition.size()
+                            ? meta_.column_repetition[c] : 1;
                         // Carry stats over from the Thrift parser (col_in.min_bytes
                         // / max_bytes) by decoding raw bytes into typed Values.
                         // Without this, RowGroupMightMatch always returned true
@@ -1358,9 +1424,11 @@ static size_t ReadOnePageMapped(const uint8_t *file_base, size_t file_size,
 
 // Decode a DataPage (V1 or V2) into `out` values. Handles PLAIN and PLAIN_DICTIONARY.
 // For flat schemas with nullable columns, def_level bit_width is 1.
+// `is_required`: REQUIRED column has no def_levels - skip parsing them so we
+// don't consume the value stream as if it were RLE-encoded levels.
 static void DecodeDataPage(const ParqPageHeader &hdr, const uint8_t *data, size_t size,
                            ParquetType ptype, const std::vector<Value> &dict,
-                           std::vector<Value> &out) {
+                           std::vector<Value> &out, bool is_required = false) {
     const uint8_t *p = data;
     size_t remaining = size;
 
@@ -1369,7 +1437,9 @@ static void DecodeDataPage(const ParqPageHeader &hdr, const uint8_t *data, size_
     std::vector<uint8_t> def_mask; // one byte per value (0 = null, 1 = present)
     int32_t n_values = hdr.num_values;
 
-    if (hdr.type == 0) {
+    if (is_required) {
+        // No rep_levels, no def_levels.
+    } else if (hdr.type == 0) {
         // DATA_PAGE V1: 4-byte length, then RLE-packed def levels (bit_width=1).
         if (remaining >= 4) {
             uint32_t def_len = ReadLEU32(p);
@@ -1519,7 +1589,8 @@ static std::vector<Value> ReadColumnChunkStd(const uint8_t *file_base, size_t fi
             body_size = decompressed.size();
         }
 
-        DecodeDataPage(hdr, body, body_size, meta.parquet_type, dict, values);
+        DecodeDataPage(hdr, body, body_size, meta.parquet_type, dict, values,
+                       meta.repetition_type == 0);
         remaining_rows -= hdr.num_values;
 
         if (cur_offset >= total_chunk_end) break;
@@ -1674,21 +1745,32 @@ size_t ReadDefLevels(const uint8_t *data, size_t size, int32_t n_values,
 // row_offset. Supports PLAIN and PLAIN_DICTIONARY / RLE_DICTIONARY.
 // `skip_str_data`: for VARCHAR dict path, skip `dst[i] = ...` per-row writes
 // when the caller will resolve strings via str_dict_values + str_dict_indices.
+// `is_required`: when true the column is REQUIRED (max_def_level=0) and the
+// page body has no def_levels at all - critical for ClickBench-style files
+// where required INT64 cols would otherwise consume the dict-index data
+// stream as if it were RLE-encoded def levels (gives bit_width=garbage).
 bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t size,
                          ParquetType ptype, const ParquetDict &dict,
                          ParquetColumnData &out, idx_t row_offset,
-                         bool skip_str_data) {
+                         bool skip_str_data, bool is_required = false) {
     const uint8_t *p = data;
     size_t remaining = size;
     int32_t n_values = hdr.num_values;
     std::vector<uint8_t> def_mask;
     int32_t non_null = n_values;
 
-    if (hdr.type == 0) {
-        // DATA_PAGE V1: rep levels then def levels (both RLE with length prefix).
-        // For flat schemas, rep_levels are absent (max_rep_level == 0). We assume
-        // flat here (same assumption as the Value path above).
-        size_t consumed = ReadDefLevels(p, remaining, n_values, def_mask, non_null, true, 0);
+    if (is_required) {
+        // REQUIRED column: no rep_levels, no def_levels. Page body starts
+        // directly with values.
+    } else if (hdr.type == 0) {
+        // DATA_PAGE V1: rep levels then def levels.
+        // Per parquet-format spec, when def_level_encoding == RLE the levels
+        // are wrapped in a 4-byte LE length prefix. When BIT_PACKED, no
+        // prefix. Flat schemas have no rep_levels.
+        bool has_prefix = (hdr.def_level_encoding == 3); // 3 = RLE
+        size_t consumed = ReadDefLevels(p, remaining, n_values, def_mask,
+                                         non_null, has_prefix,
+                                         has_prefix ? 0 : remaining);
         if (consumed == 0 && remaining >= 4) {
             // ReadDefLevels returns 0 on failure; treat as all-valid and continue.
             def_mask.clear();
@@ -1773,8 +1855,26 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
     }
     case LogicalTypeId::INTEGER: {
         auto *dst = out.i32_data.data() + row_offset;
+        if (def_mask.empty()) {
+            uint32_t buf[256];
+            const int32_t *dv = dict.i32.data();
+            uint32_t dn = static_cast<uint32_t>(dict.i32.size());
+            int32_t left = n_values;
+            int32_t off = 0;
+            while (left > 0) {
+                int want = left < 256 ? left : 256;
+                int got = rd.NextBatch(buf, want);
+                if (got <= 0) break;
+                for (int j = 0; j < got; j++) {
+                    uint32_t idx = buf[j];
+                    dst[off + j] = idx < dn ? dv[idx] : 0;
+                }
+                off += got; left -= got;
+            }
+            return true;
+        }
         for (int32_t i = 0; i < n_values; i++) {
-            if (!def_mask.empty() && !def_mask[i]) continue;
+            if (!def_mask[i]) continue;
             uint32_t idx = idx_for(i);
             dst[i] = idx < dict.i32.size() ? dict.i32[idx] : 0;
         }
@@ -1782,8 +1882,26 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
     }
     case LogicalTypeId::BIGINT: {
         auto *dst = out.i64_data.data() + row_offset;
+        if (def_mask.empty()) {
+            uint32_t buf[256];
+            const int64_t *dv = dict.i64.data();
+            uint32_t dn = static_cast<uint32_t>(dict.i64.size());
+            int32_t left = n_values;
+            int32_t off = 0;
+            while (left > 0) {
+                int want = left < 256 ? left : 256;
+                int got = rd.NextBatch(buf, want);
+                if (got <= 0) break;
+                for (int j = 0; j < got; j++) {
+                    uint32_t idx = buf[j];
+                    dst[off + j] = idx < dn ? dv[idx] : 0;
+                }
+                off += got; left -= got;
+            }
+            return true;
+        }
         for (int32_t i = 0; i < n_values; i++) {
-            if (!def_mask.empty() && !def_mask[i]) continue;
+            if (!def_mask[i]) continue;
             uint32_t idx = idx_for(i);
             dst[i] = idx < dict.i64.size() ? dict.i64[idx] : 0;
         }
@@ -1980,6 +2098,11 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     // 2) Data pages.
     int64_t total_end = cmeta.data_offset + cmeta.total_compressed_size;
     idx_t rows_read = 0;
+    // Decompression scratch reused across pages — saves a malloc/free
+    // pair per page (~10-20 pages per RG × 80 RGs = lots) on ZSTD/GZIP/SNAPPY
+    // codecs. The vector is resized to each page's uncompressed_size; once
+    // capacity reaches the largest page, no further allocation happens.
+    std::vector<uint8_t> decomp;
     while (rows_read < total_rows && cur_offset < (int64_t)file_size_) {
         ParqPageHeader hdr;
         const uint8_t *body; size_t body_size;
@@ -1989,7 +2112,6 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         if (hdr.type == 2) continue; // stray dict page
 
         // Decompress page body if needed.
-        std::vector<uint8_t> decomp;
         bool is_compressed = (hdr.type == 3) ? hdr.is_compressed : (cmeta.codec != 0);
         if (is_compressed && cmeta.codec != 0) {
             if (!DecompressPage(cmeta.codec, body, body_size,
@@ -1998,7 +2120,8 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         }
 
         if (!DecodeDataPageTyped(hdr, body, body_size, cmeta.parquet_type, dict, out,
-                                  rows_read, skip_str_data)) {
+                                  rows_read, skip_str_data,
+                                  cmeta.repetition_type == 0)) {
             return false;
         }
         // A PLAIN (non-dict) data page invalidates the dict-index fast path
@@ -2159,6 +2282,60 @@ static bool CoerceForCompare(const Value &v, const Value &target, Value &out) {
     return false;
 }
 
+bool ParquetReader::DictSkipPossible(idx_t rg_idx, idx_t col_idx,
+                                      const std::string &op, const Value &val) const {
+    if (op != "=" && op != "==") return false;
+    if (rg_idx >= meta_.row_groups.size()) return false;
+    auto &rg = meta_.row_groups[rg_idx];
+    if (col_idx >= rg.columns.size()) return false;
+    auto &col = rg.columns[col_idx];
+    if (col.parquet_type != ParquetType::INT64) return false;
+    if (col.dict_page_offset < 0) return false;
+    if (val.type().id() != LogicalTypeId::BIGINT) return false;
+
+    int64_t literal = val.GetValue<int64_t>();
+    uint64_t key = (uint64_t)rg_idx << 32 | (uint32_t)col_idx;
+
+    {
+        std::lock_guard<std::mutex> lk(dict_cache_mu_);
+        auto it = int64_dict_cache_.find(key);
+        if (it != int64_dict_cache_.end()) {
+            return !std::binary_search(it->second.begin(), it->second.end(), literal);
+        }
+    }
+
+    ParqPageHeader hdr;
+    const uint8_t *body = nullptr; size_t body_size = 0;
+    size_t consumed = ReadOnePageMapped(file_data_, file_size_, col.dict_page_offset,
+                                         hdr, body, body_size);
+    if (consumed == 0 || hdr.type != 2 || body == nullptr) return false;
+
+    std::vector<uint8_t> decompressed;
+    if (col.codec != 0) {
+        if (!DecompressPage(col.codec, body, body_size,
+                            (size_t)hdr.uncompressed_page_size, decompressed)) {
+            return false;
+        }
+        body = decompressed.data();
+        body_size = decompressed.size();
+    }
+
+    int32_t ndv = hdr.dict_num_values;
+    if (ndv <= 0) return false;
+    if ((size_t)ndv * sizeof(int64_t) > body_size) return false;
+
+    std::vector<int64_t> dict(ndv);
+    std::memcpy(dict.data(), body, (size_t)ndv * sizeof(int64_t));
+    std::sort(dict.begin(), dict.end());
+
+    bool present = std::binary_search(dict.begin(), dict.end(), literal);
+    if (!present) {
+        std::lock_guard<std::mutex> lk(dict_cache_mu_);
+        int64_dict_cache_.emplace(key, std::move(dict));
+    }
+    return !present;
+}
+
 bool ParquetReader::RowGroupMightMatch(idx_t rg_idx, idx_t col_idx,
                                         const std::string &op, const Value &val) const {
     if (rg_idx >= meta_.row_groups.size()) return false;
@@ -2174,7 +2351,9 @@ bool ParquetReader::RowGroupMightMatch(idx_t rg_idx, idx_t col_idx,
 
     // Use zone map logic.
     if (op == "=" || op == "==") {
-        return !(v < col.min_value) && !(col.max_value < v);
+        bool zone_might = !(v < col.min_value) && !(col.max_value < v);
+        if (zone_might && DictSkipPossible(rg_idx, col_idx, op, v)) return false;
+        return zone_might;
     } else if (op == ">") {
         return !(col.max_value < v) && !(col.max_value == v);
     } else if (op == ">=") {
@@ -2183,6 +2362,11 @@ bool ParquetReader::RowGroupMightMatch(idx_t rg_idx, idx_t col_idx,
         return !(v < col.min_value) && !(col.min_value == v);
     } else if (op == "<=") {
         return !(v < col.min_value);
+    } else if (op == "<>" || op == "!=") {
+        // RG can be skipped only when every row equals v — i.e. min == v
+        // AND max == v. ClickBench Q8/Q12 filter on AdvEngineID/MobilePhone
+        // with `<> 0`, and many RGs are all-zero on these columns.
+        return !(col.min_value == v && col.max_value == v);
     }
     return true;
 }

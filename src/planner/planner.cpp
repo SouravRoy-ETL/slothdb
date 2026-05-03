@@ -155,6 +155,166 @@ void RemapGroupColumns(BoundExprPtr &expr,
     }
 }
 
+// Structural equality for two bound-expression trees. Used to detect when
+// a SELECT-list / ORDER-BY subtree matches a GROUP BY entry verbatim so we
+// can replace the subtree with a column ref to the aggregate's group output
+// (analogous to RemapGroupColumns for plain BoundColumnRef groups, but for
+// expression-valued GROUP BY entries like DATE_PART('year', EventDate)).
+// Conservative: only handles the node kinds present in the binder. Any kind
+// not listed here returns false, which just disables the rewrite for that
+// subtree (safe default - the planner falls back to evaluating the SELECT
+// expression against the agg-output schema, which fails loudly).
+bool BoundExprEqual(const BoundExpression *a, const BoundExpression *b) {
+    if (!a || !b) return a == b;
+    if (a->GetExpressionType() != b->GetExpressionType()) return false;
+    switch (a->GetExpressionType()) {
+    case BoundExpressionType::COLUMN_REF: {
+        auto *ca = static_cast<const BoundColumnRef *>(a);
+        auto *cb = static_cast<const BoundColumnRef *>(b);
+        return ca->column_index == cb->column_index &&
+               ca->column_name == cb->column_name;
+    }
+    case BoundExpressionType::CONSTANT: {
+        auto *ca = static_cast<const BoundConstant *>(a);
+        auto *cb = static_cast<const BoundConstant *>(b);
+        return ca->value.ToString() == cb->value.ToString();
+    }
+    case BoundExpressionType::FUNCTION: {
+        auto *fa = static_cast<const BoundFunction *>(a);
+        auto *fb = static_cast<const BoundFunction *>(b);
+        if (fa->function_name != fb->function_name) return false;
+        if (fa->is_aggregate != fb->is_aggregate) return false;
+        if (fa->is_distinct != fb->is_distinct) return false;
+        if (fa->arguments.size() != fb->arguments.size()) return false;
+        for (size_t i = 0; i < fa->arguments.size(); i++) {
+            if (!BoundExprEqual(fa->arguments[i].get(), fb->arguments[i].get())) return false;
+        }
+        return true;
+    }
+    case BoundExpressionType::ARITHMETIC: {
+        auto *aa = static_cast<const BoundArithmetic *>(a);
+        auto *ab = static_cast<const BoundArithmetic *>(b);
+        return aa->op == ab->op &&
+               BoundExprEqual(aa->left.get(), ab->left.get()) &&
+               BoundExprEqual(aa->right.get(), ab->right.get());
+    }
+    case BoundExpressionType::COMPARISON: {
+        auto *aa = static_cast<const BoundComparison *>(a);
+        auto *ab = static_cast<const BoundComparison *>(b);
+        return aa->op == ab->op &&
+               BoundExprEqual(aa->left.get(), ab->left.get()) &&
+               BoundExprEqual(aa->right.get(), ab->right.get());
+    }
+    case BoundExpressionType::CONJUNCTION: {
+        auto *aa = static_cast<const BoundConjunction *>(a);
+        auto *ab = static_cast<const BoundConjunction *>(b);
+        return aa->op == ab->op &&
+               BoundExprEqual(aa->left.get(), ab->left.get()) &&
+               BoundExprEqual(aa->right.get(), ab->right.get());
+    }
+    case BoundExpressionType::NEGATION: {
+        auto *na = static_cast<const BoundNegation *>(a);
+        auto *nb = static_cast<const BoundNegation *>(b);
+        return BoundExprEqual(na->child.get(), nb->child.get());
+    }
+    case BoundExpressionType::IS_NULL: {
+        auto *na = static_cast<const BoundIsNull *>(a);
+        auto *nb = static_cast<const BoundIsNull *>(b);
+        return na->is_not == nb->is_not &&
+               BoundExprEqual(na->child.get(), nb->child.get());
+    }
+    case BoundExpressionType::UNARY_MINUS: {
+        auto *na = static_cast<const BoundUnaryMinus *>(a);
+        auto *nb = static_cast<const BoundUnaryMinus *>(b);
+        return BoundExprEqual(na->child.get(), nb->child.get());
+    }
+    case BoundExpressionType::CAST: {
+        auto *ca = static_cast<const BoundCast *>(a);
+        auto *cb = static_cast<const BoundCast *>(b);
+        if (!(ca->GetReturnType() == cb->GetReturnType())) return false;
+        return ca->is_try == cb->is_try &&
+               BoundExprEqual(ca->child.get(), cb->child.get());
+    }
+    default:
+        return false;
+    }
+}
+
+// Walks a SELECT-list / ORDER-BY expression top-down. If a subtree matches
+// (structurally) one of the original GROUP BY expressions, replace it with
+// a BoundColumnRef pointing at the aggregate operator's group-output slot
+// for that group (column_index = group_index, name = "_gbe_<i>"). This
+// turns `SELECT date_part('year', EventDate), COUNT(*) ... GROUP BY 1`
+// into a plan whose projection reads the precomputed group value rather
+// than re-evaluating date_part against the post-aggregate schema (which
+// no longer contains EventDate).
+//
+// Run BEFORE HoistAggregates/RemapGroupColumns: a top-level GROUP BY match
+// short-circuits the descent into aggregates, which is what we want.
+void RewriteGroupExprs(BoundExprPtr &expr,
+                       const std::vector<const BoundExpression *> &original_groups,
+                       const std::vector<LogicalType> &group_types) {
+    if (!expr) return;
+    // Try whole-subtree match first.
+    for (idx_t gi = 0; gi < original_groups.size(); gi++) {
+        if (!original_groups[gi]) continue;
+        // Skip plain COLUMN_REF groups - RemapGroupColumns already handles
+        // those, and matching them here would double-rewrite the index.
+        if (original_groups[gi]->GetExpressionType() == BoundExpressionType::COLUMN_REF) continue;
+        if (BoundExprEqual(expr.get(), original_groups[gi])) {
+            expr = std::make_unique<BoundColumnRef>(
+                std::string("_gbe_") + std::to_string(gi), gi, group_types[gi]);
+            return;
+        }
+    }
+    // No whole-subtree match - recurse.
+    auto type = expr->GetExpressionType();
+    if (type == BoundExpressionType::FUNCTION) {
+        auto *fn = static_cast<BoundFunction *>(expr.get());
+        for (auto &arg : fn->arguments) RewriteGroupExprs(arg, original_groups, group_types);
+        return;
+    }
+    if (type == BoundExpressionType::ARITHMETIC) {
+        auto *a = static_cast<BoundArithmetic *>(expr.get());
+        RewriteGroupExprs(a->left, original_groups, group_types);
+        RewriteGroupExprs(a->right, original_groups, group_types);
+        return;
+    }
+    if (type == BoundExpressionType::COMPARISON) {
+        auto *a = static_cast<BoundComparison *>(expr.get());
+        RewriteGroupExprs(a->left, original_groups, group_types);
+        RewriteGroupExprs(a->right, original_groups, group_types);
+        return;
+    }
+    if (type == BoundExpressionType::CONJUNCTION) {
+        auto *a = static_cast<BoundConjunction *>(expr.get());
+        RewriteGroupExprs(a->left, original_groups, group_types);
+        RewriteGroupExprs(a->right, original_groups, group_types);
+        return;
+    }
+    if (type == BoundExpressionType::NEGATION) {
+        auto *a = static_cast<BoundNegation *>(expr.get());
+        RewriteGroupExprs(a->child, original_groups, group_types);
+        return;
+    }
+    if (type == BoundExpressionType::IS_NULL) {
+        auto *a = static_cast<BoundIsNull *>(expr.get());
+        RewriteGroupExprs(a->child, original_groups, group_types);
+        return;
+    }
+    if (type == BoundExpressionType::UNARY_MINUS) {
+        auto *a = static_cast<BoundUnaryMinus *>(expr.get());
+        RewriteGroupExprs(a->child, original_groups, group_types);
+        return;
+    }
+    if (type == BoundExpressionType::CAST) {
+        auto *a = static_cast<BoundCast *>(expr.get());
+        RewriteGroupExprs(a->child, original_groups, group_types);
+        return;
+    }
+    // COLUMN_REF, CONSTANT, STAR, WINDOW, SUBQUERY: no rewrite needed.
+}
+
 } // namespace
 
 LogicalOpPtr Planner::Plan(const BoundStatement &stmt) {
@@ -244,13 +404,78 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
             group_types.push_back(g->GetReturnType());
         }
 
+        // GROUP BY-by-expression lift. For each non-COLUMN_REF GROUP BY
+        // entry (e.g. DATE_PART('year', EventDate)), insert a passthrough
+        // pre-aggregate LogicalProjection that materializes the expression
+        // as a synthetic source column, then replace the GROUP BY entry
+        // with a BoundColumnRef pointing at that synthetic column. The
+        // aggregate operator then reads the precomputed value instead of
+        // re-evaluating the expression against post-aggregate schema (which
+        // is missing the original source columns).
+        //
+        // We also save raw pointers to the ORIGINAL group expressions
+        // (kept alive inside the lift projection) so RewriteGroupExprs
+        // below can match SELECT-list / ORDER-BY subtrees against them.
+        std::vector<const BoundExpression *> original_group_ptrs;
+        original_group_ptrs.reserve(groups.size());
+        for (auto &g : groups) original_group_ptrs.push_back(g.get());
+        bool needs_lift = false;
+        for (auto &g : groups) {
+            if (g->GetExpressionType() != BoundExpressionType::COLUMN_REF) {
+                needs_lift = true;
+                break;
+            }
+        }
+        if (needs_lift) {
+            const auto &source_types = plan->GetTypes();
+            idx_t source_w = source_types.size();
+            std::vector<BoundExprPtr> lift_exprs;
+            std::vector<LogicalType> lift_types;
+            lift_exprs.reserve(source_w + groups.size());
+            lift_types.reserve(source_w + groups.size());
+            // Passthrough: column_index i with the placeholder name (the
+            // executor only looks at index, not name, for COLUMN_REF).
+            for (idx_t i = 0; i < source_w; i++) {
+                lift_exprs.push_back(std::make_unique<BoundColumnRef>(
+                    std::string("_pt_") + std::to_string(i), i, source_types[i]));
+                lift_types.push_back(source_types[i]);
+            }
+            // Lift each non-COLUMN_REF group expression. Replace groups[gi]
+            // with a synthetic column ref pointing at the lifted slot.
+            // original_group_ptrs[gi] still points to the original tree -
+            // it's been moved into lift_exprs but the heap object is the
+            // same so the pointer stays valid.
+            for (idx_t gi = 0; gi < groups.size(); gi++) {
+                if (groups[gi]->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                    continue;
+                }
+                idx_t synthetic_idx = lift_exprs.size();
+                LogicalType gt = group_types[gi];
+                lift_exprs.push_back(std::move(groups[gi]));
+                lift_types.push_back(gt);
+                groups[gi] = std::make_unique<BoundColumnRef>(
+                    std::string("_gbe_") + std::to_string(gi), synthetic_idx, gt);
+            }
+            auto lift_proj = std::make_unique<LogicalProjection>(
+                std::move(lift_exprs), std::move(lift_types));
+            lift_proj->children.push_back(std::move(plan));
+            plan = std::move(lift_proj);
+        }
+
         std::vector<BoundExprPtr> proj_exprs;
         proj_exprs.reserve(mutable_stmt.select_list.size());
 
         for (auto &expr : mutable_stmt.select_list) {
-            // Two-pass rewrite: hoist aggregates anywhere in the tree
-            // (handles ROUND(AVG(x)), AVG(x)+1, CAST(SUM(y) AS DOUBLE)...),
-            // then remap remaining source column refs that match a GROUP BY.
+            // Three-pass rewrite for SELECT list under aggregation:
+            //  1. RewriteGroupExprs: replace any subtree that matches a
+            //     non-COLUMN_REF GROUP BY entry with a column ref to the
+            //     aggregate's group-output slot (handles `SELECT
+            //     date_part('year', EventDate) ... GROUP BY 1`).
+            //  2. HoistAggregates: pull aggregates out anywhere in the
+            //     tree (ROUND(AVG(x)), AVG(x)+1, CAST(SUM(y) AS DOUBLE)).
+            //  3. RemapGroupColumns: remap remaining source column refs
+            //     that match a plain COLUMN_REF GROUP BY entry.
+            RewriteGroupExprs(expr, original_group_ptrs, group_types);
             HoistAggregates(expr, aggregates, agg_types, group_types.size());
             RemapGroupColumns(expr, groups);
             proj_exprs.push_back(std::move(expr));
@@ -259,6 +484,7 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
         // Same treatment for ORDER BY expressions so they read the same
         // aggregate-internal schema as the projection does.
         for (auto &item : mutable_stmt.order_by) {
+            RewriteGroupExprs(item.expression, original_group_ptrs, group_types);
             HoistAggregates(item.expression, aggregates, agg_types, group_types.size());
             RemapGroupColumns(item.expression, groups);
         }

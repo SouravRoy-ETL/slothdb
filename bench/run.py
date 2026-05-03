@@ -44,7 +44,12 @@ def substitute(query, table, data):
 
 
 def run_one(exe, sql, timeout):
-    """Time one query through `exe -c '<sql>'`. Returns (seconds, error_or_None)."""
+    """Time one query through `exe -c '<sql>'`. Returns (seconds, error_or_None).
+
+    Note: DuckDB's CLI exits 0 even on Conversion/Binder errors (printed to
+    stdout). Catch those by scanning the combined stdout+stderr for typical
+    error signatures so we don't accept errored runs as wins.
+    """
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     exe_abs = os.path.abspath(exe)
@@ -55,9 +60,20 @@ def run_one(exe, sql, timeout):
             capture_output=True, timeout=timeout, env=env,
         )
         elapsed = time.perf_counter() - start
+        out = proc.stdout.decode("utf-8", errors="replace")
+        err = proc.stderr.decode("utf-8", errors="replace")
+        combined = out + "\n" + err
         if proc.returncode != 0:
-            err = proc.stderr.decode("utf-8", errors="replace").strip()
-            return elapsed, err.splitlines()[0][:120] if err else "non-zero exit"
+            msg = err.strip() or out.strip()
+            return elapsed, (msg.splitlines()[0][:120] if msg else "non-zero exit")
+        # DuckDB-style errors: returncode 0 but error printed.
+        for sig in ("Conversion Error", "Binder Error", "Catalog Error",
+                    "Parser Error", "IO Error", "Constraint Error",
+                    "Out of Memory Error", "Internal Error", "Invalid Input Error"):
+            idx = combined.find(sig)
+            if idx >= 0:
+                line = combined[idx:].splitlines()[0][:120]
+                return elapsed, line
         return elapsed, None
     except subprocess.TimeoutExpired:
         return float(timeout), f"TIMEOUT (>{timeout}s)"
@@ -113,7 +129,7 @@ def main():
     rows = []
     for i, q in enumerate(queries, 1):
         if i in skip:
-            print(f"{i:>3}  {'skip':>10}  {'skip':>10}  {'':>8}  {q[:60]}...")
+            print(f"{i:>3}  {'skip':>10}  {'skip':>10}  {'':>8}  {q[:60]}...", flush=True)
             rows.append((i, q, -1.0, -1.0, None, None))
             continue
         sql = substitute(q, args.table, args.data)
@@ -121,10 +137,11 @@ def main():
         duck_times = []
         sloth_err = None
         duck_err = None
+        print(f"{i:>3}  ...running...{'  warmup' if args.warmup else ''}  {q[:60]}{'...' if len(q) > 60 else ''}", flush=True)
         if args.warmup:
             run_one(args.slothdb, sql, args.timeout)
             run_one(args.duckdb, sql, args.timeout)
-        for _ in range(args.runs):
+        for trial in range(args.runs):
             s, se = run_one(args.slothdb, sql, args.timeout)
             d, de = run_one(args.duckdb, sql, args.timeout)
             sloth_times.append(s)
@@ -133,6 +150,7 @@ def main():
                 sloth_err = se
             if de and not duck_err:
                 duck_err = de
+            print(f"{i:>3}  trial {trial+1}/{args.runs}: sloth={fmt_ms(s) if not se else 'FAIL'}  duck={fmt_ms(d) if not de else 'FAIL'}", flush=True)
         s_med = median(sloth_times)
         d_med = median(duck_times)
         speedup = ""
@@ -140,7 +158,7 @@ def main():
             speedup = f"{d_med/s_med:.2f}x" if d_med >= s_med else f"{d_med/s_med:.2f}x"
         s_disp = "FAIL" if sloth_err else fmt_ms(s_med)
         d_disp = "FAIL" if duck_err else fmt_ms(d_med)
-        print(f"{i:>3}  {s_disp:>10}  {d_disp:>10}  {speedup:>8}  {q[:60]}{'...' if len(q) > 60 else ''}")
+        print(f"{i:>3}  {s_disp:>10}  {d_disp:>10}  {speedup:>8}  {q[:60]}{'...' if len(q) > 60 else ''}", flush=True)
         rows.append((i, q, s_med, d_med, sloth_err, duck_err))
 
     print()

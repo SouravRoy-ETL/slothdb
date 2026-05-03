@@ -320,6 +320,22 @@ std::vector<LogicalType> FastCSVReader::DetectTypes(idx_t sample_size) {
 
             if (len == 0) { col++; continue; }
 
+            // Try TIMESTAMP first: 'YYYY-MM-DD HH:MM:SS' would otherwise match
+            // BIGINT via stoll(2012, garbage_trail).
+            int64_t ts_micros;
+            if (Value::TryParseTimestampMicros(field, len, ts_micros)) {
+                if (types[col].id() == LogicalTypeId::VARCHAR ||
+                    types[col].id() == LogicalTypeId::TIMESTAMP)
+                    types[col] = LogicalType::TIMESTAMP();
+                col++;
+                continue;
+            }
+            if (types[col].id() == LogicalTypeId::TIMESTAMP) {
+                types[col] = LogicalType::VARCHAR();
+                col++;
+                continue;
+            }
+
             // Try integer.
             bool is_int = true;
             for (size_t i = (field[0] == '-' ? 1 : 0); i < len; i++) {
@@ -529,6 +545,16 @@ idx_t FastCSVReader::ReadChunk(DataChunk &chunk, const std::vector<LogicalType> 
                     }
                     break;
                 }
+                case LogicalTypeId::TIMESTAMP: {
+                    auto *arr = reinterpret_cast<int64_t *>(cp.data);
+                    int64_t micros;
+                    if (Value::TryParseTimestampMicros(field, len, micros)) {
+                        arr[row_count] = micros;
+                    } else {
+                        cp.validity->SetInvalid(row_count);
+                    }
+                    break;
+                }
                 default: {
                     // Fallback for other types - use SetValue.
                     chunk.SetValue(col, row_count, Value::VARCHAR(std::string(field, len)));
@@ -658,6 +684,16 @@ idx_t FastCSVReader::ReadChunkProjected(DataChunk &chunk, const std::vector<Logi
                     } else {
                         const char *heap = cp.str_buf->AddString(field, len);
                         arr[row_count] = string_t(heap, static_cast<uint32_t>(len));
+                    }
+                    break;
+                }
+                case LogicalTypeId::TIMESTAMP: {
+                    auto *arr = reinterpret_cast<int64_t *>(cp.data);
+                    int64_t micros;
+                    if (Value::TryParseTimestampMicros(field, len, micros)) {
+                        arr[row_count] = micros;
+                    } else {
+                        cp.validity->SetInvalid(row_count);
                     }
                     break;
                 }

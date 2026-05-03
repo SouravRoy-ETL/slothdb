@@ -1958,6 +1958,15 @@ QueryResult Connection::Query(const std::string &sql) {
 
         // 5. Execute.
         ExpressionExecutor::SetCatalog(&db_.GetCatalog());
+        // Kick off column-projection pushdown from the root: every result
+        // column is needed, intermediate operators expand to include any
+        // column they reference (filter predicates, sort keys, agg args)
+        // and forward to their children. Cuts decode work to just the
+        // referenced columns at the parquet scan boundary instead of all.
+        {
+            std::vector<bool> top_mask(physical->GetTypes().size(), true);
+            physical->SetNeededOutputs(top_mask);
+        }
         physical->Init();
 
         // Collect result column names/types from bound statement.
