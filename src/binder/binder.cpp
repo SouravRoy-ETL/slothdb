@@ -198,12 +198,36 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         result->where_clause = BindExpression(*stmt.where_clause, context);
     }
 
-    // Bind GROUP BY. Resolve select-list aliases first (e.g.
-    // `extract(minute FROM EventTime) AS m ... GROUP BY m`); ClickBench Q19
-    // depends on this. Mirrors the ORDER BY alias-resolution rule below.
+    // Bind GROUP BY. Resolve positional ordinals (`GROUP BY 1`) and
+    // select-list aliases (e.g. `extract(minute FROM EventTime) AS m ...
+    // GROUP BY m`) to their underlying SELECT-list expression. ClickBench
+    // Q13 needs the ordinal path; Q19 needs the alias path.
     for (auto &expr : stmt.group_by) {
         bool resolved = false;
-        if (expr->GetExpressionType() == ExpressionType::COLUMN_REF) {
+        // Positional ordinal: GROUP BY <integer-literal>
+        if (expr->GetExpressionType() == ExpressionType::CONSTANT) {
+            auto bound = BindExpression(*expr, context);
+            if (bound->GetExpressionType() == BoundExpressionType::CONSTANT) {
+                auto &val = static_cast<BoundConstant &>(*bound).value;
+                int64_t ord = -1;
+                if (val.type().id() == LogicalTypeId::INTEGER) {
+                    ord = val.GetValue<int32_t>();
+                } else if (val.type().id() == LogicalTypeId::BIGINT) {
+                    ord = val.GetValue<int64_t>();
+                }
+                if (ord >= 1 && ord <= static_cast<int64_t>(stmt.select_list.size())) {
+                    idx_t sl_idx = static_cast<idx_t>(ord - 1);
+                    if (stmt.select_list[sl_idx]->GetExpressionType()
+                            != ExpressionType::STAR) {
+                        result->group_by.push_back(
+                            BindExpression(*stmt.select_list[sl_idx], context));
+                        resolved = true;
+                    }
+                }
+            }
+        }
+        // Alias: GROUP BY <result-name>
+        if (!resolved && expr->GetExpressionType() == ExpressionType::COLUMN_REF) {
             auto &col_ref = static_cast<ColumnRefExpression &>(*expr);
             if (col_ref.table_name.empty()) {
                 auto ref_upper = StringUtil::Upper(col_ref.column_name);
