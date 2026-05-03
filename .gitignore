@@ -72,3 +72,24 @@ real-life-testing/
 # Personal benchmarking + reports — kept locally, not committed.
 sloth-test/
 _private/
+
+# Bench data (large CSV/parquet, never commit)
+bench/taxi/data/
+bench/clickbench/data/
+
+# Out-of-tree build directories
+build-ask/
+build-clean/
+build-shared/
+
+# Python build/cache artifacts
+python/dist-ci/
+python/slothdb/__pycache__/
+
+# Cloudflare runtime
+cloudflare/cors-proxy/.wrangler/
+
+# Vendored experiments (Q4 Snappy abandoned; flat/swiss hash sets abandoned)
+third_party/snappy/
+include/slothdb/util/
+test/unit/util/
