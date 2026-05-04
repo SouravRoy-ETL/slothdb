@@ -4978,18 +4978,10 @@ private:
                 }
             }
             if (pq) {
-                // If the group column is VARCHAR and will be dict-encoded,
-                // tell the scan to skip per-row string_t materialization.
-                // The fused path uses str_dict_indices + str_dict_values only.
-                {
-                    idx_t ncols = pq->GetTypes().size();
-                    std::vector<bool> skip(ncols, false);
-                    if (group_col < ncols &&
-                        pq->GetTypes()[group_col].id() == LogicalTypeId::VARCHAR) {
-                        skip[group_col] = true;
-                    }
-                    pq->SetSkipStrData(std::move(skip));
-                }
+                // Do NOT skip str_data on VARCHAR group cols: PLAIN-page RGs
+                // need gstr[] populated for the fallback at the per-row branch
+                // below. (Mid-RG dict-to-PLAIN fallback in hits.parquet would
+                // OOB-write through nullptr str_data otherwise.)
                 // Hoist agg kinds out of the per-row hot loop (shared r/o state).
                 enum class AK { CountStar, Count, Sum, Min, Max, Other };
                 std::vector<AK> kinds(num_aggs);
@@ -5011,6 +5003,11 @@ private:
                     std::vector<int64_t> int_order;
                     std::vector<std::string> str_cache_keys;
                     std::vector<std::vector<AggState>> str_cache_states;
+                    // Per-thread O(1) lookup mirror of str_cache_keys -> 1-based
+                    // index into str_cache_states. Replaces the prior O(K_RG^2)
+                    // linear scan on the dict-fast miss path and the non-dict
+                    // VARCHAR fallback.
+                    ankerl::unordered_dense::map<std::string, uint32_t> str_cache_index;
                 };
                 constexpr int MAX_THREADS = 8;
                 std::vector<TLSingle> tls(MAX_THREADS);
@@ -5038,8 +5035,11 @@ private:
 
                     bool dict_fast = is_varchar && gcol.str_dict_encoded &&
                                      !gcol.str_dict_indices.empty();
-                    std::vector<std::vector<AggState> *> dict_slot_ptrs;
-                    if (dict_fast) dict_slot_ptrs.assign(gcol.str_dict_values.size(), nullptr);
+                    // 1-based index into tl.str_cache_states; 0 = unset. Indices
+                    // remain valid across emplace_back relocations, raw pointers
+                    // do not.
+                    std::vector<uint32_t> dict_slot_idx;
+                    if (dict_fast) dict_slot_idx.assign(gcol.str_dict_values.size(), 0u);
 
                     // Per-agg column snapshot for this RG.
                     struct AggCol { const ParquetColumnData *col; LogicalTypeId tid; bool decoded; bool all_valid; };
@@ -5086,44 +5086,40 @@ private:
                             states_ptr = &it->second;
                         } else if (dict_fast) {
                             uint32_t di = gcol.str_dict_indices[r];
-                            if (di >= dict_slot_ptrs.size()) continue;
-                            if (!dict_slot_ptrs[di]) {
+                            if (di >= dict_slot_idx.size()) continue;
+                            if (dict_slot_idx[di] == 0u) {
                                 const auto &dv = gcol.str_dict_values[di];
                                 const char *s_data = dv.GetData();
                                 uint32_t s_len = dv.GetSize();
-                                std::vector<AggState> *sp = nullptr;
-                                for (idx_t oi = 0; oi < tl.str_cache_keys.size(); oi++) {
-                                    const auto &ck = tl.str_cache_keys[oi];
-                                    if (ck.size() == s_len &&
-                                        std::memcmp(ck.data(), s_data, s_len) == 0) {
-                                        sp = &tl.str_cache_states[oi];
-                                        break;
-                                    }
-                                }
-                                if (!sp) {
-                                    tl.str_cache_keys.emplace_back(s_data, s_len);
+                                std::string key(s_data, s_len);
+                                auto it = tl.str_cache_index.find(key);
+                                uint32_t found_idx;
+                                if (it != tl.str_cache_index.end()) {
+                                    found_idx = it->second;
+                                } else {
+                                    tl.str_cache_keys.push_back(key);
                                     tl.str_cache_states.emplace_back(num_aggs);
-                                    sp = &tl.str_cache_states.back();
+                                    found_idx = (uint32_t)tl.str_cache_states.size();
+                                    tl.str_cache_index.emplace(std::move(key), found_idx);
                                 }
-                                dict_slot_ptrs[di] = sp;
+                                dict_slot_idx[di] = found_idx;
                             }
-                            states_ptr = dict_slot_ptrs[di];
+                            states_ptr = &tl.str_cache_states[dict_slot_idx[di] - 1u];
                         } else if (is_varchar) {
                             const char *s_data = gstr[r].GetData();
                             uint32_t s_len = gstr[r].GetSize();
-                            for (idx_t oi = 0; oi < tl.str_cache_keys.size(); oi++) {
-                                const auto &ck = tl.str_cache_keys[oi];
-                                if (ck.size() == s_len &&
-                                    std::memcmp(ck.data(), s_data, s_len) == 0) {
-                                    states_ptr = &tl.str_cache_states[oi];
-                                    break;
-                                }
-                            }
-                            if (!states_ptr) {
-                                tl.str_cache_keys.emplace_back(s_data, s_len);
+                            std::string key(s_data, s_len);
+                            auto it = tl.str_cache_index.find(key);
+                            uint32_t found_idx;
+                            if (it != tl.str_cache_index.end()) {
+                                found_idx = it->second;
+                            } else {
+                                tl.str_cache_keys.push_back(key);
                                 tl.str_cache_states.emplace_back(num_aggs);
-                                states_ptr = &tl.str_cache_states.back();
+                                found_idx = (uint32_t)tl.str_cache_states.size();
+                                tl.str_cache_index.emplace(std::move(key), found_idx);
                             }
+                            states_ptr = &tl.str_cache_states[found_idx - 1u];
                         }
                         if (!states_ptr) continue;
 
@@ -5184,6 +5180,10 @@ private:
                 };
 
                 // Merge per-thread state into the enclosing int_groups / str_cache.
+                // Global O(1) lookup mirror of str_cache_keys -> 0-based index
+                // into str_cache_states. Replaces the prior inner linear scan
+                // (O(N^2) over global cardinality, ~6M for SearchPhrase).
+                ankerl::unordered_dense::map<std::string, uint32_t> global_str_index;
                 for (int t = 0; t < nt; t++) {
                     auto &tl = tls[t];
                     for (int64_t k : tl.int_order) {
@@ -5199,17 +5199,18 @@ private:
                     }
                     for (idx_t oi = 0; oi < tl.str_cache_keys.size(); oi++) {
                         const auto &k = tl.str_cache_keys[oi];
-                        // Find in global str_cache by content.
-                        std::vector<AggState> *gsp = nullptr;
-                        for (idx_t go = 0; go < str_cache_keys.size(); go++) {
-                            if (str_cache_keys[go] == k) { gsp = &str_cache_states[go]; break; }
-                        }
-                        if (!gsp) {
+                        auto git = global_str_index.find(k);
+                        std::vector<AggState> *gsp;
+                        if (git == global_str_index.end()) {
+                            uint32_t new_idx = (uint32_t)str_cache_keys.size();
                             str_cache_keys.push_back(k);
                             str_cache_states.emplace_back(num_aggs);
                             str_order.push_back(k);
                             str_keys[k] = Value::VARCHAR(k);
-                            gsp = &str_cache_states.back();
+                            global_str_index.emplace(k, new_idx);
+                            gsp = &str_cache_states[new_idx];
+                        } else {
+                            gsp = &str_cache_states[git->second];
                         }
                         merge_states(*gsp, tl.str_cache_states[oi]);
                     }
