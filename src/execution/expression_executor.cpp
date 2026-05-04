@@ -1543,15 +1543,39 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         for (idx_t i = 0; i < count; i++) {
             auto ts_val = ts_vec.GetValue(i);
             if (ts_val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
-            int64_t micros = ts_val.GetValue<int64_t>();
+            // Auto-detect input scale (matches DATE_PART/EXTRACT logic):
+            //   |raw| >= 1e13  -> microseconds since epoch (NOW/TO_TIMESTAMP)
+            //   otherwise      -> seconds since epoch (ClickBench EventTime BIGINT)
+            // Output preserves the input scale so downstream GROUP BY/ORDER BY
+            // remain self-consistent against the original column.
+            int64_t raw = 0;
+            bool input_is_micros = false;
+            if (ts_val.type().id() == LogicalTypeId::TIMESTAMP) {
+                raw = ts_val.GetValue<int64_t>();
+                input_is_micros = true;
+            } else if (ts_val.type().id() == LogicalTypeId::DATE) {
+                raw = static_cast<int64_t>(ts_val.GetValue<int32_t>()) * 86400;
+                input_is_micros = false;
+            } else if (ts_val.type().id() == LogicalTypeId::INTEGER) {
+                raw = static_cast<int64_t>(ts_val.GetValue<int32_t>());
+                input_is_micros = false;
+            } else {
+                raw = ts_val.GetValue<int64_t>();
+                int64_t abs_raw = raw < 0 ? -raw : raw;
+                input_is_micros = (abs_raw >= 10000000000000LL);
+            }
+            int64_t micros = input_is_micros ? raw : raw * 1000000;
 
             // Sub-second truncation needs no tm round-trip.
             if (part == "MICROSECOND" || part == "MICROSECONDS") {
-                result.SetValue(i, Value::BIGINT(micros));
+                int64_t out = input_is_micros ? micros : micros / 1000000;
+                result.SetValue(i, Value::BIGINT(out));
                 continue;
             }
             if (part == "MILLISECOND" || part == "MILLISECONDS") {
-                result.SetValue(i, Value::BIGINT((micros / 1000) * 1000));
+                int64_t out_micros = (micros / 1000) * 1000;
+                int64_t out = input_is_micros ? out_micros : out_micros / 1000000;
+                result.SetValue(i, Value::BIGINT(out));
                 continue;
             }
 
@@ -1599,13 +1623,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 tm_buf.tm_mon = 0; tm_buf.tm_mday = 1; tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
             }
 
-            auto truncated = static_cast<int64_t>(
+            int64_t trunc_secs = static_cast<int64_t>(
 #ifdef _MSC_VER
                 _mkgmtime(&tm_buf)
 #else
                 timegm(&tm_buf)
 #endif
-            ) * 1000000;
+            );
+            int64_t truncated = input_is_micros ? trunc_secs * 1000000 : trunc_secs;
             result.SetValue(i, Value::BIGINT(truncated));
         }
         return;
