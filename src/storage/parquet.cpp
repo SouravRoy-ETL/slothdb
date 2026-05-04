@@ -2155,6 +2155,192 @@ std::vector<Value> ParquetReader::ReadColumn(idx_t rg_idx, idx_t col_idx) {
     return ReadColumnChunk(rg.columns[col_idx]);
 }
 
+// Q4 fast path: walk pages of a BIGINT dict-encoded column, accumulate
+// histogram of dict indices, and reduce SUM = sum_idx (count[idx]*dict[idx]).
+// Skips materialization of i64_data entirely.
+//
+// Bails (returns false) if any of:
+//  - column type is not BIGINT INT64
+//  - column has no dictionary page
+//  - any data page is PLAIN (non-dict) — would invalidate the histogram
+//  - any null is observed in def_levels
+//  - codec is unsupported
+// Caller falls back to ReadColumnInto + scalar SUM.
+bool ParquetReader::DecodeBigintColumnHistogram(idx_t rg_idx, idx_t col_idx,
+                                                int64_t &out_count, double &out_sum) {
+    out_count = 0;
+    out_sum = 0.0;
+    if (!is_standard_parquet_) return false;
+    if (!file_data_) return false;
+    if (rg_idx >= meta_.row_groups.size()) return false;
+    auto &rg = meta_.row_groups[rg_idx];
+    if (col_idx >= rg.columns.size()) return false;
+    auto &cmeta = rg.columns[col_idx];
+    if (cmeta.parquet_type != ParquetType::INT64) return false;
+    if (cmeta.slothdb_type.id() != LogicalTypeId::BIGINT) return false;
+    if (cmeta.dict_page_offset < 0) return false;
+    if (cmeta.codec != 0 && cmeta.codec != 1 && cmeta.codec != 2 && cmeta.codec != 6) return false;
+
+    // 1) Read dict page.
+    ParquetDict dict;
+    size_t consumed = 0;
+    if (!ReadDictionaryPage(file_data_, file_size_, cmeta.dict_page_offset,
+                             cmeta.codec, cmeta.parquet_type, dict, nullptr, consumed)) {
+        return false;
+    }
+    if (dict.i64.empty()) return false;
+
+    int64_t cur_offset = cmeta.dict_page_offset + (int64_t)consumed;
+    if (cur_offset < cmeta.data_offset) cur_offset = cmeta.data_offset;
+    int64_t total_end = cmeta.data_offset + cmeta.total_compressed_size;
+    const idx_t total_rows = static_cast<idx_t>(cmeta.num_values);
+    const bool is_required = (cmeta.repetition_type == 0);
+
+    // 2) Histogram. Sized to dict.i64.size(). Per-RG max ~31k * 4B = ~125KB.
+    //    Stays L2-resident on a single thread; one zero-fill at start.
+    std::vector<uint32_t> hist(dict.i64.size(), 0);
+
+    // PLAIN-page carry: pages within an RG can be a mix of dict-encoded and
+    // PLAIN. The histogram is only valid for the dict-encoded pages; PLAIN
+    // pages contribute directly to (count, sum) and are folded in below.
+    int64_t plain_carry_count = 0;
+    double  plain_carry_sum = 0.0;
+
+    std::vector<uint8_t> decomp;
+    idx_t rows_read = 0;
+    while (rows_read < total_rows && cur_offset < (int64_t)file_size_) {
+        ParqPageHeader hdr;
+        const uint8_t *body; size_t body_size;
+        size_t pconsumed = ReadOnePageMapped(file_data_, file_size_, cur_offset,
+                                              hdr, body, body_size);
+        if (pconsumed == 0) return false;
+        cur_offset += (int64_t)pconsumed;
+        if (hdr.type == 2) continue; // stray dict page (shouldn't happen mid-column)
+
+        // Decompress page body if needed.
+        bool is_compressed = (hdr.type == 3) ? hdr.is_compressed : (cmeta.codec != 0);
+        if (is_compressed && cmeta.codec != 0) {
+            if (!DecompressPage(cmeta.codec, body, body_size,
+                                (size_t)hdr.uncompressed_page_size, decomp)) return false;
+            body = decomp.data(); body_size = decomp.size();
+        }
+
+        // Skip def_levels if any (and bail on any null - histogram math
+        // assumes every row contributes both to count and to sum-via-dict).
+        const uint8_t *p = body;
+        size_t remaining = body_size;
+        int32_t n_values = hdr.num_values;
+        int32_t non_null = n_values;
+        std::vector<uint8_t> def_mask;
+
+        if (is_required) {
+            // No def_levels.
+        } else if (hdr.type == 0) {
+            // V1 page: rep then def levels (rep absent for flat schemas).
+            bool has_prefix = (hdr.def_level_encoding == 3);
+            size_t dconsumed = ReadDefLevels(p, remaining, n_values, def_mask,
+                                              non_null, has_prefix,
+                                              has_prefix ? 0 : remaining);
+            if (dconsumed == 0 && remaining >= 4) {
+                def_mask.clear();
+                non_null = n_values;
+            } else {
+                p += dconsumed; remaining -= dconsumed;
+            }
+        } else if (hdr.type == 3) {
+            // V2 page.
+            if (hdr.rep_levels_byte_length > 0) {
+                if ((size_t)hdr.rep_levels_byte_length > remaining) return false;
+                p += hdr.rep_levels_byte_length;
+                remaining -= hdr.rep_levels_byte_length;
+            }
+            if (hdr.def_levels_byte_length > 0) {
+                size_t dconsumed = ReadDefLevels(p, remaining, n_values, def_mask, non_null,
+                                                  false, (size_t)hdr.def_levels_byte_length);
+                if (dconsumed == 0) return false;
+                p += dconsumed; remaining -= dconsumed;
+            }
+        }
+
+        // Bail on any null observed (def_mask non-empty after ReadDefLevels
+        // means some null was seen). This keeps the histogram math exact.
+        if (!def_mask.empty()) return false;
+        if (non_null != n_values) return false;
+
+        // Encoding 2 = PLAIN_DICTIONARY, 8 = RLE_DICTIONARY, 0 = PLAIN.
+        // For PLAIN pages of INT64 we read 8 bytes per value directly.
+        bool dict_enc = (hdr.encoding == 2 || hdr.encoding == 8);
+        if (!dict_enc) {
+            // PLAIN INT64: walk values directly into running sum + count.
+            if (hdr.encoding != 0) return false;
+            if ((size_t)n_values * sizeof(int64_t) > remaining) return false;
+            const int64_t *vp = reinterpret_cast<const int64_t *>(p);
+            // Accumulate via 4-lane double SUM (matches the existing scalar
+            // path's precision on this column).
+            double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+            int32_t i = 0;
+            for (; i + 4 <= n_values; i += 4) {
+                s0 += static_cast<double>(vp[i]);
+                s1 += static_cast<double>(vp[i + 1]);
+                s2 += static_cast<double>(vp[i + 2]);
+                s3 += static_cast<double>(vp[i + 3]);
+            }
+            for (; i < n_values; i++) s0 += static_cast<double>(vp[i]);
+            plain_carry_count += static_cast<int64_t>(n_values);
+            plain_carry_sum   += (s0 + s1) + (s2 + s3);
+            rows_read += static_cast<idx_t>(n_values);
+            if (cur_offset >= total_end) break;
+            continue;
+        }
+
+        // Bit-width prefix byte, then RLE/bit-packed indices.
+        if (remaining < 1) return false;
+        int bit_width = p[0];
+        p++; remaining--;
+        if (bit_width < 0 || bit_width > 32) return false;
+
+        RleDecoder rd(p, remaining, bit_width);
+        uint32_t buf[256];
+        const uint32_t dn = static_cast<uint32_t>(dict.i64.size());
+        int32_t left = n_values;
+        while (left > 0) {
+            int want = left < 256 ? left : 256;
+            int got = rd.NextBatch(buf, want);
+            if (got <= 0) break;
+            // Inner loop: histogram bump. The CMOV-style guard `idx < dn`
+            // mirrors the standard decode path's bounds check; unbounded
+            // index would overflow `hist`. In practice every page has
+            // bit_width tight to log2(dict_size), so the branch is never
+            // taken — predictor friendly.
+            for (int j = 0; j < got; j++) {
+                uint32_t idx = buf[j];
+                if (idx < dn) hist[idx]++;
+            }
+            left -= got;
+        }
+
+        rows_read += static_cast<idx_t>(n_values);
+        if (cur_offset >= total_end) break;
+    }
+
+    // 3) Reduce: sum_idx (count[idx] * dict.i64[idx]).
+    //    Cast to double to match AggState.sum semantics. ~31k iterations.
+    int64_t total_count = 0;
+    double total_sum = 0.0;
+    const int64_t *dv = dict.i64.data();
+    const size_t nd = dict.i64.size();
+    for (size_t i = 0; i < nd; i++) {
+        uint32_t c = hist[i];
+        if (c == 0) continue;
+        total_count += static_cast<int64_t>(c);
+        total_sum += static_cast<double>(c) * static_cast<double>(dv[i]);
+    }
+
+    out_count = total_count + plain_carry_count;
+    out_sum = total_sum + plain_carry_sum;
+    return true;
+}
+
 std::vector<std::vector<Value>> ParquetReader::ReadRowGroup(idx_t rg_idx) {
     if (rg_idx >= meta_.row_groups.size()) return {};
 

@@ -1,5 +1,6 @@
 #include "slothdb/execution/physical_planner.hpp"
 #include "slothdb/execution/expression_executor.hpp"
+#include "slothdb/execution/q4_dict_histogram.hpp"
 #include "slothdb/execution/q6_string_dedup.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/parallel.hpp"
@@ -651,6 +652,7 @@ public:
     void SetPushdownFilters(std::vector<PushdownFilter> f) {
         pushdown_filters_ = std::move(f);
     }
+    bool HasPushdownFilters() const { return !pushdown_filters_.empty(); }
 
     // One fully decoded row group - what the worker threads produce.
     struct RGWork {
@@ -5763,6 +5765,44 @@ private:
                         }
                         total_rows_processed += static_cast<idx_t>(meta.num_rows);
                         goto fused_parquet_stats_only_done;
+                    }
+                }
+                // === Q4 DICT-HISTOGRAM FAST PATH ===
+                // Single SUM/AVG/COUNT(c) over a BIGINT-dict-encoded column,
+                // no GROUP BY, no WHERE, no offset, no DISTINCT. Skips the
+                // 800MB sequential write of decoded INT64 i64_data and the
+                // per-row dict-gather; replaces with per-RG histogram +
+                // sum_idx (count[idx] * dict[idx]). See
+                // include/slothdb/execution/q4_dict_histogram.hpp.
+                if (num_aggs == 1 && !pq->HasPushdownFilters()) {
+                    auto &info = agg_infos[0];
+                    bool eligible = !info.is_count_star &&
+                                    !info.is_distinct &&
+                                    !info.sum_with_offset &&
+                                    info.col_idx != INVALID_INDEX &&
+                                    info.primary_idx == INVALID_INDEX &&
+                                    (info.name == "SUM" || info.name == "AVG" ||
+                                     info.name == "COUNT");
+                    if (eligible) {
+                        auto col_types = pq->GetTypes();
+                        if (info.col_idx < col_types.size() &&
+                            col_types[info.col_idx].id() == LogicalTypeId::BIGINT) {
+                            pq->Init();
+                            auto *reader_q4 = pq->GetReader();
+                            if (reader_q4) {
+                                int64_t hcount = 0; double hsum = 0.0;
+                                if (TryQ4DictHistogram(*reader_q4, info.col_idx,
+                                                        hcount, hsum)) {
+                                    auto &state = states[0];
+                                    state.count = hcount;
+                                    state.sum = hsum;
+                                    total_rows_processed +=
+                                        static_cast<idx_t>(reader_q4->GetMeta().num_rows);
+                                    goto fused_parquet_stats_only_done;
+                                }
+                                // Fall through to the standard fused path.
+                            }
+                        }
                     }
                 }
                 {

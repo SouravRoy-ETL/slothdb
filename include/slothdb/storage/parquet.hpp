@@ -195,6 +195,17 @@ public:
     idx_t ReadRowGroupChunk(idx_t rg_idx, DataChunk &chunk,
                              const std::vector<bool> &projection = {});
 
+    // Q4 dict-histogram fast path: for an INT64 dict-encoded column,
+    // accumulate (count, sum) across the row group WITHOUT materializing
+    // the decoded i64_data buffer. Walks each data page, RLE-decodes
+    // dict indices into a histogram count[idx], then reduces
+    // sum = sum_idx (count[idx] * dict.i64[idx]).
+    // Returns false if the column is not BIGINT or any data page is NOT
+    // dict-encoded (PLAIN page) or any null is observed — caller falls
+    // back to the standard decode path.
+    bool DecodeBigintColumnHistogram(idx_t rg_idx, idx_t col_idx,
+                                     int64_t &out_count, double &out_sum);
+
     idx_t NumRowGroups() const { return static_cast<idx_t>(meta_.row_groups.size()); }
 
     // Check if a row group might contain rows matching a predicate.
