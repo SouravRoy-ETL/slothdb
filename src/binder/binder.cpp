@@ -283,10 +283,49 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         result->has_window = true;
     }
 
-    // Bind ORDER BY - resolve select-list aliases first.
+    // Bind ORDER BY - resolve positional ordinals + select-list aliases.
     for (auto &item : stmt.order_by) {
         BoundOrderBy bound_item;
         bool resolved = false;
+        // Positional ordinal: ORDER BY <integer-literal> binds to
+        // select_list[N-1] (1-based), mirroring the GROUP BY ordinal
+        // path above. Required for ClickBench Q13 ("ORDER BY 2 DESC"
+        // sorts by COUNT(*), not by the constant 2). Out-of-range
+        // ordinals raise BinderException.
+        if (item.expression->GetExpressionType() == ExpressionType::CONSTANT) {
+            auto bound_const = BindExpression(*item.expression, context);
+            if (bound_const->GetExpressionType() == BoundExpressionType::CONSTANT) {
+                auto &val = static_cast<BoundConstant &>(*bound_const).value;
+                int64_t ord = -1;
+                bool is_int_ordinal = false;
+                if (val.type().id() == LogicalTypeId::INTEGER) {
+                    ord = val.GetValue<int32_t>();
+                    is_int_ordinal = true;
+                } else if (val.type().id() == LogicalTypeId::BIGINT) {
+                    ord = val.GetValue<int64_t>();
+                    is_int_ordinal = true;
+                }
+                if (is_int_ordinal) {
+                    if (ord >= 1 &&
+                        ord <= static_cast<int64_t>(stmt.select_list.size())) {
+                        idx_t sl_idx = static_cast<idx_t>(ord - 1);
+                        if (stmt.select_list[sl_idx]->GetExpressionType()
+                                != ExpressionType::STAR) {
+                            bound_item.expression = BindExpression(
+                                *stmt.select_list[sl_idx], context);
+                            resolved = true;
+                        }
+                    } else {
+                        throw BinderException(
+                            ErrorCode::OUT_OF_RANGE,
+                            "ORDER BY position " + std::to_string(ord) +
+                            " is out of range (select list has " +
+                            std::to_string(stmt.select_list.size()) +
+                            " entries)");
+                    }
+                }
+            }
+        }
         // Check if this ORDER BY expression is a select-list alias.
         // The alias-resolution branch re-binds the ORIGINAL (unbound)
         // select_list expression; that only works when select_list[i] is
@@ -295,7 +334,7 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         // binding it as a scalar throws "Unhandled expression type in
         // binder". Skip alias-resolution for any index whose select_list
         // entry is a star; fall through to normal column-name resolution.
-        if (item.expression->GetExpressionType() == ExpressionType::COLUMN_REF) {
+        if (!resolved && item.expression->GetExpressionType() == ExpressionType::COLUMN_REF) {
             auto &col_ref = static_cast<ColumnRefExpression &>(*item.expression);
             if (col_ref.table_name.empty()) {
                 auto ref_upper = StringUtil::Upper(col_ref.column_name);
