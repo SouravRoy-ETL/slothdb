@@ -17,6 +17,11 @@ struct BindContext {
     // Table insertion order + cumulative column offset for JOINs.
     std::vector<std::pair<std::string, idx_t>> table_order; // (alias, column_offset)
 
+    // SELECT-list alias map (UPPER(name) -> parsed expression). Populated
+    // only while binding HAVING so that `HAVING c > N` can resolve `c`
+    // against `SELECT ... COUNT(*) AS c`. Empty otherwise.
+    std::unordered_map<std::string, const ParsedExpression *> select_list_aliases;
+
     void AddTable(const std::string &alias, TableCatalogEntry *entry);
     std::pair<std::string, idx_t> ResolveColumn(const std::string &col_name,
                                                  const std::string &table_name = "") const;

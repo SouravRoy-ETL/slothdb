@@ -272,9 +272,29 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         if (!result->group_by.empty()) result->has_aggregation = true;
     }
 
-    // Bind HAVING.
+    // Bind HAVING. Populate the alias map so column refs inside HAVING
+    // (e.g. `HAVING c > 100000` where c is an alias for COUNT(*)) re-bind
+    // to the matching select-list expression. The map is cleared after
+    // binding so other clauses get default column-resolution.
     if (stmt.having_clause) {
+        context.select_list_aliases.clear();
+        for (idx_t i = 0; i < result->result_names.size() &&
+                          i < stmt.select_list.size(); i++) {
+            // Skip STAR entries: re-binding a STAR throws. With multiple
+            // expanded names mapping to a single STAR, we'd also pick the
+            // wrong one. Plain column refs match the source schema directly,
+            // so we don't need an alias entry for them either.
+            if (stmt.select_list[i]->GetExpressionType() == ExpressionType::STAR) continue;
+            if (stmt.select_list[i]->GetExpressionType() == ExpressionType::COLUMN_REF) continue;
+            auto key = StringUtil::Upper(result->result_names[i]);
+            // First-wins: a later select-list entry with the same alias
+            // would shadow the first; SQL doesn't define HAVING in that
+            // case so we just keep the first.
+            if (!context.select_list_aliases.count(key))
+                context.select_list_aliases[key] = stmt.select_list[i].get();
+        }
         result->having_clause = BindExpression(*stmt.having_clause, context);
+        context.select_list_aliases.clear();
     }
 
     // Bind QUALIFY.
@@ -568,6 +588,16 @@ BoundExprPtr Binder::BindExpression(const ParsedExpression &expr, BindContext &c
 }
 
 BoundExprPtr Binder::BindColumnRef(const ColumnRefExpression &expr, BindContext &context) {
+    // SELECT-list alias resolution (HAVING): when the active context has
+    // an alias map populated, an unqualified column ref whose name matches
+    // a select-list alias re-binds the original select-list expression.
+    // Required for SQL forms like `... COUNT(*) AS c ... HAVING c > N`.
+    if (expr.table_name.empty() && !context.select_list_aliases.empty()) {
+        auto it = context.select_list_aliases.find(StringUtil::Upper(expr.column_name));
+        if (it != context.select_list_aliases.end() && it->second) {
+            return BindExpression(*it->second, context);
+        }
+    }
     auto [table, combined_idx] = context.ResolveColumn(expr.column_name, expr.table_name);
     idx_t offset = context.GetTableOffset(table);
     idx_t local_idx = combined_idx - offset;

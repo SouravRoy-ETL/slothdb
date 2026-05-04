@@ -489,14 +489,39 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
             RemapGroupColumns(item.expression, groups);
         }
 
+        // HAVING rewrite - same three passes as SELECT/ORDER BY so the
+        // expression reads the aggregate's [groups..., aggregates...]
+        // internal schema. Must run BEFORE LogicalAggregate construction
+        // because HoistAggregates may append new aggregates that the
+        // operator needs to evaluate. RemapGroupColumns reads `groups`
+        // by reference, so we do it before moving groups into the agg.
+        if (mutable_stmt.having_clause) {
+            RewriteGroupExprs(mutable_stmt.having_clause,
+                              original_group_ptrs, group_types);
+            HoistAggregates(mutable_stmt.having_clause, aggregates,
+                            agg_types, group_types.size());
+            RemapGroupColumns(mutable_stmt.having_clause, groups);
+        }
+
         std::vector<LogicalType> agg_internal_types = group_types;
         agg_internal_types.insert(agg_internal_types.end(),
                                    agg_types.begin(), agg_types.end());
 
+        auto agg_types_for_filter = agg_internal_types;
         auto agg = std::make_unique<LogicalAggregate>(
             std::move(groups), std::move(aggregates), std::move(agg_internal_types));
         agg->children.push_back(std::move(plan));
         plan = std::move(agg);
+
+        // Insert the HAVING filter directly above the aggregate. ORDER BY
+        // and the deferred projection still read the same agg-internal
+        // schema, so they keep working.
+        if (mutable_stmt.having_clause) {
+            auto having_filter = std::make_unique<LogicalFilter>(
+                std::move(mutable_stmt.having_clause), agg_types_for_filter);
+            having_filter->children.push_back(std::move(plan));
+            plan = std::move(having_filter);
+        }
 
         deferred_projection = std::make_unique<LogicalProjection>(
             std::move(proj_exprs), stmt.result_types);
