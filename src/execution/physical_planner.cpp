@@ -7051,6 +7051,76 @@ private:
                     multi_has_filter = true;
                 }
             }
+            // Pre-resolve which aggs take a non-column expression argument
+            // (e.g. AVG(STRLEN(URL))). For these we evaluate the arg per
+            // row group via ExpressionExecutor; the per-row hot loop in
+            // apply_aggs reads the precomputed typed buffer.
+            std::vector<const BoundExpression *> expr_args(num_aggs, nullptr);
+            for (idx_t a = 0; a < num_aggs; a++) {
+                auto &info = agg_infos[a];
+                if (info.col_idx != INVALID_INDEX) continue;
+                if (info.is_count_star) continue;
+                auto &agg_expr = static_cast<BoundFunction &>(*aggregates_[a]);
+                if (!agg_expr.arguments.empty())
+                    expr_args[a] = agg_expr.arguments[0].get();
+            }
+            // Local CollectRefs (sibling class' helper is private). Walks the
+            // expression tree marking column indices referenced.
+            std::function<void(const BoundExpression &, std::vector<bool> &)>
+                collect_refs_local = [&](const BoundExpression &e,
+                                          std::vector<bool> &used) {
+                switch (e.GetExpressionType()) {
+                case BoundExpressionType::COLUMN_REF: {
+                    auto &r = static_cast<const BoundColumnRef &>(e);
+                    if (r.column_index < used.size()) used[r.column_index] = true;
+                    break;
+                }
+                case BoundExpressionType::COMPARISON: {
+                    auto &c = static_cast<const BoundComparison &>(e);
+                    collect_refs_local(*c.left, used);
+                    collect_refs_local(*c.right, used);
+                    break;
+                }
+                case BoundExpressionType::CONJUNCTION: {
+                    auto &c = static_cast<const BoundConjunction &>(e);
+                    collect_refs_local(*c.left, used);
+                    collect_refs_local(*c.right, used);
+                    break;
+                }
+                case BoundExpressionType::NEGATION: {
+                    auto &n = static_cast<const BoundNegation &>(e);
+                    collect_refs_local(*n.child, used);
+                    break;
+                }
+                case BoundExpressionType::IS_NULL: {
+                    auto &n = static_cast<const BoundIsNull &>(e);
+                    collect_refs_local(*n.child, used);
+                    break;
+                }
+                case BoundExpressionType::ARITHMETIC: {
+                    auto &a2 = static_cast<const BoundArithmetic &>(e);
+                    collect_refs_local(*a2.left, used);
+                    collect_refs_local(*a2.right, used);
+                    break;
+                }
+                case BoundExpressionType::FUNCTION: {
+                    auto &f = static_cast<const BoundFunction &>(e);
+                    for (auto &arg : f.arguments) collect_refs_local(*arg, used);
+                    break;
+                }
+                case BoundExpressionType::UNARY_MINUS: {
+                    auto &u = static_cast<const BoundUnaryMinus &>(e);
+                    collect_refs_local(*u.child, used);
+                    break;
+                }
+                case BoundExpressionType::CAST: {
+                    auto &c = static_cast<const BoundCast &>(e);
+                    collect_refs_local(*c.child, used);
+                    break;
+                }
+                default: break;
+                }
+            };
             // Push projection down so we only decode columns we need.
             {
                 std::vector<bool> needed(pq->GetTypes().size(), false);
@@ -7058,6 +7128,9 @@ private:
                 for (auto &info : agg_infos) {
                     if (info.col_idx != INVALID_INDEX && info.col_idx < needed.size())
                         needed[info.col_idx] = true;
+                }
+                for (idx_t a = 0; a < num_aggs; a++) {
+                    if (expr_args[a]) collect_refs_local(*expr_args[a], needed);
                 }
                 for (auto &p : multi_preds) {
                     if (p.col_idx < needed.size()) needed[p.col_idx] = true;
@@ -7222,13 +7295,147 @@ private:
                     }
                 }
 
+                // Pre-evaluate expression-arg aggregates (e.g. AVG(STRLEN(URL)))
+                // once per RG into typed double + validity buffers. The per-row
+                // hot loop in apply_aggs then reads from these buffers without
+                // any further ExpressionExecutor calls.
+                std::vector<std::vector<double>> expr_vals(num_aggs);
+                std::vector<std::vector<uint8_t>> expr_valid(num_aggs);
+                bool any_expr_arg = false;
+                for (idx_t a = 0; a < num_aggs; a++) if (expr_args[a]) { any_expr_arg = true; break; }
+                if (any_expr_arg) {
+                    auto &child_types = pq->GetTypes();
+                    // Per-agg ref masks so we only SetValue the referenced cols.
+                    std::vector<std::vector<bool>> agg_used(num_aggs);
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        if (!expr_args[a]) continue;
+                        agg_used[a].assign(child_types.size(), false);
+                        collect_refs_local(*expr_args[a], agg_used[a]);
+                        expr_vals[a].assign(nrows, 0.0);
+                        expr_valid[a].assign(nrows, 0);
+                    }
+                    DataChunk row_chunk;
+                    row_chunk.Initialize(child_types, VECTOR_SIZE);
+                    for (idx_t base = 0; base < nrows; base += VECTOR_SIZE) {
+                        idx_t cnt = std::min<idx_t>(VECTOR_SIZE, nrows - base);
+                        // Reset chunk and populate referenced columns from work.cols.
+                        for (idx_t c = 0; c < child_types.size(); c++) {
+                            row_chunk.GetVector(c).GetValidity().Reset();
+                        }
+                        // Build per-column once per agg-set; union the refs.
+                        std::vector<bool> any_used(child_types.size(), false);
+                        for (idx_t a = 0; a < num_aggs; a++) {
+                            if (!expr_args[a]) continue;
+                            for (idx_t c = 0; c < child_types.size(); c++)
+                                if (agg_used[a][c]) any_used[c] = true;
+                        }
+                        for (idx_t c = 0; c < child_types.size(); c++) {
+                            if (!any_used[c]) continue;
+                            const auto &col = work.cols[c];
+                            if (col.decoded) {
+                                auto tid = col.type.id();
+                                for (idx_t i = 0; i < cnt; i++) {
+                                    idx_t r = base + i;
+                                    if (!col.all_valid && r < col.validity.size() &&
+                                        !col.validity[r]) {
+                                        row_chunk.GetVector(c).GetValidity().SetInvalid(i);
+                                        continue;
+                                    }
+                                    Value v;
+                                    switch (tid) {
+                                    case LogicalTypeId::BIGINT:  v = Value::BIGINT(col.i64_data[r]); break;
+                                    case LogicalTypeId::INTEGER: v = Value::INTEGER(col.i32_data[r]); break;
+                                    case LogicalTypeId::DOUBLE:  v = Value::DOUBLE(col.f64_data[r]); break;
+                                    case LogicalTypeId::FLOAT:   v = Value::DOUBLE((double)col.f32_data[r]); break;
+                                    case LogicalTypeId::VARCHAR: {
+                                        if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
+                                            uint32_t di = col.str_dict_indices[r];
+                                            if (di < col.str_dict_values.size()) {
+                                                const auto &s = col.str_dict_values[di];
+                                                v = Value::VARCHAR(std::string(s.GetData(), s.GetSize()));
+                                            }
+                                        } else if (!col.str_data.empty()) {
+                                            const auto &s = col.str_data[r];
+                                            v = Value::VARCHAR(std::string(s.GetData(), s.GetSize()));
+                                        }
+                                        break;
+                                    }
+                                    default: break;
+                                    }
+                                    row_chunk.SetValue(c, i, v);
+                                }
+                            } else if (c < work.cols_fallback.size() &&
+                                       !work.cols_fallback[c].empty()) {
+                                const auto &fb = work.cols_fallback[c];
+                                for (idx_t i = 0; i < cnt; i++) {
+                                    idx_t r = base + i;
+                                    if (r < fb.size()) row_chunk.SetValue(c, i, fb[r]);
+                                }
+                            }
+                        }
+                        row_chunk.SetCardinality(cnt);
+                        // Evaluate each expression-arg agg into expr_vals/expr_valid.
+                        for (idx_t a = 0; a < num_aggs; a++) {
+                            if (!expr_args[a]) continue;
+                            Vector res(expr_args[a]->GetReturnType(), VECTOR_SIZE);
+                            ExpressionExecutor::Execute(*expr_args[a], row_chunk, res, cnt);
+                            auto rtid = res.GetType().id();
+                            for (idx_t i = 0; i < cnt; i++) {
+                                if (!res.GetValidity().RowIsValid(i)) continue;
+                                double dv = 0.0;
+                                switch (rtid) {
+                                case LogicalTypeId::INTEGER:
+                                    dv = (double)res.GetData<int32_t>()[i]; break;
+                                case LogicalTypeId::BIGINT:
+                                    dv = (double)res.GetData<int64_t>()[i]; break;
+                                case LogicalTypeId::DOUBLE:
+                                    dv = res.GetData<double>()[i]; break;
+                                case LogicalTypeId::FLOAT:
+                                    dv = (double)res.GetData<float>()[i]; break;
+                                default: {
+                                    auto val = res.GetValue(i);
+                                    if (val.IsNull()) continue;
+                                    try { dv = val.GetValue<double>(); }
+                                    catch (...) { continue; }
+                                    break;
+                                }
+                                }
+                                expr_vals[a][base + i] = dv;
+                                expr_valid[a][base + i] = 1;
+                            }
+                        }
+                    }
+                }
+
                 // Inner agg-update lambda shared by packed and string paths.
                 auto apply_aggs = [&](std::vector<AggState> &states_r, idx_t r) {
                     for (idx_t a = 0; a < num_aggs; a++) {
                         auto &state = states_r[a];
                         auto &acol = acs[a];
                         if (kinds[a] == AK::CountStar) { state.count++; continue; }
-                        if (!acol.col || !acol.decoded) continue;
+                        if (!acol.col) {
+                            // Expression-arg path: read precomputed value if any.
+                            if (!expr_args[a]) continue;
+                            if (!expr_valid[a][r]) continue;
+                            double val = expr_vals[a][r];
+                            switch (kinds[a]) {
+                            case AK::Count: state.count++; break;
+                            case AK::Sum:   state.sum += val; state.count++; break;
+                            case AK::Min:
+                                if (!state.has_min || val < state.sum_min) {
+                                    state.sum_min = val; state.has_min = true;
+                                }
+                                break;
+                            case AK::Max:
+                                if (!state.has_max || val > state.sum_max) {
+                                    state.sum_max = val; state.has_max = true;
+                                }
+                                break;
+                            default: break;
+                            }
+                            continue;
+                        }
+                        if (!acol.decoded) continue;
                         if (!acol.all_valid && !acol.col->validity[r]) continue;
                         // Distinct paths: insert into the typed dedup set;
                         // count++ only on new insert. The set itself is the
