@@ -1,5 +1,6 @@
 #include "slothdb/execution/physical_planner.hpp"
 #include "slothdb/execution/expression_executor.hpp"
+#include "slothdb/execution/q6_string_dedup.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/parallel.hpp"
 #include "slothdb/common/string_util.hpp"
@@ -6285,6 +6286,11 @@ private:
                 "TLDistinct layout pinned: growing this struct shifts cache lines"
                 " and regresses Q7/Q8/Q30 (see memory feedback_struct_growth_cache_shifts.md)");
             std::vector<TLDistinct> tls(MAX_THREADS);
+            // Q6 path B: per-thread radix-shard for ungrouped VARCHAR
+            // distinct. Lives outside TLDistinct (960-byte assert pinned)
+            // and is only consulted on the !has_group + agg_is_varchar
+            // branch — see q6_string_dedup.hpp.
+            Q6BuildState q6_state(MAX_THREADS);
 
             // Q5 ingests ~6M UserIDs per thread; pre-reserve scatter mini-arrays
             // so push_back stays branchless after first growth.
@@ -6360,8 +6366,12 @@ private:
                             }
                         }
                     } else {
-                        // VARCHAR distinct. Dict-encoded path: hit the set
-                        // once per dict entry per RG instead of once per row.
+                        // VARCHAR distinct path B: per-thread radix-shard build.
+                        // q6_emplace hashes once, picks one of 16 shards, and
+                        // copies bytes into the per-thread arena only on miss.
+                        // Merge phase below unions disjoint shards in parallel
+                        // — no rehash, no duplicate alloc.
+                        const int q6tid = tid % MAX_THREADS;
                         if (a_dict_idx) {
                             std::vector<uint8_t> seen(a_dsz, 0);
                             for (idx_t r = 0; r < nrows; r++) {
@@ -6370,14 +6380,16 @@ private:
                                 uint32_t di = a_dict_idx[r];
                                 if (di >= a_dsz || seen[di]) continue;
                                 seen[di] = 1;
-                                tl.str_set.emplace(a_dict_val[di].GetData(),
-                                                    a_dict_val[di].GetSize());
+                                q6_emplace(q6_state, q6tid,
+                                           a_dict_val[di].GetData(),
+                                           a_dict_val[di].GetSize());
                             }
                         } else if (a_str) {
                             for (idx_t r = 0; r < nrows; r++) {
                                 if (!keep_row(r)) continue;
                                 if (!acol.all_valid && !acol.validity[r]) continue;
-                                tl.str_set.emplace(a_str[r].GetData(), a_str[r].GetSize());
+                                q6_emplace(q6_state, q6tid,
+                                           a_str[r].GetData(), a_str[r].GetSize());
                             }
                         }
                     }
@@ -6679,24 +6691,10 @@ private:
                     for (int s = 0; s < NSHARDS; s++) total += (int64_t)shard_sz[s];
                     emit_int_only(total);
                 } else {
-                    constexpr int NSHARDS = 16;
-                    std::array<ankerl::unordered_dense::set<std::string>, NSHARDS> dst;
-                    std::vector<std::thread> mts;
-                    auto run_shard = [&](int s) {
-                        ankerl::unordered_dense::hash<std::string_view> hasher;
-                        for (int t = 0; t < MAX_THREADS; t++) {
-                            for (const auto &v : tls[t].str_set) {
-                                if ((hasher(std::string_view(v)) & (NSHARDS - 1)) == (size_t)s)
-                                    dst[s].insert(v);
-                            }
-                        }
-                    };
-                    for (int s = 1; s < NSHARDS; s++) mts.emplace_back(run_shard, s);
-                    run_shard(0);
-                    for (auto &m : mts) m.join();
-                    int64_t total = 0;
-                    for (int s = 0; s < NSHARDS; s++) total += (int64_t)dst[s].size();
-                    emit_int_only(total);
+                    // Path B: shards already disjoint by hash partition.
+                    // q6_total_distinct unions per-shard across threads
+                    // in parallel without rehashing.
+                    emit_int_only(q6_total_distinct(q6_state));
                 }
             } else if (two_col_group) {
                 // 2-col merge: composite key collected across threads, then
