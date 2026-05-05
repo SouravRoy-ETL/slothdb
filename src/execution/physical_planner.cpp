@@ -7366,12 +7366,58 @@ private:
                     auto &child_types = pq->GetTypes();
                     // Per-agg ref masks so we only SetValue the referenced cols.
                     std::vector<std::vector<bool>> agg_used(num_aggs);
+                    // Fast path: STRLEN(VARCHAR direct col) is just the per-row
+                    // string size — no need to box through DataChunk + Executor.
+                    // Cuts ~5s on Q28 (100M rows × per-row std::string alloc).
+                    std::vector<idx_t> strlen_col(num_aggs, INVALID_INDEX);
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        if (!expr_args[a]) continue;
+                        if (expr_args[a]->GetExpressionType() != BoundExpressionType::FUNCTION) continue;
+                        auto &fn = static_cast<const BoundFunction &>(*expr_args[a]);
+                        if (fn.function_name != "STRLEN" && fn.function_name != "LENGTH") continue;
+                        if (fn.arguments.size() != 1) continue;
+                        if (fn.arguments[0]->GetExpressionType() != BoundExpressionType::COLUMN_REF) continue;
+                        auto &cr = static_cast<const BoundColumnRef &>(*fn.arguments[0]);
+                        if (cr.column_index >= child_types.size()) continue;
+                        if (child_types[cr.column_index].id() != LogicalTypeId::VARCHAR) continue;
+                        strlen_col[a] = cr.column_index;
+                    }
                     for (idx_t a = 0; a < num_aggs; a++) {
                         if (!expr_args[a]) continue;
                         agg_used[a].assign(child_types.size(), false);
                         collect_refs_local(*expr_args[a], agg_used[a]);
                         expr_vals[a].assign(nrows, 0.0);
                         expr_valid[a].assign(nrows, 0);
+                    }
+                    // STRLEN fast path: read string sizes directly per agg.
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        if (strlen_col[a] == INVALID_INDEX) continue;
+                        const auto &col = work.cols[strlen_col[a]];
+                        if (!col.decoded) { strlen_col[a] = INVALID_INDEX; continue; }
+                        if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
+                            // Precompute dict-entry sizes once, then per-row index lookup.
+                            std::vector<int32_t> dict_sz(col.str_dict_values.size());
+                            for (size_t di = 0; di < col.str_dict_values.size(); di++)
+                                dict_sz[di] = (int32_t)col.str_dict_values[di].GetSize();
+                            const uint32_t *idx_arr = col.str_dict_indices.data();
+                            for (idx_t r = 0; r < nrows; r++) {
+                                if (!col.all_valid && r < col.validity.size() && !col.validity[r]) continue;
+                                uint32_t di = idx_arr[r];
+                                if (di < dict_sz.size()) {
+                                    expr_vals[a][r] = (double)dict_sz[di];
+                                    expr_valid[a][r] = 1;
+                                }
+                            }
+                        } else if (!col.str_data.empty()) {
+                            const auto *sd = col.str_data.data();
+                            for (idx_t r = 0; r < nrows; r++) {
+                                if (!col.all_valid && r < col.validity.size() && !col.validity[r]) continue;
+                                expr_vals[a][r] = (double)sd[r].GetSize();
+                                expr_valid[a][r] = 1;
+                            }
+                        } else {
+                            strlen_col[a] = INVALID_INDEX;  // no usable data; fall back
+                        }
                     }
                     DataChunk row_chunk;
                     row_chunk.Initialize(child_types, VECTOR_SIZE);
@@ -7382,9 +7428,12 @@ private:
                             row_chunk.GetVector(c).GetValidity().Reset();
                         }
                         // Build per-column once per agg-set; union the refs.
+                        // Skip STRLEN-fast-path aggs - they read column data
+                        // directly above without going through the row_chunk.
                         std::vector<bool> any_used(child_types.size(), false);
                         for (idx_t a = 0; a < num_aggs; a++) {
                             if (!expr_args[a]) continue;
+                            if (strlen_col[a] != INVALID_INDEX) continue;
                             for (idx_t c = 0; c < child_types.size(); c++)
                                 if (agg_used[a][c]) any_used[c] = true;
                         }
@@ -7436,6 +7485,7 @@ private:
                         // Evaluate each expression-arg agg into expr_vals/expr_valid.
                         for (idx_t a = 0; a < num_aggs; a++) {
                             if (!expr_args[a]) continue;
+                            if (strlen_col[a] != INVALID_INDEX) continue;  // already filled by fast path
                             Vector res(expr_args[a]->GetReturnType(), VECTOR_SIZE);
                             ExpressionExecutor::Execute(*expr_args[a], row_chunk, res, cnt);
                             auto rtid = res.GetType().id();
