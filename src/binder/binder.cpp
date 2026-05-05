@@ -677,9 +677,41 @@ BoundExprPtr Binder::BindComparison(const ComparisonExpression &expr, BindContex
         }
         konst.SetReturnType(target_typed.GetReturnType());
     };
+    // Coerce a strict 'YYYY-MM-DD' VARCHAR literal against an integer date
+    // column (USMALLINT/INTEGER days-since-epoch, e.g. ClickBench EventDate)
+    // so the typed-compare fast path fires instead of falling to per-row
+    // string-stod. ClickBench Q41-Q47 lives here.
+    auto promote_date_literal = [](BoundExpression &target_typed, BoundExpression *literal) {
+        if (literal->GetExpressionType() != BoundExpressionType::CONSTANT) return;
+        auto &konst = *static_cast<BoundConstant *>(literal);
+        if (konst.value.IsNull()) return;
+        if (konst.value.type().id() != LogicalTypeId::VARCHAR) return;
+        auto dst = target_typed.GetReturnType().id();
+        if (dst != LogicalTypeId::USMALLINT && dst != LogicalTypeId::SMALLINT &&
+            dst != LogicalTypeId::INTEGER && dst != LogicalTypeId::BIGINT) return;
+        const std::string &s = konst.value.GetValue<std::string>();
+        int32_t days = 0;
+        if (!Value::TryParseDateStringEpochDays(s.data(), s.size(), days)) return;
+        switch (dst) {
+        case LogicalTypeId::USMALLINT:
+            if (days < 0 || days > UINT16_MAX) return;
+            konst.value = Value::USMALLINT(static_cast<uint16_t>(days)); break;
+        case LogicalTypeId::SMALLINT:
+            if (days < INT16_MIN || days > INT16_MAX) return;
+            konst.value = Value::SMALLINT(static_cast<int16_t>(days)); break;
+        case LogicalTypeId::INTEGER:
+            konst.value = Value::INTEGER(days); break;
+        case LogicalTypeId::BIGINT:
+            konst.value = Value::BIGINT(days); break;
+        default: return;
+        }
+        konst.SetReturnType(target_typed.GetReturnType());
+    };
     if (left->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+        promote_date_literal(*left, right.get());
         promote_literal(*left, right.get());
     } else if (right->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+        promote_date_literal(*right, left.get());
         promote_literal(*right, left.get());
     }
 

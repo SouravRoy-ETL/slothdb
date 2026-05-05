@@ -207,6 +207,20 @@ bool Value::TryParseTimestampMicros(const char *s, size_t len, int64_t &out_micr
     return true;
 }
 
+bool Value::TryParseDateStringEpochDays(const char *s, size_t len, int32_t &out_days) {
+    if (len != 10) return false;
+    auto digit = [&](size_t i) { return s[i] >= '0' && s[i] <= '9'; };
+    if (!digit(0) || !digit(1) || !digit(2) || !digit(3) ||
+        !digit(5) || !digit(6) || !digit(8) || !digit(9)) return false;
+    if (s[4] != '-' || s[7] != '-') return false;
+    int y = (s[0]-'0')*1000 + (s[1]-'0')*100 + (s[2]-'0')*10 + (s[3]-'0');
+    unsigned mo = (s[5]-'0')*10 + (s[6]-'0');
+    unsigned d  = (s[8]-'0')*10 + (s[9]-'0');
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    out_days = DaysFromYMD(y, mo, d);
+    return true;
+}
+
 Value Value::TIME(int64_t micros) {
     Value result(micros);
     result.type_ = LogicalType::TIME();

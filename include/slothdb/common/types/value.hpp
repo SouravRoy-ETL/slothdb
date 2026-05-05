@@ -64,6 +64,11 @@ public:
     // is the UTC epoch-microseconds value. Used by CSV type inference.
     static bool TryParseTimestampMicros(const char *s, size_t len, int64_t &out_micros);
 
+    // Strict 'YYYY-MM-DD' (length 10) → days since 1970-01-01. Used by binder
+    // to coerce date string literals against parquet date columns stored as
+    // USMALLINT/INTEGER days-since-epoch (e.g. ClickBench EventDate).
+    static bool TryParseDateStringEpochDays(const char *s, size_t len, int32_t &out_days);
+
     bool IsNull() const { return is_null_; }
     const LogicalType &type() const { return type_; }
 
