@@ -4035,7 +4035,7 @@ private:
         bool bool_and = true;       // for BOOL_AND
         bool bool_or = false;       // for BOOL_OR
         std::unordered_set<std::string> distinct_set; // for COUNT(DISTINCT VARCHAR / mixed)
-        ankerl::unordered_dense::set<int64_t> distinct_int_set; // INT/BIGINT fast path
+        slothdb::SimpleI64Set distinct_int_set; // INT/BIGINT fast path
     };
 
     struct AggInfo {
@@ -7507,7 +7507,7 @@ private:
                             else if (acol.tid == LogicalTypeId::INTEGER)
                                 iv = (int64_t)acol.col->i32_data[r];
                             else continue;
-                            if (state.distinct_int_set.insert(iv).second)
+                            if (state.distinct_int_set.insert(iv))
                                 state.count++;
                             continue;
                         }
@@ -7723,10 +7723,7 @@ private:
                         if (d.distinct_int_set.empty()) {
                             d.distinct_int_set = std::move(s.distinct_int_set);
                         } else if (!s.distinct_int_set.empty()) {
-                            if (s.distinct_int_set.size() > d.distinct_int_set.size())
-                                std::swap(d.distinct_int_set, s.distinct_int_set);
-                            d.distinct_int_set.insert(s.distinct_int_set.begin(),
-                                                      s.distinct_int_set.end());
+                            d.distinct_int_set.merge(std::move(s.distinct_int_set));
                         }
                         d.count = (int64_t)d.distinct_int_set.size();
                         continue;

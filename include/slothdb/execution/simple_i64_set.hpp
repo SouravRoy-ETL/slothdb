@@ -24,14 +24,19 @@ class SimpleI64Set {
 public:
     SimpleI64Set() : slots_(64, 0), cap_(64), mask_(63), count_(0), has_zero_(false) {}
 
-    void insert(int64_t v) {
-        if (v == 0) { has_zero_ = true; return; }
+    // Returns true iff this insert added a new element.
+    bool insert(int64_t v) {
+        if (v == 0) {
+            bool was_new = !has_zero_;
+            has_zero_ = true;
+            return was_new;
+        }
         if ((count_ + 1) * 2 > cap_) grow();
         size_t i = ankerl::unordered_dense::hash<int64_t>{}(v) & mask_;
         while (true) {
             int64_t s = slots_[i];
-            if (s == 0) { slots_[i] = v; ++count_; return; }
-            if (s == v) return;
+            if (s == 0) { slots_[i] = v; ++count_; return true; }
+            if (s == v) return false;
             i = (i + 1) & mask_;
         }
     }
