@@ -5007,6 +5007,21 @@ private:
                                     if (p.col_idx < need.size()) need[p.col_idx] = true;
                                 }
                                 pq->SetNeededOutputs(need);
+                                // VARCHAR predicate cols: BuildTypedKeepMask
+                                // + EvalSimplePredicates both prefer
+                                // str_dict_values; per-row str_data bytes
+                                // unused. Skip the materialisation; PLAIN
+                                // pages trigger back-fill in parquet.cpp.
+                                // Q22 URL falls here.
+                                std::vector<bool> skip(pq->GetTypes().size(), false);
+                                for (auto &p : single_preds) {
+                                    if (p.col_idx < skip.size() && p.str_form &&
+                                        pq->GetTypes()[p.col_idx].id() == LogicalTypeId::VARCHAR &&
+                                        p.col_idx != group_col) {
+                                        skip[p.col_idx] = true;
+                                    }
+                                }
+                                pq->SetSkipStrData(std::move(skip));
                             }
                         }
                     }
