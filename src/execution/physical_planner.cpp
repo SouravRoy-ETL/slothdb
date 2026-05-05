@@ -1520,10 +1520,41 @@ private:
         // parallel path. Non-identity projections block this — falls
         // back to sequential.
         PhysicalParquetScan *pq_scan = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+        std::vector<SimplePredicate> tn_preds;
         if (!pq_scan) {
             if (auto *proj = dynamic_cast<PhysicalProjection *>(children[0].get())) {
                 if (proj->IsIdentityProjection() && !proj->children.empty()) {
                     pq_scan = dynamic_cast<PhysicalParquetScan *>(proj->children[0].get());
+                }
+            }
+        }
+        // Filter unwrap: TopN -> [Projection ->] Filter -> [Projection ->] Scan
+        // for Q24/Q25/Q26/Q27 (`SELECT ... WHERE ... ORDER BY ... LIMIT N`).
+        // Without this, those queries fall to the sequential DataChunk-based
+        // path that boxes every row into Value (Q25 ~75s vs DuckDB 0.8s).
+        // With a SimplePredicate-compilable filter, the parallel pass-1
+        // worker decodes predicate cols + key, builds a typed keep-mask
+        // (or per-row fallback for mixed-encoding RGs), and only pushes
+        // matching rows into the heap.
+        if (!pq_scan) {
+            PhysicalFilter *flt = dynamic_cast<PhysicalFilter *>(children[0].get());
+            if (!flt) {
+                if (auto *proj = dynamic_cast<PhysicalProjection *>(children[0].get())) {
+                    if (proj->IsIdentityProjection() && !proj->children.empty())
+                        flt = dynamic_cast<PhysicalFilter *>(proj->children[0].get());
+                }
+            }
+            if (flt && flt->GetCondition() && !flt->children.empty()) {
+                std::vector<SimplePredicate> tmp;
+                if (TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                    PhysicalParquetScan *cand = dynamic_cast<PhysicalParquetScan *>(flt->children[0].get());
+                    if (!cand) {
+                        if (auto *p2 = dynamic_cast<PhysicalProjection *>(flt->children[0].get())) {
+                            if (p2->IsIdentityProjection() && !p2->children.empty())
+                                cand = dynamic_cast<PhysicalParquetScan *>(p2->children[0].get());
+                        }
+                    }
+                    if (cand) { pq_scan = cand; tn_preds = std::move(tmp); }
                 }
             }
         }
@@ -1567,6 +1598,15 @@ private:
             //
             // Falls back to the original parallel-decode-everything path
             // when stats are missing for the column.
+            // For VARCHAR predicate cols, set SkipStrData BEFORE Init so
+            // the decoder preserves dict_indices when available.
+            if (!tn_preds.empty()) {
+                std::vector<bool> skip_pre(ncols, false);
+                for (auto &p : tn_preds) {
+                    if (p.col_idx < ncols && p.str_form) skip_pre[p.col_idx] = true;
+                }
+                pq_scan->SetSkipStrData(std::move(skip_pre));
+            }
             pq_scan->Init();
             auto *reader = pq_scan->GetReader();
             const auto &meta = reader->GetMeta();
@@ -1602,7 +1642,13 @@ private:
 
             LightHeap light_merged(light_cmp);
 
-            if (all_have_stats) {
+            // With a filter active, the stats threshold-skip is unsafe
+            // (RGs whose key-min looks worse than current K-th best may
+            // still hide a matching row). Force the parallel-no-stats
+            // path; total-decode of the key column is the dominant cost
+            // anyway and the filter removes most rows from heap traffic.
+            bool use_stats_path = all_have_stats && tn_preds.empty();
+            if (use_stats_path) {
                 // Sort: best RG first. For DESC, that's max desc.
                 std::sort(rg_order.begin(), rg_order.end(),
                     [ascending](const RGEntry &a, const RGEntry &b) {
@@ -1650,6 +1696,9 @@ private:
                 std::array<std::mutex, MAX_THREADS> mus;
                 std::vector<bool> need_key_only(ncols, false);
                 need_key_only[key_col] = true;
+                for (auto &p : tn_preds) {
+                    if (p.col_idx < ncols) need_key_only[p.col_idx] = true;
+                }
                 pq_scan->SetNeededOutputs(need_key_only);
                 pq_scan->Init();
                 pq_scan->SetRGConsumer(
@@ -1668,7 +1717,70 @@ private:
                         else if constexpr (std::is_same_v<T, float>)   kdata = reinterpret_cast<const T *>(kcol.f32_data.data());
                         if (!kdata) return;
 
+                        // Filter mask: try dict-amortised BuildTypedKeepMask
+                        // first; on refusal (mixed PLAIN+DICT pages clear
+                        // str_dict_encoded — common on hits.parquet URL),
+                        // fall through to per-row eval. Mirrors the FUSED
+                        // COUNT pattern at line ~5616.
+                        std::vector<uint8_t> mask;
+                        bool mask_active = false;
+                        bool fallback_row_loop = false;
+                        if (!tn_preds.empty()) {
+                            mask_active = BuildTypedKeepMask(tn_preds, work.cols, nrows, mask);
+                            if (!mask_active) fallback_row_loop = true;
+                        }
+
+                        auto eval_row = [&](idx_t i) -> bool {
+                            for (auto &p : tn_preds) {
+                                const auto &col = work.cols[p.col_idx];
+                                if (!col.decoded) return false;
+                                if (!col.all_valid && i < col.validity.size() && !col.validity[i]) return false;
+                                if (p.str_form) {
+                                    const char *sd = nullptr; uint32_t sl = 0;
+                                    if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
+                                        uint32_t di = col.str_dict_indices[i];
+                                        if (di >= col.str_dict_values.size()) return false;
+                                        sd = col.str_dict_values[di].GetData();
+                                        sl = col.str_dict_values[di].GetSize();
+                                    } else if (i < col.str_data.size()) {
+                                        sd = col.str_data[i].GetData();
+                                        sl = col.str_data[i].GetSize();
+                                    } else {
+                                        return false;
+                                    }
+                                    if (p.like_contains) {
+                                        if (p.sval.empty()) continue;
+                                        if (sl < p.sval.size()) return false;
+                                        if (!FindSubstr(sd, sl, p.sval.data(), p.sval.size())) return false;
+                                    } else {
+                                        bool eq = (sl == p.sval.size()) &&
+                                                  (p.sval.empty() ||
+                                                   std::memcmp(sd, p.sval.data(), p.sval.size()) == 0);
+                                        if (p.op == SimpleCmpOp::EQ) { if (!eq) return false; }
+                                        else                         { if (eq)  return false; }
+                                    }
+                                } else {
+                                    int64_t pv = (int64_t)p.dval;
+                                    int64_t v = 0;
+                                    if (col.type.id() == LogicalTypeId::INTEGER) v = col.i32_data[i];
+                                    else if (col.type.id() == LogicalTypeId::BIGINT) v = col.i64_data[i];
+                                    else return false;
+                                    switch (p.op) {
+                                    case SimpleCmpOp::EQ: if (v != pv) return false; break;
+                                    case SimpleCmpOp::NE: if (v == pv) return false; break;
+                                    case SimpleCmpOp::LT: if (!(v <  pv)) return false; break;
+                                    case SimpleCmpOp::LE: if (!(v <= pv)) return false; break;
+                                    case SimpleCmpOp::GT: if (!(v >  pv)) return false; break;
+                                    case SimpleCmpOp::GE: if (!(v >= pv)) return false; break;
+                                    }
+                                }
+                            }
+                            return true;
+                        };
+
                         for (idx_t i = 0; i < nrows; i++) {
+                            if (mask_active && !mask[i]) continue;
+                            if (fallback_row_loop && !eval_row(i)) continue;
                             bool key_is_null = !key_all_valid && !(i < kcol.validity.size() && kcol.validity[i]);
                             T key = key_is_null ? T{} : kdata[i];
                             LightEntry e{key, (uint32_t)rg_idx, (uint32_t)i, key_is_null};
