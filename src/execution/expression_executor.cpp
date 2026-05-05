@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 #include <ctime>
+#include <optional>
 #include <regex>
 
 namespace slothdb {
@@ -1369,14 +1370,22 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             }
             return out;
         };
+        std::optional<std::regex> compiled_re;
+        std::string cached_pattern;
+        bool have_cached = false;
         for (idx_t i = 0; i < count; i++) {
             auto s = str_vec.GetValue(i).GetValue<std::string>();
             auto p = pat_vec.GetValue(i).GetValue<std::string>();
             auto r = rep_vec.GetValue(i).GetValue<std::string>();
             try {
-                std::regex re(p);
+                if (!have_cached || cached_pattern != p) {
+                    have_cached = false;
+                    compiled_re.emplace(p);
+                    cached_pattern = p;
+                    have_cached = true;
+                }
                 auto rep = translate_replacement(r);
-                result.SetValue(i, Value::VARCHAR(std::regex_replace(s, re, rep)));
+                result.SetValue(i, Value::VARCHAR(std::regex_replace(s, *compiled_re, rep)));
             } catch (...) {
                 result.SetValue(i, Value::VARCHAR(s));
             }
