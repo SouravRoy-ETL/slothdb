@@ -15,6 +15,7 @@
 #include "slothdb/storage/json_reader.hpp"
 #include "slothdb/storage/parquet.hpp"
 #include "third_party/unordered_dense.h"
+#include "slothdb/execution/simple_i64_set.hpp"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -6805,7 +6806,7 @@ private:
                     std::array<size_t, NSHARDS> shard_sz{};
                     std::vector<std::thread> mts;
                     auto run_shard = [&](int s) {
-                        ankerl::unordered_dense::set<int64_t> out;
+                        slothdb::SimpleI64Set out;
                         out.reserve(512 * 1024);
                         for (int t = 0; t < MAX_THREADS; t++) {
                             for (int64_t v : tls[t].scatter[s]) out.insert(v);
