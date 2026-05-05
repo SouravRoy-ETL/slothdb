@@ -1495,9 +1495,16 @@ private:
     void CollectTopN_Primitive(idx_t k, idx_t key_col, bool ascending) {
         struct HeapEntry {
             T key;
+            bool is_null = false;
             std::vector<Value> row;
         };
+        // NULLS LAST: heap top is the worst candidate (first to evict).
+        // For ASC top-K, top = greatest value; for DESC, top = smallest.
+        // NULL must be the worst (= top) so any non-null evicts it.
         auto cmp = [ascending](const HeapEntry &a, const HeapEntry &b) {
+            if (a.is_null && b.is_null) return false;
+            if (a.is_null) return !ascending; // ASC: a is top, not < b
+            if (b.is_null) return ascending;
             return ascending ? a.key < b.key : a.key > b.key;
         };
 
@@ -1535,8 +1542,12 @@ private:
                 T key;
                 uint32_t rg_idx;
                 uint32_t row_idx;
+                bool is_null = false;
             };
             auto light_cmp = [ascending](const LightEntry &a, const LightEntry &b) {
+                if (a.is_null && b.is_null) return false;
+                if (a.is_null) return !ascending;
+                if (b.is_null) return ascending;
                 return ascending ? a.key < b.key : a.key > b.key;
             };
 
@@ -1599,7 +1610,7 @@ private:
                     });
                 // Sequential decode in priority order with early break.
                 for (auto &re : rg_order) {
-                    if (light_merged.size() >= k) {
+                    if (light_merged.size() >= k && !light_merged.top().is_null) {
                         T cur_thr = light_merged.top().key;
                         bool beats = ascending ? (re.order_key < cur_thr)
                                                : (re.order_key > cur_thr);
@@ -1616,15 +1627,14 @@ private:
                     if (!kdata) continue;
                     bool key_all_valid = kcol.all_valid;
                     for (idx_t i = 0; i < nrows; i++) {
-                        if (!key_all_valid && !(i < kcol.validity.size() && kcol.validity[i])) continue;
-                        T key = kdata[i];
-                        LightEntry e{key, (uint32_t)re.rg_idx, (uint32_t)i};
+                        bool key_is_null = !key_all_valid && !(i < kcol.validity.size() && kcol.validity[i]);
+                        T key = key_is_null ? T{} : kdata[i];
+                        LightEntry e{key, (uint32_t)re.rg_idx, (uint32_t)i, key_is_null};
                         if (light_merged.size() < k) {
                             light_merged.push(e);
-                        } else {
-                            bool wins = ascending ? (key < light_merged.top().key)
-                                                  : (key > light_merged.top().key);
-                            if (wins) { light_merged.pop(); light_merged.push(e); }
+                        } else if (light_cmp(e, light_merged.top())) {
+                            light_merged.pop();
+                            light_merged.push(e);
                         }
                     }
                 }
@@ -1658,14 +1668,14 @@ private:
                         if (!kdata) return;
 
                         for (idx_t i = 0; i < nrows; i++) {
-                            if (!key_all_valid && !(i < kcol.validity.size() && kcol.validity[i])) continue;
-                            T key = kdata[i];
-                            LightEntry e{key, (uint32_t)rg_idx, (uint32_t)i};
+                            bool key_is_null = !key_all_valid && !(i < kcol.validity.size() && kcol.validity[i]);
+                            T key = key_is_null ? T{} : kdata[i];
+                            LightEntry e{key, (uint32_t)rg_idx, (uint32_t)i, key_is_null};
                             if (heap.size() < k) {
                                 heap.push(e);
-                            } else {
-                                bool wins = ascending ? (key < heap.top().key) : (key > heap.top().key);
-                                if (wins) { heap.pop(); heap.push(e); }
+                            } else if (light_cmp(e, heap.top())) {
+                                heap.pop();
+                                heap.push(e);
                             }
                         }
                     });
@@ -1793,7 +1803,9 @@ private:
                 for (idx_t c = 0; c < ncols; c++) {
                     if (c == key_col) {
                         // Use the key value already captured during pass 1.
-                        if constexpr (std::is_same_v<T, int64_t>)
+                        if (winner.is_null) {
+                            row.push_back(Value());
+                        } else if constexpr (std::is_same_v<T, int64_t>)
                             row.push_back(Value::BIGINT(winner.key));
                         else if constexpr (std::is_same_v<T, int32_t>)
                             row.push_back(Value::INTEGER(winner.key));
