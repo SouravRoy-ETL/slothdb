@@ -38,6 +38,18 @@ public:
 
     size_t size() const noexcept { return count_ + (has_zero_ ? 1 : 0); }
     bool empty() const noexcept { return count_ == 0 && !has_zero_; }
+
+    template <typename Fn>
+    void for_each(Fn &&fn) const {
+        if (has_zero_) fn(int64_t(0));
+        for (int64_t v : slots_) if (v != 0) fn(v);
+    }
+
+    void merge(SimpleI64Set &&other) {
+        if (other.has_zero_) has_zero_ = true;
+        for (int64_t v : other.slots_) if (v != 0) insert(v);
+    }
+
     void reserve(size_t n) {
         size_t need = 1;
         while (need * 1 < n * 2) need <<= 1;
