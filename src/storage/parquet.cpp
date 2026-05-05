@@ -2070,9 +2070,12 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         if (!skip_str_data) {
             out.str_data.resize(total_rows);
         } else {
-            // Skip-mode: drop any state from a prior RG. The lazy back-fill
-            // path uses str_data.empty() to detect uninitialised state.
+            // Skip-mode: pre-reserve the full buffer so that a mid-RG
+            // MaterialiseStrDataLazy resize doesn't reallocate. Callers can
+            // safely capture str_data.data() once at RG start; the pointer
+            // stays valid even if PLAIN pages later trigger back-fill.
             out.str_data.clear();
+            out.str_data.reserve(total_rows);
         }
         out.str_data_skipped = skip_str_data;
         out.str_heap = std::make_shared<std::vector<char>>();
