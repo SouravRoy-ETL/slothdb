@@ -7224,11 +7224,20 @@ private:
                 pq->SetNeededOutputs(needed);
                 // Skip per-row string_t materialization for VARCHAR group cols
                 // - the packed-key path uses only str_dict_indices + str_dict_values.
+                // Also skip VARCHAR predicate cols (BuildTypedKeepMask + the
+                // per-row fallback consult str_dict_values first); PLAIN-only
+                // RGs trigger MaterialiseStrDataLazy back-fill in parquet.cpp.
                 std::vector<bool> skip(pq->GetTypes().size(), false);
                 for (auto gc : group_col_indices) {
                     if (gc < skip.size() &&
                         pq->GetTypes()[gc].id() == LogicalTypeId::VARCHAR) {
                         skip[gc] = true;
+                    }
+                }
+                for (auto &p : multi_preds) {
+                    if (p.col_idx < skip.size() && p.str_form &&
+                        pq->GetTypes()[p.col_idx].id() == LogicalTypeId::VARCHAR) {
+                        skip[p.col_idx] = true;
                     }
                 }
                 pq->SetSkipStrData(std::move(skip));
