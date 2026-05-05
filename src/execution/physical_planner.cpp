@@ -5164,6 +5164,42 @@ private:
                             if (kinds[a] == AK::CountStar) { state.count++; continue; }
                             if (!acol.col || !acol.decoded) continue;
                             if (!acol.all_valid && !acol.col->validity[r]) continue;
+                            // VARCHAR MIN/MAX: store winner in min_val/max_val.
+                            if ((kinds[a] == AK::Min || kinds[a] == AK::Max) &&
+                                acol.tid == LogicalTypeId::VARCHAR) {
+                                const char *sd = nullptr; uint32_t sl = 0;
+                                if (acol.col->str_dict_encoded &&
+                                    !acol.col->str_dict_indices.empty()) {
+                                    uint32_t di = acol.col->str_dict_indices[r];
+                                    if (di >= acol.col->str_dict_values.size()) continue;
+                                    sd = acol.col->str_dict_values[di].GetData();
+                                    sl = acol.col->str_dict_values[di].GetSize();
+                                } else if (!acol.col->str_data.empty()) {
+                                    sd = acol.col->str_data[r].GetData();
+                                    sl = acol.col->str_data[r].GetSize();
+                                } else continue;
+                                std::string_view sv(sd, sl);
+                                if (kinds[a] == AK::Min) {
+                                    if (!state.has_min) {
+                                        state.min_val = Value::VARCHAR(std::string(sd, sl));
+                                        state.has_min = true;
+                                    } else {
+                                        auto cur = state.min_val.template GetValue<std::string>();
+                                        if (sv < std::string_view(cur))
+                                            state.min_val = Value::VARCHAR(std::string(sd, sl));
+                                    }
+                                } else {
+                                    if (!state.has_max) {
+                                        state.max_val = Value::VARCHAR(std::string(sd, sl));
+                                        state.has_max = true;
+                                    } else {
+                                        auto cur = state.max_val.template GetValue<std::string>();
+                                        if (sv > std::string_view(cur))
+                                            state.max_val = Value::VARCHAR(std::string(sd, sl));
+                                    }
+                                }
+                                continue;
+                            }
                             double val = 0.0;
                             switch (acol.tid) {
                             case LogicalTypeId::DOUBLE:  val = acol.col->f64_data[r]; break;
@@ -5204,11 +5240,31 @@ private:
                         auto &d = dst[a]; auto &s = src[a];
                         d.count += s.count;
                         d.sum   += s.sum;
-                        if (s.has_min && (!d.has_min || s.sum_min < d.sum_min)) {
-                            d.sum_min = s.sum_min; d.has_min = true;
+                        if (s.has_min) {
+                            if (!d.has_min) {
+                                d.has_min = true;
+                                d.sum_min = s.sum_min;
+                                d.min_val = s.min_val;
+                            } else if (!s.min_val.IsNull() && !d.min_val.IsNull()) {
+                                if (s.min_val.template GetValue<std::string>() <
+                                    d.min_val.template GetValue<std::string>())
+                                    d.min_val = s.min_val;
+                            } else if (s.sum_min < d.sum_min) {
+                                d.sum_min = s.sum_min;
+                            }
                         }
-                        if (s.has_max && (!d.has_max || s.sum_max > d.sum_max)) {
-                            d.sum_max = s.sum_max; d.has_max = true;
+                        if (s.has_max) {
+                            if (!d.has_max) {
+                                d.has_max = true;
+                                d.sum_max = s.sum_max;
+                                d.max_val = s.max_val;
+                            } else if (!s.max_val.IsNull() && !d.max_val.IsNull()) {
+                                if (s.max_val.template GetValue<std::string>() >
+                                    d.max_val.template GetValue<std::string>())
+                                    d.max_val = s.max_val;
+                            } else if (s.sum_max > d.sum_max) {
+                                d.sum_max = s.sum_max;
+                            }
                         }
                     }
                 };
@@ -7481,6 +7537,43 @@ private:
                                 state.count++;
                             continue;
                         }
+                        // VARCHAR MIN/MAX: store winner in min_val/max_val Value;
+                        // emit path already handles non-null min_val/max_val.
+                        if ((kinds[a] == AK::Min || kinds[a] == AK::Max) &&
+                            acol.tid == LogicalTypeId::VARCHAR) {
+                            const char *sd = nullptr; uint32_t sl = 0;
+                            if (acol.col->str_dict_encoded &&
+                                !acol.col->str_dict_indices.empty()) {
+                                uint32_t di = acol.col->str_dict_indices[r];
+                                if (di >= acol.col->str_dict_values.size()) continue;
+                                sd = acol.col->str_dict_values[di].GetData();
+                                sl = acol.col->str_dict_values[di].GetSize();
+                            } else if (!acol.col->str_data.empty()) {
+                                sd = acol.col->str_data[r].GetData();
+                                sl = acol.col->str_data[r].GetSize();
+                            } else continue;
+                            std::string_view sv(sd, sl);
+                            if (kinds[a] == AK::Min) {
+                                if (!state.has_min) {
+                                    state.min_val = Value::VARCHAR(std::string(sd, sl));
+                                    state.has_min = true;
+                                } else {
+                                    auto cur = state.min_val.template GetValue<std::string>();
+                                    if (sv < std::string_view(cur))
+                                        state.min_val = Value::VARCHAR(std::string(sd, sl));
+                                }
+                            } else {
+                                if (!state.has_max) {
+                                    state.max_val = Value::VARCHAR(std::string(sd, sl));
+                                    state.has_max = true;
+                                } else {
+                                    auto cur = state.max_val.template GetValue<std::string>();
+                                    if (sv > std::string_view(cur))
+                                        state.max_val = Value::VARCHAR(std::string(sd, sl));
+                                }
+                            }
+                            continue;
+                        }
                         double val = 0.0;
                         switch (acol.tid) {
                         case LogicalTypeId::DOUBLE:  val = acol.col->f64_data[r]; break;
@@ -7660,11 +7753,32 @@ private:
                         continue;
                     }
                     d.count += s.count; d.sum += s.sum;
-                    if (s.has_min && (!d.has_min || s.sum_min < d.sum_min)) {
-                        d.sum_min = s.sum_min; d.has_min = true;
+                    if (s.has_min) {
+                        if (!d.has_min) {
+                            d.has_min = true;
+                            d.sum_min = s.sum_min;
+                            d.min_val = s.min_val;
+                        } else if (!s.min_val.IsNull() && !d.min_val.IsNull()) {
+                            // VARCHAR path - compare via min_val.
+                            if (s.min_val.template GetValue<std::string>() <
+                                d.min_val.template GetValue<std::string>())
+                                d.min_val = s.min_val;
+                        } else if (s.sum_min < d.sum_min) {
+                            d.sum_min = s.sum_min;
+                        }
                     }
-                    if (s.has_max && (!d.has_max || s.sum_max > d.sum_max)) {
-                        d.sum_max = s.sum_max; d.has_max = true;
+                    if (s.has_max) {
+                        if (!d.has_max) {
+                            d.has_max = true;
+                            d.sum_max = s.sum_max;
+                            d.max_val = s.max_val;
+                        } else if (!s.max_val.IsNull() && !d.max_val.IsNull()) {
+                            if (s.max_val.template GetValue<std::string>() >
+                                d.max_val.template GetValue<std::string>())
+                                d.max_val = s.max_val;
+                        } else if (s.sum_max > d.sum_max) {
+                            d.sum_max = s.sum_max;
+                        }
                     }
                 }
             };
