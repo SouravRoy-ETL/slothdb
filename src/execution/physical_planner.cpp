@@ -5467,6 +5467,18 @@ private:
                         if (p.col_idx < nc) need[p.col_idx] = true;
                     }
                     fused_pq->SetNeededOutputs(need);
+                    // VARCHAR predicate cols: BuildTypedKeepMask + the row-loop
+                    // fallback both consult str_dict_values first. Skip the
+                    // per-row str_data write (1.6 GB / Q21 query). PLAIN-only
+                    // RGs trigger MaterialiseStrDataLazy back-fill.
+                    std::vector<bool> skip(nc, false);
+                    for (auto &p : fused_count_preds) {
+                        if (p.col_idx < nc && p.str_form &&
+                            fused_pq->GetTypes()[p.col_idx].id() == LogicalTypeId::VARCHAR) {
+                            skip[p.col_idx] = true;
+                        }
+                    }
+                    fused_pq->SetSkipStrData(std::move(skip));
                 }
                 fused_pq->Init();
 

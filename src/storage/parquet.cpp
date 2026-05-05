@@ -1,4 +1,5 @@
 #include "slothdb/storage/parquet.hpp"
+#include "slothdb/storage/parquet_lazy_strdata.hpp"
 #include "slothdb/common/exception.hpp"
 #include "miniz.h"
 #include "zstd.h"
@@ -1827,6 +1828,9 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
                                                   out.f64_data.data() + row_offset);
         case LogicalTypeId::VARCHAR:
             if (ptype != ParquetType::BYTE_ARRAY) return false;
+            if (out.str_data_skipped && out.str_data.empty())
+                MaterialiseStrDataLazy(out, dict.str_ptr.data(), dict.str_len.data(),
+                                       (uint32_t)dict.str_ptr.size(), row_offset);
             return DecodePlainStringInto(p, remaining, n_values, def_mask,
                                          out.str_data.data() + row_offset, *out.str_heap);
         default:
@@ -2063,7 +2067,13 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     case LogicalTypeId::FLOAT:   out.f32_data.resize(total_rows); break;
     case LogicalTypeId::DOUBLE:  out.f64_data.resize(total_rows); break;
     case LogicalTypeId::VARCHAR:
-        if (!skip_str_data) out.str_data.resize(total_rows);
+        if (!skip_str_data) {
+            out.str_data.resize(total_rows);
+        } else {
+            // Skip-mode: drop any state from a prior RG. The lazy back-fill
+            // path uses str_data.empty() to detect uninitialised state.
+            out.str_data.clear();
+        }
         out.str_data_skipped = skip_str_data;
         out.str_heap = std::make_shared<std::vector<char>>();
         out.str_heap->reserve((size_t)cmeta.total_uncompressed_size + 64);
@@ -2120,7 +2130,7 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         }
 
         if (!DecodeDataPageTyped(hdr, body, body_size, cmeta.parquet_type, dict, out,
-                                  rows_read, skip_str_data,
+                                  rows_read, out.str_data_skipped,
                                   cmeta.repetition_type == 0)) {
             return false;
         }
