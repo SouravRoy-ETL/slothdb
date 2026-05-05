@@ -6395,18 +6395,18 @@ private:
                 // low 4 bits of ankerl hash so the merge phase needs no rehash.
                 std::array<std::vector<int64_t>, 16> scatter;
                 ankerl::unordered_dense::map<int64_t,
-                    ankerl::unordered_dense::set<int64_t>> int_g_int_d;
+                    slothdb::SimpleI64Set> int_g_int_d;
                 ankerl::unordered_dense::map<int64_t,
                     ankerl::unordered_dense::set<std::string>> int_g_str_d;
                 std::unordered_map<std::string,
-                    ankerl::unordered_dense::set<int64_t>> str_g_int_d;
+                    slothdb::SimpleI64Set> str_g_int_d;
                 std::unordered_map<std::string,
                     ankerl::unordered_dense::set<std::string>> str_g_str_d;
                 // 2-col grouped variant: composite key = bytewise concat of
                 // (col1 || \xFF || col2), with the original (Value, Value)
                 // pair stashed alongside for emit. Q12 lives here.
                 std::unordered_map<std::string,
-                    ankerl::unordered_dense::set<int64_t>> g2_int_d;
+                    slothdb::SimpleI64Set> g2_int_d;
                 std::unordered_map<std::string,
                     ankerl::unordered_dense::set<std::string>> g2_str_d;
                 std::unordered_map<std::string, std::vector<Value>> g2_key_parts;
@@ -6616,8 +6616,7 @@ private:
                                     value_for(r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str),
                                     value_for(r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)};
                                 tl.g2_key_parts.emplace(k, std::move(kv));
-                                it = tl.g2_int_d.emplace(k,
-                                    ankerl::unordered_dense::set<int64_t>()).first;
+                                it = tl.g2_int_d.emplace(k, slothdb::SimpleI64Set()).first;
                             }
                             it->second.insert(a_i64 ? a_i64[r] : (int64_t)a_i32[r]);
                         } else {
@@ -6667,7 +6666,7 @@ private:
                 // gint × int distinct
                 if (gint && !agg_is_varchar) {
                     int64_t prev_g = 0;
-                    ankerl::unordered_dense::set<int64_t> *cached = nullptr;
+                    slothdb::SimpleI64Set *cached = nullptr;
                     for (idx_t r = 0; r < nrows; r++) {
                         if (!keep_row(r)) continue;
                         if (!acol.all_valid && !acol.validity[r]) continue;
@@ -6716,7 +6715,7 @@ private:
                 // gstr × int distinct
                 if (gstr && !agg_is_varchar) {
                     if (g_dict_idx) {
-                        std::vector<ankerl::unordered_dense::set<int64_t> *>
+                        std::vector<slothdb::SimpleI64Set *>
                             di_to_set(g_dsz, nullptr);
                         for (idx_t r = 0; r < nrows; r++) {
                             if (!keep_row(r)) continue;
@@ -6734,7 +6733,7 @@ private:
                         }
                     } else if (g_str) {
                         string_t prev_s; bool have_prev = false;
-                        ankerl::unordered_dense::set<int64_t> *cached = nullptr;
+                        slothdb::SimpleI64Set *cached = nullptr;
                         for (idx_t r = 0; r < nrows; r++) {
                             if (!keep_row(r)) continue;
                             if (!acol.all_valid && !acol.validity[r]) continue;
@@ -6829,7 +6828,7 @@ private:
                 // 2-col merge: composite key collected across threads, then
                 // per-key disjoint parallel union of the distinct sets.
                 std::unordered_map<std::string,
-                    ankerl::unordered_dense::set<int64_t>> merged_int;
+                    slothdb::SimpleI64Set> merged_int;
                 std::unordered_map<std::string,
                     ankerl::unordered_dense::set<std::string>> merged_str;
                 std::unordered_map<std::string, std::vector<Value>> merged_keys;
@@ -6863,10 +6862,7 @@ private:
                                 auto it = tls[t].g2_int_d.find(key);
                                 if (it == tls[t].g2_int_d.end()) continue;
                                 if (dst.empty()) dst = std::move(it->second);
-                                else {
-                                    if (it->second.size() > dst.size()) std::swap(dst, it->second);
-                                    dst.insert(it->second.begin(), it->second.end());
-                                }
+                                else dst.merge(std::move(it->second));
                             }
                         } else {
                             auto &dst = merged_str[key];
@@ -6914,14 +6910,14 @@ private:
                 // workers, each worker unions per-group sets for its keys.
                 if (group_tid != LogicalTypeId::VARCHAR) {
                     ankerl::unordered_dense::map<int64_t,
-                        ankerl::unordered_dense::set<int64_t>> merged_int;
+                        slothdb::SimpleI64Set> merged_int;
                     ankerl::unordered_dense::map<int64_t,
                         ankerl::unordered_dense::set<std::string>> merged_str;
                     std::vector<int64_t> all_keys;
                     for (int t = 0; t < MAX_THREADS; t++) {
                         for (auto &kv : tls[t].int_g_int_d) {
                             if (merged_int.emplace(kv.first,
-                                ankerl::unordered_dense::set<int64_t>()).second)
+                                slothdb::SimpleI64Set()).second)
                                 all_keys.push_back(kv.first);
                         }
                         for (auto &kv : tls[t].int_g_str_d) {
@@ -6942,10 +6938,7 @@ private:
                                     auto it = tls[t].int_g_int_d.find(key);
                                     if (it == tls[t].int_g_int_d.end()) continue;
                                     if (dst.empty()) dst = std::move(it->second);
-                                    else {
-                                        if (it->second.size() > dst.size()) std::swap(dst, it->second);
-                                        dst.insert(it->second.begin(), it->second.end());
-                                    }
+                                    else dst.merge(std::move(it->second));
                                 }
                             } else {
                                 auto &dst = merged_str[key];
@@ -6995,7 +6988,7 @@ private:
                 } else {
                     // VARCHAR group key.
                     std::unordered_map<std::string,
-                        ankerl::unordered_dense::set<int64_t>> merged_int;
+                        slothdb::SimpleI64Set> merged_int;
                     std::unordered_map<std::string,
                         ankerl::unordered_dense::set<std::string>> merged_str;
                     std::vector<std::string> all_keys;
@@ -7025,10 +7018,7 @@ private:
                                     auto it = tls[t].str_g_int_d.find(key);
                                     if (it == tls[t].str_g_int_d.end()) continue;
                                     if (dst.empty()) dst = std::move(it->second);
-                                    else {
-                                        if (it->second.size() > dst.size()) std::swap(dst, it->second);
-                                        dst.insert(it->second.begin(), it->second.end());
-                                    }
+                                    else dst.merge(std::move(it->second));
                                 }
                             } else {
                                 auto &dst = merged_str[key];
