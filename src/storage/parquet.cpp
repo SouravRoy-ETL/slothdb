@@ -2102,8 +2102,9 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     case LogicalTypeId::DOUBLE:  out.f64_data.resize(total_rows); break;
     case LogicalTypeId::VARCHAR:
         if (out.str_lengths_only) {
-            // Lengths-only mode: allocate only the length buffer.
-            // str_data + str_heap stay empty; consumers read str_lengths.
+            // Lengths-only mode: allocate the length buffer. str_data stays
+            // empty; consumers read str_lengths. str_heap is still allocated
+            // (small) because dict pages need somewhere to store byte data.
             out.str_lengths.resize(total_rows);
         } else if (!skip_str_data) {
             out.str_data.resize(total_rows);
@@ -2116,10 +2117,8 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
             out.str_data.reserve(total_rows);
         }
         out.str_data_skipped = skip_str_data;
-        if (!out.str_lengths_only) {
-            out.str_heap = std::make_shared<std::vector<char>>();
-            out.str_heap->reserve((size_t)cmeta.total_uncompressed_size + 64);
-        }
+        out.str_heap = std::make_shared<std::vector<char>>();
+        out.str_heap->reserve((size_t)cmeta.total_uncompressed_size + 64);
         if (cmeta.dict_page_offset >= 0 && !out.str_lengths_only) {
             out.str_dict_indices.resize(total_rows);
             out.str_dict_encoded = true;

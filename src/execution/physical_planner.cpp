@@ -7965,7 +7965,51 @@ private:
                         skip[p.col_idx] = true;
                     }
                 }
+                // Lengths-only detection (Q28 attack).
+                idx_t ncols_lo = pq->GetTypes().size();
+                std::vector<bool> lo(ncols_lo, false);
+                std::vector<bool> lo_blocker(ncols_lo, false);
+                for (auto gc : group_col_indices)
+                    if (gc < ncols_lo) lo_blocker[gc] = true;
+                for (auto &info : agg_infos)
+                    if (info.col_idx != INVALID_INDEX && info.col_idx < ncols_lo)
+                        lo_blocker[info.col_idx] = true;
+                for (auto &p : multi_preds) {
+                    if (p.col_idx >= ncols_lo) continue;
+                    if (!p.str_form) continue;
+                    if (p.like_contains || !p.sval.empty() ||
+                        (p.op != SimpleCmpOp::EQ && p.op != SimpleCmpOp::NE)) {
+                        lo_blocker[p.col_idx] = true;
+                    }
+                }
+                for (idx_t a = 0; a < num_aggs; a++) {
+                    if (!expr_args[a]) continue;
+                    auto *e = expr_args[a];
+                    bool simple_strlen = false;
+                    if (e->GetExpressionType() == BoundExpressionType::FUNCTION) {
+                        auto &f = static_cast<const BoundFunction &>(*e);
+                        if ((f.function_name == "STRLEN" ||
+                             f.function_name == "LENGTH") &&
+                            f.arguments.size() == 1 &&
+                            f.arguments[0]->GetExpressionType() ==
+                                BoundExpressionType::COLUMN_REF) {
+                            simple_strlen = true;
+                        }
+                    }
+                    if (simple_strlen) continue;
+                    std::vector<bool> refs(ncols_lo, false);
+                    collect_refs_local(*e, refs);
+                    for (idx_t c = 0; c < ncols_lo; c++)
+                        if (refs[c]) lo_blocker[c] = true;
+                }
+                for (idx_t c = 0; c < ncols_lo; c++) {
+                    if (pq->GetTypes()[c].id() == LogicalTypeId::VARCHAR &&
+                        needed[c] && !lo_blocker[c]) {
+                        lo[c] = true;
+                    }
+                }
                 pq->SetSkipStrData(std::move(skip));
+                pq->SetStrLengthsOnly(std::move(lo));
             }
 
             enum class AK { CountStar, Count, Sum, Min, Max, CountDistinctInt, CountDistinctStr, Other };
