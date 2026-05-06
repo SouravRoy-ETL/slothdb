@@ -1697,6 +1697,25 @@ bool DecodePlainStringInto(const uint8_t *data, size_t size, int32_t n_values,
     return true;
 }
 
+// Lengths-only PLAIN VARCHAR decode. Reads the 4-byte length prefix per row
+// into `dst_lengths[i]`, then advances past the byte data without copying.
+// Used when the consumer only needs string LENGTH (e.g. STRLEN, `<> ''`).
+// Saves the per-row inline-or-heap memcpy of ~50-byte URL bytes × 100M rows.
+bool DecodePlainStringLengthsInto(const uint8_t *data, size_t size, int32_t n_values,
+                                   const std::vector<uint8_t> &def,
+                                   uint32_t *dst_lengths) {
+    size_t pos = 0;
+    for (int32_t i = 0; i < n_values; i++) {
+        if (!def.empty() && !def[i]) continue;
+        if (pos + 4 > size) return false;
+        uint32_t len = ReadLEU32(data + pos); pos += 4;
+        if (pos + len > size) return false;
+        dst_lengths[i] = len;
+        pos += len;
+    }
+    return true;
+}
+
 // Helper: read def_levels (bit-width 1) and populate def_mask (size n_values,
 // byte-per-row, 1 = valid, 0 = null). For DATA_PAGE V1 the levels are prefixed
 // by a 4-byte LE length; for V2 they are passed without a length prefix.
@@ -1828,6 +1847,10 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
                                                   out.f64_data.data() + row_offset);
         case LogicalTypeId::VARCHAR:
             if (ptype != ParquetType::BYTE_ARRAY) return false;
+            if (out.str_lengths_only) {
+                return DecodePlainStringLengthsInto(p, remaining, n_values, def_mask,
+                                                     out.str_lengths.data() + row_offset);
+            }
             if (out.str_data_skipped && out.str_data.empty())
                 MaterialiseStrDataLazy(out, dict.str_ptr.data(), dict.str_len.data(),
                                        (uint32_t)dict.str_ptr.size(), row_offset);
@@ -2067,7 +2090,11 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     case LogicalTypeId::FLOAT:   out.f32_data.resize(total_rows); break;
     case LogicalTypeId::DOUBLE:  out.f64_data.resize(total_rows); break;
     case LogicalTypeId::VARCHAR:
-        if (!skip_str_data) {
+        if (out.str_lengths_only) {
+            // Lengths-only mode: allocate only the length buffer.
+            // str_data + str_heap stay empty; consumers read str_lengths.
+            out.str_lengths.resize(total_rows);
+        } else if (!skip_str_data) {
             out.str_data.resize(total_rows);
         } else {
             // Skip-mode: pre-reserve the full buffer so that a mid-RG
@@ -2078,9 +2105,11 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
             out.str_data.reserve(total_rows);
         }
         out.str_data_skipped = skip_str_data;
-        out.str_heap = std::make_shared<std::vector<char>>();
-        out.str_heap->reserve((size_t)cmeta.total_uncompressed_size + 64);
-        if (cmeta.dict_page_offset >= 0) {
+        if (!out.str_lengths_only) {
+            out.str_heap = std::make_shared<std::vector<char>>();
+            out.str_heap->reserve((size_t)cmeta.total_uncompressed_size + 64);
+        }
+        if (cmeta.dict_page_offset >= 0 && !out.str_lengths_only) {
             out.str_dict_indices.resize(total_rows);
             out.str_dict_encoded = true;
         }
