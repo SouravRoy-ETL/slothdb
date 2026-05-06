@@ -687,6 +687,11 @@ public:
     // materialization (populate only str_dict_indices + str_dict_values).
     // Consumers (fused GROUP BY) must resolve strings via str_dict_values.
     void SetSkipStrData(std::vector<bool> mask) { skip_str_data_ = std::move(mask); }
+    // Per-column hint: lengths-only mode. The decoder fills str_lengths
+    // (one uint32 per row) and skips byte materialization entirely. Use when
+    // the column is consumed only by STRLEN(col) and `<> ''` / `= ''` checks.
+    // Mutually exclusive with normal byte materialization.
+    void SetStrLengthsOnly(std::vector<bool> mask) { str_lengths_only_ = std::move(mask); }
     const std::string &GetFilePath() const { return file_path_; }
     ParquetReader *GetReader() { return reader_sp_.get(); }
 
@@ -838,6 +843,8 @@ private:
                 continue;
             }
             bool skip_str = (c < skip_str_data_.size()) && skip_str_data_[c];
+            bool len_only = (c < str_lengths_only_.size()) && str_lengths_only_[c];
+            work.cols[c].str_lengths_only = len_only;
             if (!reader_sp_->ReadColumnInto(rg, c, work.cols[c], skip_str)) {
                 work.cols_fallback[c] = reader_sp_->ReadColumn(rg, c);
             } else {
@@ -979,6 +986,7 @@ private:
     std::shared_ptr<ParquetReader> reader_sp_;
     std::shared_ptr<ParquetReader> cached_reader_;
     std::vector<bool> skip_str_data_; // per-column hint
+    std::vector<bool> str_lengths_only_; // per-column hint: lengths-only decode
     std::vector<bool> projection_;
     std::vector<PushdownFilter> pushdown_filters_; // zone-map row-group skip
 

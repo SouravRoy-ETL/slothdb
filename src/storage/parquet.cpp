@@ -1953,6 +1953,17 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
         return true;
     }
     case LogicalTypeId::VARCHAR: {
+        // Lengths-only DICT path: per-row lookup of dict.str_len[idx].
+        // The byte data is never touched. Used for STRLEN + `<> ''` shape.
+        if (out.str_lengths_only) {
+            uint32_t *len_dst = out.str_lengths.data() + row_offset;
+            for (int32_t i = 0; i < n_values; i++) {
+                if (!def_mask.empty() && !def_mask[i]) { len_dst[i] = 0; continue; }
+                uint32_t idx = idx_for(i);
+                len_dst[i] = (idx < dict.str_len.size()) ? dict.str_len[idx] : 0;
+            }
+            return true;
+        }
         string_t *dst = skip_str_data ? nullptr : (out.str_data.data() + row_offset);
         const bool want_indices = !out.str_dict_indices.empty();
         uint32_t *idx_dst = want_indices ? (out.str_dict_indices.data() + row_offset)
