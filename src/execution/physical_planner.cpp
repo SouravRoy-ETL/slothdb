@@ -281,6 +281,16 @@ static inline bool EvalSimplePredicates(const std::vector<SimplePredicate> &pred
         if (!c.all_valid && !c.validity[r]) return false;
         if (p.str_form) {
             if (c.type.id() != LogicalTypeId::VARCHAR) return false;
+            // Lengths-only fast path: when the column was decoded for length
+            // only (str_lengths_only=true) and predicate is `= ''` / `<> ''`.
+            if (c.str_lengths_only && !c.str_lengths.empty() &&
+                !p.like_contains && p.sval.empty() &&
+                (p.op == SimpleCmpOp::EQ || p.op == SimpleCmpOp::NE)) {
+                bool is_empty = (c.str_lengths[r] == 0);
+                if (p.op == SimpleCmpOp::EQ) { if (!is_empty) return false; }
+                else                         { if (is_empty)  return false; }
+                continue;
+            }
             // Two layouts available: dict-encoded (str_dict_indices +
             // str_dict_values) or expanded str_data. Prefer dict — one
             // memcmp per dict entry vs one per row in the caller's loop
@@ -349,6 +359,12 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
         if (!c.decoded || !c.all_valid) return false;
         if (p.str_form) {
             if (c.type.id() != LogicalTypeId::VARCHAR) return false;
+            // Lengths-only path accepts `= ''` / `<> ''` (length-only check).
+            if (c.str_lengths_only && !c.str_lengths.empty() &&
+                !p.like_contains && p.sval.empty() &&
+                (p.op == SimpleCmpOp::EQ || p.op == SimpleCmpOp::NE)) {
+                continue;
+            }
             if (!c.str_dict_encoded || c.str_dict_indices.empty()) return false;
             if (p.like_contains) continue;
             if (p.op != SimpleCmpOp::EQ && p.op != SimpleCmpOp::NE) return false;
@@ -361,6 +377,18 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
     for (auto &p : preds) {
         const auto &c = cols[p.col_idx];
         if (p.str_form) {
+            // Lengths-only path: per-row length comparison, no dict needed.
+            if (c.str_lengths_only && !c.str_lengths.empty() &&
+                !p.like_contains && p.sval.empty() &&
+                (p.op == SimpleCmpOp::EQ || p.op == SimpleCmpOp::NE)) {
+                const uint32_t *L = c.str_lengths.data();
+                if (p.op == SimpleCmpOp::EQ) {
+                    for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(L[r] == 0);
+                } else {
+                    for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(L[r] != 0);
+                }
+                continue;
+            }
             // Precompute dict_match[d] once per dict entry (~thousands)
             // instead of per row (~100M). The per-row inner loop becomes
             // a single load + bitwise-and.
@@ -8119,7 +8147,16 @@ private:
                         if (strlen_col[a] == INVALID_INDEX) continue;
                         const auto &col = work.cols[strlen_col[a]];
                         if (!col.decoded) { strlen_col[a] = INVALID_INDEX; continue; }
-                        if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
+                        if (col.str_lengths_only && !col.str_lengths.empty()) {
+                            // Lengths-only mode: STRLEN(URL) reads the raw
+                            // length array directly. Skips byte-decode entirely.
+                            const uint32_t *L = col.str_lengths.data();
+                            for (idx_t r = 0; r < nrows; r++) {
+                                if (!col.all_valid && r < col.validity.size() && !col.validity[r]) continue;
+                                expr_vals[a][r] = (double)L[r];
+                                expr_valid[a][r] = 1;
+                            }
+                        } else if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
                             // Precompute dict-entry sizes once, then per-row index lookup.
                             std::vector<int32_t> dict_sz(col.str_dict_values.size());
                             for (size_t di = 0; di < col.str_dict_values.size(); di++)
