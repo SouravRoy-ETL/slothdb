@@ -132,6 +132,13 @@ struct ParquetColumnData {
     bool all_valid = true;
     // Set true if native decode succeeded; false falls back to Value path.
     bool decoded = false;
+    // Lengths-only fast path: when consumers only need string LENGTH (e.g.
+    // `WHERE col <> ''` length-check, `STRLEN(col)` aggregate arg), the
+    // decoder skips byte materialization entirely and fills only `str_lengths`.
+    // Placed at end of struct to preserve cache-line layout of pre-existing
+    // fields (per memory feedback_struct_growth_cache_shifts.md).
+    std::vector<uint32_t> str_lengths;
+    bool str_lengths_only = false;
 
     void Clear() {
         count = 0;
@@ -145,6 +152,8 @@ struct ParquetColumnData {
         validity.clear();
         all_valid = true;
         decoded = false;
+        str_lengths.clear();
+        str_lengths_only = false;
     }
 };
 
