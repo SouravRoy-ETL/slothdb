@@ -8,9 +8,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace slothdb {
@@ -239,11 +237,6 @@ private:
     bool owns_mmap_ = false;   // true if we created the mapping (must unmap in ~)
     bool owns_buffer_ = false; // true if we malloc'd a buffer (fread fallback)
     void *mmap_handle_ = nullptr; // Windows: HANDLE; POSIX: unused
-    // Per-(rg,col) sorted INT64 dictionary cache. Only populated for RGs we
-    // proved DON'T contain the queried literal — those are pruned and won't
-    // be revisited. Key = (rg_idx << 32) | col_idx.
-    mutable std::unordered_map<uint64_t, std::vector<int64_t>> int64_dict_cache_;
-    mutable std::mutex dict_cache_mu_;
 };
 
 } // namespace slothdb
