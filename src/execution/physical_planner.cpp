@@ -2071,10 +2071,30 @@ private:
             // when stats are missing for the column.
             // For VARCHAR predicate cols, set SkipStrData BEFORE Init so
             // the decoder preserves dict_indices when available.
+            // Also detect lengths-only candidates: VARCHAR predicate cols whose
+            // ALL predicates are `<> ''` / `= ''` (length-check only). For
+            // Q25/Q26/Q27 (`WHERE SearchPhrase <> '' ORDER BY ... LIMIT 10`),
+            // pass-1 only needs SearchPhrase lengths; pass-2 re-decodes the
+            // K winning RGs with full bytes for output.
+            std::vector<bool> tn_lo_pred(ncols, false);
             if (!tn_preds.empty()) {
                 std::vector<bool> skip_pre(ncols, false);
+                std::vector<bool> lo_eligible(ncols, true);
+                std::vector<bool> lo_seen(ncols, false);
                 for (auto &p : tn_preds) {
-                    if (p.col_idx < ncols && p.str_form) skip_pre[p.col_idx] = true;
+                    if (p.col_idx < ncols && p.str_form) {
+                        skip_pre[p.col_idx] = true;
+                        lo_seen[p.col_idx] = true;
+                        if (p.like_contains || !p.sval.empty() ||
+                            (p.op != SimpleCmpOp::EQ && p.op != SimpleCmpOp::NE)) {
+                            lo_eligible[p.col_idx] = false;
+                        }
+                    }
+                }
+                for (idx_t c = 0; c < ncols; c++) {
+                    if (lo_seen[c] && lo_eligible[c] && c != key_col) {
+                        tn_lo_pred[c] = true;
+                    }
                 }
                 pq_scan->SetSkipStrData(std::move(skip_pre));
             }
@@ -2169,6 +2189,9 @@ private:
                     for (auto &p : tn_preds) {
                         if (p.col_idx >= ncols) return;
                         if (p.col_idx == key_col) continue;
+                        // Enable lengths-only for `<> ''` / `= ''` predicates
+                        // before ReadColumnInto so the decoder fills str_lengths.
+                        pcols[p.col_idx].str_lengths_only = tn_lo_pred[p.col_idx];
                         if (!reader->ReadColumnInto(re.rg_idx, p.col_idx, pcols[p.col_idx])) return;
                     }
                     auto &kcol = pcols[key_col];
@@ -2194,6 +2217,14 @@ private:
                             if (!col.decoded) return false;
                             if (!col.all_valid && i < col.validity.size() && !col.validity[i]) return false;
                             if (p.str_form) {
+                                if (col.str_lengths_only && !col.str_lengths.empty() &&
+                                    !p.like_contains && p.sval.empty() &&
+                                    (p.op == SimpleCmpOp::EQ || p.op == SimpleCmpOp::NE)) {
+                                    bool is_empty = (col.str_lengths[i] == 0);
+                                    if (p.op == SimpleCmpOp::EQ) { if (!is_empty) return false; }
+                                    else                         { if (is_empty)  return false; }
+                                    continue;
+                                }
                                 const char *sd = nullptr; uint32_t sl = 0;
                                 if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
                                     uint32_t di = col.str_dict_indices[i];
@@ -2294,6 +2325,7 @@ private:
                     if (p.col_idx < ncols) need_key_only[p.col_idx] = true;
                 }
                 pq_scan->SetNeededOutputs(need_key_only);
+                pq_scan->SetStrLengthsOnly(tn_lo_pred);
                 pq_scan->Init();
                 pq_scan->SetRGConsumer(
                     [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {
@@ -2330,6 +2362,14 @@ private:
                                 if (!col.decoded) return false;
                                 if (!col.all_valid && i < col.validity.size() && !col.validity[i]) return false;
                                 if (p.str_form) {
+                                    if (col.str_lengths_only && !col.str_lengths.empty() &&
+                                        !p.like_contains && p.sval.empty() &&
+                                        (p.op == SimpleCmpOp::EQ || p.op == SimpleCmpOp::NE)) {
+                                        bool is_empty = (col.str_lengths[i] == 0);
+                                        if (p.op == SimpleCmpOp::EQ) { if (!is_empty) return false; }
+                                        else                         { if (is_empty)  return false; }
+                                        continue;
+                                    }
                                     const char *sd = nullptr; uint32_t sl = 0;
                                     if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
                                         uint32_t di = col.str_dict_indices[i];
