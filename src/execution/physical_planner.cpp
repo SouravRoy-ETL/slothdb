@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <condition_variable>
 #include <filesystem>
@@ -109,13 +110,13 @@ static bool ParseCmpOp(const std::string &s, SimpleCmpOp &out) {
 // Returns true iff `e` is an AND-tree of (ColumnRef OP Constant) comparisons
 // on numeric columns; fills `out`. On `false`, `out` may be partially filled -
 // caller should discard it.
-static bool TryCompileSimplePredicate(const BoundExpression &e,
-                                      std::vector<SimplePredicate> &out) {
+static bool TryCompileSimplePredicateImpl(const BoundExpression &e,
+                                          std::vector<SimplePredicate> &out) {
     if (e.GetExpressionType() == BoundExpressionType::CONJUNCTION) {
         auto &c = static_cast<const BoundConjunction &>(e);
         if (c.op != "AND") return false;
-        return TryCompileSimplePredicate(*c.left, out) &&
-               TryCompileSimplePredicate(*c.right, out);
+        return TryCompileSimplePredicateImpl(*c.left, out) &&
+               TryCompileSimplePredicateImpl(*c.right, out);
     }
     if (e.GetExpressionType() != BoundExpressionType::COMPARISON) return false;
     auto &cmp = static_cast<const BoundComparison &>(e);
@@ -203,6 +204,22 @@ static bool TryCompileSimplePredicate(const BoundExpression &e,
     sp.op = op;
     sp.dval = d;
     out.push_back(std::move(sp));
+    return true;
+}
+
+// Top-level entry: compile then reorder so cheap+selective predicates run
+// first. LIKE '%needle%' is per-row substring search; on ClickBench Q22 the
+// URL-LIKE clause is paired with a much cheaper SearchPhrase <> '' that
+// rejects ~98% of rows, so eval'ing NE first short-circuits LIKE on most
+// rows.
+static bool TryCompileSimplePredicate(const BoundExpression &e,
+                                      std::vector<SimplePredicate> &out) {
+    size_t base = out.size();
+    if (!TryCompileSimplePredicateImpl(e, out)) return false;
+    std::stable_sort(out.begin() + base, out.end(),
+        [](const SimplePredicate &a, const SimplePredicate &b) {
+            return !a.like_contains && b.like_contains;
+        });
     return true;
 }
 
