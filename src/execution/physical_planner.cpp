@@ -4783,28 +4783,53 @@ public:
     }
 
 private:
+    // Extras: rarely-used per-AggState fields bundled behind a single
+    // unique_ptr. STDDEV/MEDIAN/STRING_AGG/COUNT(DISTINCT)/BOOL_AND/OR all
+    // populate fields here only when the relevant aggregate fires. For
+    // common queries (COUNT*, SUM, AVG, numeric MIN/MAX) this stays nullptr,
+    // saving ~140B per AggState.
+    struct AggExtras {
+        double sum_sq = 0;          // for STDDEV/VARIANCE
+        std::vector<double> values; // for MEDIAN
+        std::string str_agg;        // for STRING_AGG
+        std::string str_delim;
+        bool str_started = false;
+        bool bool_and = true;       // for BOOL_AND
+        bool bool_or = false;       // for BOOL_OR
+        std::unordered_set<std::string> distinct_set; // for COUNT(DISTINCT VARCHAR / mixed)
+        slothdb::SimpleI64Set distinct_int_set; // INT/BIGINT fast path
+    };
+
     struct AggState {
         int64_t count = 0;
         double sum = 0;
-        double sum_sq = 0;          // for STDDEV/VARIANCE
         bool has_min = false;
-        // Lazy: only allocated for VARCHAR MIN. Saves ~96B per state when
-        // unused. Numeric MIN uses sum_min directly. (Q35 memory diet.)
+        // Lazy: only allocated for VARCHAR MIN. Numeric MIN uses sum_min.
         std::unique_ptr<Value> min_val_ptr;
         double sum_min = 0;         // numeric min for fast comparison
         bool has_max = false;
         std::unique_ptr<Value> max_val_ptr;
         double sum_max = 0;         // numeric max for fast comparison
-        std::vector<double> values; // for MEDIAN
-        std::string str_agg;        // for STRING_AGG
-        bool str_started = false;
-        std::string str_delim;
-        bool bool_and = true;       // for BOOL_AND
-        bool bool_or = false;       // for BOOL_OR
-        std::unordered_set<std::string> distinct_set; // for COUNT(DISTINCT VARCHAR / mixed)
-        slothdb::SimpleI64Set distinct_int_set; // INT/BIGINT fast path
+        std::unique_ptr<AggExtras> extras_ptr;
 
-        // Helpers: lazy create + access. Use these for VARCHAR MIN/MAX paths.
+        // Lazy create extras on first use of any uncommon field.
+        AggExtras &extras() {
+            if (!extras_ptr) extras_ptr = std::make_unique<AggExtras>();
+            return *extras_ptr;
+        }
+        // Field accessors mirror old direct access (so reads on never-used
+        // states return defaults without allocation).
+        double sum_sq() const { return extras_ptr ? extras_ptr->sum_sq : 0.0; }
+        bool str_started() const { return extras_ptr ? extras_ptr->str_started : false; }
+        bool bool_and_v() const { return extras_ptr ? extras_ptr->bool_and : true; }
+        bool bool_or_v() const { return extras_ptr ? extras_ptr->bool_or : false; }
+        const std::string &str_agg_const() const {
+            static const std::string empty;
+            return extras_ptr ? extras_ptr->str_agg : empty;
+        }
+        bool has_extras() const { return (bool)extras_ptr; }
+
+        // Helpers for MIN/MAX
         Value &min_val() {
             if (!min_val_ptr) min_val_ptr = std::make_unique<Value>();
             return *min_val_ptr;
@@ -4817,7 +4842,6 @@ private:
         bool max_val_is_null() const { return !max_val_ptr || max_val_ptr->IsNull(); }
         Value min_val_or_null() const { return min_val_ptr ? *min_val_ptr : Value(); }
         Value max_val_or_null() const { return max_val_ptr ? *max_val_ptr : Value(); }
-        // Cross-state copy: when source has a value, deep-copy into dst.
         void set_min_from(const AggState &s) {
             if (s.min_val_ptr) min_val_ptr = std::make_unique<Value>(*s.min_val_ptr);
         }
@@ -8434,7 +8458,7 @@ private:
                             else if (acol.tid == LogicalTypeId::INTEGER)
                                 iv = (int64_t)acol.col->i32_data[r];
                             else continue;
-                            if (state.distinct_int_set.insert(iv))
+                            if (state.extras().distinct_int_set.insert(iv))
                                 state.count++;
                             continue;
                         }
@@ -8451,7 +8475,7 @@ private:
                                 sd = acol.col->str_data[r].GetData();
                                 sl = acol.col->str_data[r].GetSize();
                             } else continue;
-                            if (state.distinct_set.emplace(sd, sl).second)
+                            if (state.extras().distinct_set.emplace(sd, sl).second)
                                 state.count++;
                             continue;
                         }
@@ -8647,24 +8671,29 @@ private:
                     // counts (those would double-count cross-thread
                     // duplicates).
                     if (kinds[a] == AK::CountDistinctInt) {
-                        if (d.distinct_int_set.empty()) {
-                            d.distinct_int_set = std::move(s.distinct_int_set);
-                        } else if (!s.distinct_int_set.empty()) {
-                            d.distinct_int_set.merge(std::move(s.distinct_int_set));
+                        if (s.extras_ptr) {
+                            auto &dx = d.extras().distinct_int_set;
+                            if (dx.empty()) {
+                                dx = std::move(s.extras_ptr->distinct_int_set);
+                            } else if (!s.extras_ptr->distinct_int_set.empty()) {
+                                dx.merge(std::move(s.extras_ptr->distinct_int_set));
+                            }
                         }
-                        d.count = (int64_t)d.distinct_int_set.size();
+                        d.count = d.extras_ptr ? (int64_t)d.extras_ptr->distinct_int_set.size() : 0;
                         continue;
                     }
                     if (kinds[a] == AK::CountDistinctStr) {
-                        if (d.distinct_set.empty()) {
-                            d.distinct_set = std::move(s.distinct_set);
-                        } else if (!s.distinct_set.empty()) {
-                            if (s.distinct_set.size() > d.distinct_set.size())
-                                std::swap(d.distinct_set, s.distinct_set);
-                            d.distinct_set.insert(s.distinct_set.begin(),
-                                                   s.distinct_set.end());
+                        if (s.extras_ptr) {
+                            auto &dx = d.extras().distinct_set;
+                            auto &sx = s.extras_ptr->distinct_set;
+                            if (dx.empty()) {
+                                dx = std::move(sx);
+                            } else if (!sx.empty()) {
+                                if (sx.size() > dx.size()) std::swap(dx, sx);
+                                dx.insert(sx.begin(), sx.end());
+                            }
                         }
-                        d.count = (int64_t)d.distinct_set.size();
+                        d.count = d.extras_ptr ? (int64_t)d.extras_ptr->distinct_set.size() : 0;
                         continue;
                     }
                     d.count += s.count; d.sum += s.sum;
@@ -8808,7 +8837,7 @@ private:
                                    chunk.GetVector(info.col_idx).GetValidity().RowIsValid(i)) {
                             if (info.is_distinct) {
                                 auto v = chunk.GetValue(info.col_idx, i);
-                                if (state.distinct_set.insert(v.ToString()).second)
+                                if (state.extras().distinct_set.insert(v.ToString()).second)
                                     state.count++;
                             } else {
                                 state.count++;
@@ -8828,7 +8857,7 @@ private:
                                 Value arg_val = res.GetValue(0);
                                 if (!arg_val.IsNull()) {
                                     if (info.is_distinct) {
-                                        if (state.distinct_set.insert(arg_val.ToString()).second)
+                                        if (state.extras().distinct_set.insert(arg_val.ToString()).second)
                                             state.count++;
                                     } else {
                                         state.count++;
@@ -8860,21 +8889,24 @@ private:
                                        info.name == "VAR_SAMP" || info.name == "VAR_POP") {
                                 state.count++;
                                 state.sum += val;
-                                state.sum_sq += val * val;
+                                state.extras().sum_sq += val * val;
                             } else if (info.name == "MEDIAN") {
-                                state.values.push_back(val);
+                                state.extras().values.push_back(val);
                             } else if (info.name == "BOOL_AND") {
                                 state.count++;
-                                state.bool_and = state.bool_and && (val != 0.0);
+                                auto &x = state.extras();
+                                x.bool_and = x.bool_and && (val != 0.0);
                             } else if (info.name == "BOOL_OR") {
                                 state.count++;
-                                state.bool_or = state.bool_or || (val != 0.0);
+                                auto &x = state.extras();
+                                x.bool_or = x.bool_or || (val != 0.0);
                             } else if (info.name == "STRING_AGG" || info.name == "LISTAGG" || info.name == "GROUP_CONCAT") {
                                 auto v = chunk.GetValue(info.col_idx, i);
                                 if (!v.IsNull()) {
-                                    if (state.str_started) state.str_agg += state.str_delim.empty() ? "," : state.str_delim;
-                                    state.str_agg += v.ToString();
-                                    state.str_started = true;
+                                    auto &x = state.extras();
+                                    if (x.str_started) x.str_agg += x.str_delim.empty() ? "," : x.str_delim;
+                                    x.str_agg += v.ToString();
+                                    x.str_started = true;
                                 }
                             }
                         }
@@ -8978,11 +9010,11 @@ private:
                         }
                     }
                 } else if (name == "STRING_AGG" || name == "LISTAGG" || name == "GROUP_CONCAT") {
-                    result_row.push_back(state.str_started ? Value::VARCHAR(state.str_agg) : Value());
+                    result_row.push_back(state.str_started() ? Value::VARCHAR(state.str_agg_const()) : Value());
                 } else if (name == "STDDEV" || name == "STDDEV_SAMP") {
                     if (state.count > 1) {
                         double mean = state.sum / state.count;
-                        double var = (state.sum_sq - state.count * mean * mean) / (state.count - 1);
+                        double var = (state.sum_sq() - state.count * mean * mean) / (state.count - 1);
                         result_row.push_back(Value::DOUBLE(std::sqrt(var)));
                     } else {
                         result_row.push_back(Value());
@@ -8990,7 +9022,7 @@ private:
                 } else if (name == "STDDEV_POP") {
                     if (state.count > 0) {
                         double mean = state.sum / state.count;
-                        double var = (state.sum_sq - state.count * mean * mean) / state.count;
+                        double var = (state.sum_sq() - state.count * mean * mean) / state.count;
                         result_row.push_back(Value::DOUBLE(std::sqrt(var)));
                     } else {
                         result_row.push_back(Value());
@@ -8998,7 +9030,7 @@ private:
                 } else if (name == "VARIANCE" || name == "VAR_SAMP") {
                     if (state.count > 1) {
                         double mean = state.sum / state.count;
-                        double var = (state.sum_sq - state.count * mean * mean) / (state.count - 1);
+                        double var = (state.sum_sq() - state.count * mean * mean) / (state.count - 1);
                         result_row.push_back(Value::DOUBLE(var));
                     } else {
                         result_row.push_back(Value());
@@ -9006,26 +9038,27 @@ private:
                 } else if (name == "VAR_POP") {
                     if (state.count > 0) {
                         double mean = state.sum / state.count;
-                        double var = (state.sum_sq - state.count * mean * mean) / state.count;
+                        double var = (state.sum_sq() - state.count * mean * mean) / state.count;
                         result_row.push_back(Value::DOUBLE(var));
                     } else {
                         result_row.push_back(Value());
                     }
                 } else if (name == "MEDIAN") {
-                    if (!state.values.empty()) {
-                        std::sort(state.values.begin(), state.values.end());
-                        size_t mid = state.values.size() / 2;
-                        double median = (state.values.size() % 2 == 0)
-                            ? (state.values[mid - 1] + state.values[mid]) / 2.0
-                            : state.values[mid];
+                    if (state.extras_ptr && !state.extras_ptr->values.empty()) {
+                        auto &vals = state.extras_ptr->values;
+                        std::sort(vals.begin(), vals.end());
+                        size_t mid = vals.size() / 2;
+                        double median = (vals.size() % 2 == 0)
+                            ? (vals[mid - 1] + vals[mid]) / 2.0
+                            : vals[mid];
                         result_row.push_back(Value::DOUBLE(median));
                     } else {
                         result_row.push_back(Value());
                     }
                 } else if (name == "BOOL_AND") {
-                    result_row.push_back(state.count > 0 ? Value::BOOLEAN(state.bool_and) : Value());
+                    result_row.push_back(state.count > 0 ? Value::BOOLEAN(state.bool_and_v()) : Value());
                 } else if (name == "BOOL_OR") {
-                    result_row.push_back(state.count > 0 ? Value::BOOLEAN(state.bool_or) : Value());
+                    result_row.push_back(state.count > 0 ? Value::BOOLEAN(state.bool_or_v()) : Value());
                 }
             }
 
