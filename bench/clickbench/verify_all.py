@@ -1,5 +1,5 @@
 """Surface-scan all 43 ClickBench queries: status + correctness vs DuckDB.
-One warmup + one timed trial per query (warm-cache best). Captures:
+One trial per query, 30s timeout. Captures:
 PARSE_ERROR/RUNTIME/TIMEOUT/WIN/LOSS/WRONG/WIN_DF.
 
 WIN_DF = "DuckDB Failed": SlothDB completes correctly but DuckDB cannot run
@@ -16,7 +16,7 @@ DUCK = ROOT / "real-life-testing/duckdb.exe"
 DATA = ROOT / "bench/clickbench/data/hits.parquet"
 QFILE = ROOT / "bench/clickbench/queries.sql"
 OUT = ROOT / "_private/orchestrator/phase2_clickbench43_verify.md"
-TIMEOUT = 60
+TIMEOUT = 30
 ERR_SIGS = ("Conversion Error","Binder Error","Catalog Error","Parser Error","IO Error",
             "Constraint Error","Out of Memory Error","Internal Error","Invalid Input Error",
             "ParseError","RuntimeError","Bind Error")
@@ -68,23 +68,18 @@ def norm(s):
             if any(c.isdigit() for c in t): toks.append(t)
     return "\n".join(sorted(toks))
 
-def run_warm(exe, sql):
-    """One warmup run (output discarded) + one timed run (returned)."""
-    run(exe, sql)
-    return run(exe, sql)
-
 def main():
     qs = [(s[:-1] if s.endswith(";") else s) for s in (l.strip() for l in
           QFILE.read_text(encoding="utf-8").splitlines()) if s and not s.startswith("--")]
     rows = []
     for i, q in enumerate(qs, 1):
         sql = re.sub(r"\bhits\b", lambda _: f"'{DATA}'", q)
-        sd, ss, se, so = run_warm(SLOTH, sql)
+        sd, ss, se, so = run(SLOTH, sql)
         if ss != "OK":
             # SlothDB can't run it. If DuckDB also can't, both fail; if DuckDB
             # can, that's a real LOSS_DF (DuckDB-only feature gap).
             rows.append((i, ss, sd, None, se, q)); print(f"{i:>3} {ss} {se}"); continue
-        dd, ds, de, do = run_warm(DUCK, sql)
+        dd, ds, de, do = run(DUCK, sql)
         if ds != "OK":
             # DuckDB failed but SlothDB succeeded → SlothDB capability win.
             rows.append((i, "WIN_DF", sd, dd, de, q))
