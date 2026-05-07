@@ -4788,10 +4788,12 @@ private:
         double sum = 0;
         double sum_sq = 0;          // for STDDEV/VARIANCE
         bool has_min = false;
-        Value min_val;
+        // Lazy: only allocated for VARCHAR MIN. Saves ~96B per state when
+        // unused. Numeric MIN uses sum_min directly. (Q35 memory diet.)
+        std::unique_ptr<Value> min_val_ptr;
         double sum_min = 0;         // numeric min for fast comparison
         bool has_max = false;
-        Value max_val;
+        std::unique_ptr<Value> max_val_ptr;
         double sum_max = 0;         // numeric max for fast comparison
         std::vector<double> values; // for MEDIAN
         std::string str_agg;        // for STRING_AGG
@@ -4801,6 +4803,27 @@ private:
         bool bool_or = false;       // for BOOL_OR
         std::unordered_set<std::string> distinct_set; // for COUNT(DISTINCT VARCHAR / mixed)
         slothdb::SimpleI64Set distinct_int_set; // INT/BIGINT fast path
+
+        // Helpers: lazy create + access. Use these for VARCHAR MIN/MAX paths.
+        Value &min_val() {
+            if (!min_val_ptr) min_val_ptr = std::make_unique<Value>();
+            return *min_val_ptr;
+        }
+        Value &max_val() {
+            if (!max_val_ptr) max_val_ptr = std::make_unique<Value>();
+            return *max_val_ptr;
+        }
+        bool min_val_is_null() const { return !min_val_ptr || min_val_ptr->IsNull(); }
+        bool max_val_is_null() const { return !max_val_ptr || max_val_ptr->IsNull(); }
+        Value min_val_or_null() const { return min_val_ptr ? *min_val_ptr : Value(); }
+        Value max_val_or_null() const { return max_val_ptr ? *max_val_ptr : Value(); }
+        // Cross-state copy: when source has a value, deep-copy into dst.
+        void set_min_from(const AggState &s) {
+            if (s.min_val_ptr) min_val_ptr = std::make_unique<Value>(*s.min_val_ptr);
+        }
+        void set_max_from(const AggState &s) {
+            if (s.max_val_ptr) max_val_ptr = std::make_unique<Value>(*s.max_val_ptr);
+        }
     };
 
     struct AggInfo {
@@ -5962,21 +5985,21 @@ private:
                                 std::string_view sv(sd, sl);
                                 if (kinds[a] == AK::Min) {
                                     if (!state.has_min) {
-                                        state.min_val = Value::VARCHAR(std::string(sd, sl));
+                                        state.min_val() = Value::VARCHAR(std::string(sd, sl));
                                         state.has_min = true;
                                     } else {
-                                        auto cur = state.min_val.template GetValue<std::string>();
+                                        auto cur = state.min_val().template GetValue<std::string>();
                                         if (sv < std::string_view(cur))
-                                            state.min_val = Value::VARCHAR(std::string(sd, sl));
+                                            state.min_val() = Value::VARCHAR(std::string(sd, sl));
                                     }
                                 } else {
                                     if (!state.has_max) {
-                                        state.max_val = Value::VARCHAR(std::string(sd, sl));
+                                        state.max_val() = Value::VARCHAR(std::string(sd, sl));
                                         state.has_max = true;
                                     } else {
-                                        auto cur = state.max_val.template GetValue<std::string>();
+                                        auto cur = state.max_val().template GetValue<std::string>();
                                         if (sv > std::string_view(cur))
-                                            state.max_val = Value::VARCHAR(std::string(sd, sl));
+                                            state.max_val() = Value::VARCHAR(std::string(sd, sl));
                                     }
                                 }
                                 continue;
@@ -6025,11 +6048,11 @@ private:
                             if (!d.has_min) {
                                 d.has_min = true;
                                 d.sum_min = s.sum_min;
-                                d.min_val = s.min_val;
-                            } else if (!s.min_val.IsNull() && !d.min_val.IsNull()) {
-                                if (s.min_val.template GetValue<std::string>() <
-                                    d.min_val.template GetValue<std::string>())
-                                    d.min_val = s.min_val;
+                                d.set_min_from(s);
+                            } else if (!s.min_val_is_null() && !d.min_val_is_null()) {
+                                if (s.min_val_ptr->template GetValue<std::string>() <
+                                    d.min_val_ptr->template GetValue<std::string>())
+                                    d.set_min_from(s);
                             } else if (s.sum_min < d.sum_min) {
                                 d.sum_min = s.sum_min;
                             }
@@ -6038,11 +6061,11 @@ private:
                             if (!d.has_max) {
                                 d.has_max = true;
                                 d.sum_max = s.sum_max;
-                                d.max_val = s.max_val;
-                            } else if (!s.max_val.IsNull() && !d.max_val.IsNull()) {
-                                if (s.max_val.template GetValue<std::string>() >
-                                    d.max_val.template GetValue<std::string>())
-                                    d.max_val = s.max_val;
+                                d.set_max_from(s);
+                            } else if (!s.max_val_is_null() && !d.max_val_is_null()) {
+                                if (s.max_val_ptr->template GetValue<std::string>() >
+                                    d.max_val_ptr->template GetValue<std::string>())
+                                    d.set_max_from(s);
                             } else if (s.sum_max > d.sum_max) {
                                 d.sum_max = s.sum_max;
                             }
@@ -6162,12 +6185,12 @@ private:
                                     } else if (info.name == "MIN") {
                                         if (!state.has_min || val < state.sum_min) {
                                             state.sum_min = val; state.has_min = true;
-                                            state.min_val = chunk.GetValue(info.col_idx, i);
+                                            state.min_val() = chunk.GetValue(info.col_idx, i);
                                         }
                                     } else if (info.name == "MAX") {
                                         if (!state.has_max || val > state.sum_max) {
                                             state.sum_max = val; state.has_max = true;
-                                            state.max_val = chunk.GetValue(info.col_idx, i);
+                                            state.max_val() = chunk.GetValue(info.col_idx, i);
                                         }
                                     }
                                 }
@@ -6608,8 +6631,8 @@ private:
                                 for (auto &rg : meta.row_groups) {
                                     const auto &v = rg.columns[info.col_idx].min_value;
                                     if (v.IsNull()) continue;
-                                    if (!state.has_min || v < state.min_val) {
-                                        state.min_val = v;
+                                    if (!state.has_min || v < state.min_val()) {
+                                        state.min_val() = v;
                                         state.has_min = true;
                                     }
                                 }
@@ -6617,8 +6640,8 @@ private:
                                 for (auto &rg : meta.row_groups) {
                                     const auto &v = rg.columns[info.col_idx].max_value;
                                     if (v.IsNull()) continue;
-                                    if (!state.has_max || state.max_val < v) {
-                                        state.max_val = v;
+                                    if (!state.has_max || state.max_val() < v) {
+                                        state.max_val() = v;
                                         state.has_max = true;
                                     }
                                 }
@@ -6745,12 +6768,12 @@ private:
                                 } else if (info.name == "MIN") {
                                     double d = v.GetValue<double>();
                                     if (!state.has_min || d < state.sum_min) {
-                                        state.sum_min = d; state.has_min = true; state.min_val = v;
+                                        state.sum_min = d; state.has_min = true; state.min_val() = v;
                                     }
                                 } else if (info.name == "MAX") {
                                     double d = v.GetValue<double>();
                                     if (!state.has_max || d > state.sum_max) {
-                                        state.sum_max = d; state.has_max = true; state.max_val = v;
+                                        state.sum_max = d; state.has_max = true; state.max_val() = v;
                                     }
                                 }
                             }
@@ -6871,11 +6894,11 @@ private:
                         d.sum   += s.sum;
                         if (s.has_min && (!d.has_min || s.sum_min < d.sum_min)) {
                             d.sum_min = s.sum_min; d.has_min = true;
-                            if (!s.min_val.IsNull()) d.min_val = s.min_val;
+                            if (!s.min_val_is_null()) d.set_min_from(s);
                         }
                         if (s.has_max && (!d.has_max || s.sum_max > d.sum_max)) {
                             d.sum_max = s.sum_max; d.has_max = true;
-                            if (!s.max_val.IsNull()) d.max_val = s.max_val;
+                            if (!s.max_val_is_null()) d.set_max_from(s);
                         }
                     }
                     total_rows_processed += tl_rows[t];
@@ -7063,12 +7086,12 @@ private:
                                     if (info.name == "MIN") {
                                         if (!state.has_min || val < state.sum_min) {
                                             state.sum_min = val; state.has_min = true;
-                                            state.min_val = chunk.GetValue(info.col_idx, i);
+                                            state.min_val() = chunk.GetValue(info.col_idx, i);
                                         }
                                     } else {
                                         if (!state.has_max || val > state.sum_max) {
                                             state.sum_max = val; state.has_max = true;
-                                            state.max_val = chunk.GetValue(info.col_idx, i);
+                                            state.max_val() = chunk.GetValue(info.col_idx, i);
                                         }
                                     }
                                 }
@@ -8450,21 +8473,21 @@ private:
                             std::string_view sv(sd, sl);
                             if (kinds[a] == AK::Min) {
                                 if (!state.has_min) {
-                                    state.min_val = Value::VARCHAR(std::string(sd, sl));
+                                    state.min_val() = Value::VARCHAR(std::string(sd, sl));
                                     state.has_min = true;
                                 } else {
-                                    auto cur = state.min_val.template GetValue<std::string>();
+                                    auto cur = state.min_val().template GetValue<std::string>();
                                     if (sv < std::string_view(cur))
-                                        state.min_val = Value::VARCHAR(std::string(sd, sl));
+                                        state.min_val() = Value::VARCHAR(std::string(sd, sl));
                                 }
                             } else {
                                 if (!state.has_max) {
-                                    state.max_val = Value::VARCHAR(std::string(sd, sl));
+                                    state.max_val() = Value::VARCHAR(std::string(sd, sl));
                                     state.has_max = true;
                                 } else {
-                                    auto cur = state.max_val.template GetValue<std::string>();
+                                    auto cur = state.max_val().template GetValue<std::string>();
                                     if (sv > std::string_view(cur))
-                                        state.max_val = Value::VARCHAR(std::string(sd, sl));
+                                        state.max_val() = Value::VARCHAR(std::string(sd, sl));
                                 }
                             }
                             continue;
@@ -8649,12 +8672,12 @@ private:
                         if (!d.has_min) {
                             d.has_min = true;
                             d.sum_min = s.sum_min;
-                            d.min_val = s.min_val;
-                        } else if (!s.min_val.IsNull() && !d.min_val.IsNull()) {
+                            d.set_min_from(s);
+                        } else if (!s.min_val_is_null() && !d.min_val_is_null()) {
                             // VARCHAR path - compare via min_val.
-                            if (s.min_val.template GetValue<std::string>() <
-                                d.min_val.template GetValue<std::string>())
-                                d.min_val = s.min_val;
+                            if (s.min_val_ptr->template GetValue<std::string>() <
+                                d.min_val_ptr->template GetValue<std::string>())
+                                d.set_min_from(s);
                         } else if (s.sum_min < d.sum_min) {
                             d.sum_min = s.sum_min;
                         }
@@ -8663,11 +8686,11 @@ private:
                         if (!d.has_max) {
                             d.has_max = true;
                             d.sum_max = s.sum_max;
-                            d.max_val = s.max_val;
-                        } else if (!s.max_val.IsNull() && !d.max_val.IsNull()) {
-                            if (s.max_val.template GetValue<std::string>() >
-                                d.max_val.template GetValue<std::string>())
-                                d.max_val = s.max_val;
+                            d.set_max_from(s);
+                        } else if (!s.max_val_is_null() && !d.max_val_is_null()) {
+                            if (s.max_val_ptr->template GetValue<std::string>() >
+                                d.max_val_ptr->template GetValue<std::string>())
+                                d.set_max_from(s);
                         } else if (s.sum_max > d.sum_max) {
                             d.sum_max = s.sum_max;
                         }
@@ -8824,13 +8847,13 @@ private:
                                 if (!state.has_min || val < state.sum_min) {
                                     state.sum_min = val;
                                     state.has_min = true;
-                                    state.min_val = chunk.GetValue(info.col_idx, i);
+                                    state.min_val() = chunk.GetValue(info.col_idx, i);
                                 }
                             } else if (info.name == "MAX") {
                                 if (!state.has_max || val > state.sum_max) {
                                     state.sum_max = val;
                                     state.has_max = true;
-                                    state.max_val = chunk.GetValue(info.col_idx, i);
+                                    state.max_val() = chunk.GetValue(info.col_idx, i);
                                 }
                             } else if (info.name == "STDDEV" || info.name == "STDDEV_SAMP" ||
                                        info.name == "STDDEV_POP" || info.name == "VARIANCE" ||
@@ -8927,8 +8950,8 @@ private:
                 } else if (name == "MIN") {
                     if (!state.has_min) {
                         result_row.push_back(Value());
-                    } else if (!state.min_val.IsNull()) {
-                        result_row.push_back(state.min_val);
+                    } else if (!state.min_val_is_null()) {
+                        result_row.push_back(*state.min_val_ptr);
                     } else {
                         // Fused path writes only sum_min (double) for speed;
                         // synthesize a typed Value here using the agg's return type.
@@ -8943,8 +8966,8 @@ private:
                 } else if (name == "MAX") {
                     if (!state.has_max) {
                         result_row.push_back(Value());
-                    } else if (!state.max_val.IsNull()) {
-                        result_row.push_back(state.max_val);
+                    } else if (!state.max_val_is_null()) {
+                        result_row.push_back(*state.max_val_ptr);
                     } else {
                         auto rt = agg_expr.GetReturnType().id();
                         switch (rt) {
@@ -10026,8 +10049,8 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
                         else if (tid == LogicalTypeId::BIGINT) d = static_cast<double>(v.GetValue<int64_t>());
                         else if (tid == LogicalTypeId::DOUBLE) d = v.GetValue<double>();
                         if (info.name == "SUM" || info.name == "AVG") { state.count++; state.sum += d; }
-                        else if (info.name == "MIN") { if (!state.has_min || v < state.min_val) { state.min_val = v; state.has_min = true; } }
-                        else if (info.name == "MAX") { if (!state.has_max || v > state.max_val) { state.max_val = v; state.has_max = true; } }
+                        else if (info.name == "MIN") { if (!state.has_min || v < state.min_val()) { state.min_val() = v; state.has_min = true; } }
+                        else if (info.name == "MAX") { if (!state.has_max || v > state.max_val()) { state.max_val() = v; state.has_max = true; } }
                     } else {
                         auto &vec = pchunk.GetVector(ac.local);
                         if (!vec.GetValidity().RowIsValid(i)) continue;
@@ -10100,7 +10123,7 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
             else if (info.name == "MIN") {
                 auto &ac = acols[a];
                 if (!state.has_min) r = Value();
-                else if (ac.is_build) r = state.min_val;
+                else if (ac.is_build) r = state.min_val_or_null();
                 else {
                     auto tid = probe->GetTypes()[ac.local].id();
                     if (tid == LogicalTypeId::INTEGER) r = Value::INTEGER(static_cast<int32_t>(state.sum_min));
@@ -10111,7 +10134,7 @@ bool PhysicalHashAggregate::TryComputeFusedJoinAggregate(
             else if (info.name == "MAX") {
                 auto &ac = acols[a];
                 if (!state.has_max) r = Value();
-                else if (ac.is_build) r = state.max_val;
+                else if (ac.is_build) r = state.max_val_or_null();
                 else {
                     auto tid = probe->GetTypes()[ac.local].id();
                     if (tid == LogicalTypeId::INTEGER) r = Value::INTEGER(static_cast<int32_t>(state.sum_max));
