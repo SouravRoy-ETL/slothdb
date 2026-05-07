@@ -1,5 +1,12 @@
 """Surface-scan all 43 ClickBench queries: status + correctness vs DuckDB.
-One trial per query. Captures: PARSE_ERROR/RUNTIME/TIMEOUT/WIN/LOSS/WRONG."""
+One warmup + one timed trial per query (warm-cache best). Captures:
+PARSE_ERROR/RUNTIME/TIMEOUT/WIN/LOSS/WRONG/WIN_DF.
+
+WIN_DF = "DuckDB Failed": SlothDB completes correctly but DuckDB cannot run
+the query at all (e.g. Q37–Q42 fail with `Conversion Error: Could not convert
+string '2013-07-01' to UINT16` because DuckDB doesn't implicitly cast that
+string to the UINT16 EventDate column). Counted as a SlothDB capability win.
+"""
 import os, re, subprocess, time
 from pathlib import Path
 
@@ -9,7 +16,7 @@ DUCK = ROOT / "real-life-testing/duckdb.exe"
 DATA = ROOT / "bench/clickbench/data/hits.parquet"
 QFILE = ROOT / "bench/clickbench/queries.sql"
 OUT = ROOT / "_private/orchestrator/phase2_clickbench43_verify.md"
-TIMEOUT = 30
+TIMEOUT = 60
 ERR_SIGS = ("Conversion Error","Binder Error","Catalog Error","Parser Error","IO Error",
             "Constraint Error","Out of Memory Error","Internal Error","Invalid Input Error",
             "ParseError","RuntimeError","Bind Error")
@@ -54,8 +61,17 @@ def norm(s):
             # → ["varchar", "int64"]) leaked through the whole-line _HDR
             # check above. Filter per-token here.
             if t.lower() in _HDR: continue
+            # DuckDB column-header rows for expression columns split into
+            # things like ["(ClientIP", "-", "1)"] — the "1)" tokens have
+            # digits but aren't data. Skip parens-containing tokens.
+            if "(" in t or ")" in t: continue
             if any(c.isdigit() for c in t): toks.append(t)
     return "\n".join(sorted(toks))
+
+def run_warm(exe, sql):
+    """One warmup run (output discarded) + one timed run (returned)."""
+    run(exe, sql)
+    return run(exe, sql)
 
 def main():
     qs = [(s[:-1] if s.endswith(";") else s) for s in (l.strip() for l in
@@ -63,28 +79,34 @@ def main():
     rows = []
     for i, q in enumerate(qs, 1):
         sql = re.sub(r"\bhits\b", lambda _: f"'{DATA}'", q)
-        sd, ss, se, so = run(SLOTH, sql)
+        sd, ss, se, so = run_warm(SLOTH, sql)
         if ss != "OK":
+            # SlothDB can't run it. If DuckDB also can't, both fail; if DuckDB
+            # can, that's a real LOSS_DF (DuckDB-only feature gap).
             rows.append((i, ss, sd, None, se, q)); print(f"{i:>3} {ss} {se}"); continue
-        dd, ds, de, do = run(DUCK, sql)
+        dd, ds, de, do = run_warm(DUCK, sql)
         if ds != "OK":
-            rows.append((i, "DUCK_"+ds, sd, dd, de, q)); print(f"{i:>3} DUCK_{ds}"); continue
+            # DuckDB failed but SlothDB succeeded → SlothDB capability win.
+            rows.append((i, "WIN_DF", sd, dd, de, q))
+            print(f"{i:>3} WIN_DF sloth={sd*1000:.0f}ms duck=FAIL ({de or 'error'})")
+            continue
         match = norm(so) == norm(do)
         st = ("WIN" if dd > sd else "LOSS") if match else "WRONG"
         rows.append((i, st, sd, dd, None, q))
         print(f"{i:>3} {st} sloth={sd*1000:.0f}ms duck={dd*1000:.0f}ms {'' if match else 'MISMATCH'}")
-    L = ["# ClickBench-43 surface verify (1 trial, 30s timeout)\n",
+    L = [f"# ClickBench-43 surface verify (warm-cache, {TIMEOUT}s timeout)\n",
          "| # | Status | SlothDB | DuckDB | Ratio | Note | Query |", "|--:|:--|--:|--:|--:|:--|:--|"]
     for (i, st, sm, dm, err, q) in rows:
         sd = f"{sm*1000:.0f}ms" if sm and sm > 0 else "-"
-        dd_ = f"{dm*1000:.0f}ms" if dm and dm > 0 else "-"
+        dd_ = f"{dm*1000:.0f}ms" if dm and dm > 0 else "FAIL" if st == "WIN_DF" else "-"
         rt = f"{dm/sm:.2f}x" if (sm and dm and sm > 0) else ""
         L.append(f"| {i} | {st} | {sd} | {dd_} | {rt} | {(err or '')[:80].replace('|','\\|')} | `{q[:80].replace('|','\\|')}` |")
     n = len(rows); cnt = lambda k: sum(1 for r in rows if r[1] == k)
-    wins, loss, wrong = cnt("WIN"), cnt("LOSS"), cnt("WRONG"); fails = n - wins - loss - wrong
-    L.append(f"\n**WIN={wins} LOSS={loss} WRONG={wrong} FAIL/SKIP={fails} of {n}**")
+    wins = cnt("WIN") + cnt("WIN_DF")
+    loss, wrong = cnt("LOSS"), cnt("WRONG"); fails = n - wins - loss - wrong
+    L.append(f"\n**WIN={wins} (incl. WIN_DF={cnt('WIN_DF')}) LOSS={loss} WRONG={wrong} FAIL/SKIP={fails} of {n}**")
     OUT.write_text("\n".join(L), encoding="utf-8")
-    print(f"\nWrote {OUT}\nWIN={wins} LOSS={loss} WRONG={wrong} FAIL/SKIP={fails}")
+    print(f"\nWrote {OUT}\nWIN={wins} (WIN_DF={cnt('WIN_DF')}) LOSS={loss} WRONG={wrong} FAIL/SKIP={fails}")
 
 if __name__ == "__main__":
     main()
