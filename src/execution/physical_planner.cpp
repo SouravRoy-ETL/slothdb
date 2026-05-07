@@ -4927,6 +4927,19 @@ private:
         ankerl::unordered_dense::map<std::string, std::vector<AggState>> group_states;
         ankerl::unordered_dense::map<std::string, std::vector<Value>> group_keys;
         std::vector<std::string> group_order;
+        // Int-only fast path: when the FUSED GENERIC parquet branch sees
+        // GROUP BY columns that are all integral (no VARCHAR), the per-
+        // thread `pkey` is content-deterministic across threads, so the
+        // std::string content_key the generic path builds is unnecessary
+        // work. The 5.7 M std::string allocations + 4 std::string-keyed
+        // map insertions per pkey were ~25 s of Q35's wall on this code.
+        // When `int_only_active` is set, run_merge and the result emit
+        // loop iterate the uint64-keyed maps below instead of the
+        // std::string-keyed ones above.
+        ankerl::unordered_dense::map<uint64_t, std::vector<AggState>> group_states_u64;
+        ankerl::unordered_dense::map<uint64_t, std::vector<Value>> group_keys_u64;
+        std::vector<uint64_t> group_order_u64;
+        bool int_only_active = false;
 
         idx_t num_aggs = aggregates_.size();
 
@@ -8769,8 +8782,13 @@ private:
             for (int t = 0; !any_str_groups && t < nt; t++) {
                 if (!tls[t].str_order.empty()) any_str_groups = true;
             }
+            // src_map for the std::string path; src_map_u64 for int-only.
+            ankerl::unordered_dense::map<uint64_t, std::vector<MergeSrc>> src_map_u64;
             if (int_only_pre_merge && !any_str_groups) {
-                // Bucket sources by pkey first, then build std::string keys once.
+                // Skip std::string content_keys entirely. pkey is content-
+                // deterministic across threads when no VARCHAR groups, so
+                // the cross-thread merge can key directly on uint64.
+                int_only_active = true;
                 ankerl::unordered_dense::map<uint64_t, idx_t> pkey_to_idx;
                 std::vector<std::vector<MergeSrc>> src_by_idx;
                 std::vector<uint64_t> uniq_pkeys;
@@ -8793,17 +8811,18 @@ private:
                         src_by_idx[idx].push_back({t, pkey, nullptr});
                     }
                 }
-                all_sks.reserve(uniq_pkeys.size());
+                group_keys_u64.reserve(uniq_pkeys.size());
+                group_order_u64.reserve(uniq_pkeys.size());
+                group_states_u64.reserve(uniq_pkeys.size());
+                src_map_u64.reserve(uniq_pkeys.size());
                 for (size_t i = 0; i < uniq_pkeys.size(); i++) {
                     uint64_t pkey = uniq_pkeys[i];
                     int t0 = uniq_first_t[i];
                     auto &kv = tls[t0].packed_keys[pkey];
-                    std::string sk = build_content_key(kv);
-                    group_keys[sk] = kv;
-                    group_order.push_back(sk);
-                    group_states.emplace(sk, std::vector<AggState>(num_aggs));
-                    src_map[sk] = std::move(src_by_idx[i]);
-                    all_sks.push_back(std::move(sk));
+                    group_keys_u64.emplace(pkey, kv);
+                    group_order_u64.push_back(pkey);
+                    group_states_u64.emplace(pkey, std::vector<AggState>(num_aggs));
+                    src_map_u64.emplace(pkey, std::move(src_by_idx[i]));
                 }
             } else {
                 for (int t = 0; t < nt; t++) {
@@ -8832,9 +8851,23 @@ private:
                     }
                 }
             }
-            int merge_w = (int)std::min<size_t>((size_t)MAX_THREADS, all_sks.size());
+            const size_t num_merge_groups =
+                int_only_active ? group_order_u64.size() : all_sks.size();
+            int merge_w = (int)std::min<size_t>((size_t)MAX_THREADS, num_merge_groups);
             if (merge_w < 1) merge_w = 1;
             auto run_merge = [&](int wi) {
+                if (int_only_active) {
+                    for (size_t i = wi; i < group_order_u64.size(); i += (size_t)merge_w) {
+                        uint64_t pkey = group_order_u64[i];
+                        auto &dst = group_states_u64.find(pkey)->second;
+                        auto &srcs = src_map_u64.find(pkey)->second;
+                        for (auto &src : srcs) {
+                            auto pit = tls[src.t].packed_groups.find(src.pkey);
+                            merge_states_m(dst, pit->second);
+                        }
+                    }
+                    return;
+                }
                 for (size_t i = wi; i < all_sks.size(); i += (size_t)merge_w) {
                     const std::string &sk = all_sks[i];
                     auto &dst = group_states.find(sk)->second;
@@ -9000,40 +9033,66 @@ private:
             emit_descs[a].sum_offset = agg_infos[a].sum_offset;
         }
 
-        result_rows_.reserve(group_order.size());
-        for (auto &gk : group_order) {
-            auto &key_vals = group_keys[gk];
-            auto &states = group_states[gk];
+        auto build_view = [](const AggState &state, EmitAggView &view) {
+            view.count = state.count;
+            view.sum = state.sum;
+            view.sum_sq = state.sum_sq();
+            view.has_min = state.has_min;
+            view.sum_min = state.sum_min;
+            view.min_val_ptr = state.min_val_is_null() ? nullptr : state.min_val_ptr.get();
+            view.has_max = state.has_max;
+            view.sum_max = state.sum_max;
+            view.max_val_ptr = state.max_val_is_null() ? nullptr : state.max_val_ptr.get();
+            view.str_started = state.str_started();
+            view.str_agg = &state.str_agg_const();
+            view.values = state.extras_ptr ? &state.extras_ptr->values : nullptr;
+            view.bool_and_v = state.bool_and_v();
+            view.bool_or_v = state.bool_or_v();
+        };
 
-            std::vector<Value> result_row;
-            for (auto &v : key_vals) result_row.push_back(v);
+        if (int_only_active) {
+            // uint64-keyed emit: skip the std::string lookups that
+            // dominated Q35-shape queries. group_states/group_keys/
+            // group_order stay empty in this path.
+            result_rows_.reserve(group_order_u64.size());
+            for (uint64_t pkey : group_order_u64) {
+                auto &key_vals = group_keys_u64[pkey];
+                auto &states = group_states_u64[pkey];
 
-            for (idx_t a = 0; a < num_aggs; a++) {
-                // Dedup: when primary_idx is set, emit reads from the
-                // primary's state (the only one populated by the scan).
-                idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
-                                      ? agg_infos[a].primary_idx : a;
-                auto &state = states[state_idx];
+                std::vector<Value> result_row;
+                for (auto &v : key_vals) result_row.push_back(v);
 
-                EmitAggView view;
-                view.count = state.count;
-                view.sum = state.sum;
-                view.sum_sq = state.sum_sq();
-                view.has_min = state.has_min;
-                view.sum_min = state.sum_min;
-                view.min_val_ptr = state.min_val_is_null() ? nullptr : state.min_val_ptr.get();
-                view.has_max = state.has_max;
-                view.sum_max = state.sum_max;
-                view.max_val_ptr = state.max_val_is_null() ? nullptr : state.max_val_ptr.get();
-                view.str_started = state.str_started();
-                view.str_agg = &state.str_agg_const();
-                view.values = state.extras_ptr ? &state.extras_ptr->values : nullptr;
-                view.bool_and_v = state.bool_and_v();
-                view.bool_or_v = state.bool_or_v();
-                EmitAggValue(emit_descs[a], view, result_row);
+                for (idx_t a = 0; a < num_aggs; a++) {
+                    idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
+                                          ? agg_infos[a].primary_idx : a;
+                    EmitAggView view;
+                    build_view(states[state_idx], view);
+                    EmitAggValue(emit_descs[a], view, result_row);
+                }
+
+                result_rows_.push_back(std::move(result_row));
             }
+        } else {
+            result_rows_.reserve(group_order.size());
+            for (auto &gk : group_order) {
+                auto &key_vals = group_keys[gk];
+                auto &states = group_states[gk];
 
-            result_rows_.push_back(std::move(result_row));
+                std::vector<Value> result_row;
+                for (auto &v : key_vals) result_row.push_back(v);
+
+                for (idx_t a = 0; a < num_aggs; a++) {
+                    // Dedup: when primary_idx is set, emit reads from the
+                    // primary's state (the only one populated by the scan).
+                    idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
+                                          ? agg_infos[a].primary_idx : a;
+                    EmitAggView view;
+                    build_view(states[state_idx], view);
+                    EmitAggValue(emit_descs[a], view, result_row);
+                }
+
+                result_rows_.push_back(std::move(result_row));
+            }
         }
 
         // Handle no-group aggregation (e.g., SELECT COUNT(*) FROM t).
