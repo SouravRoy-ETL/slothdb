@@ -8754,29 +8754,79 @@ private:
             struct MergeSrc { int t; uint64_t pkey; const std::string *sk_raw; };
             std::unordered_map<std::string, std::vector<MergeSrc>> src_map;
             std::vector<std::string> all_sks;
-            for (int t = 0; t < nt; t++) {
-                auto &tl = tls[t];
-                for (uint64_t pkey : tl.packed_order) {
-                    auto &kv = tl.packed_keys[pkey];
-                    std::string sk = build_content_key(kv);
-                    if (group_states.find(sk) == group_states.end()) {
-                        group_keys[sk] = kv;
-                        group_order.push_back(sk);
-                        group_states.emplace(sk, std::vector<AggState>(num_aggs));
-                        all_sks.push_back(sk);
+            // Fast pre-merge for int-only group keys: pkey is content-deterministic
+            // across threads (same row → same uint64), so dedupe by pkey directly
+            // and only build std::string sk ONCE per unique pkey. Avoids ~5 std::map
+            // ops per pkey over millions of unique keys.
+            bool int_only_pre_merge = true;
+            for (size_t gi = 0; gi < group_col_indices.size(); gi++) {
+                if (pack[gi].kind == 1) { int_only_pre_merge = false; break; }
+            }
+            bool any_str_groups = false;
+            for (int t = 0; !any_str_groups && t < nt; t++) {
+                if (!tls[t].str_order.empty()) any_str_groups = true;
+            }
+            if (int_only_pre_merge && !any_str_groups) {
+                // Bucket sources by pkey first, then build std::string keys once.
+                ankerl::unordered_dense::map<uint64_t, idx_t> pkey_to_idx;
+                std::vector<std::vector<MergeSrc>> src_by_idx;
+                std::vector<uint64_t> uniq_pkeys;
+                std::vector<int> uniq_first_t;
+                if (!tls.empty()) pkey_to_idx.reserve(tls[0].packed_order.size());
+                for (int t = 0; t < nt; t++) {
+                    auto &tl = tls[t];
+                    for (uint64_t pkey : tl.packed_order) {
+                        auto sit = pkey_to_idx.find(pkey);
+                        idx_t idx;
+                        if (sit == pkey_to_idx.end()) {
+                            idx = uniq_pkeys.size();
+                            uniq_pkeys.push_back(pkey);
+                            uniq_first_t.push_back(t);
+                            src_by_idx.emplace_back();
+                            pkey_to_idx.emplace(pkey, idx);
+                        } else {
+                            idx = sit->second;
+                        }
+                        src_by_idx[idx].push_back({t, pkey, nullptr});
                     }
-                    src_map[sk].push_back({t, pkey, nullptr});
                 }
-                for (const auto &sk_raw : tl.str_order) {
-                    auto &kv = tl.str_keys_map[sk_raw];
+                all_sks.reserve(uniq_pkeys.size());
+                for (size_t i = 0; i < uniq_pkeys.size(); i++) {
+                    uint64_t pkey = uniq_pkeys[i];
+                    int t0 = uniq_first_t[i];
+                    auto &kv = tls[t0].packed_keys[pkey];
                     std::string sk = build_content_key(kv);
-                    if (group_states.find(sk) == group_states.end()) {
-                        group_keys[sk] = kv;
-                        group_order.push_back(sk);
-                        group_states.emplace(sk, std::vector<AggState>(num_aggs));
-                        all_sks.push_back(sk);
+                    group_keys[sk] = kv;
+                    group_order.push_back(sk);
+                    group_states.emplace(sk, std::vector<AggState>(num_aggs));
+                    src_map[sk] = std::move(src_by_idx[i]);
+                    all_sks.push_back(std::move(sk));
+                }
+            } else {
+                for (int t = 0; t < nt; t++) {
+                    auto &tl = tls[t];
+                    for (uint64_t pkey : tl.packed_order) {
+                        auto &kv = tl.packed_keys[pkey];
+                        std::string sk = build_content_key(kv);
+                        if (group_states.find(sk) == group_states.end()) {
+                            group_keys[sk] = kv;
+                            group_order.push_back(sk);
+                            group_states.emplace(sk, std::vector<AggState>(num_aggs));
+                            all_sks.push_back(sk);
+                        }
+                        src_map[sk].push_back({t, pkey, nullptr});
                     }
-                    src_map[sk].push_back({t, 0, &sk_raw});
+                    for (const auto &sk_raw : tl.str_order) {
+                        auto &kv = tl.str_keys_map[sk_raw];
+                        std::string sk = build_content_key(kv);
+                        if (group_states.find(sk) == group_states.end()) {
+                            group_keys[sk] = kv;
+                            group_order.push_back(sk);
+                            group_states.emplace(sk, std::vector<AggState>(num_aggs));
+                            all_sks.push_back(sk);
+                        }
+                        src_map[sk].push_back({t, 0, &sk_raw});
+                    }
                 }
             }
             int merge_w = (int)std::min<size_t>((size_t)MAX_THREADS, all_sks.size());
