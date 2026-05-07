@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdlib>
 #include <thread>
 #include <vector>
 
@@ -18,7 +19,19 @@ inline unsigned int HWThreads() {
     return 1;
 #else
     unsigned int n = std::thread::hardware_concurrency();
-    return n == 0 ? 4 : n;
+    if (n == 0) n = 4;
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4996)
+#endif
+    if (const char *cap = std::getenv("SLOTHDB_MAX_THREADS")) {
+        unsigned int c = (unsigned int)std::atoi(cap);
+        if (c > 0 && c < n) n = c;
+    }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    return n;
 #endif
 }
 
