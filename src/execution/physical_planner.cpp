@@ -9056,10 +9056,11 @@ private:
             // group_order stay empty in this path.
             result_rows_.reserve(group_order_u64.size());
             for (uint64_t pkey : group_order_u64) {
-                auto &key_vals = group_keys_u64[pkey];
-                auto &states = group_states_u64[pkey];
+                auto &key_vals = group_keys_u64.find(pkey)->second;
+                auto &states = group_states_u64.find(pkey)->second;
 
                 std::vector<Value> result_row;
+                result_row.reserve(key_vals.size() + num_aggs);
                 for (auto &v : key_vals) result_row.push_back(v);
 
                 for (idx_t a = 0; a < num_aggs; a++) {
@@ -9075,10 +9076,11 @@ private:
         } else {
             result_rows_.reserve(group_order.size());
             for (auto &gk : group_order) {
-                auto &key_vals = group_keys[gk];
-                auto &states = group_states[gk];
+                auto &key_vals = group_keys.find(gk)->second;
+                auto &states = group_states.find(gk)->second;
 
                 std::vector<Value> result_row;
+                result_row.reserve(key_vals.size() + num_aggs);
                 for (auto &v : key_vals) result_row.push_back(v);
 
                 for (idx_t a = 0; a < num_aggs; a++) {
