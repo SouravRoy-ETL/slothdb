@@ -49,6 +49,17 @@ _HDR = {"int64","bigint","double","varchar","date","timestamp","int32","integer"
 #   SlothDB:  "(10 rows)"  → after strip: "(10 rows)"
 #   DuckDB:   "│ 10 rows   2 columns │" → after box-drawing strip: "10 rows   2 columns"
 _FOOTER = re.compile(r"^\(?\d+\s+rows?\)?(\s+\d+\s+columns?)?$")
+def _canon_num(t):
+    # 1587 vs 1587.0 should compare equal: both are the same value, just
+    # different display (DuckDB keeps trailing .0 for double columns, SlothDB
+    # drops it via to_chars). Canonicalize to int when fractional part is 0.
+    try: return str(int(t))
+    except ValueError: pass
+    try:
+        f = float(t)
+        return str(int(f)) if f.is_integer() else repr(f)
+    except ValueError: return t
+
 def norm(s):
     # Strip box-drawing decoration; keep value-bearing numeric tokens (multiset compare).
     toks = []
@@ -65,7 +76,7 @@ def norm(s):
             # things like ["(ClientIP", "-", "1)"] — the "1)" tokens have
             # digits but aren't data. Skip parens-containing tokens.
             if "(" in t or ")" in t: continue
-            if any(c.isdigit() for c in t): toks.append(t)
+            if any(c.isdigit() for c in t): toks.append(_canon_num(t))
     return "\n".join(sorted(toks))
 
 def main():
