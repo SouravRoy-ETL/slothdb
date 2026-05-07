@@ -1813,14 +1813,25 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
         }
     }
 
-    // Track nulls on the output.
+    // Track nulls on the output. def_mask non-empty just means definition
+    // levels exist in the parquet (nullable schema); it doesn't mean any
+    // value IS null. Only flip all_valid when an actual null is observed —
+    // otherwise downstream BuildTypedKeepMask falls to the per-row loop on
+    // columns that are nullable-by-schema but null-free in practice (e.g.
+    // URL on hits.parquet → Q21 +4s).
     if (!def_mask.empty()) {
-        if (out.all_valid) {
-            out.validity.assign(out.count, 1);
-            out.all_valid = false;
-        }
+        bool any_null = false;
         for (int32_t i = 0; i < n_values; i++) {
-            if (!def_mask[i]) out.validity[row_offset + i] = 0;
+            if (!def_mask[i]) { any_null = true; break; }
+        }
+        if (any_null) {
+            if (out.all_valid) {
+                out.validity.assign(out.count, 1);
+                out.all_valid = false;
+            }
+            for (int32_t i = 0; i < n_values; i++) {
+                if (!def_mask[i]) out.validity[row_offset + i] = 0;
+            }
         }
     }
 
