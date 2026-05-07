@@ -5883,9 +5883,11 @@ private:
 
                 // Thread-local aggregate state. Each worker thread writes to
                 // its own TLSingle - no synchronization on the hot path.
+                // int_keys was redundant: int64 key uniquely determines its
+                // Value (group col type fixed per query). Synthesize at merge
+                // time instead — saves ~30-50ns/miss in the scan hot loop.
                 struct TLSingle {
                     ankerl::unordered_dense::map<int64_t, std::vector<AggState>> int_groups;
-                    ankerl::unordered_dense::map<int64_t, Value> int_keys;
                     std::vector<int64_t> int_order;
                     std::vector<std::string> str_cache_keys;
                     std::vector<std::vector<AggState>> str_cache_states;
@@ -5963,8 +5965,6 @@ private:
                             auto it = tl.int_groups.find(k);
                             if (it == tl.int_groups.end()) {
                                 tl.int_order.push_back(k);
-                                tl.int_keys[k] = is_bigint ? Value::BIGINT(k)
-                                                            : Value::INTEGER((int32_t)k);
                                 auto [nit, _] = tl.int_groups.try_emplace(k);
                                 nit->second.resize(num_aggs);
                                 it = nit;
@@ -6125,19 +6125,28 @@ private:
                 // Global O(1) lookup mirror of str_cache_keys -> 0-based index
                 // into str_cache_states. Replaces the prior inner linear scan
                 // (O(N^2) over global cardinality, ~6M for SearchPhrase).
+                // Outer-scope group-col type for synthesizing int_keys at
+                // merge (replaces the per-thread int_keys map that just held
+                // Value::BIGINT/Value::INTEGER of the same int64 key).
+                auto _grp_tid = children[0]->GetTypes()[group_col].id();
+                bool _grp_is_bigint = (_grp_tid == LogicalTypeId::BIGINT);
                 ankerl::unordered_dense::map<std::string, uint32_t> global_str_index;
                 for (int t = 0; t < nt; t++) {
                     auto &tl = tls[t];
-                    for (int64_t k : tl.int_order) {
+                    // Iterate tl.int_groups pairs directly; saves one ankerl
+                    // lookup per key vs prior `int_order` walk + `tl.int_groups[k]`.
+                    for (auto &kv : tl.int_groups) {
+                        int64_t k = kv.first;
                         auto git = int_groups.find(k);
                         if (git == int_groups.end()) {
                             int_order.push_back(k);
-                            int_keys[k] = tl.int_keys[k];
+                            int_keys[k] = _grp_is_bigint ? Value::BIGINT(k)
+                                                         : Value::INTEGER((int32_t)k);
                             auto [nit, _] = int_groups.try_emplace(k);
                             nit->second.resize(num_aggs);
                             git = nit;
                         }
-                        merge_states(git->second, tl.int_groups[k]);
+                        merge_states(git->second, kv.second);
                     }
                     for (idx_t oi = 0; oi < tl.str_cache_keys.size(); oi++) {
                         const auto &k = tl.str_cache_keys[oi];
