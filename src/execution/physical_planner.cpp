@@ -4921,8 +4921,10 @@ private:
 
     void ComputeAggregates() {
         // Process chunks directly - no intermediate row materialization.
-        std::unordered_map<std::string, std::vector<AggState>> group_states;
-        std::unordered_map<std::string, std::vector<Value>> group_keys;
+        // ankerl maps are 2-3× faster than std::unordered_map for the
+        // 5M+ unique keys produced by Q35-shape multi-col GROUP BY.
+        ankerl::unordered_dense::map<std::string, std::vector<AggState>> group_states;
+        ankerl::unordered_dense::map<std::string, std::vector<Value>> group_keys;
         std::vector<std::string> group_order;
 
         idx_t num_aggs = aggregates_.size();
@@ -8752,7 +8754,7 @@ private:
             // content-keys in a sequential pass, then disjoint-partition
             // by key for parallel state union.
             struct MergeSrc { int t; uint64_t pkey; const std::string *sk_raw; };
-            std::unordered_map<std::string, std::vector<MergeSrc>> src_map;
+            ankerl::unordered_dense::map<std::string, std::vector<MergeSrc>> src_map;
             std::vector<std::string> all_sks;
             // Fast pre-merge for int-only group keys: pkey is content-deterministic
             // across threads (same row → same uint64), so dedupe by pkey directly
@@ -8984,6 +8986,7 @@ private:
             }
             total_rows_processed += chunk_size;
         }
+        result_rows_.reserve(group_order.size());
         // Build result rows.
         for (auto &gk : group_order) {
             auto &key_vals = group_keys[gk];
