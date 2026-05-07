@@ -4934,10 +4934,18 @@ private:
         // work. The 5.7 M std::string allocations + 4 std::string-keyed
         // map insertions per pkey were ~25 s of Q35's wall on this code.
         // When `int_only_active` is set, run_merge and the result emit
-        // loop iterate the uint64-keyed maps below instead of the
-        // std::string-keyed ones above.
-        ankerl::unordered_dense::map<uint64_t, std::vector<AggState>> group_states_u64;
-        ankerl::unordered_dense::map<uint64_t, std::vector<Value>> group_keys_u64;
+        // loop iterate the uint64-keyed map below instead of the
+        // std::string-keyed maps above.
+        struct MergeSrc { int t; uint64_t pkey; const std::string *sk_raw; };
+        // Fused per-group record: kv + states + cross-thread merge srcs
+        // share one map slot so each pkey lookup probes ankerl once
+        // instead of three times (group_keys/states/src_map).
+        struct PerGroupRec {
+            std::vector<Value> kv;
+            std::vector<AggState> states;
+            std::vector<MergeSrc> srcs;
+        };
+        ankerl::unordered_dense::map<uint64_t, PerGroupRec> group_recs_u64;
         std::vector<uint64_t> group_order_u64;
         bool int_only_active = false;
 
@@ -8767,7 +8775,8 @@ private:
             // Cross-thread merge dominates Q10 wall - pre-register all
             // content-keys in a sequential pass, then disjoint-partition
             // by key for parallel state union.
-            struct MergeSrc { int t; uint64_t pkey; const std::string *sk_raw; };
+            // (MergeSrc is hoisted to ComputeAggregates scope since the
+            // int-only path's PerGroupRec also uses it.)
             ankerl::unordered_dense::map<std::string, std::vector<MergeSrc>> src_map;
             std::vector<std::string> all_sks;
             // Fast pre-merge for int-only group keys: pkey is content-deterministic
@@ -8782,47 +8791,31 @@ private:
             for (int t = 0; !any_str_groups && t < nt; t++) {
                 if (!tls[t].str_order.empty()) any_str_groups = true;
             }
-            // src_map for the std::string path; src_map_u64 for int-only.
-            ankerl::unordered_dense::map<uint64_t, std::vector<MergeSrc>> src_map_u64;
             if (int_only_pre_merge && !any_str_groups) {
                 // Skip std::string content_keys entirely. pkey is content-
                 // deterministic across threads when no VARCHAR groups, so
                 // the cross-thread merge can key directly on uint64.
+                // Single-pass population: each per-thread pkey probes
+                // group_recs_u64 once; on miss, materialize kv+states
+                // alongside the first src entry.
                 int_only_active = true;
-                ankerl::unordered_dense::map<uint64_t, idx_t> pkey_to_idx;
-                std::vector<std::vector<MergeSrc>> src_by_idx;
-                std::vector<uint64_t> uniq_pkeys;
-                std::vector<int> uniq_first_t;
-                if (!tls.empty()) pkey_to_idx.reserve(tls[0].packed_order.size());
+                if (!tls.empty()) group_recs_u64.reserve(tls[0].packed_order.size());
+                group_order_u64.reserve(tls.empty() ? 0 : tls[0].packed_order.size());
                 for (int t = 0; t < nt; t++) {
                     auto &tl = tls[t];
                     for (uint64_t pkey : tl.packed_order) {
-                        auto sit = pkey_to_idx.find(pkey);
-                        idx_t idx;
-                        if (sit == pkey_to_idx.end()) {
-                            idx = uniq_pkeys.size();
-                            uniq_pkeys.push_back(pkey);
-                            uniq_first_t.push_back(t);
-                            src_by_idx.emplace_back();
-                            pkey_to_idx.emplace(pkey, idx);
+                        auto it = group_recs_u64.find(pkey);
+                        if (it == group_recs_u64.end()) {
+                            PerGroupRec rec;
+                            rec.kv = tl.packed_keys[pkey];
+                            rec.states.resize(num_aggs);
+                            rec.srcs.push_back({t, pkey, nullptr});
+                            group_recs_u64.emplace(pkey, std::move(rec));
+                            group_order_u64.push_back(pkey);
                         } else {
-                            idx = sit->second;
+                            it->second.srcs.push_back({t, pkey, nullptr});
                         }
-                        src_by_idx[idx].push_back({t, pkey, nullptr});
                     }
-                }
-                group_keys_u64.reserve(uniq_pkeys.size());
-                group_order_u64.reserve(uniq_pkeys.size());
-                group_states_u64.reserve(uniq_pkeys.size());
-                src_map_u64.reserve(uniq_pkeys.size());
-                for (size_t i = 0; i < uniq_pkeys.size(); i++) {
-                    uint64_t pkey = uniq_pkeys[i];
-                    int t0 = uniq_first_t[i];
-                    auto &kv = tls[t0].packed_keys[pkey];
-                    group_keys_u64.emplace(pkey, kv);
-                    group_order_u64.push_back(pkey);
-                    group_states_u64.emplace(pkey, std::vector<AggState>(num_aggs));
-                    src_map_u64.emplace(pkey, std::move(src_by_idx[i]));
                 }
             } else {
                 for (int t = 0; t < nt; t++) {
@@ -8859,11 +8852,10 @@ private:
                 if (int_only_active) {
                     for (size_t i = wi; i < group_order_u64.size(); i += (size_t)merge_w) {
                         uint64_t pkey = group_order_u64[i];
-                        auto &dst = group_states_u64.find(pkey)->second;
-                        auto &srcs = src_map_u64.find(pkey)->second;
-                        for (auto &src : srcs) {
+                        auto &rec = group_recs_u64.find(pkey)->second;
+                        for (auto &src : rec.srcs) {
                             auto pit = tls[src.t].packed_groups.find(src.pkey);
-                            merge_states_m(dst, pit->second);
+                            merge_states_m(rec.states, pit->second);
                         }
                     }
                     return;
@@ -9051,23 +9043,22 @@ private:
         };
 
         if (int_only_active) {
-            // uint64-keyed emit: skip the std::string lookups that
-            // dominated Q35-shape queries. group_states/group_keys/
-            // group_order stay empty in this path.
+            // uint64-keyed emit: one map probe per group instead of two
+            // (kv + states share one PerGroupRec slot). std::string-keyed
+            // group_states/group_keys/group_order stay empty in this path.
             result_rows_.reserve(group_order_u64.size());
             for (uint64_t pkey : group_order_u64) {
-                auto &key_vals = group_keys_u64.find(pkey)->second;
-                auto &states = group_states_u64.find(pkey)->second;
+                auto &rec = group_recs_u64.find(pkey)->second;
 
                 std::vector<Value> result_row;
-                result_row.reserve(key_vals.size() + num_aggs);
-                for (auto &v : key_vals) result_row.push_back(v);
+                result_row.reserve(rec.kv.size() + num_aggs);
+                for (auto &v : rec.kv) result_row.push_back(v);
 
                 for (idx_t a = 0; a < num_aggs; a++) {
                     idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
                                           ? agg_infos[a].primary_idx : a;
                     EmitAggView view;
-                    build_view(states[state_idx], view);
+                    build_view(rec.states[state_idx], view);
                     EmitAggValue(emit_descs[a], view, result_row);
                 }
 
