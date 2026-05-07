@@ -36,14 +36,22 @@ def run(exe, sql):
 
 _BOX = "│┌┐└┘─┬┴├┤┼"
 _HDR = {"int64","bigint","double","varchar","date","timestamp","int32","integer","decimal","time"}
+# Row-count / column-count footer in either CLI style:
+#   SlothDB:  "(10 rows)"  → after strip: "(10 rows)"
+#   DuckDB:   "│ 10 rows   2 columns │" → after box-drawing strip: "10 rows   2 columns"
+_FOOTER = re.compile(r"^\(?\d+\s+rows?\)?(\s+\d+\s+columns?)?$")
 def norm(s):
     # Strip box-drawing decoration; keep value-bearing numeric tokens (multiset compare).
     toks = []
     for l in s.splitlines():
         l = "".join(c for c in l if c not in _BOX).strip()
         if not l or set(l) <= set("-+| ") or l.lower() in _HDR: continue
-        if l.startswith("(") and (l.endswith("row)") or l.endswith("rows)")): continue
+        if _FOOTER.match(l): continue
         for t in l.replace("|"," ").split():
+            # Multi-cell type-row tokens (e.g. DuckDB "│ varchar │ int64 │"
+            # → ["varchar", "int64"]) leaked through the whole-line _HDR
+            # check above. Filter per-token here.
+            if t.lower() in _HDR: continue
             if any(c.isdigit() for c in t): toks.append(t)
     return "\n".join(sorted(toks))
 
