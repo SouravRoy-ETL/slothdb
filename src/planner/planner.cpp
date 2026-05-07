@@ -419,6 +419,62 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
         std::vector<const BoundExpression *> original_group_ptrs;
         original_group_ptrs.reserve(groups.size());
         for (auto &g : groups) original_group_ptrs.push_back(g.get());
+
+        // Q35-style redundant-group elimination. GROUP BY (X, X±c1, X±c2, ...)
+        // has the same partition as GROUP BY X — X uniquely determines X±c.
+        // Drop the (col ± const) groups when col itself is also a group; the
+        // SELECT-list/ORDER-BY rewrites that match against original_group_ptrs
+        // still find the dropped expression, but RemapGroupColumns will rewrite
+        // its inner col-ref to the surviving aggregate-output slot, so the
+        // arithmetic is computed only on the (small) post-aggregate row count
+        // instead of every input row. Q35 hashes 1 col, not 4.
+        {
+            std::vector<idx_t> kept_colref_idx; // source col_idx of COLUMN_REF groups
+            kept_colref_idx.reserve(groups.size());
+            for (auto &g : groups) {
+                if (g->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                    kept_colref_idx.push_back(
+                        static_cast<const BoundColumnRef &>(*g).column_index);
+                }
+            }
+            auto base_col_of_arith = [](const BoundExpression &e, idx_t &out_col) -> bool {
+                if (e.GetExpressionType() != BoundExpressionType::ARITHMETIC) return false;
+                auto &a = static_cast<const BoundArithmetic &>(e);
+                bool lc = a.left && a.left->GetExpressionType() == BoundExpressionType::COLUMN_REF;
+                bool rc = a.right && a.right->GetExpressionType() == BoundExpressionType::COLUMN_REF;
+                bool lk = a.left && a.left->GetExpressionType() == BoundExpressionType::CONSTANT;
+                bool rk = a.right && a.right->GetExpressionType() == BoundExpressionType::CONSTANT;
+                if (lc && rk) {
+                    out_col = static_cast<const BoundColumnRef &>(*a.left).column_index;
+                    return true;
+                }
+                if (lk && rc) {
+                    out_col = static_cast<const BoundColumnRef &>(*a.right).column_index;
+                    return true;
+                }
+                return false;
+            };
+            std::vector<bool> drop(groups.size(), false);
+            for (idx_t gi = 0; gi < groups.size(); gi++) {
+                idx_t base_col = 0;
+                if (!base_col_of_arith(*groups[gi], base_col)) continue;
+                for (idx_t kc : kept_colref_idx) {
+                    if (kc == base_col) { drop[gi] = true; break; }
+                }
+            }
+            // Erase back-to-front. original_group_ptrs[gi] points into
+            // groups[gi]; erasing groups[gi] frees the BoundExpression, so
+            // we must drop the matching original_group_ptrs entry too — but
+            // RewriteGroupExprs/RemapGroupColumns won't ever try to match
+            // against a dropped expression because we also remove its slot.
+            for (idx_t gi = groups.size(); gi-- > 0;) {
+                if (!drop[gi]) continue;
+                groups.erase(groups.begin() + gi);
+                group_types.erase(group_types.begin() + gi);
+                original_group_ptrs.erase(original_group_ptrs.begin() + gi);
+            }
+        }
+
         bool needs_lift = false;
         for (auto &g : groups) {
             if (g->GetExpressionType() != BoundExpressionType::COLUMN_REF) {
