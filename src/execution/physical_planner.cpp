@@ -6262,7 +6262,63 @@ private:
             for (idx_t oi = 0; oi < str_cache_keys.size(); oi++) {
                 str_groups[str_cache_keys[oi]] = std::move(str_cache_states[oi]);
             }
+            // Direct emit shortcut for the int-only single-col case: when
+            // no string groups are present, skip rebuilding string-keyed
+            // group_states/group_keys/group_order (which on Q35 cost ~7.7s
+            // for std::to_string + 4 ankerl ops × 9.76 M keys) AND skip the
+            // common emit's `find()` per group (~4.6s on Q35). Emit straight
+            // into result_rows_ from int_order/int_groups/synth-Value.
+            // Only safe when str_order is empty (otherwise common emit must
+            // still run).
+            if (!int_order.empty() && str_order.empty()) {
+                auto direct_grp_tid = children[0]->GetTypes()[group_col].id();
+                bool direct_is_bigint = (direct_grp_tid == LogicalTypeId::BIGINT);
+                std::vector<EmitAggDesc> direct_descs(num_aggs);
+                for (idx_t a = 0; a < num_aggs; a++) {
+                    auto &ae = static_cast<BoundFunction &>(*aggregates_[a]);
+                    direct_descs[a].kind = ResolveEmitAggKind(StringUtil::Upper(ae.function_name));
+                    direct_descs[a].return_type_id = ae.GetReturnType().id();
+                    direct_descs[a].sum_with_offset = agg_infos[a].sum_with_offset;
+                    direct_descs[a].sum_offset = agg_infos[a].sum_offset;
+                }
+                auto direct_view = [](const AggState &s, EmitAggView &v) {
+                    v.count = s.count;
+                    v.sum = s.sum;
+                    v.sum_sq = s.sum_sq();
+                    v.has_min = s.has_min;
+                    v.sum_min = s.sum_min;
+                    v.min_val_ptr = s.min_val_is_null() ? nullptr : s.min_val_ptr.get();
+                    v.has_max = s.has_max;
+                    v.sum_max = s.sum_max;
+                    v.max_val_ptr = s.max_val_is_null() ? nullptr : s.max_val_ptr.get();
+                    v.str_started = s.str_started();
+                    v.str_agg = &s.str_agg_const();
+                    v.values = s.extras_ptr ? &s.extras_ptr->values : nullptr;
+                    v.bool_and_v = s.bool_and_v();
+                    v.bool_or_v = s.bool_or_v();
+                };
+                result_rows_.reserve(int_order.size());
+                for (int64_t k : int_order) {
+                    auto &states_r = int_groups[k];
+                    std::vector<Value> result_row;
+                    result_row.reserve(1 + num_aggs);
+                    result_row.push_back(direct_is_bigint ? Value::BIGINT(k)
+                                                          : Value::INTEGER((int32_t)k));
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
+                                              ? agg_infos[a].primary_idx : a;
+                        EmitAggView view;
+                        direct_view(states_r[state_idx], view);
+                        EmitAggValue(direct_descs[a], view, result_row);
+                    }
+                    result_rows_.push_back(std::move(result_row));
+                }
+                int_order.clear();
+                int_groups.clear();
+            }
             // Move into the standard group_states map for result building.
+            // (int_order is cleared above when the direct-emit path ran, so
+            //  this loop is a no-op in the int-only case.)
             for (auto k : int_order) {
                 std::string sk = std::to_string(k);
                 group_states[sk] = std::move(int_groups[k]);
