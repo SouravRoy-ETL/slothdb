@@ -1375,6 +1375,18 @@ public:
         if (!children.empty()) children[0]->SetRowLimit(n);
     }
 
+    // Translate TopN hint's output col_idx through this projection. If
+    // expressions_[col_idx] is a simple ColumnRef, we can forward the
+    // underlying input col_idx; otherwise the projection materializes a
+    // computed value our child can't reason about, so we drop the hint.
+    void SetTopNHint(idx_t col_idx, bool ascending, idx_t limit) override {
+        if (children.empty() || col_idx >= expressions_.size()) return;
+        auto &e = expressions_[col_idx];
+        if (!e || e->GetExpressionType() != BoundExpressionType::COLUMN_REF) return;
+        auto &cref = static_cast<BoundColumnRef &>(*e);
+        children[0]->SetTopNHint(cref.column_index, ascending, limit);
+    }
+
     // Forward column pruning down through the projection. The needed-out
     // mask is stated in the projection's OUTPUT slots, which we map back
     // to INPUT slots by following each output expression's ColumnRef
@@ -1496,6 +1508,20 @@ public:
     void SetRowLimit(idx_t n) override { row_limit_ = n; }
 
     void Init() override {
+        // TopN pushdown: when row_limit_ is set (PhysicalLimit fed it to us)
+        // AND the ORDER BY is a single simple ColumnRef, tell our child "you
+        // only need the top-K rows by this output column". Aggregates can
+        // honor this with a bounded heap instead of materializing all groups.
+        // Q35: 9.76 M groups × ORDER BY count DESC LIMIT 10 → aggregate
+        // produces only 10 rows after pushdown.
+        if (row_limit_ > 0 && orders_.size() == 1 && !children.empty() &&
+            orders_[0].expression &&
+            orders_[0].expression->GetExpressionType() ==
+                BoundExpressionType::COLUMN_REF) {
+            auto &cref = static_cast<BoundColumnRef &>(*orders_[0].expression);
+            children[0]->SetTopNHint(cref.column_index,
+                                      orders_[0].ascending, row_limit_);
+        }
         for (auto &child : children) child->Init();
         collected_ = false;
         emit_pos_ = 0;
@@ -4755,6 +4781,18 @@ public:
         : PhysicalOperator(PhysicalOperatorType::TABLE_SCAN, std::move(result_types)),
           groups_(std::move(groups)), aggregates_(std::move(aggregates)) {}
 
+    // TopN pushdown: when an upstream OrderBy(simple_col_ref) → Limit(K) is
+    // present, OrderBy/Projection forwards (col_idx, ascending, limit) to us.
+    // The direct-emit path then keeps a bounded heap of size `limit` instead
+    // of materializing every group. col_idx is in our OUTPUT slot space:
+    // 0..groups-1 → group cols, groups..groups+aggs-1 → agg cols.
+    void SetTopNHint(idx_t col_idx, bool ascending, idx_t limit) override {
+        topn_col_idx_ = col_idx;
+        topn_ascending_ = ascending;
+        topn_limit_ = limit;
+        topn_active_ = true;
+    }
+
     void Init() override {
         for (auto &child : children) child->Init();
         computed_ = false;
@@ -6338,14 +6376,82 @@ private:
                     v.bool_and_v = s.bool_and_v();
                     v.bool_or_v = s.bool_or_v();
                 };
-                result_rows_.reserve(total_shard_groups);
-                for (auto &sh : int_merge_shards) {
-                    for (int64_t k : sh.int_order) {
-                        auto &states_r = sh.int_groups[k];
+                // TopN pushdown: when ORDER BY+LIMIT is forwarded to us AND
+                // the order-key is an int64-comparable col (group col or a
+                // COUNT-style agg), keep a bounded heap of size topn_limit_
+                // and emit only the top-K rows. Skips the 9.76 M result-row
+                // materialization on Q35 when ORDER BY count DESC LIMIT 10.
+                bool topn_int_path = false;
+                bool topn_key_is_group = false;       // col_idx targets group col 0
+                idx_t topn_agg_idx = INVALID_INDEX;   // when targeting an agg col
+                if (topn_active_ && topn_limit_ > 0 &&
+                    topn_limit_ < total_shard_groups) {
+                    if (topn_col_idx_ == 0) {
+                        // Order key is the (only) group col — int64 key.
+                        topn_int_path = true;
+                        topn_key_is_group = true;
+                    } else if (topn_col_idx_ >= 1 &&
+                               topn_col_idx_ - 1 < num_aggs) {
+                        idx_t ai = topn_col_idx_ - 1;
+                        idx_t real_ai = (agg_infos[ai].primary_idx != INVALID_INDEX)
+                                            ? agg_infos[ai].primary_idx : ai;
+                        // Q35-shape: COUNT/COUNT(*) → state.count is int64.
+                        if (agg_infos[real_ai].name == "COUNT") {
+                            topn_int_path = true;
+                            topn_agg_idx = real_ai;
+                        }
+                    }
+                }
+                if (topn_int_path) {
+                    // Min-heap (when ascending=false / DESC) so the smallest
+                    // top-K element sits at top(); push when better, pop top
+                    // when full and the candidate beats it.
+                    struct HE { int64_t sk; int64_t gk; int sh; };
+                    auto cmp_desc = [](const HE& a, const HE& b) {
+                        return a.sk > b.sk;  // min-heap for DESC top-K
+                    };
+                    auto cmp_asc = [](const HE& a, const HE& b) {
+                        return a.sk < b.sk;  // max-heap for ASC top-K
+                    };
+                    std::vector<HE> heap_buf;
+                    heap_buf.reserve(topn_limit_ + 1);
+                    auto get_sk = [&](const std::vector<AggState> &sr, int64_t k) -> int64_t {
+                        if (topn_key_is_group) return k;
+                        return sr[topn_agg_idx].count;
+                    };
+                    auto better_than_top = [&](int64_t cand, int64_t top) {
+                        return topn_ascending_ ? cand < top : cand > top;
+                    };
+                    auto push_heap_local = [&]() {
+                        if (topn_ascending_) std::push_heap(heap_buf.begin(), heap_buf.end(), cmp_asc);
+                        else std::push_heap(heap_buf.begin(), heap_buf.end(), cmp_desc);
+                    };
+                    auto pop_heap_local = [&]() {
+                        if (topn_ascending_) std::pop_heap(heap_buf.begin(), heap_buf.end(), cmp_asc);
+                        else std::pop_heap(heap_buf.begin(), heap_buf.end(), cmp_desc);
+                        heap_buf.pop_back();
+                    };
+                    for (int sh_i = 0; sh_i < (int)int_merge_shards.size(); sh_i++) {
+                        auto &shard = int_merge_shards[sh_i];
+                        for (int64_t k : shard.int_order) {
+                            int64_t sk = get_sk(shard.int_groups[k], k);
+                            if (heap_buf.size() < topn_limit_) {
+                                heap_buf.push_back({sk, k, sh_i});
+                                push_heap_local();
+                            } else if (better_than_top(sk, heap_buf.front().sk)) {
+                                pop_heap_local();
+                                heap_buf.push_back({sk, k, sh_i});
+                                push_heap_local();
+                            }
+                        }
+                    }
+                    result_rows_.reserve(heap_buf.size());
+                    for (auto &he : heap_buf) {
+                        auto &states_r = int_merge_shards[he.sh].int_groups[he.gk];
                         std::vector<Value> result_row;
                         result_row.reserve(1 + num_aggs);
-                        result_row.push_back(grp_is_bigint ? Value::BIGINT(k)
-                                                           : Value::INTEGER((int32_t)k));
+                        result_row.push_back(grp_is_bigint ? Value::BIGINT(he.gk)
+                                                           : Value::INTEGER((int32_t)he.gk));
                         for (idx_t a = 0; a < num_aggs; a++) {
                             idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
                                                   ? agg_infos[a].primary_idx : a;
@@ -6355,8 +6461,28 @@ private:
                         }
                         result_rows_.push_back(std::move(result_row));
                     }
+                    int_merge_shards.clear();
+                } else {
+                    result_rows_.reserve(total_shard_groups);
+                    for (auto &sh : int_merge_shards) {
+                        for (int64_t k : sh.int_order) {
+                            auto &states_r = sh.int_groups[k];
+                            std::vector<Value> result_row;
+                            result_row.reserve(1 + num_aggs);
+                            result_row.push_back(grp_is_bigint ? Value::BIGINT(k)
+                                                               : Value::INTEGER((int32_t)k));
+                            for (idx_t a = 0; a < num_aggs; a++) {
+                                idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
+                                                      ? agg_infos[a].primary_idx : a;
+                                EmitAggView view;
+                                direct_view(states_r[state_idx], view);
+                                EmitAggValue(direct_descs[a], view, result_row);
+                            }
+                            result_rows_.push_back(std::move(result_row));
+                        }
+                    }
+                    int_merge_shards.clear();
                 }
-                int_merge_shards.clear();
             } else if (total_shard_groups > 0) {
                 // Mixed pq path with str groups: rebuild string-keyed map
                 // from int shards so the common emit can see them.
@@ -9235,6 +9361,11 @@ private:
     std::vector<std::vector<Value>> result_rows_;
     bool computed_ = false;
     idx_t emit_pos_ = 0;
+    // TopN pushdown state (see SetTopNHint comment).
+    bool topn_active_ = false;
+    idx_t topn_col_idx_ = 0;
+    bool topn_ascending_ = true;
+    idx_t topn_limit_ = 0;
 };
 
 // ============================================================================

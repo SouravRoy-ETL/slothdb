@@ -43,6 +43,14 @@ public:
     // Sort-heavy operators can use this for partial_sort / nth_element.
     virtual void SetRowLimit(idx_t) {}
 
+    // TopN pushdown: when an OrderBy(simple_col_ref) feeds a Limit(K), the
+    // OrderBy can tell its child "I only need the top-K rows by output column
+    // `col_idx`". Aggregates can then keep a bounded heap during emit instead
+    // of materializing all rows. `col_idx` is in this operator's OUTPUT slot
+    // space; intermediates (e.g. Projection) translate before forwarding.
+    virtual void SetTopNHint(idx_t /*col_idx*/, bool /*ascending*/,
+                              idx_t /*limit*/) {}
+
     std::vector<std::unique_ptr<PhysicalOperator>> children;
 
 private:
