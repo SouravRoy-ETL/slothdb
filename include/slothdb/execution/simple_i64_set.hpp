@@ -22,7 +22,11 @@ namespace slothdb {
 
 class SimpleI64Set {
 public:
-    SimpleI64Set() : slots_(64, 0), cap_(64), mask_(63), count_(0), has_zero_(false) {}
+    // Lazy: don't allocate slots until first non-zero insert. Empty instance
+    // is just 32 bytes (vector header + scalars), not 512+. Critical for
+    // AggState arrays that may instantiate millions of unused dedup sets
+    // (e.g. Q35 with 5.7M GROUP BY entries × 4 aggs × no DISTINCT).
+    SimpleI64Set() : cap_(0), mask_(0), count_(0), has_zero_(false) {}
 
     // Returns true iff this insert added a new element.
     bool insert(int64_t v) {
@@ -30,6 +34,11 @@ public:
             bool was_new = !has_zero_;
             has_zero_ = true;
             return was_new;
+        }
+        if (cap_ == 0) {
+            slots_.assign(64, 0);
+            cap_ = 64;
+            mask_ = 63;
         }
         if ((count_ + 1) * 2 > cap_) grow();
         size_t i = ankerl::unordered_dense::hash<int64_t>{}(v) & mask_;
