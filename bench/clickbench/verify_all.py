@@ -35,7 +35,9 @@ def run(exe, sql):
         return float(TIMEOUT), "TIMEOUT", f">{TIMEOUT}s", ""
 
 _BOX = "│┌┐└┘─┬┴├┤┼"
-_HDR = {"int64","bigint","double","varchar","date","timestamp","int32","integer","decimal","time"}
+_HDR = {"int64","bigint","double","varchar","date","timestamp","int32","integer","decimal","time",
+        "int8","int16","int128","uint8","uint16","uint32","uint64","ubigint",
+        "tinyint","smallint","hugeint","float","real","boolean","bool","blob","interval"}
 # Row-count / column-count footer in either CLI style:
 #   SlothDB:  "(10 rows)"  → after strip: "(10 rows)"
 #   DuckDB:   "│ 10 rows   2 columns │" → after box-drawing strip: "10 rows   2 columns"

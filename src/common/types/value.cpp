@@ -1,5 +1,6 @@
 #include "slothdb/common/types/value.hpp"
 #include "slothdb/common/exception.hpp"
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 
@@ -341,10 +342,19 @@ std::string Value::ToString() const {
         return std::to_string(uinteger_);
     case LogicalTypeId::UBIGINT:
         return std::to_string(ubigint_);
-    case LogicalTypeId::FLOAT:
-        return std::to_string(float_);
-    case LogicalTypeId::DOUBLE:
-        return std::to_string(double_);
+    case LogicalTypeId::FLOAT: {
+        // std::to_string(float) gives 6 decimals padded with zeros. Use
+        // std::to_chars (chars_format::general) for shortest round-trip
+        // representation, matching DuckDB's output.
+        char buf[32];
+        auto res = std::to_chars(buf, buf + sizeof(buf), float_);
+        return std::string(buf, res.ptr);
+    }
+    case LogicalTypeId::DOUBLE: {
+        char buf[32];
+        auto res = std::to_chars(buf, buf + sizeof(buf), double_);
+        return std::string(buf, res.ptr);
+    }
     case LogicalTypeId::HUGEINT:
         return hugeint_.ToString();
     case LogicalTypeId::VARCHAR:
