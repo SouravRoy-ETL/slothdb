@@ -1,5 +1,6 @@
 #include "slothdb/execution/physical_planner.hpp"
 #include "slothdb/execution/expression_executor.hpp"
+#include "slothdb/execution/agg_emit_helpers.hpp"
 #include "slothdb/execution/q4_dict_histogram.hpp"
 #include "slothdb/execution/q6_string_dedup.hpp"
 #include "slothdb/common/exception.hpp"
@@ -8986,133 +8987,50 @@ private:
             }
             total_rows_processed += chunk_size;
         }
+        // Pre-resolve emit descriptors once per query. The big per-agg
+        // dispatch switch lives in agg_emit_helpers.cpp so future emit-
+        // loop changes don't shift this TU's .text section
+        // (see feedback_text_icache_shift.md).
+        std::vector<EmitAggDesc> emit_descs(num_aggs);
+        for (idx_t a = 0; a < num_aggs; a++) {
+            auto &agg_expr = static_cast<BoundFunction &>(*aggregates_[a]);
+            emit_descs[a].kind = ResolveEmitAggKind(StringUtil::Upper(agg_expr.function_name));
+            emit_descs[a].return_type_id = agg_expr.GetReturnType().id();
+            emit_descs[a].sum_with_offset = agg_infos[a].sum_with_offset;
+            emit_descs[a].sum_offset = agg_infos[a].sum_offset;
+        }
+
         result_rows_.reserve(group_order.size());
-        // Build result rows.
         for (auto &gk : group_order) {
             auto &key_vals = group_keys[gk];
             auto &states = group_states[gk];
 
             std::vector<Value> result_row;
+            for (auto &v : key_vals) result_row.push_back(v);
 
-            // Group by columns first.
-            for (auto &v : key_vals) {
-                result_row.push_back(v);
-            }
-
-            // Aggregate results.
             for (idx_t a = 0; a < num_aggs; a++) {
-                auto &agg_expr = static_cast<BoundFunction &>(*aggregates_[a]);
-                auto name = StringUtil::Upper(agg_expr.function_name);
                 // Dedup: when primary_idx is set, emit reads from the
-                // primary's state (the only one populated by the scan)
-                // and applies this agg's own offset for the algebraic-
-                // collapse case.
+                // primary's state (the only one populated by the scan).
                 idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
                                       ? agg_infos[a].primary_idx : a;
                 auto &state = states[state_idx];
 
-                if (name == "COUNT") {
-                    result_row.push_back(Value::BIGINT(state.count));
-                } else if (name == "SUM") {
-                    // Algebraic collapse: SUM(col +/- N) = SUM(col) + N*COUNT(col).
-                    // Q30's 90 SUMs over the same column reduce to ONE
-                    // scan; each agg's offset adjusts the emitted answer.
-                    double s = state.sum;
-                    if (agg_infos[a].sum_with_offset)
-                        s += agg_infos[a].sum_offset * (double)state.count;
-                    auto ret_type = agg_expr.GetReturnType().id();
-                    if (ret_type == LogicalTypeId::BIGINT) {
-                        result_row.push_back(Value::BIGINT(static_cast<int64_t>(s)));
-                    } else {
-                        result_row.push_back(Value::DOUBLE(s));
-                    }
-                } else if (name == "AVG") {
-                    if (state.count > 0) {
-                        result_row.push_back(Value::DOUBLE(state.sum / state.count));
-                    } else {
-                        result_row.push_back(Value());
-                    }
-                } else if (name == "MIN") {
-                    if (!state.has_min) {
-                        result_row.push_back(Value());
-                    } else if (!state.min_val_is_null()) {
-                        result_row.push_back(*state.min_val_ptr);
-                    } else {
-                        // Fused path writes only sum_min (double) for speed;
-                        // synthesize a typed Value here using the agg's return type.
-                        auto rt = agg_expr.GetReturnType().id();
-                        switch (rt) {
-                        case LogicalTypeId::INTEGER: result_row.push_back(Value::INTEGER((int32_t)state.sum_min)); break;
-                        case LogicalTypeId::BIGINT:  result_row.push_back(Value::BIGINT((int64_t)state.sum_min)); break;
-                        case LogicalTypeId::FLOAT:   result_row.push_back(Value::FLOAT((float)state.sum_min)); break;
-                        default:                     result_row.push_back(Value::DOUBLE(state.sum_min)); break;
-                        }
-                    }
-                } else if (name == "MAX") {
-                    if (!state.has_max) {
-                        result_row.push_back(Value());
-                    } else if (!state.max_val_is_null()) {
-                        result_row.push_back(*state.max_val_ptr);
-                    } else {
-                        auto rt = agg_expr.GetReturnType().id();
-                        switch (rt) {
-                        case LogicalTypeId::INTEGER: result_row.push_back(Value::INTEGER((int32_t)state.sum_max)); break;
-                        case LogicalTypeId::BIGINT:  result_row.push_back(Value::BIGINT((int64_t)state.sum_max)); break;
-                        case LogicalTypeId::FLOAT:   result_row.push_back(Value::FLOAT((float)state.sum_max)); break;
-                        default:                     result_row.push_back(Value::DOUBLE(state.sum_max)); break;
-                        }
-                    }
-                } else if (name == "STRING_AGG" || name == "LISTAGG" || name == "GROUP_CONCAT") {
-                    result_row.push_back(state.str_started() ? Value::VARCHAR(state.str_agg_const()) : Value());
-                } else if (name == "STDDEV" || name == "STDDEV_SAMP") {
-                    if (state.count > 1) {
-                        double mean = state.sum / state.count;
-                        double var = (state.sum_sq() - state.count * mean * mean) / (state.count - 1);
-                        result_row.push_back(Value::DOUBLE(std::sqrt(var)));
-                    } else {
-                        result_row.push_back(Value());
-                    }
-                } else if (name == "STDDEV_POP") {
-                    if (state.count > 0) {
-                        double mean = state.sum / state.count;
-                        double var = (state.sum_sq() - state.count * mean * mean) / state.count;
-                        result_row.push_back(Value::DOUBLE(std::sqrt(var)));
-                    } else {
-                        result_row.push_back(Value());
-                    }
-                } else if (name == "VARIANCE" || name == "VAR_SAMP") {
-                    if (state.count > 1) {
-                        double mean = state.sum / state.count;
-                        double var = (state.sum_sq() - state.count * mean * mean) / (state.count - 1);
-                        result_row.push_back(Value::DOUBLE(var));
-                    } else {
-                        result_row.push_back(Value());
-                    }
-                } else if (name == "VAR_POP") {
-                    if (state.count > 0) {
-                        double mean = state.sum / state.count;
-                        double var = (state.sum_sq() - state.count * mean * mean) / state.count;
-                        result_row.push_back(Value::DOUBLE(var));
-                    } else {
-                        result_row.push_back(Value());
-                    }
-                } else if (name == "MEDIAN") {
-                    if (state.extras_ptr && !state.extras_ptr->values.empty()) {
-                        auto &vals = state.extras_ptr->values;
-                        std::sort(vals.begin(), vals.end());
-                        size_t mid = vals.size() / 2;
-                        double median = (vals.size() % 2 == 0)
-                            ? (vals[mid - 1] + vals[mid]) / 2.0
-                            : vals[mid];
-                        result_row.push_back(Value::DOUBLE(median));
-                    } else {
-                        result_row.push_back(Value());
-                    }
-                } else if (name == "BOOL_AND") {
-                    result_row.push_back(state.count > 0 ? Value::BOOLEAN(state.bool_and_v()) : Value());
-                } else if (name == "BOOL_OR") {
-                    result_row.push_back(state.count > 0 ? Value::BOOLEAN(state.bool_or_v()) : Value());
-                }
+                EmitAggView view;
+                view.count = state.count;
+                view.sum = state.sum;
+                view.sum_sq = state.sum_sq();
+                view.has_min = state.has_min;
+                view.sum_min = state.sum_min;
+                view.min_val_ptr = state.min_val_is_null() ? nullptr : state.min_val_ptr.get();
+                view.has_max = state.has_max;
+                view.sum_max = state.sum_max;
+                view.max_val_ptr = state.max_val_is_null() ? nullptr : state.max_val_ptr.get();
+                view.str_started = state.str_started();
+                view.str_agg = &state.str_agg_const();
+                view.values = state.extras_ptr ? &state.extras_ptr->values : nullptr;
+                view.bool_and_v = state.bool_and_v();
+                view.bool_or_v = state.bool_or_v();
+                EmitAggValue(emit_descs[a], view, result_row);
             }
 
             result_rows_.push_back(std::move(result_row));
