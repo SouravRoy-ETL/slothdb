@@ -5813,6 +5813,21 @@ private:
             ankerl::unordered_dense::map<int64_t, Value> int_keys;
             std::unordered_map<std::string, Value> str_keys;
 
+            // Per-shard merge buckets (populated only by the parquet fast path).
+            // Declared at this scope so the post-if/else direct-emit and
+            // shard-rebuild loops can read them.
+            constexpr int MERGE_SHARDS = 4;
+            struct MergeShard {
+                ankerl::unordered_dense::map<int64_t, std::vector<AggState>> int_groups;
+                std::vector<int64_t> int_order;
+            };
+            std::vector<MergeShard> int_merge_shards(MERGE_SHARDS);
+            // Group-col type for synthesizing Value at emit/rebuild time
+            // (replaces the per-thread int_keys map). Set by the parquet
+            // fast path; chunk fallback doesn't use it (writes int_keys
+            // directly via chunk.GetValue()).
+            bool grp_is_bigint = false;
+
             // === FUSED PARQUET SINGLE-COLUMN GROUP BY ===
             // Iterate row groups directly from ParquetColumnData - skip
             // DataChunk materialization and the per-row vector dispatch.
@@ -6121,33 +6136,54 @@ private:
                     }
                 };
 
-                // Merge per-thread state into the enclosing int_groups / str_cache.
-                // Global O(1) lookup mirror of str_cache_keys -> 0-based index
-                // into str_cache_states. Replaces the prior inner linear scan
-                // (O(N^2) over global cardinality, ~6M for SearchPhrase).
-                // Outer-scope group-col type for synthesizing int_keys at
-                // merge (replaces the per-thread int_keys map that just held
-                // Value::BIGINT/Value::INTEGER of the same int64 key).
-                auto _grp_tid = children[0]->GetTypes()[group_col].id();
-                bool _grp_is_bigint = (_grp_tid == LogicalTypeId::BIGINT);
+                // Merge per-thread state. Group-col type cached at outer
+                // scope so the post-if/else direct-emit and shard-rebuild
+                // loops can synthesize Values without re-reading children[0].
+                grp_is_bigint =
+                    (children[0]->GetTypes()[group_col].id() == LogicalTypeId::BIGINT);
+
+                // Parallel cross-thread int merge by hash sharding. Each shard
+                // worker scans every tl.int_groups but only processes keys
+                // hashing to its shard (cheap bit-mix + bitand filters out
+                // ~all keys from non-owned shards in ~3-5ns). The per-shard
+                // ankerl maps are independent so the workers run with zero
+                // synchronization. Q35: 9.76M unique groups across 2 threads;
+                // single-threaded global merge was ~7.5s wall, sharded target
+                // ~1-2s.
+                size_t _est_total = 0;
+                for (int t = 0; t < nt; t++) _est_total += tls[t].int_groups.size();
+                size_t per_shard_est = _est_total / MERGE_SHARDS + 64;
+                for (auto &sh : int_merge_shards) {
+                    sh.int_groups.reserve(per_shard_est);
+                    sh.int_order.reserve(per_shard_est);
+                }
+                slothdb::ParallelFor(MERGE_SHARDS, [&](unsigned int s) {
+                    auto &out = int_merge_shards[s];
+                    for (int t = 0; t < nt; t++) {
+                        auto &tl = tls[t];
+                        for (auto &kv : tl.int_groups) {
+                            // Bit-mix to avoid sequential ClientIPs all
+                            // landing in the same shard. (Multiplicative hash
+                            // with golden-ratio constant.)
+                            uint64_t h = (uint64_t)kv.first;
+                            h *= 0x9E3779B97F4A7C15ULL;
+                            if ((h & (MERGE_SHARDS - 1)) != s) continue;
+                            int64_t k = kv.first;
+                            auto git = out.int_groups.find(k);
+                            if (git == out.int_groups.end()) {
+                                out.int_order.push_back(k);
+                                auto [nit, _] = out.int_groups.try_emplace(k);
+                                nit->second.resize(num_aggs);
+                                git = nit;
+                            }
+                            merge_states(git->second, kv.second);
+                        }
+                    }
+                });
+
                 ankerl::unordered_dense::map<std::string, uint32_t> global_str_index;
                 for (int t = 0; t < nt; t++) {
                     auto &tl = tls[t];
-                    // Iterate tl.int_groups pairs directly; saves one ankerl
-                    // lookup per key vs prior `int_order` walk + `tl.int_groups[k]`.
-                    for (auto &kv : tl.int_groups) {
-                        int64_t k = kv.first;
-                        auto git = int_groups.find(k);
-                        if (git == int_groups.end()) {
-                            int_order.push_back(k);
-                            int_keys[k] = _grp_is_bigint ? Value::BIGINT(k)
-                                                         : Value::INTEGER((int32_t)k);
-                            auto [nit, _] = int_groups.try_emplace(k);
-                            nit->second.resize(num_aggs);
-                            git = nit;
-                        }
-                        merge_states(git->second, kv.second);
-                    }
                     for (idx_t oi = 0; oi < tl.str_cache_keys.size(); oi++) {
                         const auto &k = tl.str_cache_keys[oi];
                         auto git = global_str_index.find(k);
@@ -6263,16 +6299,21 @@ private:
                 str_groups[str_cache_keys[oi]] = std::move(str_cache_states[oi]);
             }
             // Direct emit shortcut for the int-only single-col case: when
-            // no string groups are present, skip rebuilding string-keyed
+            // no string groups are present, emit straight into result_rows_
+            // from the parallel-merge shards. Skips rebuilding string-keyed
             // group_states/group_keys/group_order (which on Q35 cost ~7.7s
-            // for std::to_string + 4 ankerl ops × 9.76 M keys) AND skip the
-            // common emit's `find()` per group (~4.6s on Q35). Emit straight
-            // into result_rows_ from int_order/int_groups/synth-Value.
-            // Only safe when str_order is empty (otherwise common emit must
-            // still run).
-            if (!int_order.empty() && str_order.empty()) {
-                auto direct_grp_tid = children[0]->GetTypes()[group_col].id();
-                bool direct_is_bigint = (direct_grp_tid == LogicalTypeId::BIGINT);
+            // for std::to_string + 4 ankerl ops × 9.76 M keys) AND skips the
+            // common emit's `find()` per group (~4.6s on Q35). Each shard
+            // produces a slice of result_rows_; the slices are concatenated
+            // at the end (insertion order across shards is meaningless since
+            // ankerl iteration order is hash-bucket order anyway).
+            // Runs only when str_order is empty (parquet pq path) AND when
+            // shards have data (pq path populated them); chunk fallback's
+            // outer int_order/int_groups/int_keys go through the FS.MOVE
+            // loop further down instead.
+            size_t total_shard_groups = 0;
+            for (auto &sh : int_merge_shards) total_shard_groups += sh.int_order.size();
+            if (total_shard_groups > 0 && str_order.empty()) {
                 std::vector<EmitAggDesc> direct_descs(num_aggs);
                 for (idx_t a = 0; a < num_aggs; a++) {
                     auto &ae = static_cast<BoundFunction &>(*aggregates_[a]);
@@ -6297,28 +6338,42 @@ private:
                     v.bool_and_v = s.bool_and_v();
                     v.bool_or_v = s.bool_or_v();
                 };
-                result_rows_.reserve(int_order.size());
-                for (int64_t k : int_order) {
-                    auto &states_r = int_groups[k];
-                    std::vector<Value> result_row;
-                    result_row.reserve(1 + num_aggs);
-                    result_row.push_back(direct_is_bigint ? Value::BIGINT(k)
-                                                          : Value::INTEGER((int32_t)k));
-                    for (idx_t a = 0; a < num_aggs; a++) {
-                        idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
-                                              ? agg_infos[a].primary_idx : a;
-                        EmitAggView view;
-                        direct_view(states_r[state_idx], view);
-                        EmitAggValue(direct_descs[a], view, result_row);
+                result_rows_.reserve(total_shard_groups);
+                for (auto &sh : int_merge_shards) {
+                    for (int64_t k : sh.int_order) {
+                        auto &states_r = sh.int_groups[k];
+                        std::vector<Value> result_row;
+                        result_row.reserve(1 + num_aggs);
+                        result_row.push_back(grp_is_bigint ? Value::BIGINT(k)
+                                                           : Value::INTEGER((int32_t)k));
+                        for (idx_t a = 0; a < num_aggs; a++) {
+                            idx_t state_idx = (agg_infos[a].primary_idx != INVALID_INDEX)
+                                                  ? agg_infos[a].primary_idx : a;
+                            EmitAggView view;
+                            direct_view(states_r[state_idx], view);
+                            EmitAggValue(direct_descs[a], view, result_row);
+                        }
+                        result_rows_.push_back(std::move(result_row));
                     }
-                    result_rows_.push_back(std::move(result_row));
                 }
-                int_order.clear();
-                int_groups.clear();
+                int_merge_shards.clear();
+            } else if (total_shard_groups > 0) {
+                // Mixed pq path with str groups: rebuild string-keyed map
+                // from int shards so the common emit can see them.
+                for (auto &sh : int_merge_shards) {
+                    for (int64_t k : sh.int_order) {
+                        std::string sk = std::to_string(k);
+                        group_states[sk] = std::move(sh.int_groups[k]);
+                        group_keys[sk] = {grp_is_bigint ? Value::BIGINT(k)
+                                                       : Value::INTEGER((int32_t)k)};
+                        group_order.push_back(sk);
+                    }
+                }
+                int_merge_shards.clear();
             }
-            // Move into the standard group_states map for result building.
-            // (int_order is cleared above when the direct-emit path ran, so
-            //  this loop is a no-op in the int-only case.)
+            // Chunk-fallback FS.MOVE: only used when the parquet fast path
+            // didn't run (pq was null). Outer int_order/int_groups/int_keys
+            // were populated by the chunk loop instead of int_merge_shards.
             for (auto k : int_order) {
                 std::string sk = std::to_string(k);
                 group_states[sk] = std::move(int_groups[k]);
