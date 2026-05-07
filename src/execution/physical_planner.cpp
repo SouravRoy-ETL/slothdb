@@ -29,6 +29,7 @@
 #include <limits>
 #include <mutex>
 #include <queue>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <type_traits>
@@ -1665,47 +1666,74 @@ private:
         using LightHeap = std::priority_queue<LightEntry,
             std::vector<LightEntry>, decltype(light_cmp)>;
 
-        PhysicalParquetScan *pq_scan = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+        // Walk the plan: OrderBy(this) → [Projection?] → [Filter?] → ParquetScan.
+        // The projection may be non-identity (e.g. `SELECT SearchPhrase` over
+        // wide hits.parquet — Q26). When it is, every projection expression
+        // must be a plain column ref; we record an output→scan column map
+        // and translate `key_col` (which is the orderby's input index =
+        // projection's output index) into a scan-side index.
+        PhysicalProjection *outer_proj = dynamic_cast<PhysicalProjection *>(children[0].get());
+        PhysicalFilter *flt = nullptr;
+        PhysicalParquetScan *pq_scan = nullptr;
         std::vector<SimplePredicate> tn_preds;
-        if (!pq_scan) {
-            if (auto *proj = dynamic_cast<PhysicalProjection *>(children[0].get())) {
-                if (proj->IsIdentityProjection() && !proj->children.empty())
-                    pq_scan = dynamic_cast<PhysicalParquetScan *>(proj->children[0].get());
+        std::vector<idx_t> output_to_scan;  // empty = identity output
+
+        auto unwrap_proj = [&](PhysicalProjection *p) -> bool {
+            // Returns true on success, also sets output_to_scan if non-identity.
+            if (!p || p->children.empty()) return false;
+            if (p->IsIdentityProjection()) return true;
+            auto &exprs = p->GetExpressions();
+            std::vector<idx_t> map;
+            map.reserve(exprs.size());
+            for (auto &e : exprs) {
+                if (!e || e->GetExpressionType() != BoundExpressionType::COLUMN_REF) return false;
+                map.push_back(static_cast<BoundColumnRef &>(*e).column_index);
             }
+            output_to_scan = std::move(map);
+            return true;
+        };
+
+        if (outer_proj) {
+            if (!unwrap_proj(outer_proj)) return false;
+            auto *child = outer_proj->children[0].get();
+            pq_scan = dynamic_cast<PhysicalParquetScan *>(child);
+            if (!pq_scan) flt = dynamic_cast<PhysicalFilter *>(child);
+        } else {
+            pq_scan = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+            if (!pq_scan) flt = dynamic_cast<PhysicalFilter *>(children[0].get());
         }
-        if (!pq_scan) {
-            PhysicalFilter *flt = dynamic_cast<PhysicalFilter *>(children[0].get());
-            if (!flt) {
-                if (auto *proj = dynamic_cast<PhysicalProjection *>(children[0].get())) {
-                    if (proj->IsIdentityProjection() && !proj->children.empty())
-                        flt = dynamic_cast<PhysicalFilter *>(proj->children[0].get());
-                }
-            }
-            if (flt && flt->GetCondition() && !flt->children.empty()) {
-                std::vector<SimplePredicate> tmp;
-                if (TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
-                    PhysicalParquetScan *cand = dynamic_cast<PhysicalParquetScan *>(flt->children[0].get());
-                    if (!cand) {
-                        if (auto *p2 = dynamic_cast<PhysicalProjection *>(flt->children[0].get())) {
-                            if (p2->IsIdentityProjection() && !p2->children.empty())
-                                cand = dynamic_cast<PhysicalParquetScan *>(p2->children[0].get());
-                        }
+        if (!pq_scan && flt && flt->GetCondition() && !flt->children.empty()) {
+            std::vector<SimplePredicate> tmp;
+            if (TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                auto *child = flt->children[0].get();
+                pq_scan = dynamic_cast<PhysicalParquetScan *>(child);
+                if (!pq_scan) {
+                    if (auto *p2 = dynamic_cast<PhysicalProjection *>(child)) {
+                        if (p2->IsIdentityProjection() && !p2->children.empty())
+                            pq_scan = dynamic_cast<PhysicalParquetScan *>(p2->children[0].get());
                     }
-                    if (cand) { pq_scan = cand; tn_preds = std::move(tmp); }
                 }
+                if (pq_scan) tn_preds = std::move(tmp);
             }
         }
         if (!pq_scan) return false;
+
+        // Translate orderby's key_col (output-side) to scan-side.
+        idx_t key_col_scan = key_col;
+        if (!output_to_scan.empty()) {
+            if (key_col >= output_to_scan.size()) return false;
+            key_col_scan = output_to_scan[key_col];
+        }
 
         idx_t ncols = pq_scan->GetTypes().size();
         // VARCHAR predicate cols benefit from SkipStrData on the predicate
         // col (preserve dict_indices for BuildTypedKeepMask). The key col
         // also stays VARCHAR — but because we MUST materialise the key
-        // string per surviving row, we DO NOT skip str_data on key_col.
+        // string per surviving row, we DO NOT skip str_data on key_col_scan.
         if (!tn_preds.empty()) {
             std::vector<bool> skip_pre(ncols, false);
             for (auto &p : tn_preds) {
-                if (p.col_idx < ncols && p.str_form && p.col_idx != key_col)
+                if (p.col_idx < ncols && p.str_form && p.col_idx != key_col_scan)
                     skip_pre[p.col_idx] = true;
             }
             pq_scan->SetSkipStrData(std::move(skip_pre));
@@ -1717,8 +1745,11 @@ private:
         for (int i = 0; i < MAX_THREADS; i++) light_heaps.emplace_back(light_cmp);
         std::array<std::mutex, MAX_THREADS> mus;
         std::vector<bool> need(ncols, false);
-        need[key_col] = true;
+        need[key_col_scan] = true;
         for (auto &p : tn_preds) if (p.col_idx < ncols) need[p.col_idx] = true;
+        // First-pass scan only needs key + predicate columns. Output
+        // materialization happens in a separate pass 2 below where we decode
+        // only the columns the projection actually emits.
         pq_scan->SetNeededOutputs(need);
         pq_scan->Init();
         auto *reader = pq_scan->GetReader();
@@ -1729,7 +1760,7 @@ private:
                 auto &heap = light_heaps[slot];
                 std::lock_guard<std::mutex> lk(mus[slot]);
                 idx_t nrows = pq_scan->RowGroupSize(rg_idx);
-                const auto &kcol = work.cols[key_col];
+                const auto &kcol = work.cols[key_col_scan];
                 if (!kcol.decoded) return;
                 bool key_all_valid = kcol.all_valid;
 
@@ -1805,19 +1836,40 @@ private:
                     return false;
                 };
 
+                // Most rows lose against heap.top() once the heap fills.
+                // Compare candidate (sd,sl,is_null) against heap.top() WITHOUT
+                // allocating an std::string for the candidate key — the copy
+                // only happens on the rare row that wins. For Q26 ORDER BY
+                // SearchPhrase ASC LIMIT 10 over ~100M rows this skips ~99%
+                // of the per-row std::string allocations.
+                auto wins_against_top = [ascending](const LightEntry &top,
+                                                     const char *sd, uint32_t sl,
+                                                     bool is_null) -> bool {
+                    if (is_null && top.is_null) return false;
+                    if (is_null) return !ascending;
+                    if (top.is_null) return ascending;
+                    std::string_view cand(sd, sl);
+                    std::string_view t(top.key);
+                    return ascending ? cand < t : cand > t;
+                };
                 for (idx_t i = 0; i < nrows; i++) {
                     if (mask_active && !mask[i]) continue;
                     if (fallback_row_loop && !eval_row(i)) continue;
                     const char *sd = nullptr; uint32_t sl = 0; bool is_null = false;
                     if (!get_key(i, sd, sl, is_null)) continue;
-                    LightEntry e;
-                    e.is_null = is_null;
-                    e.rg_idx = (uint32_t)rg_idx;
-                    e.row_idx = (uint32_t)i;
-                    if (!is_null) e.key.assign(sd, sl);
                     if (heap.size() < k) {
+                        LightEntry e;
+                        e.is_null = is_null;
+                        e.rg_idx = (uint32_t)rg_idx;
+                        e.row_idx = (uint32_t)i;
+                        if (!is_null) e.key.assign(sd, sl);
                         heap.push(std::move(e));
-                    } else if (light_cmp(e, heap.top())) {
+                    } else if (wins_against_top(heap.top(), sd, sl, is_null)) {
+                        LightEntry e;
+                        e.is_null = is_null;
+                        e.rg_idx = (uint32_t)rg_idx;
+                        e.row_idx = (uint32_t)i;
+                        if (!is_null) e.key.assign(sd, sl);
                         heap.pop();
                         heap.push(std::move(e));
                     }
@@ -1850,10 +1902,25 @@ private:
         while (!merged.empty()) { winners.push_back(merged.top()); merged.pop(); }
         std::reverse(winners.begin(), winners.end());
 
-        // Pass 2: materialise full rows for K winners.
+        // Pass 2: materialise rows for K winners. Output is in projection
+        // schema (output_to_scan maps each output col to a scan col); for
+        // identity output we emit all scan cols.
         ankerl::unordered_dense::map<uint32_t, std::vector<size_t>> rg_to_winner_indices;
         for (size_t i = 0; i < winners.size(); i++)
             rg_to_winner_indices[winners[i].rg_idx].push_back(i);
+
+        std::vector<idx_t> needed_scan_cols;
+        if (output_to_scan.empty()) {
+            needed_scan_cols.reserve(ncols);
+            for (idx_t c = 0; c < ncols; c++) needed_scan_cols.push_back(c);
+        } else {
+            // Deduplicate while preserving the cols we need.
+            std::vector<bool> seen(ncols, false);
+            for (idx_t sc : output_to_scan) {
+                if (sc < ncols && !seen[sc]) { seen[sc] = true; needed_scan_cols.push_back(sc); }
+            }
+        }
+        idx_t out_ncols = output_to_scan.empty() ? ncols : output_to_scan.size();
 
         std::vector<std::vector<Value>> output_rows(winners.size());
         std::vector<uint32_t> unique_rgs;
@@ -1868,9 +1935,9 @@ private:
 
         struct DecodeUnit { uint32_t rg; idx_t col; };
         std::vector<DecodeUnit> units;
-        units.reserve(unique_rgs.size() * ncols);
+        units.reserve(unique_rgs.size() * needed_scan_cols.size());
         for (auto rg_u : unique_rgs)
-            for (idx_t c = 0; c < ncols; c++)
+            for (idx_t c : needed_scan_cols)
                 units.push_back({rg_u, c});
 
         unsigned int p2_threads = HWThreads();
@@ -1930,13 +1997,14 @@ private:
             size_t local = rg_to_local[winner.rg_idx];
             idx_t row_i = winner.row_idx;
             std::vector<Value> row;
-            row.reserve(ncols);
-            for (idx_t c = 0; c < ncols; c++) {
-                auto &cd = rg_cols[local][c];
+            row.reserve(out_ncols);
+            for (idx_t out_c = 0; out_c < out_ncols; out_c++) {
+                idx_t scan_c = output_to_scan.empty() ? out_c : output_to_scan[out_c];
+                auto &cd = rg_cols[local][scan_c];
                 if (cd.decoded) {
                     row.push_back(box_typed(cd, row_i));
                 } else {
-                    auto &fb = rg_fallback[local][c];
+                    auto &fb = rg_fallback[local][scan_c];
                     row.push_back(row_i < fb.size() ? fb[row_i] : Value());
                 }
             }
