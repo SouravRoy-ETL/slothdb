@@ -8890,12 +8890,15 @@ private:
                         }
                         pq->Init();
 
-                        constexpr int BK_THREADS = 8;
-                        slothdb::RadixMultiAggBigKey agg(BK_THREADS, bk_sa_n);
+                        const int BK_THREADS = 8;
                         bool g0_is_bigint =
                             (bk_t0 == LogicalTypeId::BIGINT);
                         bool g1_is_bigint =
                             (bk_t1 == LogicalTypeId::BIGINT);
+                        // Generic phase 1-3+emit. Same shape as the Q31
+                        // dispatch: lifts InlineRowAggBigKey<N> over the
+                        // legacy RadixMultiAggBigKey via env-var rollback.
+                        auto run_q32 = [&](auto& agg) {
                         pq->SetRGConsumer(
                             [&](const PhysicalParquetScan::RGWork &work,
                                 idx_t rg_idx, int tid) {
@@ -8978,8 +8981,9 @@ private:
                                 }
                             });
                         pq->RunParallelRGs();
+                        using BkAggT = std::remove_reference_t<decltype(agg)>;
                         std::vector<std::thread> mts;
-                        for (int s = 1; s < slothdb::RadixMultiAggBigKey::N_RADIX; s++) {
+                        for (int s = 1; s < BkAggT::N_RADIX; s++) {
                             mts.emplace_back([&agg, s]() {
                                 agg.MergeShard(s);
                             });
@@ -9045,6 +9049,24 @@ private:
                                 }
                             }
                             result_rows_.push_back(std::move(row));
+                        }
+                        };  // end run_q32 generic lambda
+
+                        size_t _bk_legacy_len = 0;
+                        const bool bk_legacy_override =
+                            (getenv_s(&_bk_legacy_len, nullptr, 0,
+                                      "SLOTH_LEGACY_AGG") == 0 &&
+                             _bk_legacy_len > 0);
+                        if (!bk_legacy_override && bk_sa_n >= 1 && bk_sa_n <= 4) {
+                            switch (bk_sa_n) {
+                            case 1: { slothdb::InlineRowAggBigKey<1> a(BK_THREADS); run_q32(a); break; }
+                            case 2: { slothdb::InlineRowAggBigKey<2> a(BK_THREADS); run_q32(a); break; }
+                            case 3: { slothdb::InlineRowAggBigKey<3> a(BK_THREADS); run_q32(a); break; }
+                            case 4: { slothdb::InlineRowAggBigKey<4> a(BK_THREADS); run_q32(a); break; }
+                            }
+                        } else {
+                            slothdb::RadixMultiAggBigKey a(BK_THREADS, bk_sa_n);
+                            run_q32(a);
                         }
                         return;
                     }

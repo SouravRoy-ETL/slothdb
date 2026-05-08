@@ -64,4 +64,47 @@ private:
     std::unique_ptr<InlineRowAggImpl<NumAggs>> impl_;
 };
 
+// Stage 1b — composite (int64 a, int64 b) key. For Q32-shape (BIGINT+INT
+// or BIGINT+BIGINT) where a uint64 packed key would lose precision. Row
+// layout: { hash:8, key_a:8, key_b:8, count_star:8, sum[N]:8N, cnt[N]:8N }
+// = (4 + 2N) * 8 bytes. Same probe table + shard architecture as
+// InlineRowAgg<N>. SAFETY GATE on caller side: filter required to bound
+// cardinality, mirroring RadixMultiAggBigKey's gate (Q33 unguarded
+// crashed the test PC at 100M near-unique pairs).
+template <int NumAggs>
+struct InlineRowAggBigResult {
+    int64_t  key_a;
+    int64_t  key_b;
+    int64_t  count_star;
+    int64_t  sum[NumAggs];
+    int64_t  cnt[NumAggs];
+};
+
+template <int NumAggs>
+struct InlineRowAggBigImpl;
+
+template <int NumAggs>
+class InlineRowAggBigKey {
+public:
+    static constexpr int N_RADIX = 16;
+
+    InlineRowAggBigKey(int max_threads);
+    ~InlineRowAggBigKey();
+    InlineRowAggBigKey(const InlineRowAggBigKey&) = delete;
+    InlineRowAggBigKey& operator=(const InlineRowAggBigKey&) = delete;
+
+    void Update(int tid, int64_t key_a, int64_t key_b,
+                const int64_t* agg_vals,
+                const uint8_t* agg_valid);
+
+    void MergeShard(int shard);
+
+    std::vector<InlineRowAggBigResult<NumAggs>> EmitTopK(int k) const;
+
+    size_t TotalGroups() const;
+
+private:
+    std::unique_ptr<InlineRowAggBigImpl<NumAggs>> impl_;
+};
+
 }  // namespace slothdb

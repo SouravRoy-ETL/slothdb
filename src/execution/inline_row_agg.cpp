@@ -246,4 +246,242 @@ template class InlineRowAgg<2>;
 template class InlineRowAgg<3>;
 template class InlineRowAgg<4>;
 
+// =====================================================================
+// Stage 1b — InlineRowAggBigKey: 16B composite (int64 a, int64 b) key
+// =====================================================================
+
+namespace {
+
+// Composite key hasher matching RadixMultiAggBigKey's BigKeyHash so the
+// shard distribution stays consistent. Mum-style mix of two 64-bit hashes.
+inline uint64_t HashBigKey(int64_t a, int64_t b) {
+    uint64_t h1 = ankerl::unordered_dense::hash<int64_t>{}(a);
+    uint64_t h2 = ankerl::unordered_dense::hash<int64_t>{}(b);
+    return (h1 * 0x9E3779B97F4A7C15ULL) ^ h2;
+}
+
+template <int NumAggs>
+struct alignas(8) BigRow {
+    uint64_t hash;
+    int64_t  key_a;
+    int64_t  key_b;
+    int64_t  count_star;
+    int64_t  sum[NumAggs];
+    int64_t  cnt[NumAggs];
+};
+
+template <int NumAggs>
+struct BigShardState {
+    std::vector<BigRow<NumAggs>> rows;
+    std::vector<uint64_t>        table;
+    size_t                       mask;
+
+    BigShardState() : table(INIT_TABLE_CAP, 0), mask(INIT_TABLE_CAP - 1) {}
+
+    inline void EnsureCapForOneInsert() {
+        if ((rows.size() * 4) >= (table.size() * 3)) Resize(table.size() * 2);
+    }
+
+    void Reserve(size_t n) {
+        size_t target = INIT_TABLE_CAP;
+        while (target * 3 < (n + 1) * 4) target <<= 1;
+        if (target > table.size()) Resize(target);
+        rows.reserve(n);
+    }
+
+    void Resize(size_t new_cap) {
+        std::vector<uint64_t> new_table(new_cap, 0);
+        size_t new_mask = new_cap - 1;
+        for (size_t i = 0; i < rows.size(); i++) {
+            uint64_t shifted = rows[i].hash >> SHARD_BITS;
+            uint64_t salt = shifted >> 48;
+            size_t pos = shifted & new_mask;
+            while (new_table[pos] != 0) pos = (pos + 1) & new_mask;
+            new_table[pos] = (salt << 48) | (uint64_t)(i + 1);
+        }
+        table.swap(new_table);
+        mask = new_mask;
+    }
+};
+
+}  // anonymous namespace
+
+template <int NumAggs>
+struct InlineRowAggBigImpl {
+    int max_threads;
+    std::vector<std::array<BigShardState<NumAggs>, N_SHARDS>> threads;
+    std::array<BigShardState<NumAggs>, N_SHARDS> final_shards;
+};
+
+template <int NumAggs>
+InlineRowAggBigKey<NumAggs>::InlineRowAggBigKey(int max_threads)
+    : impl_(std::make_unique<InlineRowAggBigImpl<NumAggs>>()) {
+    impl_->max_threads = max_threads;
+    impl_->threads.resize(max_threads);
+}
+
+template <int NumAggs>
+InlineRowAggBigKey<NumAggs>::~InlineRowAggBigKey() = default;
+
+template <int NumAggs>
+void InlineRowAggBigKey<NumAggs>::Update(int tid, int64_t key_a, int64_t key_b,
+                                          const int64_t* agg_vals,
+                                          const uint8_t* agg_valid) {
+    uint64_t hash = HashBigKey(key_a, key_b);
+    int shard = (int)(hash & (N_SHARDS - 1));
+    uint64_t shifted = hash >> SHARD_BITS;
+    uint64_t salt = shifted >> 48;
+
+    auto& s = impl_->threads[tid][shard];
+    s.EnsureCapForOneInsert();
+
+    size_t pos = shifted & s.mask;
+    while (true) {
+        uint64_t v = s.table[pos];
+        if (v == 0) {
+            uint32_t idx = (uint32_t)s.rows.size();
+            s.rows.emplace_back();
+            auto& r = s.rows.back();
+            r.hash = hash;
+            r.key_a = key_a;
+            r.key_b = key_b;
+            r.count_star = 1;
+            for (int A = 0; A < NumAggs; A++) {
+                if (agg_valid[A]) {
+                    r.sum[A] = agg_vals[A];
+                    r.cnt[A] = 1;
+                } else {
+                    r.sum[A] = 0;
+                    r.cnt[A] = 0;
+                }
+            }
+            s.table[pos] = (salt << 48) | (uint64_t)(idx + 1);
+            return;
+        }
+        if ((v >> 48) == salt) {
+            uint32_t idx = (uint32_t)((v & IDX_MASK) - 1);
+            auto& r = s.rows[idx];
+            if (r.key_a == key_a && r.key_b == key_b) {
+                r.count_star++;
+                for (int A = 0; A < NumAggs; A++) {
+                    if (agg_valid[A]) {
+                        r.sum[A] += agg_vals[A];
+                        r.cnt[A]++;
+                    }
+                }
+                return;
+            }
+        }
+        pos = (pos + 1) & s.mask;
+    }
+}
+
+template <int NumAggs>
+void InlineRowAggBigKey<NumAggs>::MergeShard(int shard) {
+    auto& dst = impl_->final_shards[shard];
+    size_t max_single = 0;
+    for (auto& tarr : impl_->threads) {
+        size_t sz = tarr[shard].rows.size();
+        if (sz > max_single) max_single = sz;
+    }
+    dst.Reserve(max_single + max_single / 4);
+    for (auto& tarr : impl_->threads) {
+        auto& src = tarr[shard];
+        for (auto& sr : src.rows) {
+            uint64_t shifted = sr.hash >> SHARD_BITS;
+            uint64_t salt = shifted >> 48;
+            dst.EnsureCapForOneInsert();
+            size_t pos = shifted & dst.mask;
+            while (true) {
+                uint64_t v = dst.table[pos];
+                if (v == 0) {
+                    uint32_t idx = (uint32_t)dst.rows.size();
+                    dst.rows.push_back(sr);
+                    dst.table[pos] = (salt << 48) | (uint64_t)(idx + 1);
+                    break;
+                }
+                if ((v >> 48) == salt) {
+                    uint32_t idx = (uint32_t)((v & IDX_MASK) - 1);
+                    auto& d = dst.rows[idx];
+                    if (d.key_a == sr.key_a && d.key_b == sr.key_b) {
+                        d.count_star += sr.count_star;
+                        for (int A = 0; A < NumAggs; A++) {
+                            d.sum[A] += sr.sum[A];
+                            d.cnt[A] += sr.cnt[A];
+                        }
+                        break;
+                    }
+                }
+                pos = (pos + 1) & dst.mask;
+            }
+        }
+    }
+}
+
+template <int NumAggs>
+std::vector<InlineRowAggBigResult<NumAggs>>
+InlineRowAggBigKey<NumAggs>::EmitTopK(int k) const {
+    auto build_at = [](const BigRow<NumAggs>& r,
+                       InlineRowAggBigResult<NumAggs>& out) {
+        out.key_a = r.key_a;
+        out.key_b = r.key_b;
+        out.count_star = r.count_star;
+        for (int A = 0; A < NumAggs; A++) {
+            out.sum[A] = r.sum[A];
+            out.cnt[A] = r.cnt[A];
+        }
+    };
+    if (k <= 0) {
+        std::vector<InlineRowAggBigResult<NumAggs>> all;
+        all.reserve(TotalGroups());
+        for (int sh = 0; sh < N_SHARDS; sh++) {
+            for (auto& r : impl_->final_shards[sh].rows) {
+                all.emplace_back();
+                build_at(r, all.back());
+            }
+        }
+        return all;
+    }
+    struct HeapEntry { int64_t count_star; uint32_t shard; uint32_t row_idx; };
+    auto cmp = [](const HeapEntry& a, const HeapEntry& b) {
+        return a.count_star > b.count_star;
+    };
+    std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)>
+        heap(cmp);
+    for (int sh = 0; sh < N_SHARDS; sh++) {
+        const auto& rows = impl_->final_shards[sh].rows;
+        for (size_t i = 0; i < rows.size(); i++) {
+            int64_t cs = rows[i].count_star;
+            if ((int)heap.size() < k) {
+                heap.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
+            } else if (cs > heap.top().count_star) {
+                heap.pop();
+                heap.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
+            }
+        }
+    }
+    std::vector<InlineRowAggBigResult<NumAggs>> out;
+    out.reserve(heap.size());
+    while (!heap.empty()) {
+        const auto& e = heap.top();
+        out.emplace_back();
+        build_at(impl_->final_shards[e.shard].rows[e.row_idx], out.back());
+        heap.pop();
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+template <int NumAggs>
+size_t InlineRowAggBigKey<NumAggs>::TotalGroups() const {
+    size_t total = 0;
+    for (auto& s : impl_->final_shards) total += s.rows.size();
+    return total;
+}
+
+template class InlineRowAggBigKey<1>;
+template class InlineRowAggBigKey<2>;
+template class InlineRowAggBigKey<3>;
+template class InlineRowAggBigKey<4>;
+
 }  // namespace slothdb
