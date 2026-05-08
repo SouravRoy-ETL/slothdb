@@ -132,13 +132,12 @@ std::vector<RadixMultiAggResult>
 RadixMultiAggI64Key::EmitTopK(int k) const {
     int num_aggs = impl_->num_aggs;
     size_t per_slot = (size_t)(1 + 2 * num_aggs);
-    auto build = [&](uint64_t key, const int64_t* slot) {
-        RadixMultiAggResult r;
+    auto build_at = [&](uint64_t key, const int64_t* slot,
+                        RadixMultiAggResult& r) {
         r.key = key;
         r.count_star = slot[0];
         r.sum.assign(slot + 1, slot + 1 + num_aggs);
         r.cnt.assign(slot + 1 + num_aggs, slot + 1 + 2 * num_aggs);
-        return r;
     };
     if (k <= 0) {
         std::vector<RadixMultiAggResult> all;
@@ -146,17 +145,28 @@ RadixMultiAggI64Key::EmitTopK(int k) const {
         for (int s = 0; s < N_SHARDS; s++) {
             const int64_t* arena = impl_->final_arenas[s].data();
             for (auto& kv : impl_->final_maps[s]) {
-                all.push_back(
-                    build(kv.first, arena + (size_t)kv.second * per_slot));
+                all.emplace_back();
+                build_at(kv.first,
+                         arena + (size_t)kv.second * per_slot, all.back());
             }
         }
         return all;
     }
-    auto cmp = [](const RadixMultiAggResult& a, const RadixMultiAggResult& b) {
+    // Cheap heap: (count_star, key, shard, slot_idx). 24 bytes, no
+    // per-element vector allocations. Materialise the ≤K winners only at
+    // the end. The previous version called build() — allocating two
+    // vector<int64_t>s — for every candidate that beat the heap min, which
+    // for high-cardinality groups (Q31 ~5.7M) was a hot allocator path.
+    struct HeapEntry {
+        int64_t count_star;
+        uint64_t key;
+        uint32_t shard;
+        uint32_t slot_idx;
+    };
+    auto cmp = [](const HeapEntry& a, const HeapEntry& b) {
         return a.count_star > b.count_star;  // min-heap by count_star
     };
-    std::priority_queue<RadixMultiAggResult,
-                        std::vector<RadixMultiAggResult>, decltype(cmp)>
+    std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)>
         heap(cmp);
     for (int s = 0; s < N_SHARDS; s++) {
         const int64_t* arena = impl_->final_arenas[s].data();
@@ -164,18 +174,21 @@ RadixMultiAggI64Key::EmitTopK(int k) const {
             const int64_t* slot = arena + (size_t)kv.second * per_slot;
             int64_t cs = slot[0];
             if ((int)heap.size() < k) {
-                heap.push(build(kv.first, slot));
+                heap.push(HeapEntry{cs, kv.first, (uint32_t)s, kv.second});
             } else if (cs > heap.top().count_star) {
                 heap.pop();
-                heap.push(build(kv.first, slot));
+                heap.push(HeapEntry{cs, kv.first, (uint32_t)s, kv.second});
             }
         }
     }
     std::vector<RadixMultiAggResult> out;
     out.reserve(heap.size());
     while (!heap.empty()) {
-        out.push_back(std::move(
-            const_cast<RadixMultiAggResult&>(heap.top())));
+        const auto& e = heap.top();
+        const int64_t* arena = impl_->final_arenas[e.shard].data();
+        const int64_t* slot = arena + (size_t)e.slot_idx * per_slot;
+        out.emplace_back();
+        build_at(e.key, slot, out.back());
         heap.pop();
     }
     std::reverse(out.begin(), out.end());
@@ -317,14 +330,13 @@ std::vector<RadixMultiAggBigResult>
 RadixMultiAggBigKey::EmitTopK(int k) const {
     int num_aggs = impl_->num_aggs;
     size_t per_slot = (size_t)(1 + 2 * num_aggs);
-    auto build = [&](BigKey key, const int64_t* slot) {
-        RadixMultiAggBigResult r;
+    auto build_at = [&](BigKey key, const int64_t* slot,
+                        RadixMultiAggBigResult& r) {
         r.key_a = key.a;
         r.key_b = key.b;
         r.count_star = slot[0];
         r.sum.assign(slot + 1, slot + 1 + num_aggs);
         r.cnt.assign(slot + 1 + num_aggs, slot + 1 + 2 * num_aggs);
-        return r;
     };
     if (k <= 0) {
         std::vector<RadixMultiAggBigResult> all;
@@ -332,18 +344,27 @@ RadixMultiAggBigKey::EmitTopK(int k) const {
         for (int s = 0; s < BK_NSHARDS; s++) {
             const int64_t* arena = impl_->final_arenas[s].data();
             for (auto& kv : impl_->final_maps[s]) {
-                all.push_back(
-                    build(kv.first, arena + (size_t)kv.second * per_slot));
+                all.emplace_back();
+                build_at(kv.first,
+                         arena + (size_t)kv.second * per_slot, all.back());
             }
         }
         return all;
     }
-    auto cmp = [](const RadixMultiAggBigResult& a,
-                  const RadixMultiAggBigResult& b) {
+    // Cheap heap: (count_star, key_a, key_b, shard, slot_idx). 32 bytes, no
+    // per-element vector allocations. Materialise the ≤K winners only at
+    // the end. Mirrors the I64Key fix.
+    struct HeapEntry {
+        int64_t count_star;
+        int64_t key_a;
+        int64_t key_b;
+        uint32_t shard;
+        uint32_t slot_idx;
+    };
+    auto cmp = [](const HeapEntry& a, const HeapEntry& b) {
         return a.count_star > b.count_star;
     };
-    std::priority_queue<RadixMultiAggBigResult,
-                        std::vector<RadixMultiAggBigResult>, decltype(cmp)>
+    std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)>
         heap(cmp);
     for (int s = 0; s < BK_NSHARDS; s++) {
         const int64_t* arena = impl_->final_arenas[s].data();
@@ -351,18 +372,23 @@ RadixMultiAggBigKey::EmitTopK(int k) const {
             const int64_t* slot = arena + (size_t)kv.second * per_slot;
             int64_t cs = slot[0];
             if ((int)heap.size() < k) {
-                heap.push(build(kv.first, slot));
+                heap.push(HeapEntry{cs, kv.first.a, kv.first.b,
+                                    (uint32_t)s, kv.second});
             } else if (cs > heap.top().count_star) {
                 heap.pop();
-                heap.push(build(kv.first, slot));
+                heap.push(HeapEntry{cs, kv.first.a, kv.first.b,
+                                    (uint32_t)s, kv.second});
             }
         }
     }
     std::vector<RadixMultiAggBigResult> out;
     out.reserve(heap.size());
     while (!heap.empty()) {
-        out.push_back(std::move(
-            const_cast<RadixMultiAggBigResult&>(heap.top())));
+        const auto& e = heap.top();
+        const int64_t* arena = impl_->final_arenas[e.shard].data();
+        const int64_t* slot = arena + (size_t)e.slot_idx * per_slot;
+        out.emplace_back();
+        build_at(BigKey{e.key_a, e.key_b}, slot, out.back());
         heap.pop();
     }
     std::reverse(out.begin(), out.end());
