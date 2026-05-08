@@ -158,23 +158,25 @@ RadixCountAggStr::RadixCountAggStr(int max_threads)
 RadixCountAggStr::~RadixCountAggStr() = default;
 
 void RadixCountAggStr::IncrementRow(int tid, const char* data, uint32_t size) {
+    IncrementBy(tid, data, size, 1);
+}
+
+void RadixCountAggStr::IncrementBy(int tid, const char* data, uint32_t size,
+                                   int64_t delta) {
     auto& pt = *impl_->threads[tid];
     ankerl::unordered_dense::hash<std::string_view> H;
     std::string_view probe(data, size);
     size_t h = H(probe);
     int shard = (int)(h & (STR_NSHARDS - 1));
     auto& m = pt.shards[shard];
-    // Heterogeneous lookup: probe with the volatile view first. On hit
-    // increment count without touching the arena. On miss copy bytes
-    // into the per-thread arena and insert a stable view.
     auto it = m.find(probe);
     if (it != m.end()) {
-        it->second++;
+        it->second += delta;
         return;
     }
     char* dst = pt.alloc(size);
     if (size) std::memcpy(dst, data, size);
-    m.emplace(std::string_view(dst, size), int64_t{1});
+    m.emplace(std::string_view(dst, size), delta);
 }
 
 void RadixCountAggStr::MergeShard(int shard) {

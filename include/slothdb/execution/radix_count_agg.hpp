@@ -57,6 +57,11 @@ public:
     // count. On miss, copies string into per-thread arena before insert.
     void IncrementRow(int tid, const char* data, uint32_t size);
 
+    // Same as IncrementRow but adds `delta` instead of 1. Used by the
+    // per-RG dict-aware path to push N rows worth of count for one dict
+    // entry in a single hash + lookup, instead of per-row.
+    void IncrementBy(int tid, const char* data, uint32_t size, int64_t delta);
+
     // Phase 2: parallel per-shard merge. One worker per shard.
     void MergeShard(int shard);
 
