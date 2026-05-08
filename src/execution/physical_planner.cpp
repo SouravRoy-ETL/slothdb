@@ -18,6 +18,7 @@
 #include "third_party/unordered_dense.h"
 #include "slothdb/execution/simple_i64_set.hpp"
 #include "slothdb/execution/radix_count_agg.hpp"
+#include "slothdb/execution/radix_multi_agg.hpp"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -8531,6 +8532,244 @@ private:
                     TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
                     multi_preds = std::move(tmp);
                     multi_has_filter = true;
+                }
+            }
+
+            // === Q31-shape: 2-col GROUP BY (INTEGER + INTEGER) + simple
+            //     aggs (COUNT(*) / SUM / AVG / COUNT(c)) on direct INT/BIGINT
+            //     cols. ClickBench Q31 (SearchEngineID, ClientIP, COUNT(*),
+            //     SUM(IsRefresh), AVG(ResolutionWidth)) lands here. Default
+            //     TLMulti packed_groups map per-thread balloons to ~5M
+            //     unique pairs × ~70 bytes = 350MB/thread → cache-thrash.
+            //     RadixMultiAggI64Key per-thread per-shard keeps each
+            //     working set ~22MB (L3-resident). =====
+            if (group_col_indices.size() == 2) {
+                idx_t gc0 = group_col_indices[0];
+                idx_t gc1 = group_col_indices[1];
+                auto t0_q31 = pq->GetTypes()[gc0].id();
+                auto t1_q31 = pq->GetTypes()[gc1].id();
+                bool both_int32 = (t0_q31 == LogicalTypeId::INTEGER &&
+                                   t1_q31 == LogicalTypeId::INTEGER);
+                if (both_int32 && num_aggs >= 1) {
+                    // Classify aggs. Allowed: COUNT(*), SUM, AVG, COUNT(c)
+                    // on direct INT/BIGINT cols. is_distinct disqualifies.
+                    enum class Q31AggKind { CountStar, Sum, Avg, CountC, Other };
+                    std::vector<Q31AggKind> q31_kinds(num_aggs);
+                    std::vector<int> sa_col_idx;
+                    std::vector<int> sa_emit_idx;  // sa-index per agg (-1 for count_star)
+                    std::vector<bool> sa_is_bigint;
+                    bool q31_ok = true;
+                    int sa_n = 0;
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        auto &info = agg_infos[a];
+                        if (info.is_count_star) {
+                            q31_kinds[a] = Q31AggKind::CountStar;
+                            sa_emit_idx.push_back(-1);
+                            continue;
+                        }
+                        if (info.is_distinct ||
+                            info.col_idx == INVALID_INDEX) {
+                            q31_ok = false; break;
+                        }
+                        auto ct = pq->GetTypes()[info.col_idx].id();
+                        if (ct != LogicalTypeId::INTEGER &&
+                            ct != LogicalTypeId::BIGINT) {
+                            q31_ok = false; break;
+                        }
+                        if (info.name == "COUNT")
+                            q31_kinds[a] = Q31AggKind::CountC;
+                        else if (info.name == "SUM")
+                            q31_kinds[a] = Q31AggKind::Sum;
+                        else if (info.name == "AVG")
+                            q31_kinds[a] = Q31AggKind::Avg;
+                        else { q31_ok = false; break; }
+                        sa_col_idx.push_back((int)info.col_idx);
+                        sa_is_bigint.push_back(ct == LogicalTypeId::BIGINT);
+                        sa_emit_idx.push_back(sa_n);
+                        sa_n++;
+                    }
+                    // Stack vals[4]/valid[4] bound; bail to GENERIC for
+                    // wider agg lists.
+                    if (sa_n > 4) q31_ok = false;
+                    if (q31_ok) {
+                        // Project all needed columns.
+                        {
+                            std::vector<bool> need(pq->GetTypes().size(), false);
+                            need[gc0] = true;
+                            need[gc1] = true;
+                            for (int c : sa_col_idx)
+                                if ((idx_t)c < need.size()) need[c] = true;
+                            for (auto &p : multi_preds) {
+                                if (p.col_idx < need.size()) need[p.col_idx] = true;
+                            }
+                            pq->SetNeededOutputs(need);
+                            std::vector<bool> skip(pq->GetTypes().size(), false);
+                            for (auto &p : multi_preds) {
+                                if (p.col_idx < skip.size() && p.str_form &&
+                                    pq->GetTypes()[p.col_idx].id() ==
+                                        LogicalTypeId::VARCHAR) {
+                                    skip[p.col_idx] = true;
+                                }
+                            }
+                            pq->SetSkipStrData(std::move(skip));
+                        }
+                        pq->Init();
+
+                        constexpr int Q31_THREADS = 8;
+                        slothdb::RadixMultiAggI64Key agg(Q31_THREADS, sa_n);
+                        pq->SetRGConsumer(
+                            [&](const PhysicalParquetScan::RGWork &work,
+                                idx_t rg_idx, int tid) {
+                                if (work.pruned) return;
+                                idx_t nrows = pq->RowGroupSize(rg_idx);
+                                const auto &c0 = work.cols[gc0];
+                                const auto &c1 = work.cols[gc1];
+                                if (!c0.decoded || !c1.decoded) return;
+                                const int32_t *g0 = c0.i32_data.data();
+                                const int32_t *g1 = c1.i32_data.data();
+                                struct AC {
+                                    bool is_bigint;
+                                    bool all_valid;
+                                    const int32_t *i32;
+                                    const int64_t *i64;
+                                    const uint8_t *valid;
+                                };
+                                std::vector<AC> acs(sa_n);
+                                for (int a = 0; a < sa_n; a++) {
+                                    const auto &ac = work.cols[sa_col_idx[a]];
+                                    acs[a].is_bigint = sa_is_bigint[a];
+                                    acs[a].all_valid = ac.all_valid;
+                                    acs[a].valid = ac.all_valid
+                                        ? nullptr : ac.validity.data();
+                                    acs[a].i32 = sa_is_bigint[a]
+                                        ? nullptr : ac.i32_data.data();
+                                    acs[a].i64 = sa_is_bigint[a]
+                                        ? ac.i64_data.data() : nullptr;
+                                }
+                                std::vector<uint8_t> tk;
+                                bool tk_active = false;
+                                if (multi_has_filter) {
+                                    tk_active = BuildTypedKeepMask(
+                                        multi_preds, work.cols, nrows, tk);
+                                }
+                                int t = tid % Q31_THREADS;
+                                // Stack arrays cap at 4 aggs (matches
+                                // detection: sa_n <= 4 enforced upstream
+                                // for cache-friendly slot size).
+                                int64_t vals[4];
+                                uint8_t valid[4];
+                                bool all_aggs_valid = true;
+                                for (int a = 0; a < sa_n; a++) {
+                                    if (!acs[a].all_valid) {
+                                        all_aggs_valid = false; break;
+                                    }
+                                }
+                                // Initialize valid[] to 1s once when
+                                // all_aggs_valid; the per-row loop only
+                                // updates vals[].
+                                if (all_aggs_valid) {
+                                    for (int a = 0; a < sa_n; a++) valid[a] = 1;
+                                }
+                                for (idx_t r = 0; r < nrows; r++) {
+                                    if (tk_active) {
+                                        if (!tk[r]) continue;
+                                    } else if (multi_has_filter &&
+                                               !EvalSimplePredicates(
+                                                   multi_preds, work.cols, r))
+                                        continue;
+                                    if (!c0.all_valid && !c0.validity[r]) continue;
+                                    if (!c1.all_valid && !c1.validity[r]) continue;
+                                    // Pack low-32 of both group cols into a
+                                    // uint64. Both are INTEGER (32 bits) per
+                                    // detection guard.
+                                    uint64_t key =
+                                        ((uint64_t)(uint32_t)g0[r] << 32) |
+                                        (uint32_t)g1[r];
+                                    for (int a = 0; a < sa_n; a++) {
+                                        if (!all_aggs_valid)
+                                            valid[a] = acs[a].valid[r];
+                                        if (all_aggs_valid || valid[a]) {
+                                            vals[a] = acs[a].is_bigint
+                                                ? acs[a].i64[r]
+                                                : (int64_t)acs[a].i32[r];
+                                        } else {
+                                            vals[a] = 0;
+                                        }
+                                    }
+                                    agg.Update(t, key, vals, valid);
+                                }
+                            });
+                        pq->RunParallelRGs();
+                        std::vector<std::thread> mts;
+                        for (int s = 1; s < slothdb::RadixMultiAggI64Key::N_RADIX; s++) {
+                            mts.emplace_back([&agg, s]() {
+                                agg.MergeShard(s);
+                            });
+                        }
+                        agg.MergeShard(0);
+                        for (auto &t : mts) t.join();
+                        // TopN dispatch only for ORDER BY count(*) DESC.
+                        // count_star sits at the index of the COUNT(*) agg
+                        // in the output.
+                        int top_k = 0;
+                        // Determine which agg is COUNT(*); ORDER BY it DESC
+                        // is the only TopN we accept.
+                        int count_star_emit_idx = -1;
+                        for (idx_t a = 0; a < num_aggs; a++) {
+                            if (q31_kinds[a] == Q31AggKind::CountStar) {
+                                count_star_emit_idx = (int)(2 + a); break;
+                            }
+                        }
+                        if (topn_active_ && topn_limit_ > 0 &&
+                            !topn_ascending_ &&
+                            count_star_emit_idx >= 0 &&
+                            (int)topn_col_idx_ == count_star_emit_idx) {
+                            top_k = (int)topn_limit_;
+                        }
+                        auto results = agg.EmitTopK(top_k);
+                        result_rows_.reserve(results.size());
+                        for (auto &res : results) {
+                            std::vector<Value> row;
+                            row.reserve(2 + num_aggs);
+                            // Unpack key.
+                            int32_t v0 = (int32_t)(uint32_t)(res.key >> 32);
+                            int32_t v1 = (int32_t)(uint32_t)res.key;
+                            row.push_back(Value::INTEGER(v0));
+                            row.push_back(Value::INTEGER(v1));
+                            for (idx_t a = 0; a < num_aggs; a++) {
+                                switch (q31_kinds[a]) {
+                                case Q31AggKind::CountStar:
+                                    row.push_back(Value::BIGINT(res.count_star));
+                                    break;
+                                case Q31AggKind::Sum: {
+                                    int sa = sa_emit_idx[a];
+                                    row.push_back(Value::BIGINT(res.sum[sa]));
+                                    break;
+                                }
+                                case Q31AggKind::CountC: {
+                                    int sa = sa_emit_idx[a];
+                                    row.push_back(Value::BIGINT(res.cnt[sa]));
+                                    break;
+                                }
+                                case Q31AggKind::Avg: {
+                                    int sa = sa_emit_idx[a];
+                                    if (res.cnt[sa] == 0) {
+                                        row.push_back(Value::DOUBLE(0.0));
+                                    } else {
+                                        row.push_back(Value::DOUBLE(
+                                            (double)res.sum[sa] /
+                                            (double)res.cnt[sa]));
+                                    }
+                                    break;
+                                }
+                                default:
+                                    row.push_back(Value::BIGINT(0));
+                                }
+                            }
+                            result_rows_.push_back(std::move(row));
+                        }
+                        return;
+                    }
                 }
             }
 
