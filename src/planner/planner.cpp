@@ -462,6 +462,29 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
                     if (kc == base_col) { drop[gi] = true; break; }
                 }
             }
+            // Constant group cols are redundant when ANY non-constant
+            // group col is also present. `GROUP BY 1, URL` (Q35) becomes
+            // `GROUP BY URL` since the literal contributes no partition.
+            // Without this drop the 2-col packed-path explodes to 10M+
+            // (URL, 1) pairs and the FUSED GENERIC merge OOMs.
+            bool has_non_constant = false;
+            for (idx_t gi = 0; gi < groups.size(); gi++) {
+                if (drop[gi]) continue;
+                if (groups[gi]->GetExpressionType() !=
+                    BoundExpressionType::CONSTANT) {
+                    has_non_constant = true;
+                    break;
+                }
+            }
+            if (has_non_constant) {
+                for (idx_t gi = 0; gi < groups.size(); gi++) {
+                    if (drop[gi]) continue;
+                    if (groups[gi]->GetExpressionType() ==
+                        BoundExpressionType::CONSTANT) {
+                        drop[gi] = true;
+                    }
+                }
+            }
             // Erase back-to-front. original_group_ptrs[gi] points into
             // groups[gi]; erasing groups[gi] frees the BoundExpression, so
             // we must drop the matching original_group_ptrs entry too — but
