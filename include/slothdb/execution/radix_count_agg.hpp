@@ -40,6 +40,69 @@ struct RadixCountStrResult {
     int64_t count;
 };
 
+// 2-col composite-key result: (int64, string).
+struct RadixCount2ColIntStrResult {
+    int64_t int_key;
+    std::string str_key;
+    int64_t count;
+};
+
+// 2-col GROUP BY (INT/BIGINT + VARCHAR) + only COUNT(*) aggs, with optional
+// per-RG WHERE filter. ClickBench Q15/Q17/Q18 land here. Composite key is
+// (int64, string_view) where the string_view points into a per-thread bump
+// arena. Sharded by xor-mix of int hash and string hash so phase 2 merge is
+// disjoint by shard, no contention. Mirrors RadixCountAggStr structurally
+// but with a composite key + matching emit.
+struct RadixCount2ColIntStrImpl;
+class RadixCount2ColIntStr {
+public:
+    static constexpr int N_RADIX = 16;
+    explicit RadixCount2ColIntStr(int max_threads);
+    ~RadixCount2ColIntStr();
+    RadixCount2ColIntStr(const RadixCount2ColIntStr&) = delete;
+    RadixCount2ColIntStr& operator=(const RadixCount2ColIntStr&) = delete;
+
+    // Phase 1: per-thread emplace. Hashes (int_key, str_data[size]) → shard,
+    // increments count. On miss copies string into per-thread arena.
+    void IncrementRow(int tid, int64_t int_key,
+                      const char* str_data, uint32_t str_size);
+
+    // Same as IncrementRow but adds `delta` instead of 1. Used by per-RG
+    // dict-aware path to push N rows worth of count for one (int_key, dict)
+    // pair via a single hash + lookup.
+    void IncrementBy(int tid, int64_t int_key,
+                     const char* str_data, uint32_t str_size, int64_t delta);
+
+    // Same as IncrementRow but with a caller-precomputed combined hash of
+    // (int_key, str_data[size]). Caller must use `CombineHash(int_key,
+    // str_hash)` (or otherwise produce a well-mixed value) and may cache
+    // `HashStr(str_data, str_size)` once per dict entry. Skips the per-row
+    // `ankerl::hash<string_view>` so 100M-row hot loops save ~10-15 ns/row
+    // on dict-encoded VARCHAR. Q15/Q17 land here.
+    void IncrementByHashed(int tid, int64_t int_key,
+                           const char* str_data, uint32_t str_size,
+                           size_t combined_hash, int64_t delta);
+
+    // Helper to precompute a string hash for caching across rows that share
+    // the same dict entry within a row group.
+    static size_t HashStr(const char* str_data, uint32_t str_size);
+    // Combine an int hash with a string hash into the avalanching key hash
+    // used by IncrementByHashed. Matches the internal IntStrKeyHash mixer
+    // exactly so per-row callers can reproduce it.
+    static size_t CombineIntStrHash(int64_t int_key, size_t str_hash);
+
+    // Phase 2: parallel per-shard merge.
+    void MergeShard(int shard);
+
+    // Phase 3: top-K (count DESC) across final shards.
+    std::vector<RadixCount2ColIntStrResult> EmitTopK(int k) const;
+
+    size_t TotalGroups() const;
+
+private:
+    std::unique_ptr<RadixCount2ColIntStrImpl> impl_;
+};
+
 // VARCHAR variant of RadixCountAgg. Per-thread arena holds string copies;
 // 16 shards keyed by hash of the string. Phase 2 unions disjoint shards
 // across threads. Used for Q13/Q34/Q35-shape queries (single-col VARCHAR

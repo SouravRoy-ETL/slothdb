@@ -8533,6 +8533,194 @@ private:
                     multi_has_filter = true;
                 }
             }
+
+            // === Q15/Q17/Q18-shape: 2-col GROUP BY (INT/BIGINT + VARCHAR) +
+            //     only COUNT(*) aggs. Default packed-uint64 path silently
+            //     truncates BIGINT to 32 bits (Q17/Q18 UserID), and the
+            //     str_groups fallback OOMs at high cardinality. The radix
+            //     2-col TU mirrors q16 architecture: composite key
+            //     (int64, string_view) hashed once → 16 disjoint shards →
+            //     parallel union → optional TopK heap. Lives in a separate
+            //     TU per feedback_text_icache_shift.md. =====
+            if (group_col_indices.size() == 2) {
+                bool all_count_star_2c = (num_aggs >= 1);
+                for (idx_t a = 0; a < num_aggs && all_count_star_2c; a++) {
+                    if (!agg_infos[a].is_count_star) all_count_star_2c = false;
+                }
+                if (all_count_star_2c) {
+                    auto t0 = pq->GetTypes()[group_col_indices[0]].id();
+                    auto t1 = pq->GetTypes()[group_col_indices[1]].id();
+                    bool t0_int = (t0 == LogicalTypeId::BIGINT ||
+                                   t0 == LogicalTypeId::INTEGER);
+                    bool t1_int = (t1 == LogicalTypeId::BIGINT ||
+                                   t1 == LogicalTypeId::INTEGER);
+                    bool t0_str = (t0 == LogicalTypeId::VARCHAR);
+                    bool t1_str = (t1 == LogicalTypeId::VARCHAR);
+                    bool int_str = (t0_int && t1_str);
+                    bool str_int = (t0_str && t1_int);
+                    if (int_str || str_int) {
+                        idx_t int_gc = int_str ? group_col_indices[0]
+                                                : group_col_indices[1];
+                        idx_t str_gc = int_str ? group_col_indices[1]
+                                                : group_col_indices[0];
+                        bool int_is_bigint =
+                            (pq->GetTypes()[int_gc].id() == LogicalTypeId::BIGINT);
+                        // Project group + filter cols only.
+                        {
+                            std::vector<bool> need(pq->GetTypes().size(), false);
+                            need[int_gc] = true;
+                            need[str_gc] = true;
+                            for (auto &p : multi_preds) {
+                                if (p.col_idx < need.size()) need[p.col_idx] = true;
+                            }
+                            pq->SetNeededOutputs(need);
+                            // Skip per-row str_data on filter VARCHAR cols
+                            // (BuildTypedKeepMask reads dict_values).
+                            std::vector<bool> skip(pq->GetTypes().size(), false);
+                            for (auto &p : multi_preds) {
+                                if (p.col_idx < skip.size() && p.str_form &&
+                                    pq->GetTypes()[p.col_idx].id() ==
+                                        LogicalTypeId::VARCHAR &&
+                                    p.col_idx != str_gc) {
+                                    skip[p.col_idx] = true;
+                                }
+                            }
+                            pq->SetSkipStrData(std::move(skip));
+                        }
+                        pq->Init();
+
+                        constexpr int Q15_THREADS = 8;
+                        slothdb::RadixCount2ColIntStr agg2(Q15_THREADS);
+                        pq->SetRGConsumer(
+                            [&](const PhysicalParquetScan::RGWork &work,
+                                idx_t rg_idx, int tid) {
+                                if (work.pruned) return;
+                                idx_t nrows = pq->RowGroupSize(rg_idx);
+                                const auto &icol = work.cols[int_gc];
+                                const auto &scol = work.cols[str_gc];
+                                if (!icol.decoded || !scol.decoded) return;
+                                const int64_t *gi64 = int_is_bigint
+                                    ? icol.i64_data.data() : nullptr;
+                                const int32_t *gi32 = !int_is_bigint
+                                    ? icol.i32_data.data() : nullptr;
+                                bool dict_fast = scol.str_dict_encoded &&
+                                    !scol.str_dict_indices.empty();
+                                std::vector<uint8_t> tk;
+                                bool tk_active = false;
+                                if (multi_has_filter) {
+                                    tk_active = BuildTypedKeepMask(
+                                        multi_preds, work.cols, nrows, tk);
+                                }
+                                int t = tid % Q15_THREADS;
+                                if (dict_fast) {
+                                    const uint32_t *di = scol.str_dict_indices.data();
+                                    const string_t *dv = scol.str_dict_values.data();
+                                    idx_t dsz = scol.str_dict_values.size();
+                                    // Precompute per-dict-entry string hashes.
+                                    // Reuse the same buffer across all rows of
+                                    // this RG. Without this, every per-row
+                                    // IncrementRow rehashes the string body —
+                                    // dominant cost on Q15/Q17 hot loops.
+                                    std::vector<size_t> dict_h(dsz);
+                                    for (idx_t d = 0; d < dsz; d++) {
+                                        dict_h[d] = slothdb::RadixCount2ColIntStr::
+                                            HashStr(dv[d].GetData(), dv[d].GetSize());
+                                    }
+                                    for (idx_t r = 0; r < nrows; r++) {
+                                        if (tk_active) {
+                                            if (!tk[r]) continue;
+                                        } else if (multi_has_filter &&
+                                                   !EvalSimplePredicates(
+                                                       multi_preds, work.cols, r))
+                                            continue;
+                                        if (!icol.all_valid && !icol.validity[r])
+                                            continue;
+                                        if (!scol.all_valid && !scol.validity[r])
+                                            continue;
+                                        uint32_t d = di[r];
+                                        if (d >= dsz) continue;
+                                        int64_t k = int_is_bigint
+                                            ? gi64[r] : (int64_t)gi32[r];
+                                        size_t ch = slothdb::RadixCount2ColIntStr::
+                                            CombineIntStrHash(k, dict_h[d]);
+                                        agg2.IncrementByHashed(t, k,
+                                            dv[d].GetData(), dv[d].GetSize(),
+                                            ch, 1);
+                                    }
+                                } else if (!scol.str_data.empty()) {
+                                    const string_t *gs = scol.str_data.data();
+                                    for (idx_t r = 0; r < nrows; r++) {
+                                        if (tk_active) {
+                                            if (!tk[r]) continue;
+                                        } else if (multi_has_filter &&
+                                                   !EvalSimplePredicates(
+                                                       multi_preds, work.cols, r))
+                                            continue;
+                                        if (!icol.all_valid && !icol.validity[r])
+                                            continue;
+                                        if (!scol.all_valid && !scol.validity[r])
+                                            continue;
+                                        int64_t k = int_is_bigint
+                                            ? gi64[r] : (int64_t)gi32[r];
+                                        agg2.IncrementRow(t, k,
+                                            gs[r].GetData(), gs[r].GetSize());
+                                    }
+                                }
+                            });
+                        pq->RunParallelRGs();
+                        std::vector<std::thread> mts;
+                        for (int s = 1;
+                             s < slothdb::RadixCount2ColIntStr::N_RADIX; s++) {
+                            mts.emplace_back([&agg2, s]() {
+                                agg2.MergeShard(s);
+                            });
+                        }
+                        agg2.MergeShard(0);
+                        for (auto &t : mts) t.join();
+                        // TopN dispatch: ORDER BY count DESC LIMIT K. The
+                        // count column is at index 2 (int_key, str_key,
+                        // count). All aggs are CountStar, so any agg col
+                        // index orders by count.
+                        int top_k = 0;
+                        if (topn_active_ && topn_limit_ > 0 &&
+                            !topn_ascending_ &&
+                            topn_col_idx_ >= (int)group_col_indices.size() &&
+                            topn_col_idx_ < (int)group_col_indices.size() +
+                                             (int)num_aggs) {
+                            top_k = (int)topn_limit_;
+                        }
+                        auto results = agg2.EmitTopK(top_k);
+                        result_rows_.reserve(results.size());
+                        // Output column order matches group_col_indices: if
+                        // INT was first in the SELECT list, emit (int, str);
+                        // otherwise (str, int).
+                        for (auto &res : results) {
+                            std::vector<Value> row;
+                            row.reserve(2 + num_aggs);
+                            if (int_str) {
+                                if (int_is_bigint)
+                                    row.push_back(Value::BIGINT(res.int_key));
+                                else
+                                    row.push_back(
+                                        Value::INTEGER((int32_t)res.int_key));
+                                row.push_back(Value::VARCHAR(res.str_key));
+                            } else {
+                                row.push_back(Value::VARCHAR(res.str_key));
+                                if (int_is_bigint)
+                                    row.push_back(Value::BIGINT(res.int_key));
+                                else
+                                    row.push_back(
+                                        Value::INTEGER((int32_t)res.int_key));
+                            }
+                            for (idx_t a = 0; a < num_aggs; a++) {
+                                row.push_back(Value::BIGINT(res.count));
+                            }
+                            result_rows_.push_back(std::move(row));
+                        }
+                        return;
+                    }
+                }
+            }
             // Pre-resolve which aggs take a non-column expression argument
             // (e.g. AVG(STRLEN(URL))). For these we evaluate the arg per
             // row group via ExpressionExecutor; the per-row hot loop in

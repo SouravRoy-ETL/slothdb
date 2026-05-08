@@ -243,4 +243,194 @@ size_t RadixCountAggStr::TotalGroups() const {
     return total;
 }
 
+// =====================================================================
+// RadixCount2ColIntStr — 2-col (INT/BIGINT + VARCHAR) variant
+// =====================================================================
+
+namespace {
+
+constexpr int IS_NSHARDS = RadixCount2ColIntStr::N_RADIX;
+constexpr size_t IS_ARENA_CHUNK = 256 * 1024;
+
+// Stash the combined hash in the key so IntStrKeyHash returns it directly.
+// This lets callers precompute the (int_hash, str_hash) combine once per dict
+// entry per RG and reuse across many rows. Costs 8 bytes per key (24 → 32);
+// recoups the cost on dict-heavy hot loops where the per-row string hash was
+// the dominant cost.
+struct IntStrKey {
+    int64_t i;
+    std::string_view s;
+    size_t h;
+    bool operator==(const IntStrKey& o) const noexcept {
+        return i == o.i && s == o.s;
+    }
+};
+
+struct IntStrKeyHash {
+    using is_avalanching = void;  // marks hash as already well-mixed
+    size_t operator()(const IntStrKey& k) const noexcept {
+        return k.h;
+    }
+};
+
+inline size_t MixIntStrHash(int64_t int_key, size_t str_hash) {
+    size_t h1 = ankerl::unordered_dense::hash<int64_t>{}(int_key);
+    return (h1 * 0x9E3779B97F4A7C15ULL) ^ str_hash;
+}
+
+struct IsArenaChunk {
+    std::vector<char> bytes;
+    size_t used = 0;
+};
+
+struct IsPerThread {
+    std::array<
+        ankerl::unordered_dense::map<IntStrKey, int64_t, IntStrKeyHash>,
+        IS_NSHARDS> shards;
+    std::vector<IsArenaChunk> arena;
+
+    char* alloc(size_t n) {
+        if (arena.empty() || arena.back().bytes.size() - arena.back().used < n) {
+            arena.emplace_back();
+            size_t cap = (n > IS_ARENA_CHUNK) ? n : IS_ARENA_CHUNK;
+            arena.back().bytes.resize(cap);
+        }
+        char* p = arena.back().bytes.data() + arena.back().used;
+        arena.back().used += n;
+        return p;
+    }
+};
+
+}  // anonymous namespace
+
+struct RadixCount2ColIntStrImpl {
+    int max_threads;
+    std::vector<std::unique_ptr<IsPerThread>> threads;
+    std::array<
+        ankerl::unordered_dense::map<IntStrKey, int64_t, IntStrKeyHash>,
+        IS_NSHARDS> final_maps;
+};
+
+RadixCount2ColIntStr::RadixCount2ColIntStr(int max_threads)
+    : impl_(std::make_unique<RadixCount2ColIntStrImpl>()) {
+    impl_->max_threads = max_threads;
+    impl_->threads.reserve(max_threads);
+    for (int i = 0; i < max_threads; i++) {
+        impl_->threads.emplace_back(std::make_unique<IsPerThread>());
+    }
+}
+
+RadixCount2ColIntStr::~RadixCount2ColIntStr() = default;
+
+void RadixCount2ColIntStr::IncrementRow(int tid, int64_t int_key,
+                                        const char* str_data, uint32_t str_size) {
+    IncrementBy(tid, int_key, str_data, str_size, 1);
+}
+
+void RadixCount2ColIntStr::IncrementBy(int tid, int64_t int_key,
+                                       const char* str_data, uint32_t str_size,
+                                       int64_t delta) {
+    size_t h2 = ankerl::unordered_dense::hash<std::string_view>{}(
+        std::string_view(str_data, str_size));
+    size_t h = MixIntStrHash(int_key, h2);
+    IncrementByHashed(tid, int_key, str_data, str_size, h, delta);
+}
+
+void RadixCount2ColIntStr::IncrementByHashed(int tid, int64_t int_key,
+                                             const char* str_data,
+                                             uint32_t str_size,
+                                             size_t combined_hash,
+                                             int64_t delta) {
+    auto& pt = *impl_->threads[tid];
+    IntStrKey probe{int_key, std::string_view(str_data, str_size), combined_hash};
+    int shard = (int)(combined_hash & (IS_NSHARDS - 1));
+    auto& m = pt.shards[shard];
+    auto it = m.find(probe);
+    if (it != m.end()) {
+        it->second += delta;
+        return;
+    }
+    char* dst = pt.alloc(str_size);
+    if (str_size) std::memcpy(dst, str_data, str_size);
+    m.emplace(IntStrKey{int_key, std::string_view(dst, str_size), combined_hash},
+              delta);
+}
+
+size_t RadixCount2ColIntStr::HashStr(const char* str_data, uint32_t str_size) {
+    return ankerl::unordered_dense::hash<std::string_view>{}(
+        std::string_view(str_data, str_size));
+}
+
+size_t RadixCount2ColIntStr::CombineIntStrHash(int64_t int_key, size_t str_hash) {
+    return MixIntStrHash(int_key, str_hash);
+}
+
+void RadixCount2ColIntStr::MergeShard(int shard) {
+    auto& out = impl_->final_maps[shard];
+    size_t max_single = 0;
+    for (auto& tl : impl_->threads) {
+        size_t sz = tl->shards[shard].size();
+        if (sz > max_single) max_single = sz;
+    }
+    out.reserve(max_single + max_single / 4);
+    for (auto& tl : impl_->threads) {
+        for (auto& kv : tl->shards[shard]) {
+            auto it = out.find(kv.first);
+            if (it == out.end()) {
+                out.emplace(kv.first, kv.second);
+            } else {
+                it->second += kv.second;
+            }
+        }
+    }
+}
+
+std::vector<RadixCount2ColIntStrResult>
+RadixCount2ColIntStr::EmitTopK(int k) const {
+    if (k <= 0) {
+        std::vector<RadixCount2ColIntStrResult> all;
+        all.reserve(TotalGroups());
+        for (auto& m : impl_->final_maps) {
+            for (auto& kv : m) {
+                all.push_back({kv.first.i,
+                               std::string(kv.first.s),
+                               kv.second});
+            }
+        }
+        return all;
+    }
+    auto cmp = [](const RadixCount2ColIntStrResult& a,
+                  const RadixCount2ColIntStrResult& b) {
+        return a.count > b.count;  // min-heap
+    };
+    std::priority_queue<RadixCount2ColIntStrResult,
+                        std::vector<RadixCount2ColIntStrResult>, decltype(cmp)>
+        heap(cmp);
+    for (auto& m : impl_->final_maps) {
+        for (auto& kv : m) {
+            if ((int)heap.size() < k) {
+                heap.push({kv.first.i, std::string(kv.first.s), kv.second});
+            } else if (kv.second > heap.top().count) {
+                heap.pop();
+                heap.push({kv.first.i, std::string(kv.first.s), kv.second});
+            }
+        }
+    }
+    std::vector<RadixCount2ColIntStrResult> out;
+    out.reserve(heap.size());
+    while (!heap.empty()) {
+        out.push_back(std::move(
+            const_cast<RadixCount2ColIntStrResult&>(heap.top())));
+        heap.pop();
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+size_t RadixCount2ColIntStr::TotalGroups() const {
+    size_t total = 0;
+    for (auto& m : impl_->final_maps) total += m.size();
+    return total;
+}
+
 }  // namespace slothdb
