@@ -49,6 +49,7 @@ _HDR = {"int64","bigint","double","varchar","date","timestamp","int32","integer"
 #   SlothDB:  "(10 rows)"  → after strip: "(10 rows)"
 #   DuckDB:   "│ 10 rows   2 columns │" → after box-drawing strip: "10 rows   2 columns"
 _FOOTER = re.compile(r"^\(?\d+\s+rows?\)?(\s+\d+\s+columns?)?$")
+_OCTAL_ESCAPE = re.compile(r"\\\d{1,3}")
 def _canon_num(t):
     # 1587 vs 1587.0 should compare equal: both are the same value, just
     # different display (DuckDB keeps trailing .0 for double columns, SlothDB
@@ -76,6 +77,11 @@ def norm(s):
             # things like ["(ClientIP", "-", "1)"] — the "1)" tokens have
             # digits but aren't data. Skip parens-containing tokens.
             if "(" in t or ")" in t: continue
+            # Strip DuckDB octal escapes (`\NNN`) for non-printable bytes in
+            # VARCHAR cells before deciding whether the token is data.
+            # SlothDB writes the raw byte; we want both sides to agree.
+            t = _OCTAL_ESCAPE.sub("", t)
+            if not t: continue
             if any(c.isdigit() for c in t): toks.append(_canon_num(t))
     return "\n".join(sorted(toks))
 
