@@ -2298,9 +2298,14 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         // resize stays within capacity and prior dict-page pointers remain
         // valid. Falls through to the decomp-buffer path on capacity overflow
         // (defensive — should not happen for well-formed parquet).
+        //
+        // Skip-mode (str_data_skipped=true) starts with str_data empty; the
+        // first PLAIN page triggers MaterialiseStrDataLazy back-fill INSIDE
+        // DecodeDataPageTyped (which clears the flag). Zero-copy is still
+        // valid here: str_heap capacity covers dict+plain bytes, and str_data
+        // is sized after MaterialiseStrDataLazy returns. Q22 URL benefits.
         bool body_is_stable = false;
         bool can_zero_copy_plain = (tid == LogicalTypeId::VARCHAR && !out.str_lengths_only &&
-                                     !out.str_data_skipped &&
                                      hdr.encoding != 2 && hdr.encoding != 8);
         if (is_compressed && cmeta.codec == 1 && can_zero_copy_plain) {
             size_t heap_pre = out.str_heap->size();
