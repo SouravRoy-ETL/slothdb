@@ -1968,8 +1968,28 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
         // The byte data is never touched. Used for STRLEN + `<> ''` shape.
         if (out.str_lengths_only) {
             uint32_t *len_dst = out.str_lengths.data() + row_offset;
+            // No-nulls batched fast path mirroring INT32/INT64 dict-encoded
+            // (line 1894/1921). rd.NextBatch reads up to 256 indices per
+            // call so per-call RleDecoder state save/restore amortizes.
+            if (def_mask.empty()) {
+                uint32_t buf[256];
+                const uint32_t *str_lens = dict.str_len.data();
+                uint32_t dn = static_cast<uint32_t>(dict.str_len.size());
+                int32_t left = n_values, off = 0;
+                while (left > 0) {
+                    int want = left < 256 ? left : 256;
+                    int got = rd.NextBatch(buf, want);
+                    if (got <= 0) break;
+                    for (int j = 0; j < got; j++) {
+                        uint32_t idx = buf[j];
+                        len_dst[off + j] = (idx < dn) ? str_lens[idx] : 0;
+                    }
+                    off += got; left -= got;
+                }
+                return true;
+            }
             for (int32_t i = 0; i < n_values; i++) {
-                if (!def_mask.empty() && !def_mask[i]) { len_dst[i] = 0; continue; }
+                if (!def_mask[i]) { len_dst[i] = 0; continue; }
                 uint32_t idx = idx_for(i);
                 len_dst[i] = (idx < dict.str_len.size()) ? dict.str_len[idx] : 0;
             }
@@ -1979,8 +1999,33 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
         const bool want_indices = !out.str_dict_indices.empty();
         uint32_t *idx_dst = want_indices ? (out.str_dict_indices.data() + row_offset)
                                           : nullptr;
+        // No-nulls batched fast path. Drops the RleDecoder per-call cost
+        // (state save/restore + mode dispatch) from once-per-row to
+        // once-per-256-rows; the inner per-index work (idx range check +
+        // string_t construct + optional idx_dst write) is unchanged.
+        if (def_mask.empty()) {
+            uint32_t buf[256];
+            const auto *str_ptrs = dict.str_ptr.data();
+            const auto *str_lens = dict.str_len.data();
+            uint32_t dn = static_cast<uint32_t>(dict.str_ptr.size());
+            int32_t left = n_values, off = 0;
+            while (left > 0) {
+                int want = left < 256 ? left : 256;
+                int got = rd.NextBatch(buf, want);
+                if (got <= 0) break;
+                for (int j = 0; j < got; j++) {
+                    uint32_t idx = buf[j];
+                    if (want_indices) idx_dst[off + j] = idx;
+                    if (!dst) continue;
+                    if (idx >= dn) { dst[off + j] = string_t(); continue; }
+                    dst[off + j] = string_t(str_ptrs[idx], str_lens[idx]);
+                }
+                off += got; left -= got;
+            }
+            return true;
+        }
         for (int32_t i = 0; i < n_values; i++) {
-            if (!def_mask.empty() && !def_mask[i]) continue;
+            if (!def_mask[i]) continue;
             uint32_t idx = idx_for(i);
             if (want_indices) idx_dst[i] = idx;
             if (!dst) continue;
