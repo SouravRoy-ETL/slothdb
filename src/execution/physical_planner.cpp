@@ -8773,6 +8773,247 @@ private:
                 }
             }
 
+            // === Q32-shape: 2-col GROUP BY where at least one col is
+            //     BIGINT (the other can be INTEGER or BIGINT) + simple aggs.
+            //     Q32 (WatchID BIGINT, ClientIP INT, WHERE SearchPhrase <> '')
+            //     was TIMEOUT through TLMulti packed path because BIGINT
+            //     silently truncates to 32 bits → wrong result space, then
+            //     OOMs the str_groups fallback at high cardinality.
+            //     RadixMultiAggBigKey uses a 128-bit (int64, int64) composite
+            //     key. SAFETY GATE: requires a WHERE filter — without one
+            //     the cardinality is unbounded (Q33 has 100M near-unique
+            //     pairs → ~8 GB across per-thread per-shard arenas → system
+            //     thrash). Q33 falls through to existing TLMulti TIMEOUT
+            //     path until a memory budget guard is added. =====
+            if (group_col_indices.size() == 2 && multi_has_filter) {
+                idx_t bk_gc0 = group_col_indices[0];
+                idx_t bk_gc1 = group_col_indices[1];
+                auto bk_t0 = pq->GetTypes()[bk_gc0].id();
+                auto bk_t1 = pq->GetTypes()[bk_gc1].id();
+                bool bk_t0_int = (bk_t0 == LogicalTypeId::BIGINT ||
+                                  bk_t0 == LogicalTypeId::INTEGER);
+                bool bk_t1_int = (bk_t1 == LogicalTypeId::BIGINT ||
+                                  bk_t1 == LogicalTypeId::INTEGER);
+                bool any_bigint = (bk_t0 == LogicalTypeId::BIGINT ||
+                                   bk_t1 == LogicalTypeId::BIGINT);
+                if (bk_t0_int && bk_t1_int && any_bigint && num_aggs >= 1) {
+                    enum class BKKind { CountStar, Sum, Avg, CountC, Other };
+                    std::vector<BKKind> bk_kinds(num_aggs);
+                    std::vector<int> bk_sa_col_idx;
+                    std::vector<int> bk_sa_emit_idx;
+                    std::vector<bool> bk_sa_is_bigint;
+                    bool bk_ok = true;
+                    int bk_sa_n = 0;
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        auto &info = agg_infos[a];
+                        if (info.is_count_star) {
+                            bk_kinds[a] = BKKind::CountStar;
+                            bk_sa_emit_idx.push_back(-1);
+                            continue;
+                        }
+                        if (info.is_distinct ||
+                            info.col_idx == INVALID_INDEX) {
+                            bk_ok = false; break;
+                        }
+                        auto ct = pq->GetTypes()[info.col_idx].id();
+                        if (ct != LogicalTypeId::INTEGER &&
+                            ct != LogicalTypeId::BIGINT) {
+                            bk_ok = false; break;
+                        }
+                        if (info.name == "COUNT") bk_kinds[a] = BKKind::CountC;
+                        else if (info.name == "SUM") bk_kinds[a] = BKKind::Sum;
+                        else if (info.name == "AVG") bk_kinds[a] = BKKind::Avg;
+                        else { bk_ok = false; break; }
+                        bk_sa_col_idx.push_back((int)info.col_idx);
+                        bk_sa_is_bigint.push_back(ct == LogicalTypeId::BIGINT);
+                        bk_sa_emit_idx.push_back(bk_sa_n);
+                        bk_sa_n++;
+                    }
+                    if (bk_sa_n > 4) bk_ok = false;
+                    if (bk_ok) {
+                        {
+                            std::vector<bool> need(pq->GetTypes().size(), false);
+                            need[bk_gc0] = true;
+                            need[bk_gc1] = true;
+                            for (int c : bk_sa_col_idx)
+                                if ((idx_t)c < need.size()) need[c] = true;
+                            for (auto &p : multi_preds) {
+                                if (p.col_idx < need.size()) need[p.col_idx] = true;
+                            }
+                            pq->SetNeededOutputs(need);
+                            std::vector<bool> skip(pq->GetTypes().size(), false);
+                            for (auto &p : multi_preds) {
+                                if (p.col_idx < skip.size() && p.str_form &&
+                                    pq->GetTypes()[p.col_idx].id() ==
+                                        LogicalTypeId::VARCHAR) {
+                                    skip[p.col_idx] = true;
+                                }
+                            }
+                            pq->SetSkipStrData(std::move(skip));
+                        }
+                        pq->Init();
+
+                        constexpr int BK_THREADS = 8;
+                        slothdb::RadixMultiAggBigKey agg(BK_THREADS, bk_sa_n);
+                        bool g0_is_bigint =
+                            (bk_t0 == LogicalTypeId::BIGINT);
+                        bool g1_is_bigint =
+                            (bk_t1 == LogicalTypeId::BIGINT);
+                        pq->SetRGConsumer(
+                            [&](const PhysicalParquetScan::RGWork &work,
+                                idx_t rg_idx, int tid) {
+                                if (work.pruned) return;
+                                idx_t nrows = pq->RowGroupSize(rg_idx);
+                                const auto &c0 = work.cols[bk_gc0];
+                                const auto &c1 = work.cols[bk_gc1];
+                                if (!c0.decoded || !c1.decoded) return;
+                                const int64_t *g0_64 = g0_is_bigint
+                                    ? c0.i64_data.data() : nullptr;
+                                const int32_t *g0_32 = g0_is_bigint
+                                    ? nullptr : c0.i32_data.data();
+                                const int64_t *g1_64 = g1_is_bigint
+                                    ? c1.i64_data.data() : nullptr;
+                                const int32_t *g1_32 = g1_is_bigint
+                                    ? nullptr : c1.i32_data.data();
+                                struct AC {
+                                    bool is_bigint;
+                                    bool all_valid;
+                                    const int32_t *i32;
+                                    const int64_t *i64;
+                                    const uint8_t *valid;
+                                };
+                                std::vector<AC> acs(bk_sa_n);
+                                for (int a = 0; a < bk_sa_n; a++) {
+                                    const auto &ac = work.cols[bk_sa_col_idx[a]];
+                                    acs[a].is_bigint = bk_sa_is_bigint[a];
+                                    acs[a].all_valid = ac.all_valid;
+                                    acs[a].valid = ac.all_valid
+                                        ? nullptr : ac.validity.data();
+                                    acs[a].i32 = bk_sa_is_bigint[a]
+                                        ? nullptr : ac.i32_data.data();
+                                    acs[a].i64 = bk_sa_is_bigint[a]
+                                        ? ac.i64_data.data() : nullptr;
+                                }
+                                std::vector<uint8_t> tk;
+                                bool tk_active = false;
+                                if (multi_has_filter) {
+                                    tk_active = BuildTypedKeepMask(
+                                        multi_preds, work.cols, nrows, tk);
+                                }
+                                int t = tid % BK_THREADS;
+                                int64_t vals[4];
+                                uint8_t valid[4];
+                                bool all_aggs_valid = true;
+                                for (int a = 0; a < bk_sa_n; a++) {
+                                    if (!acs[a].all_valid) {
+                                        all_aggs_valid = false; break;
+                                    }
+                                }
+                                if (all_aggs_valid) {
+                                    for (int a = 0; a < bk_sa_n; a++)
+                                        valid[a] = 1;
+                                }
+                                for (idx_t r = 0; r < nrows; r++) {
+                                    if (tk_active) {
+                                        if (!tk[r]) continue;
+                                    } else if (multi_has_filter &&
+                                               !EvalSimplePredicates(
+                                                   multi_preds, work.cols, r))
+                                        continue;
+                                    if (!c0.all_valid && !c0.validity[r]) continue;
+                                    if (!c1.all_valid && !c1.validity[r]) continue;
+                                    int64_t key_a = g0_is_bigint
+                                        ? g0_64[r] : (int64_t)g0_32[r];
+                                    int64_t key_b = g1_is_bigint
+                                        ? g1_64[r] : (int64_t)g1_32[r];
+                                    for (int a = 0; a < bk_sa_n; a++) {
+                                        if (!all_aggs_valid)
+                                            valid[a] = acs[a].valid[r];
+                                        if (all_aggs_valid || valid[a]) {
+                                            vals[a] = acs[a].is_bigint
+                                                ? acs[a].i64[r]
+                                                : (int64_t)acs[a].i32[r];
+                                        } else {
+                                            vals[a] = 0;
+                                        }
+                                    }
+                                    agg.Update(t, key_a, key_b, vals, valid);
+                                }
+                            });
+                        pq->RunParallelRGs();
+                        std::vector<std::thread> mts;
+                        for (int s = 1; s < slothdb::RadixMultiAggBigKey::N_RADIX; s++) {
+                            mts.emplace_back([&agg, s]() {
+                                agg.MergeShard(s);
+                            });
+                        }
+                        agg.MergeShard(0);
+                        for (auto &t : mts) t.join();
+                        int top_k = 0;
+                        int count_star_emit_idx = -1;
+                        for (idx_t a = 0; a < num_aggs; a++) {
+                            if (bk_kinds[a] == BKKind::CountStar) {
+                                count_star_emit_idx = (int)(2 + a); break;
+                            }
+                        }
+                        if (topn_active_ && topn_limit_ > 0 &&
+                            !topn_ascending_ &&
+                            count_star_emit_idx >= 0 &&
+                            (int)topn_col_idx_ == count_star_emit_idx) {
+                            top_k = (int)topn_limit_;
+                        }
+                        auto results = agg.EmitTopK(top_k);
+                        result_rows_.reserve(results.size());
+                        for (auto &res : results) {
+                            std::vector<Value> row;
+                            row.reserve(2 + num_aggs);
+                            if (g0_is_bigint)
+                                row.push_back(Value::BIGINT(res.key_a));
+                            else
+                                row.push_back(
+                                    Value::INTEGER((int32_t)res.key_a));
+                            if (g1_is_bigint)
+                                row.push_back(Value::BIGINT(res.key_b));
+                            else
+                                row.push_back(
+                                    Value::INTEGER((int32_t)res.key_b));
+                            for (idx_t a = 0; a < num_aggs; a++) {
+                                switch (bk_kinds[a]) {
+                                case BKKind::CountStar:
+                                    row.push_back(Value::BIGINT(res.count_star));
+                                    break;
+                                case BKKind::Sum: {
+                                    int sa = bk_sa_emit_idx[a];
+                                    row.push_back(Value::BIGINT(res.sum[sa]));
+                                    break;
+                                }
+                                case BKKind::CountC: {
+                                    int sa = bk_sa_emit_idx[a];
+                                    row.push_back(Value::BIGINT(res.cnt[sa]));
+                                    break;
+                                }
+                                case BKKind::Avg: {
+                                    int sa = bk_sa_emit_idx[a];
+                                    if (res.cnt[sa] == 0) {
+                                        row.push_back(Value::DOUBLE(0.0));
+                                    } else {
+                                        row.push_back(Value::DOUBLE(
+                                            (double)res.sum[sa] /
+                                            (double)res.cnt[sa]));
+                                    }
+                                    break;
+                                }
+                                default:
+                                    row.push_back(Value::BIGINT(0));
+                                }
+                            }
+                            result_rows_.push_back(std::move(row));
+                        }
+                        return;
+                    }
+                }
+            }
+
             // === Q15/Q17/Q18-shape: 2-col GROUP BY (INT/BIGINT + VARCHAR) +
             //     only COUNT(*) aggs. Default packed-uint64 path silently
             //     truncates BIGINT to 32 bits (Q17/Q18 UserID), and the

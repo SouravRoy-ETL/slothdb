@@ -67,4 +67,40 @@ private:
     std::unique_ptr<RadixMultiAggImpl> impl_;
 };
 
+// 128-bit composite-key result: (int64, int64).
+struct RadixMultiAggBigResult {
+    int64_t key_a;
+    int64_t key_b;
+    int64_t count_star;
+    std::vector<int64_t> sum;
+    std::vector<int64_t> cnt;
+};
+
+// 2-col GROUP BY where one or both group cols are BIGINT (Q32/Q33-shape:
+// WatchID BIGINT + ClientIP INTEGER). 64-bit packed key won't fit so the
+// key is a struct {int64 a, int64 b}. Same shard architecture as
+// RadixMultiAggI64Key. Slot is contiguous (1 + 2*N_aggs) int64s in a
+// per-shard arena, indexed from a small ankerl::map<BigKey, uint32_t>.
+struct RadixMultiAggBigImpl;
+class RadixMultiAggBigKey {
+public:
+    static constexpr int N_RADIX = 16;
+    RadixMultiAggBigKey(int max_threads, int num_aggs);
+    ~RadixMultiAggBigKey();
+    RadixMultiAggBigKey(const RadixMultiAggBigKey&) = delete;
+    RadixMultiAggBigKey& operator=(const RadixMultiAggBigKey&) = delete;
+
+    // Phase 1: per-thread emplace with composite (a, b) key.
+    void Update(int tid, int64_t key_a, int64_t key_b,
+                const int64_t* agg_vals, const uint8_t* agg_valid);
+
+    void MergeShard(int shard);
+    std::vector<RadixMultiAggBigResult> EmitTopK(int k) const;
+    size_t TotalGroups() const;
+    int NumAggs() const;
+
+private:
+    std::unique_ptr<RadixMultiAggBigImpl> impl_;
+};
+
 }  // namespace slothdb

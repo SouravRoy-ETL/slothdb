@@ -188,4 +188,191 @@ size_t RadixMultiAggI64Key::TotalGroups() const {
     return total;
 }
 
+// =====================================================================
+// RadixMultiAggBigKey — 128-bit composite key variant
+// =====================================================================
+
+namespace {
+
+struct BigKey {
+    int64_t a;
+    int64_t b;
+    bool operator==(const BigKey& o) const noexcept {
+        return a == o.a && b == o.b;
+    }
+};
+
+struct BigKeyHash {
+    using is_avalanching = void;
+    size_t operator()(const BigKey& k) const noexcept {
+        size_t h1 = ankerl::unordered_dense::hash<int64_t>{}(k.a);
+        size_t h2 = ankerl::unordered_dense::hash<int64_t>{}(k.b);
+        return (h1 * 0x9E3779B97F4A7C15ULL) ^ h2;
+    }
+};
+
+constexpr int BK_NSHARDS = RadixMultiAggBigKey::N_RADIX;
+
+struct BigPerThread {
+    int num_aggs;
+    std::array<std::vector<int64_t>, BK_NSHARDS> arenas;
+    std::array<ankerl::unordered_dense::map<BigKey, uint32_t, BigKeyHash>,
+               BK_NSHARDS> shards;
+
+    void Update(int shard, BigKey key,
+                const int64_t* vals, const uint8_t* valid) {
+        auto& m = shards[shard];
+        auto& a = arenas[shard];
+        size_t per_slot = (size_t)(1 + 2 * num_aggs);
+        auto it = m.find(key);
+        int64_t* slot;
+        if (it == m.end()) {
+            uint32_t idx = (uint32_t)(a.size() / per_slot);
+            a.resize(a.size() + per_slot, 0);
+            slot = a.data() + (size_t)idx * per_slot;
+            m.emplace(key, idx);
+        } else {
+            slot = a.data() + (size_t)it->second * per_slot;
+        }
+        slot[0]++;
+        for (int A = 0; A < num_aggs; A++) {
+            if (valid[A]) {
+                slot[1 + A] += vals[A];
+                slot[1 + num_aggs + A]++;
+            }
+        }
+    }
+};
+
+}  // anonymous namespace
+
+struct RadixMultiAggBigImpl {
+    int max_threads;
+    int num_aggs;
+    std::vector<std::unique_ptr<BigPerThread>> threads;
+    std::array<std::vector<int64_t>, BK_NSHARDS> final_arenas;
+    std::array<ankerl::unordered_dense::map<BigKey, uint32_t, BigKeyHash>,
+               BK_NSHARDS> final_maps;
+};
+
+RadixMultiAggBigKey::RadixMultiAggBigKey(int max_threads, int num_aggs)
+    : impl_(std::make_unique<RadixMultiAggBigImpl>()) {
+    impl_->max_threads = max_threads;
+    impl_->num_aggs = num_aggs;
+    impl_->threads.reserve(max_threads);
+    for (int i = 0; i < max_threads; i++) {
+        auto pt = std::make_unique<BigPerThread>();
+        pt->num_aggs = num_aggs;
+        impl_->threads.push_back(std::move(pt));
+    }
+}
+
+RadixMultiAggBigKey::~RadixMultiAggBigKey() = default;
+
+int RadixMultiAggBigKey::NumAggs() const { return impl_->num_aggs; }
+
+void RadixMultiAggBigKey::Update(int tid, int64_t key_a, int64_t key_b,
+                                  const int64_t* agg_vals,
+                                  const uint8_t* agg_valid) {
+    auto& pt = *impl_->threads[tid];
+    BigKey k{key_a, key_b};
+    size_t h = BigKeyHash{}(k);
+    int shard = (int)(h & (BK_NSHARDS - 1));
+    pt.Update(shard, k, agg_vals, agg_valid);
+}
+
+void RadixMultiAggBigKey::MergeShard(int shard) {
+    auto& out_map = impl_->final_maps[shard];
+    auto& out_arena = impl_->final_arenas[shard];
+    int num_aggs = impl_->num_aggs;
+    size_t per_slot = (size_t)(1 + 2 * num_aggs);
+    size_t max_single = 0;
+    for (auto& tl : impl_->threads) {
+        size_t sz = tl->shards[shard].size();
+        if (sz > max_single) max_single = sz;
+    }
+    out_map.reserve(max_single + max_single / 4);
+    out_arena.reserve((max_single + max_single / 4) * per_slot);
+    for (auto& tl : impl_->threads) {
+        const int64_t* src_arena = tl->arenas[shard].data();
+        for (auto& kv : tl->shards[shard]) {
+            BigKey key = kv.first;
+            const int64_t* src = src_arena + (size_t)kv.second * per_slot;
+            auto it = out_map.find(key);
+            int64_t* dst;
+            if (it == out_map.end()) {
+                uint32_t idx = (uint32_t)(out_arena.size() / per_slot);
+                out_arena.resize(out_arena.size() + per_slot, 0);
+                dst = out_arena.data() + (size_t)idx * per_slot;
+                out_map.emplace(key, idx);
+            } else {
+                dst = out_arena.data() + (size_t)it->second * per_slot;
+            }
+            for (size_t i = 0; i < per_slot; i++) dst[i] += src[i];
+        }
+    }
+}
+
+std::vector<RadixMultiAggBigResult>
+RadixMultiAggBigKey::EmitTopK(int k) const {
+    int num_aggs = impl_->num_aggs;
+    size_t per_slot = (size_t)(1 + 2 * num_aggs);
+    auto build = [&](BigKey key, const int64_t* slot) {
+        RadixMultiAggBigResult r;
+        r.key_a = key.a;
+        r.key_b = key.b;
+        r.count_star = slot[0];
+        r.sum.assign(slot + 1, slot + 1 + num_aggs);
+        r.cnt.assign(slot + 1 + num_aggs, slot + 1 + 2 * num_aggs);
+        return r;
+    };
+    if (k <= 0) {
+        std::vector<RadixMultiAggBigResult> all;
+        all.reserve(TotalGroups());
+        for (int s = 0; s < BK_NSHARDS; s++) {
+            const int64_t* arena = impl_->final_arenas[s].data();
+            for (auto& kv : impl_->final_maps[s]) {
+                all.push_back(
+                    build(kv.first, arena + (size_t)kv.second * per_slot));
+            }
+        }
+        return all;
+    }
+    auto cmp = [](const RadixMultiAggBigResult& a,
+                  const RadixMultiAggBigResult& b) {
+        return a.count_star > b.count_star;
+    };
+    std::priority_queue<RadixMultiAggBigResult,
+                        std::vector<RadixMultiAggBigResult>, decltype(cmp)>
+        heap(cmp);
+    for (int s = 0; s < BK_NSHARDS; s++) {
+        const int64_t* arena = impl_->final_arenas[s].data();
+        for (auto& kv : impl_->final_maps[s]) {
+            const int64_t* slot = arena + (size_t)kv.second * per_slot;
+            int64_t cs = slot[0];
+            if ((int)heap.size() < k) {
+                heap.push(build(kv.first, slot));
+            } else if (cs > heap.top().count_star) {
+                heap.pop();
+                heap.push(build(kv.first, slot));
+            }
+        }
+    }
+    std::vector<RadixMultiAggBigResult> out;
+    out.reserve(heap.size());
+    while (!heap.empty()) {
+        out.push_back(std::move(
+            const_cast<RadixMultiAggBigResult&>(heap.top())));
+        heap.pop();
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+size_t RadixMultiAggBigKey::TotalGroups() const {
+    size_t total = 0;
+    for (auto& m : impl_->final_maps) total += m.size();
+    return total;
+}
+
 }  // namespace slothdb
