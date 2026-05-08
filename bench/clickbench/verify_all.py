@@ -1,6 +1,12 @@
 """Surface-scan all 43 ClickBench queries: status + correctness vs DuckDB.
-One trial per query, 30s timeout. Captures:
+Min-of-3 trials per engine per query, 30s timeout. Captures:
 PARSE_ERROR/RUNTIME/TIMEOUT/WIN/LOSS/WRONG/WIN_DF.
+
+Min-of-3 stabilizes the score across runs:
+- Q4 AVG(UserID): cold ~345ms, warm ~210ms — first-trial cold-cache penalty.
+- Q10/Q20/Q21/Q28: 0.85-0.97x ratios with normal run-to-run variance.
+Reporting the warm best from 3 trials matches how ClickBench results are
+canonically published; a single noisy trial no longer flips the verdict.
 
 WIN_DF = "DuckDB Failed": SlothDB completes correctly but DuckDB cannot run
 the query at all (e.g. Q37–Q42 fail with `Conversion Error: Could not convert
@@ -96,18 +102,32 @@ def norm(s):
             if any(c.isdigit() for c in t): toks.append(_canon_num(t))
     return "\n".join(sorted(toks))
 
+def min_of_3(exe, sql):
+    # Run three times, return the fastest trial. First run pays cold-cache
+    # cost (parquet column not in OS page cache); the next two are warm.
+    # Reporting the warm best is canonical for ClickBench. If any trial
+    # errors we keep its result (an engine that flakes is failing).
+    best = None
+    for _ in range(3):
+        dt, st, err, out = run(exe, sql)
+        if st != "OK":
+            return dt, st, err, out
+        if best is None or dt < best[0]:
+            best = (dt, st, err, out)
+    return best
+
 def main():
     qs = [(s[:-1] if s.endswith(";") else s) for s in (l.strip() for l in
           QFILE.read_text(encoding="utf-8").splitlines()) if s and not s.startswith("--")]
     rows = []
     for i, q in enumerate(qs, 1):
         sql = re.sub(r"\bhits\b", lambda _: f"'{DATA}'", q)
-        sd, ss, se, so = run(SLOTH, sql)
+        sd, ss, se, so = min_of_3(SLOTH, sql)
         if ss != "OK":
             # SlothDB can't run it. If DuckDB also can't, both fail; if DuckDB
             # can, that's a real LOSS_DF (DuckDB-only feature gap).
             rows.append((i, ss, sd, None, se, q)); print(f"{i:>3} {ss} {se}"); continue
-        dd, ds, de, do = run(DUCK, sql)
+        dd, ds, de, do = min_of_3(DUCK, sql)
         if ds != "OK":
             # DuckDB failed but SlothDB succeeded → SlothDB capability win.
             rows.append((i, "WIN_DF", sd, dd, de, q))
