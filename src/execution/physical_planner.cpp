@@ -18,6 +18,7 @@
 #include "third_party/unordered_dense.h"
 #include "slothdb/execution/simple_i64_set.hpp"
 #include "slothdb/execution/radix_count_agg.hpp"
+#include "slothdb/execution/inline_row_agg.hpp"
 #include "slothdb/execution/radix_multi_agg.hpp"
 #include <algorithm>
 #include <cmath>
@@ -8615,8 +8616,20 @@ private:
                         }
                         pq->Init();
 
-                        constexpr int Q31_THREADS = 8;
-                        slothdb::RadixMultiAggI64Key agg(Q31_THREADS, sa_n);
+                        const int Q31_THREADS = 8;
+                        // Generic phase 1-3+emit. Works against any
+                        // aggregator with the API:
+                        //   .Update(tid, key, vals, valid)
+                        //   .MergeShard(s)
+                        //   .EmitTopK(k) → vector with .key, .count_star,
+                        //   .sum[a], .cnt[a]
+                        //   ::N_RADIX
+                        // RadixMultiAggI64Key (legacy) and InlineRowAgg<N>
+                        // (lifted from DuckDB's GroupedAggregateHashTable
+                        // design) both satisfy this. Toggle via env var
+                        // SLOTH_USE_INLINE_AGG=1 for A/B vs the legacy
+                        // ankerl::map+arena path.
+                        auto run_q31 = [&](auto& agg) {
                         pq->SetRGConsumer(
                             [&](const PhysicalParquetScan::RGWork &work,
                                 idx_t rg_idx, int tid) {
@@ -8700,8 +8713,9 @@ private:
                                 }
                             });
                         pq->RunParallelRGs();
+                        using AggT = std::remove_reference_t<decltype(agg)>;
                         std::vector<std::thread> mts;
-                        for (int s = 1; s < slothdb::RadixMultiAggI64Key::N_RADIX; s++) {
+                        for (int s = 1; s < AggT::N_RADIX; s++) {
                             mts.emplace_back([&agg, s]() {
                                 agg.MergeShard(s);
                             });
@@ -8767,6 +8781,29 @@ private:
                                 }
                             }
                             result_rows_.push_back(std::move(row));
+                        }
+                        };  // end run_q31 generic lambda
+
+                        // Inline-row aggregator is the default (DuckDB-style
+                        // single-row layout, ~17% faster than legacy ankerl
+                        // +arena on Q31 per A/B). SLOTH_LEGACY_AGG=1 falls
+                        // back to the prior ankerl::map+arena path as a
+                        // rollback escape hatch.
+                        size_t _legacy_len = 0;
+                        const bool legacy_override =
+                            (getenv_s(&_legacy_len, nullptr, 0,
+                                      "SLOTH_LEGACY_AGG") == 0 &&
+                             _legacy_len > 0);
+                        if (!legacy_override && sa_n >= 1 && sa_n <= 4) {
+                            switch (sa_n) {
+                            case 1: { slothdb::InlineRowAgg<1> a(Q31_THREADS); run_q31(a); break; }
+                            case 2: { slothdb::InlineRowAgg<2> a(Q31_THREADS); run_q31(a); break; }
+                            case 3: { slothdb::InlineRowAgg<3> a(Q31_THREADS); run_q31(a); break; }
+                            case 4: { slothdb::InlineRowAgg<4> a(Q31_THREADS); run_q31(a); break; }
+                            }
+                        } else {
+                            slothdb::RadixMultiAggI64Key a(Q31_THREADS, sa_n);
+                            run_q31(a);
                         }
                         return;
                     }
