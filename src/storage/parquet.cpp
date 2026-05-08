@@ -34,19 +34,29 @@ static const char PARQUET_MAGIC[4] = {'P', 'A', 'R', '1'};
 namespace {
 
 // --- Snappy (raw, no CRC) decompressor. Returns false on corruption. ---
-bool SnappyDecompress(const uint8_t *in, size_t in_size, std::vector<uint8_t> &out) {
-    if (in_size == 0) { out.clear(); return true; }
+// Internal: parse varint length prefix from a Snappy stream. Returns the
+// number of bytes consumed (0 on malformed) and writes the length to
+// `uncomp_len`.
+static size_t SnappyParseLength(const uint8_t *in, size_t in_size, uint64_t &uncomp_len) {
+    uncomp_len = 0;
     size_t p = 0;
-    uint64_t uncomp_len = 0;
     int shift = 0;
     while (p < in_size) {
         uint8_t b = in[p++];
         uncomp_len |= uint64_t(b & 0x7F) << shift;
-        if ((b & 0x80) == 0) break;
+        if ((b & 0x80) == 0) return p;
         shift += 7;
-        if (shift > 35) return false;
+        if (shift > 35) return 0;
     }
-    out.resize(static_cast<size_t>(uncomp_len));
+    return 0;
+}
+
+// Internal: decompress Snappy body into a raw output buffer, starting at
+// `start` (post-varint position) and writing `uncomp_len` bytes to `out`.
+// out MUST have at least `uncomp_len` bytes.
+static bool SnappyDecompressBody(const uint8_t *in, size_t in_size, size_t start,
+                                  uint8_t *out, size_t uncomp_len) {
+    size_t p = start;
     size_t op = 0;
     while (p < in_size) {
         uint8_t tag = in[p++];
@@ -59,14 +69,14 @@ bool SnappyDecompress(const uint8_t *in, size_t in_size, std::vector<uint8_t> &o
             else if (hi == 61) { if (p + 2 > in_size) return false; len = 1u + uint32_t(in[p]) + (uint32_t(in[p+1]) << 8); p += 2; }
             else if (hi == 62) { if (p + 3 > in_size) return false; len = 1u + uint32_t(in[p]) + (uint32_t(in[p+1]) << 8) + (uint32_t(in[p+2]) << 16); p += 3; }
             else { if (p + 4 > in_size) return false; len = 1u + uint32_t(in[p]) + (uint32_t(in[p+1]) << 8) + (uint32_t(in[p+2]) << 16) + (uint32_t(in[p+3]) << 24); p += 4; }
-            if (p + len > in_size || op + len > out.size()) return false;
+            if (p + len > in_size || op + len > uncomp_len) return false;
             std::memcpy(&out[op], &in[p], len);
             p += len; op += len;
         } else if (tt == 1) {
             if (p + 1 > in_size) return false;
             uint32_t len = ((tag >> 2) & 0x07) + 4;
             uint32_t off = (uint32_t(tag >> 5) << 8) | in[p++];
-            if (off == 0 || off > op || op + len > out.size()) return false;
+            if (off == 0 || off > op || op + len > uncomp_len) return false;
             for (uint32_t i = 0; i < len; i++) out[op + i] = out[op - off + i];
             op += len;
         } else if (tt == 2) {
@@ -74,7 +84,7 @@ bool SnappyDecompress(const uint8_t *in, size_t in_size, std::vector<uint8_t> &o
             uint32_t len = (tag >> 2) + 1;
             uint32_t off = uint32_t(in[p]) | (uint32_t(in[p+1]) << 8);
             p += 2;
-            if (off == 0 || off > op || op + len > out.size()) return false;
+            if (off == 0 || off > op || op + len > uncomp_len) return false;
             for (uint32_t i = 0; i < len; i++) out[op + i] = out[op - off + i];
             op += len;
         } else {
@@ -82,12 +92,39 @@ bool SnappyDecompress(const uint8_t *in, size_t in_size, std::vector<uint8_t> &o
             uint32_t len = (tag >> 2) + 1;
             uint32_t off = uint32_t(in[p]) | (uint32_t(in[p+1]) << 8) | (uint32_t(in[p+2]) << 16) | (uint32_t(in[p+3]) << 24);
             p += 4;
-            if (off == 0 || off > op || op + len > out.size()) return false;
+            if (off == 0 || off > op || op + len > uncomp_len) return false;
             for (uint32_t i = 0; i < len; i++) out[op + i] = out[op - off + i];
             op += len;
         }
     }
-    return op == static_cast<size_t>(uncomp_len);
+    return op == uncomp_len;
+}
+
+bool SnappyDecompress(const uint8_t *in, size_t in_size, std::vector<uint8_t> &out) {
+    if (in_size == 0) { out.clear(); return true; }
+    uint64_t uncomp_len = 0;
+    size_t start = SnappyParseLength(in, in_size, uncomp_len);
+    if (start == 0) return false;
+    out.resize(static_cast<size_t>(uncomp_len));
+    return SnappyDecompressBody(in, in_size, start, out.data(), uncomp_len);
+}
+
+// Decompress a Snappy stream directly into a pre-allocated raw buffer.
+// Caller pre-allocates `out` with at least the uncompressed-page-size bytes
+// (read from the parquet page header); on success `out_size` is set to the
+// actual decompressed length. Used to skip an intermediate vector copy on
+// VARCHAR PLAIN pages — string_t entries can then point straight into the
+// caller's persistent buffer (str_heap), matching DuckDB's zero-copy
+// StringColumnReader behavior (ReferenceBlock + PlainTemplated).
+bool SnappyDecompressRaw(const uint8_t *in, size_t in_size,
+                         uint8_t *out, size_t out_cap, size_t &out_size) {
+    if (in_size == 0) { out_size = 0; return true; }
+    uint64_t uncomp_len = 0;
+    size_t start = SnappyParseLength(in, in_size, uncomp_len);
+    if (start == 0) return false;
+    if (uncomp_len > out_cap) return false;
+    out_size = static_cast<size_t>(uncomp_len);
+    return SnappyDecompressBody(in, in_size, start, out, uncomp_len);
 }
 
 // --- Thrift Compact Protocol reader. ---
@@ -1672,10 +1709,40 @@ bool DecodePlainBoolInto(const uint8_t *data, size_t size, int32_t n_values,
 
 // Append PLAIN-encoded VARCHAR data into `heap`, writing string_t entries to
 // dst[i] for non-null rows. heap is a pre-reserved buffer (no reallocation).
+// When `data_is_stable` is true, `data` outlives the column (e.g. the page
+// was decompressed directly into heap, or points into mmap'd file bytes),
+// so string_t entries can point straight at `data` and the per-row memcpy
+// drops out of the loop. This matches DuckDB's StringColumnReader::Plain
+// where ReferenceBlock keeps the page buffer alive and PlainTemplated
+// constructs string_t in place.
 bool DecodePlainStringInto(const uint8_t *data, size_t size, int32_t n_values,
                            const std::vector<uint8_t> &def, string_t *dst,
-                           std::vector<char> &heap) {
+                           std::vector<char> &heap, bool data_is_stable = false) {
     size_t pos = 0;
+    if (data_is_stable) {
+        // Zero-copy path. string_t for non-inline rows points into `data`;
+        // for inline rows the constructor copies into string_t's inline
+        // storage anyway, so this branch handles both uniformly.
+        if (def.empty()) {
+            for (int32_t i = 0; i < n_values; i++) {
+                if (pos + 4 > size) return false;
+                uint32_t len = ReadLEU32(data + pos); pos += 4;
+                if (pos + len > size) return false;
+                dst[i] = string_t(reinterpret_cast<const char *>(data + pos), len);
+                pos += len;
+            }
+            return true;
+        }
+        for (int32_t i = 0; i < n_values; i++) {
+            if (!def[i]) continue;
+            if (pos + 4 > size) return false;
+            uint32_t len = ReadLEU32(data + pos); pos += 4;
+            if (pos + len > size) return false;
+            dst[i] = string_t(reinterpret_cast<const char *>(data + pos), len);
+            pos += len;
+        }
+        return true;
+    }
     for (int32_t i = 0; i < n_values; i++) {
         if (!def.empty() && !def[i]) continue;
         if (pos + 4 > size) return false;
@@ -1772,7 +1839,8 @@ size_t ReadDefLevels(const uint8_t *data, size_t size, int32_t n_values,
 bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t size,
                          ParquetType ptype, const ParquetDict &dict,
                          ParquetColumnData &out, idx_t row_offset,
-                         bool skip_str_data, bool is_required = false) {
+                         bool skip_str_data, bool is_required = false,
+                         bool data_is_stable = false) {
     const uint8_t *p = data;
     size_t remaining = size;
     int32_t n_values = hdr.num_values;
@@ -1866,7 +1934,8 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
                 MaterialiseStrDataLazy(out, dict.str_ptr.data(), dict.str_len.data(),
                                        (uint32_t)dict.str_ptr.size(), row_offset);
             return DecodePlainStringInto(p, remaining, n_values, def_mask,
-                                         out.str_data.data() + row_offset, *out.str_heap);
+                                         out.str_data.data() + row_offset, *out.str_heap,
+                                         data_is_stable);
         default:
             return false;
         }
@@ -2221,15 +2290,51 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
 
         // Decompress page body if needed.
         bool is_compressed = (hdr.type == 3) ? hdr.is_compressed : (cmeta.codec != 0);
-        if (is_compressed && cmeta.codec != 0) {
+        // VARCHAR PLAIN-encoded pages with Snappy can decompress straight into
+        // str_heap so DecodePlainStringInto can point string_t entries at the
+        // page bytes without a per-row memcpy. Mirrors DuckDB's StringColumn-
+        // Reader::Plain → ReferenceBlock + zero-copy PlainTemplated. Heap was
+        // pre-reserved to total_uncompressed_size + 64 (line 2246), so the
+        // resize stays within capacity and prior dict-page pointers remain
+        // valid. Falls through to the decomp-buffer path on capacity overflow
+        // (defensive — should not happen for well-formed parquet).
+        bool body_is_stable = false;
+        bool can_zero_copy_plain = (tid == LogicalTypeId::VARCHAR && !out.str_lengths_only &&
+                                     !out.str_data_skipped &&
+                                     hdr.encoding != 2 && hdr.encoding != 8);
+        if (is_compressed && cmeta.codec == 1 && can_zero_copy_plain) {
+            size_t heap_pre = out.str_heap->size();
+            size_t uncomp = (size_t)hdr.uncompressed_page_size;
+            if (heap_pre + uncomp <= out.str_heap->capacity()) {
+                out.str_heap->resize(heap_pre + uncomp);
+                size_t actual = 0;
+                if (!SnappyDecompressRaw(body, body_size,
+                                          reinterpret_cast<uint8_t *>(out.str_heap->data() + heap_pre),
+                                          uncomp, actual)) {
+                    out.str_heap->resize(heap_pre);
+                    return false;
+                }
+                body = reinterpret_cast<const uint8_t *>(out.str_heap->data() + heap_pre);
+                body_size = actual;
+                body_is_stable = true;
+            } else {
+                if (!DecompressPage(cmeta.codec, body, body_size,
+                                    (size_t)hdr.uncompressed_page_size, decomp)) return false;
+                body = decomp.data(); body_size = decomp.size();
+            }
+        } else if (is_compressed && cmeta.codec != 0) {
             if (!DecompressPage(cmeta.codec, body, body_size,
                                 (size_t)hdr.uncompressed_page_size, decomp)) return false;
             body = decomp.data(); body_size = decomp.size();
+        } else if (!is_compressed) {
+            // Uncompressed body points into the mmap'd file → stable for the
+            // process lifetime. Safe for zero-copy string_t entries.
+            body_is_stable = true;
         }
 
         if (!DecodeDataPageTyped(hdr, body, body_size, cmeta.parquet_type, dict, out,
                                   rows_read, out.str_data_skipped,
-                                  cmeta.repetition_type == 0)) {
+                                  cmeta.repetition_type == 0, body_is_stable)) {
             return false;
         }
         // A PLAIN (non-dict) data page invalidates the dict-index fast path
