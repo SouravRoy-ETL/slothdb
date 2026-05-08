@@ -8888,6 +8888,13 @@ private:
 
                 if (rg_packable) {
                     // === PACKED uint64 key path ===
+                    // Cache-last: ClickBench RegionID averages 16+ consecutive
+                    // rows per group (94% cache hit on first 100K rows). Skip
+                    // the outer-map probe when pkey unchanged. Pointer is
+                    // stable across hits because no insertion happens between
+                    // them; on miss-with-insert we re-fetch from try_emplace.
+                    uint64_t cache_pkey = 0;
+                    std::vector<AggState> *cache_states = nullptr;
                     for (idx_t r = 0; r < nrows; r++) {
                         if (multi_keep_active) {
                             if (!multi_keep_mask[r]) continue;
@@ -8903,6 +8910,10 @@ private:
                             case 3: component = (uint32_t)(uint64_t)g.i64[r]; break;
                             }
                             pkey |= (uint64_t)component << pack[gi].shift;
+                        }
+                        if (cache_states && pkey == cache_pkey) {
+                            apply_aggs(*cache_states, r);
+                            continue;
                         }
                         auto [it, inserted] = tl.packed_groups.try_emplace(pkey);
                         if (inserted) {
@@ -8923,6 +8934,8 @@ private:
                             tl.packed_keys.emplace(pkey, std::move(key_vals));
                         }
                         apply_aggs(it->second, r);
+                        cache_pkey = pkey;
+                        cache_states = &it->second;
                     }
                 } else {
                     // === FALLBACK string-key path (non-packable types) ===
