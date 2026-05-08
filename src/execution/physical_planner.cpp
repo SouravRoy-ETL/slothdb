@@ -7778,34 +7778,78 @@ private:
                         return Value();
                     };
 
+                    // Per-RG pair cache: when both group cols pack into 32 bits
+                    // each (INTEGER or VARCHAR-with-dict), the (col1, col2)
+                    // tuple has a uint64 fingerprint. Most rows in a RG repeat
+                    // the same pair (~1000x for Q12 MobilePhone, MobilePhoneModel),
+                    // so the cache lets us skip the per-row composite-string
+                    // build and tl.g2_int_d std::unordered_map probe.
+                    bool can_pack_pair =
+                        (t1 == LogicalTypeId::INTEGER ||
+                         (t1 == LogicalTypeId::VARCHAR && g1_di)) &&
+                        (t2 == LogicalTypeId::INTEGER ||
+                         (t2 == LogicalTypeId::VARCHAR && g2_di));
+                    ankerl::unordered_dense::map<uint64_t, slothdb::SimpleI64Set*> rg_pair_int;
+                    ankerl::unordered_dense::map<uint64_t,
+                        ankerl::unordered_dense::set<std::string>*> rg_pair_str;
+                    auto pair_key = [&](idx_t r) -> uint64_t {
+                        uint32_t lo = (t1 == LogicalTypeId::INTEGER)
+                                          ? (uint32_t)g1_i32[r] : g1_di[r];
+                        uint32_t hi = (t2 == LogicalTypeId::INTEGER)
+                                          ? (uint32_t)g2_i32[r] : g2_di[r];
+                        return (uint64_t)lo | ((uint64_t)hi << 32);
+                    };
                     std::string k;
                     for (idx_t r = 0; r < nrows; r++) {
                         if (!keep_row(r)) continue;
                         if (!acol.all_valid && !acol.validity[r]) continue;
-                        k.clear();
-                        if (!append_col(k, r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str)) continue;
-                        k.push_back('\xFF');
-                        if (!append_col(k, r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)) continue;
-                        if (!agg_is_varchar) {
-                            auto it = tl.g2_int_d.find(k);
-                            if (it == tl.g2_int_d.end()) {
-                                std::vector<Value> kv = {
-                                    value_for(r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str),
-                                    value_for(r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)};
-                                tl.g2_key_parts.emplace(k, std::move(kv));
-                                it = tl.g2_int_d.emplace(k, slothdb::SimpleI64Set()).first;
+                        slothdb::SimpleI64Set *sp = nullptr;
+                        ankerl::unordered_dense::set<std::string> *strset = nullptr;
+                        uint64_t pkey = 0;
+                        bool packed = can_pack_pair;
+                        if (packed) {
+                            pkey = pair_key(r);
+                            if (!agg_is_varchar) {
+                                auto cit = rg_pair_int.find(pkey);
+                                if (cit != rg_pair_int.end()) sp = cit->second;
+                            } else {
+                                auto cit = rg_pair_str.find(pkey);
+                                if (cit != rg_pair_str.end()) strset = cit->second;
                             }
-                            it->second.insert(a_i64 ? a_i64[r] : (int64_t)a_i32[r]);
-                        } else {
-                            auto it = tl.g2_str_d.find(k);
-                            if (it == tl.g2_str_d.end()) {
-                                std::vector<Value> kv = {
-                                    value_for(r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str),
-                                    value_for(r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)};
-                                tl.g2_key_parts.emplace(k, std::move(kv));
-                                it = tl.g2_str_d.emplace(k,
-                                    ankerl::unordered_dense::set<std::string>()).first;
+                        }
+                        if (!sp && !strset) {
+                            k.clear();
+                            if (!append_col(k, r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str)) continue;
+                            k.push_back('\xFF');
+                            if (!append_col(k, r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)) continue;
+                            if (!agg_is_varchar) {
+                                auto it = tl.g2_int_d.find(k);
+                                if (it == tl.g2_int_d.end()) {
+                                    std::vector<Value> kv = {
+                                        value_for(r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str),
+                                        value_for(r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)};
+                                    tl.g2_key_parts.emplace(k, std::move(kv));
+                                    it = tl.g2_int_d.emplace(k, slothdb::SimpleI64Set()).first;
+                                }
+                                sp = &it->second;
+                                if (packed) rg_pair_int.emplace(pkey, sp);
+                            } else {
+                                auto it = tl.g2_str_d.find(k);
+                                if (it == tl.g2_str_d.end()) {
+                                    std::vector<Value> kv = {
+                                        value_for(r, t1, g1_i64, g1_i32, g1_di, g1_dv, g1_dsz, g1_str),
+                                        value_for(r, t2, g2_i64, g2_i32, g2_di, g2_dv, g2_dsz, g2_str)};
+                                    tl.g2_key_parts.emplace(k, std::move(kv));
+                                    it = tl.g2_str_d.emplace(k,
+                                        ankerl::unordered_dense::set<std::string>()).first;
+                                }
+                                strset = &it->second;
+                                if (packed) rg_pair_str.emplace(pkey, strset);
                             }
+                        }
+                        if (sp) {
+                            sp->insert(a_i64 ? a_i64[r] : (int64_t)a_i32[r]);
+                        } else if (strset) {
                             const char *sd; uint32_t sl;
                             if (a_dict_idx) {
                                 uint32_t di = a_dict_idx[r];
@@ -7814,7 +7858,7 @@ private:
                             } else if (a_str) {
                                 sd = a_str[r].GetData(); sl = a_str[r].GetSize();
                             } else continue;
-                            it->second.emplace(sd, sl);
+                            strset->emplace(sd, sl);
                         }
                     }
                     return;
