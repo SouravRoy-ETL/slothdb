@@ -1,7 +1,10 @@
 #include "slothdb/execution/radix_count_agg.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <queue>
+#include <string_view>
 
 #include "third_party/unordered_dense.h"
 
@@ -95,6 +98,146 @@ std::vector<RadixCountResult> RadixCountAgg::EmitTopK(int k) const {
 size_t RadixCountAgg::TotalGroups() const {
     size_t total = 0;
     for (auto &m : radix_maps_) total += m.size();
+    return total;
+}
+
+// =====================================================================
+// RadixCountAggStr — VARCHAR variant
+// =====================================================================
+
+namespace {
+
+constexpr int STR_NSHARDS = RadixCountAggStr::N_RADIX;
+constexpr size_t STR_ARENA_CHUNK = 256 * 1024;
+
+struct StrArenaChunk {
+    std::vector<char> bytes;
+    size_t used = 0;
+};
+
+// Per-thread state: NSHARDS maps from string_view → count, plus a
+// bump arena for stable string storage. Mirrors q6_string_dedup.
+struct StrPerThread {
+    std::array<ankerl::unordered_dense::map<std::string_view, int64_t>,
+               STR_NSHARDS> shards;
+    std::vector<StrArenaChunk> arena;
+
+    char* alloc(size_t n) {
+        if (arena.empty() || arena.back().bytes.size() - arena.back().used < n) {
+            arena.emplace_back();
+            size_t cap = (n > STR_ARENA_CHUNK) ? n : STR_ARENA_CHUNK;
+            arena.back().bytes.resize(cap);
+        }
+        char* p = arena.back().bytes.data() + arena.back().used;
+        arena.back().used += n;
+        return p;
+    }
+};
+
+}  // anonymous namespace
+
+struct RadixCountAggStrImpl {
+    int max_threads;
+    std::vector<std::unique_ptr<StrPerThread>> threads;
+    // Final per-shard merged maps. Phase 2 populates these. Strings
+    // remain owned by their per-thread arena (phase 2 holds the union
+    // of all per-thread arenas live until EmitTopK consumes them).
+    std::array<ankerl::unordered_dense::map<std::string_view, int64_t>,
+               STR_NSHARDS> final_maps;
+};
+
+RadixCountAggStr::RadixCountAggStr(int max_threads)
+    : impl_(std::make_unique<RadixCountAggStrImpl>()) {
+    impl_->max_threads = max_threads;
+    impl_->threads.reserve(max_threads);
+    for (int i = 0; i < max_threads; i++) {
+        impl_->threads.emplace_back(std::make_unique<StrPerThread>());
+    }
+}
+
+RadixCountAggStr::~RadixCountAggStr() = default;
+
+void RadixCountAggStr::IncrementRow(int tid, const char* data, uint32_t size) {
+    auto& pt = *impl_->threads[tid];
+    ankerl::unordered_dense::hash<std::string_view> H;
+    std::string_view probe(data, size);
+    size_t h = H(probe);
+    int shard = (int)(h & (STR_NSHARDS - 1));
+    auto& m = pt.shards[shard];
+    // Heterogeneous lookup: probe with the volatile view first. On hit
+    // increment count without touching the arena. On miss copy bytes
+    // into the per-thread arena and insert a stable view.
+    auto it = m.find(probe);
+    if (it != m.end()) {
+        it->second++;
+        return;
+    }
+    char* dst = pt.alloc(size);
+    if (size) std::memcpy(dst, data, size);
+    m.emplace(std::string_view(dst, size), int64_t{1});
+}
+
+void RadixCountAggStr::MergeShard(int shard) {
+    // Disjoint by hash → only this worker writes to final_maps[shard].
+    auto& out = impl_->final_maps[shard];
+    size_t max_single = 0;
+    for (auto& tl : impl_->threads) {
+        size_t sz = tl->shards[shard].size();
+        if (sz > max_single) max_single = sz;
+    }
+    out.reserve(max_single + max_single / 4);
+    for (auto& tl : impl_->threads) {
+        for (auto& kv : tl->shards[shard]) {
+            auto it = out.find(kv.first);
+            if (it == out.end()) {
+                out.emplace(kv.first, kv.second);
+            } else {
+                it->second += kv.second;
+            }
+        }
+    }
+}
+
+std::vector<RadixCountStrResult> RadixCountAggStr::EmitTopK(int k) const {
+    if (k <= 0) {
+        std::vector<RadixCountStrResult> all;
+        all.reserve(TotalGroups());
+        for (auto& m : impl_->final_maps) {
+            for (auto& kv : m) {
+                all.push_back({std::string(kv.first), kv.second});
+            }
+        }
+        return all;
+    }
+    auto cmp = [](const RadixCountStrResult& a, const RadixCountStrResult& b) {
+        return a.count > b.count;  // min-heap
+    };
+    std::priority_queue<RadixCountStrResult,
+                        std::vector<RadixCountStrResult>, decltype(cmp)>
+        heap(cmp);
+    for (auto& m : impl_->final_maps) {
+        for (auto& kv : m) {
+            if ((int)heap.size() < k) {
+                heap.push({std::string(kv.first), kv.second});
+            } else if (kv.second > heap.top().count) {
+                heap.pop();
+                heap.push({std::string(kv.first), kv.second});
+            }
+        }
+    }
+    std::vector<RadixCountStrResult> out;
+    out.reserve(heap.size());
+    while (!heap.empty()) {
+        out.push_back(std::move(const_cast<RadixCountStrResult&>(heap.top())));
+        heap.pop();
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
+size_t RadixCountAggStr::TotalGroups() const {
+    size_t total = 0;
+    for (auto& m : impl_->final_maps) total += m.size();
     return total;
 }
 

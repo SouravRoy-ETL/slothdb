@@ -22,6 +22,8 @@
 // feedback_apply_aggs_split_pass_refuted.md).
 
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "slothdb/execution/simple_i64_count_map.hpp"
@@ -31,6 +33,40 @@ namespace slothdb {
 struct RadixCountResult {
     int64_t key;
     int64_t count;
+};
+
+struct RadixCountStrResult {
+    std::string key;
+    int64_t count;
+};
+
+// VARCHAR variant of RadixCountAgg. Per-thread arena holds string copies;
+// 16 shards keyed by hash of the string. Phase 2 unions disjoint shards
+// across threads. Used for Q13/Q34/Q35-shape queries (single-col VARCHAR
+// GROUP BY + only COUNT(*) aggs).
+struct RadixCountAggStrImpl;
+class RadixCountAggStr {
+public:
+    static constexpr int N_RADIX = 16;
+    explicit RadixCountAggStr(int max_threads);
+    ~RadixCountAggStr();
+    RadixCountAggStr(const RadixCountAggStr&) = delete;
+    RadixCountAggStr& operator=(const RadixCountAggStr&) = delete;
+
+    // Phase 1: per-thread emplace. Hashes string, picks shard, increments
+    // count. On miss, copies string into per-thread arena before insert.
+    void IncrementRow(int tid, const char* data, uint32_t size);
+
+    // Phase 2: parallel per-shard merge. One worker per shard.
+    void MergeShard(int shard);
+
+    // Phase 3: top-K (count DESC) across final shards.
+    std::vector<RadixCountStrResult> EmitTopK(int k) const;
+
+    size_t TotalGroups() const;
+
+private:
+    std::unique_ptr<RadixCountAggStrImpl> impl_;
 };
 
 class RadixCountAgg {

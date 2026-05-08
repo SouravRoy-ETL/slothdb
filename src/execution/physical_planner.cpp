@@ -6010,6 +6010,94 @@ private:
                     bool q16_shape = (all_count_star_q16 &&
                                       (group_tid_q16 == LogicalTypeId::BIGINT ||
                                        group_tid_q16 == LogicalTypeId::INTEGER));
+                    bool q13_shape = (all_count_star_q16 &&
+                                      group_tid_q16 == LogicalTypeId::VARCHAR);
+                    if (q13_shape) {
+                        // Q13/Q34/Q35-shape: high-card single-col VARCHAR
+                        // GROUP BY + only COUNT(*). Per-thread radix-shard
+                        // map<string_view, count> with bump arena. q6-style
+                        // pattern but with count tracking.
+                        constexpr int Q13_THREADS = 8;
+                        slothdb::RadixCountAggStr str_agg(Q13_THREADS);
+                        pq->SetRGConsumer(
+                            [&](const PhysicalParquetScan::RGWork &work,
+                                idx_t rg_idx, int tid) {
+                                if (work.pruned) return;
+                                idx_t nrows = pq->RowGroupSize(rg_idx);
+                                const auto &gcol = work.cols[group_col];
+                                if (!gcol.decoded) return;
+                                bool dict_fast = gcol.str_dict_encoded &&
+                                    !gcol.str_dict_indices.empty();
+                                std::vector<uint8_t> tk;
+                                bool tk_active = false;
+                                if (single_has_filter_fused) {
+                                    tk_active = BuildTypedKeepMask(
+                                        single_preds, work.cols, nrows, tk);
+                                }
+                                int t = tid % Q13_THREADS;
+                                if (dict_fast) {
+                                    const uint32_t *di = gcol.str_dict_indices.data();
+                                    const string_t *dv = gcol.str_dict_values.data();
+                                    idx_t dsz = gcol.str_dict_values.size();
+                                    for (idx_t r = 0; r < nrows; r++) {
+                                        if (tk_active) {
+                                            if (!tk[r]) continue;
+                                        } else if (single_has_filter_fused &&
+                                                   !EvalSimplePredicates(
+                                                       single_preds, work.cols, r))
+                                            continue;
+                                        if (!gcol.all_valid &&
+                                            !gcol.validity[r]) continue;
+                                        uint32_t d = di[r];
+                                        if (d >= dsz) continue;
+                                        str_agg.IncrementRow(t,
+                                            dv[d].GetData(), dv[d].GetSize());
+                                    }
+                                } else if (!gcol.str_data.empty()) {
+                                    const string_t *gs = gcol.str_data.data();
+                                    for (idx_t r = 0; r < nrows; r++) {
+                                        if (tk_active) {
+                                            if (!tk[r]) continue;
+                                        } else if (single_has_filter_fused &&
+                                                   !EvalSimplePredicates(
+                                                       single_preds, work.cols, r))
+                                            continue;
+                                        if (!gcol.all_valid &&
+                                            !gcol.validity[r]) continue;
+                                        str_agg.IncrementRow(t,
+                                            gs[r].GetData(), gs[r].GetSize());
+                                    }
+                                }
+                            });
+                        pq->RunParallelRGs();
+                        std::vector<std::thread> mts;
+                        for (int s = 1; s < slothdb::RadixCountAggStr::N_RADIX; s++) {
+                            mts.emplace_back([&str_agg, s]() {
+                                str_agg.MergeShard(s);
+                            });
+                        }
+                        str_agg.MergeShard(0);
+                        for (auto &t : mts) t.join();
+                        int top_k = 0;
+                        if (topn_active_ && topn_limit_ > 0 &&
+                            !topn_ascending_ &&
+                            topn_col_idx_ >= 1 &&
+                            topn_col_idx_ <= num_aggs) {
+                            top_k = (int)topn_limit_;
+                        }
+                        auto results = str_agg.EmitTopK(top_k);
+                        result_rows_.reserve(results.size());
+                        for (auto &res : results) {
+                            std::vector<Value> row;
+                            row.reserve(1 + num_aggs);
+                            row.push_back(Value::VARCHAR(res.key));
+                            for (idx_t a = 0; a < num_aggs; a++) {
+                                row.push_back(Value::BIGINT(res.count));
+                            }
+                            result_rows_.push_back(std::move(row));
+                        }
+                        return;
+                    }
                     if (q16_shape) {
                         constexpr int Q16_THREADS = 8;
                         slothdb::RadixCountAgg radix_agg(Q16_THREADS);
