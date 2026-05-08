@@ -54,10 +54,21 @@ def _canon_num(t):
     # 1587 vs 1587.0 should compare equal: both are the same value, just
     # different display (DuckDB keeps trailing .0 for double columns, SlothDB
     # drops it via to_chars). Canonicalize to int when fractional part is 0.
-    try: return str(int(t))
+    try:
+        i = int(t)
+        # Above 2^53 (~9e15), integer values can no longer be exactly
+        # represented as doubles. Different summation orders (e.g. SlothDB's
+        # 4-lane double accumulator vs DuckDB's path) produce doubles that
+        # differ by 1+ ULP. Q4's AVG(UserID) ~2.5e18 has ULP ~2048; the
+        # rendered integers differ by a few ULPs. Round to 13 sig figs.
+        if abs(i) >= 10**15:
+            return f"{float(i):.13g}"
+        return str(i)
     except ValueError: pass
     try:
         f = float(t)
+        if abs(f) >= 1e15:
+            return f"{f:.13g}"
         return str(int(f)) if f.is_integer() else repr(f)
     except ValueError: return t
 
