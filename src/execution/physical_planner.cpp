@@ -17,6 +17,7 @@
 #include "slothdb/storage/parquet.hpp"
 #include "third_party/unordered_dense.h"
 #include "slothdb/execution/simple_i64_set.hpp"
+#include "slothdb/execution/radix_count_agg.hpp"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -750,6 +751,8 @@ public:
     idx_t RowGroupSize(idx_t rg) const {
         return static_cast<idx_t>(reader_sp_->GetMeta().row_groups[rg].num_rows);
     }
+
+    idx_t NumRowGroups() const { return num_rgs_; }
 
     // Parallel consumer API. The caller sets a callback that is invoked by
     // worker threads directly after decoding each RG (instead of depositing
@@ -5985,6 +5988,117 @@ private:
                 }
             }
             if (pq) {
+                // === Q13/Q16-shape: high-card single-col INT GROUP BY +
+                //     COUNT(*) only. Default per-thread ankerl map blows up
+                //     to 12 GB at 17M+ unique groups (each thread sees all
+                //     uniques) → cache-miss every probe → 600 ns/row.
+                //     RadixCountAgg pre-partitions rows into 16 radix
+                //     buckets per thread, then 16 disjoint workers union
+                //     across threads with no contention. Lives in a
+                //     separate TU so physical_planner.cpp .text stays
+                //     stable.
+                //
+                //     Accepts multiple aggs as long as ALL are COUNT(*) — the
+                //     planner duplicates the agg when ORDER BY references its
+                //     alias, so Q16 produces two identical entries.
+                {
+                    auto group_tid_q16 = pq->GetTypes()[group_col].id();
+                    bool all_count_star_q16 = (num_aggs >= 1);
+                    for (idx_t a = 0; a < num_aggs && all_count_star_q16; a++) {
+                        if (!agg_infos[a].is_count_star) all_count_star_q16 = false;
+                    }
+                    bool q16_shape = (all_count_star_q16 &&
+                                      (group_tid_q16 == LogicalTypeId::BIGINT ||
+                                       group_tid_q16 == LogicalTypeId::INTEGER));
+                    if (q16_shape) {
+                        constexpr int Q16_THREADS = 8;
+                        slothdb::RadixCountAgg radix_agg(Q16_THREADS);
+                        // Reserve based on parquet total rows. Filter cuts
+                        // it down but reserve isn't tight either way.
+                        idx_t total_rows = 0;
+                        for (idx_t rg = 0; rg < pq->NumRowGroups(); rg++) {
+                            total_rows += pq->RowGroupSize(rg);
+                        }
+                        radix_agg.ReserveExpectedRows((int64_t)total_rows);
+                        bool is_bigint_q16 =
+                            (group_tid_q16 == LogicalTypeId::BIGINT);
+                        pq->SetRGConsumer(
+                            [&](const PhysicalParquetScan::RGWork &work,
+                                idx_t rg_idx, int tid) {
+                                if (work.pruned) return;
+                                idx_t nrows = pq->RowGroupSize(rg_idx);
+                                const auto &gcol = work.cols[group_col];
+                                if (!gcol.decoded) return;
+                                const int64_t *gi64 = is_bigint_q16
+                                    ? gcol.i64_data.data() : nullptr;
+                                const int32_t *gi32 = !is_bigint_q16
+                                    ? gcol.i32_data.data() : nullptr;
+                                std::vector<uint8_t> tk;
+                                bool tk_active = false;
+                                if (single_has_filter_fused) {
+                                    tk_active = BuildTypedKeepMask(
+                                        single_preds, work.cols, nrows, tk);
+                                }
+                                int t = tid % Q16_THREADS;
+                                for (idx_t r = 0; r < nrows; r++) {
+                                    if (tk_active) {
+                                        if (!tk[r]) continue;
+                                    } else if (single_has_filter_fused &&
+                                               !EvalSimplePredicates(
+                                                   single_preds, work.cols, r))
+                                        continue;
+                                    if (!gcol.all_valid &&
+                                        !gcol.validity[r]) continue;
+                                    int64_t k = is_bigint_q16
+                                        ? gi64[r] : (int64_t)gi32[r];
+                                    radix_agg.ScatterRow(t, k);
+                                }
+                            });
+                        pq->RunParallelRGs();
+                        // Phase 2: 16 disjoint radix workers (no
+                        // contention). Run all but radix 0 in parallel
+                        // threads; main thread does radix 0.
+                        std::vector<std::thread> mts;
+                        for (int r = 1; r < slothdb::RadixCountAgg::N_RADIX; r++) {
+                            mts.emplace_back([&radix_agg, r]() {
+                                radix_agg.MergeRadix(r);
+                            });
+                        }
+                        radix_agg.MergeRadix(0);
+                        for (auto &t : mts) t.join();
+                        // Phase 3: emit. TopN heap when LIMIT pushdown is
+                        // active and orders by count; full materialization
+                        // otherwise. All aggs are CountStar so any agg
+                        // col index orders by count (DESC only).
+                        int top_k = 0;
+                        if (topn_active_ && topn_limit_ > 0 &&
+                            !topn_ascending_ &&
+                            topn_col_idx_ >= 1 &&
+                            topn_col_idx_ <= num_aggs) {
+                            top_k = (int)topn_limit_;
+                        }
+                        auto results = radix_agg.EmitTopK(top_k);
+                        result_rows_.reserve(results.size());
+                        for (auto &res : results) {
+                            std::vector<Value> row;
+                            row.reserve(1 + num_aggs);
+                            if (is_bigint_q16) {
+                                row.push_back(Value::BIGINT(res.key));
+                            } else {
+                                row.push_back(
+                                    Value::INTEGER((int32_t)res.key));
+                            }
+                            // All num_aggs are COUNT(*) — push the same
+                            // count for each (planner duplicates when
+                            // ORDER BY references the agg alias).
+                            for (idx_t a = 0; a < num_aggs; a++) {
+                                row.push_back(Value::BIGINT(res.count));
+                            }
+                            result_rows_.push_back(std::move(row));
+                        }
+                        return;
+                    }
+                }
                 // Do NOT skip str_data on VARCHAR group cols: PLAIN-page RGs
                 // need gstr[] populated for the fallback at the per-row branch
                 // below. (Mid-RG dict-to-PLAIN fallback in hits.parquet would
