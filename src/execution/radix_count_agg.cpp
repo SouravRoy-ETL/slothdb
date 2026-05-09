@@ -5,6 +5,7 @@
 #include <cstring>
 #include <queue>
 #include <string_view>
+#include <thread>
 
 #include "third_party/unordered_dense.h"
 
@@ -529,6 +530,118 @@ size_t RadixCount2ColIntStr::TotalGroups() const {
     size_t total = 0;
     for (auto& m : impl_->final_maps) total += m.size();
     return total;
+}
+
+// Q14 Stage 1 inner loop. Per-row IncrementByHashed on (int, str) pairs.
+// Specialized for the gstr × int distinct shape: dict path with
+// precomputed per-dict-entry str hashes amortizes hashing across rows
+// that share the same dict entry.
+void RadixCount2ColIntStr::IngestRGStrIntDistinct(int tid,
+    const int64_t* int_data_64, const int32_t* int_data_32,
+    bool int_is_bigint,
+    const uint32_t* dict_indices, const string_t* dict_values,
+    uint32_t dict_size, const string_t* str_data,
+    const uint8_t* validity_int, const uint8_t* validity_str,
+    bool int_all_valid, bool str_all_valid,
+    uint32_t nrows, const uint8_t* keep_mask) {
+    auto fetch_int = [&](uint32_t r) -> int64_t {
+        return int_is_bigint
+            ? int_data_64[r] : (int64_t)int_data_32[r];
+    };
+    if (dict_indices) {
+        std::vector<size_t> dict_h(dict_size);
+        for (uint32_t d = 0; d < dict_size; d++) {
+            dict_h[d] = HashStr(dict_values[d].GetData(),
+                                dict_values[d].GetSize());
+        }
+        for (uint32_t r = 0; r < nrows; r++) {
+            if (keep_mask && !keep_mask[r]) continue;
+            if (!int_all_valid && !validity_int[r]) continue;
+            if (!str_all_valid && !validity_str[r]) continue;
+            uint32_t d = dict_indices[r];
+            if (d >= dict_size) continue;
+            int64_t k = fetch_int(r);
+            size_t ch = CombineIntStrHash(k, dict_h[d]);
+            IncrementByHashed(tid, k,
+                dict_values[d].GetData(), dict_values[d].GetSize(),
+                ch, 1);
+        }
+    } else if (str_data) {
+        for (uint32_t r = 0; r < nrows; r++) {
+            if (keep_mask && !keep_mask[r]) continue;
+            if (!int_all_valid && !validity_int[r]) continue;
+            if (!str_all_valid && !validity_str[r]) continue;
+            int64_t k = fetch_int(r);
+            IncrementRow(tid, k,
+                str_data[r].GetData(), str_data[r].GetSize());
+        }
+    }
+}
+
+// 2-stage COUNT(DISTINCT INT) GROUP BY VARCHAR: Phase A (parallel)
+// builds per-shard local str_count maps from the unique-pair set;
+// Phase B reduces sequentially; Phase C heap top-K.
+std::vector<RadixCountStrResult>
+RadixCount2ColIntStr::EmitTopKDistinctByStrKey(int k) const {
+    constexpr int NSHARDS = N_RADIX;
+    std::array<ankerl::unordered_dense::map<std::string_view, int64_t>,
+               NSHARDS> local_counts;
+    auto build_local = [&](int s) {
+        auto& out = local_counts[s];
+        const auto& m = impl_->final_maps[s];
+        out.reserve(m.size() / 2 + 16);
+        for (auto& kv : m) {
+            ++out[kv.first.s];
+        }
+    };
+    {
+        std::vector<std::thread> ts;
+        for (int s = 1; s < NSHARDS; s++)
+            ts.emplace_back([&, s]() { build_local(s); });
+        build_local(0);
+        for (auto& t : ts) t.join();
+    }
+    ankerl::unordered_dense::map<std::string_view, int64_t> str_counts;
+    size_t total_local = 0;
+    for (auto& m : local_counts) total_local += m.size();
+    str_counts.reserve(total_local / 2 + 16);
+    for (auto& m : local_counts) {
+        for (auto& kv : m) {
+            str_counts[kv.first] += kv.second;
+        }
+    }
+    if (k <= 0) {
+        std::vector<RadixCountStrResult> all;
+        all.reserve(str_counts.size());
+        for (auto& kv : str_counts) {
+            all.push_back({std::string(kv.first), kv.second});
+        }
+        return all;
+    }
+    auto cmp = [](const RadixCountStrResult& a,
+                  const RadixCountStrResult& b) {
+        return a.count > b.count;  // min-heap on count
+    };
+    std::priority_queue<RadixCountStrResult,
+                        std::vector<RadixCountStrResult>, decltype(cmp)>
+        heap(cmp);
+    for (auto& kv : str_counts) {
+        if ((int)heap.size() < k) {
+            heap.push({std::string(kv.first), kv.second});
+        } else if (kv.second > heap.top().count) {
+            heap.pop();
+            heap.push({std::string(kv.first), kv.second});
+        }
+    }
+    std::vector<RadixCountStrResult> out;
+    out.reserve(heap.size());
+    while (!heap.empty()) {
+        out.push_back(std::move(
+            const_cast<RadixCountStrResult&>(heap.top())));
+        heap.pop();
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
 }
 
 }  // namespace slothdb

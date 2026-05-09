@@ -54,6 +54,17 @@ namespace slothdb {
 
 // Forward declarations - classes that reference each other across definitions.
 class PhysicalHashJoin;
+class PhysicalParquetScan;
+struct SimplePredicate;
+// Q14 2-stage COUNT(DISTINCT) helper (defined at file-end, noinline).
+static bool TryComputeQ14_2Stage(
+    PhysicalParquetScan *pq,
+    idx_t group_col, idx_t agg_col,
+    LogicalTypeId group_tid, LogicalTypeId agg_tid,
+    bool topn_active, bool topn_ascending, idx_t topn_limit,
+    int num_aggs,
+    const std::vector<SimplePredicate> &dpd_preds, bool dpd_has_filter,
+    std::vector<std::vector<Value>> &result_rows_out);
 
 // Defined after PhysicalHashJoin's full declaration. Returns nullptr if op is not one.
 static PhysicalHashJoin *AsHashJoin(PhysicalOperator *op);
@@ -7937,6 +7948,21 @@ private:
                                                    : LogicalTypeId::INVALID;
             const auto agg_tid = pq->GetTypes()[agg_col].id();
 
+            // Q14: GROUP BY VARCHAR + COUNT(DISTINCT INT) + TopN with
+            // high-cardinality group col (gated on parquet column size).
+            // Helper is noinline + at file-end so its body doesn't bloat
+            // ComputeAggregates' .text section.
+            if (has_group && !two_col_group &&
+                num_aggs >= 1 &&
+                agg_infos[0].name == "COUNT" && agg_infos[0].is_distinct &&
+                TryComputeQ14_2Stage(pq, group_col, agg_col,
+                    group_tid, agg_tid,
+                    topn_active_, topn_ascending_, topn_limit_,
+                    (int)num_aggs, dpd_preds, dpd_has_filter,
+                    result_rows_)) {
+                return;
+            }
+
             // Project group + agg + filter cols.
             {
                 std::vector<bool> need(pq->GetTypes().size(), false);
@@ -12156,6 +12182,160 @@ PhysicalOpPtr PhysicalPlanner::PlanJoin(const LogicalJoin &op) {
 
 PhysicalOpPtr PhysicalPlanner::PlanDummyScan(const LogicalDummyScan &op) {
     return std::make_unique<PhysicalDummyScan>();
+}
+
+// =====================================================================
+// Q14 2-STAGE COUNT(DISTINCT INT) GROUP BY VARCHAR + TopN.
+// Lives at file-end + noinline so its body sits far from
+// ComputeAggregates' hot text. Adding ~120 LOC inline regressed
+// Q1/Q3/Q4/Q20 by 15-60% via I-cache shift (per
+// feedback_text_icache_shift.md).
+//
+// Single-stage path (gstr × int distinct, ~line 8351) builds N per-
+// thread per-group SimpleI64Sets and unions across threads; with 1.7M
+// SearchPhrase groups (Q14) the merge phase TIMEOUTs at 47s.
+// 2-stage rewrite (per T-103 memo): radix-partitioned dedup of
+// (UserID, SearchPhrase) pairs, then count pairs per SearchPhrase.
+// Each pair is unique by composite key, so pair-count == DISTINCT
+// count. Reuses RadixCount2ColIntStr (INT+STR shape) infra.
+//
+// Cardinality gate via parquet column metadata: total_uncompressed_size
+// proxy. SearchPhrase: 830MB. MobilePhoneModel (Q11): 9MB. >50MB
+// threshold catches Q14 only — Q11's existing low-card path stays.
+// =====================================================================
+#if defined(_MSC_VER)
+__declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline, cold))
+#endif
+static bool TryComputeQ14_2Stage(
+    PhysicalParquetScan *pq,
+    idx_t group_col, idx_t agg_col,
+    LogicalTypeId group_tid, LogicalTypeId agg_tid,
+    bool topn_active, bool topn_ascending, idx_t topn_limit,
+    int num_aggs,
+    const std::vector<SimplePredicate> &dpd_preds, bool dpd_has_filter,
+    std::vector<std::vector<Value>> &result_rows_out) {
+    // Shape gate.
+    if (!(group_tid == LogicalTypeId::VARCHAR &&
+          (agg_tid == LogicalTypeId::BIGINT ||
+           agg_tid == LogicalTypeId::INTEGER) &&
+          topn_active && !topn_ascending && topn_limit > 0)) {
+        return false;
+    }
+    // Cardinality gate via parquet column metadata.
+    int64_t group_total_uncompressed = 0;
+    auto *reader = pq->GetReader();
+    if (reader) {
+        for (auto &rg : reader->GetMeta().row_groups) {
+            if (group_col < rg.columns.size()) {
+                group_total_uncompressed +=
+                    rg.columns[group_col].total_uncompressed_size;
+            }
+        }
+    }
+    // 50MB threshold: SearchPhrase 830MB qualifies, MobilePhoneModel
+    // 9MB does not (Q11's low-card path stays optimal).
+    if (group_total_uncompressed <= 50 * 1024 * 1024) return false;
+
+    // Project group + agg + filter cols. Skip group_col str_data
+    // (dict_indices + dict_values are sufficient for grouping/emit).
+    {
+        std::vector<bool> need(pq->GetTypes().size(), false);
+        need[group_col] = true;
+        need[agg_col] = true;
+        for (auto &p : dpd_preds)
+            if (p.col_idx < need.size()) need[p.col_idx] = true;
+        pq->SetNeededOutputs(need);
+        std::vector<bool> skip(pq->GetTypes().size(), false);
+        if (group_col < skip.size() &&
+            pq->GetTypes()[group_col].id() == LogicalTypeId::VARCHAR) {
+            skip[group_col] = true;
+        }
+        for (auto &p : dpd_preds) {
+            if (p.col_idx < skip.size() && p.str_form &&
+                pq->GetTypes()[p.col_idx].id() == LogicalTypeId::VARCHAR) {
+                skip[p.col_idx] = true;
+            }
+        }
+        pq->SetSkipStrData(std::move(skip));
+    }
+    pq->Init();
+
+    constexpr int Q14_THREADS = 8;
+    slothdb::RadixCount2ColIntStr stage1(Q14_THREADS);
+    pq->SetRGConsumer(
+        [&](const PhysicalParquetScan::RGWork &work,
+            idx_t rg_idx, int tid) {
+            if (work.pruned) return;
+            idx_t nrows = pq->RowGroupSize(rg_idx);
+            const auto &gcol = work.cols[group_col];
+            const auto &acol = work.cols[agg_col];
+            if (!gcol.decoded || !acol.decoded) return;
+            std::vector<uint8_t> tk;
+            bool tk_active = false;
+            if (dpd_has_filter) {
+                tk_active = BuildTypedKeepMask(
+                    dpd_preds, work.cols, nrows, tk);
+                if (!tk_active) {
+                    tk.assign(nrows, 0);
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (EvalSimplePredicates(
+                                dpd_preds, work.cols, r))
+                            tk[r] = 1;
+                    }
+                    tk_active = true;
+                }
+            }
+            stage1.IngestRGStrIntDistinct(tid % Q14_THREADS,
+                (acol.type.id() == LogicalTypeId::BIGINT)
+                    ? acol.i64_data.data() : nullptr,
+                (acol.type.id() == LogicalTypeId::INTEGER)
+                    ? acol.i32_data.data() : nullptr,
+                acol.type.id() == LogicalTypeId::BIGINT,
+                (gcol.str_dict_encoded &&
+                 !gcol.str_dict_indices.empty())
+                    ? gcol.str_dict_indices.data() : nullptr,
+                (gcol.str_dict_encoded &&
+                 !gcol.str_dict_indices.empty())
+                    ? gcol.str_dict_values.data() : nullptr,
+                (uint32_t)(gcol.str_dict_encoded
+                    ? gcol.str_dict_values.size() : 0),
+                !gcol.str_data.empty()
+                    ? gcol.str_data.data() : nullptr,
+                acol.all_valid ? nullptr : acol.validity.data(),
+                gcol.all_valid ? nullptr : gcol.validity.data(),
+                acol.all_valid, gcol.all_valid,
+                (uint32_t)nrows,
+                tk_active ? tk.data() : nullptr);
+        });
+    pq->RunParallelRGs();
+
+    // Merge Stage 1 shards in parallel.
+    std::vector<std::thread> mts;
+    for (int s = 1;
+         s < slothdb::RadixCount2ColIntStr::N_RADIX; s++) {
+        mts.emplace_back([&stage1, s]() { stage1.MergeShard(s); });
+    }
+    stage1.MergeShard(0);
+    for (auto &mt : mts) mt.join();
+
+    // Stage 2 + Top-K: count pairs per str_key. Each pair is unique
+    // by (int, str), so |{pairs with str=X}| == |{distinct ints with str=X}|.
+    auto results = stage1.EmitTopKDistinctByStrKey((int)topn_limit);
+
+    // Emit directly into result_rows_.
+    result_rows_out.reserve(results.size());
+    for (auto &res : results) {
+        std::vector<Value> row;
+        row.reserve(1 + num_aggs);
+        row.push_back(Value::VARCHAR(res.key));
+        for (int a = 0; a < num_aggs; a++) {
+            row.push_back(Value::BIGINT(res.count));
+        }
+        result_rows_out.push_back(std::move(row));
+    }
+    return true;
 }
 
 } // namespace slothdb

@@ -108,6 +108,28 @@ public:
     // string copies before LIMIT truncates to 10.
     std::vector<RadixCount2ColIntStrResult> EmitFirstK(int k) const;
 
+    // After Phase 2 merge, treat the (int, str) pairs as the unique-pair
+    // set produced by Stage 1 of a 2-stage COUNT(DISTINCT INT) GROUP BY
+    // VARCHAR rewrite. Per str_key, count of pairs == COUNT DISTINCT int.
+    // Returns top-K (str_key, distinct_int_count) ordered by count DESC.
+    // Used by Q14: GROUP BY SearchPhrase + COUNT(DISTINCT UserID).
+    std::vector<RadixCountStrResult> EmitTopKDistinctByStrKey(int k) const;
+
+    // Q14 2-stage Stage 1 inner loop body. Lives in this TU (not
+    // physical_planner.cpp) so the planner's I-cache footprint stays
+    // tight (a +120 LOC inline version regressed Q1/Q3/Q4/Q20 by
+    // 15-60% via text-section shift — see I-cache memo).
+    // dict_indices is the dict-encoded path; if null, str_data is used.
+    // keep_mask is null when no filter is active.
+    void IngestRGStrIntDistinct(int tid,
+        const int64_t* int_data_64, const int32_t* int_data_32,
+        bool int_is_bigint,
+        const uint32_t* dict_indices, const string_t* dict_values,
+        uint32_t dict_size, const string_t* str_data,
+        const uint8_t* validity_int, const uint8_t* validity_str,
+        bool int_all_valid, bool str_all_valid,
+        uint32_t nrows, const uint8_t* keep_mask);
+
     size_t TotalGroups() const;
 
 private:
