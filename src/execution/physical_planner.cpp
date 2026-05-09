@@ -9262,8 +9262,12 @@ private:
                             }
                             pq->SetNeededOutputs(need);
                             // Skip per-row str_data on filter VARCHAR cols
-                            // (BuildTypedKeepMask reads dict_values).
+                            // AND on the str group col itself — the dict_fast
+                            // hot loop reads str_dict_indices+str_dict_values
+                            // exclusively, and PLAIN-page mid-RG fallback
+                            // back-fills via MaterialiseStrDataLazy.
                             std::vector<bool> skip(pq->GetTypes().size(), false);
+                            skip[str_gc] = true;
                             for (auto &p : multi_preds) {
                                 if (p.col_idx < skip.size() && p.str_form &&
                                     pq->GetTypes()[p.col_idx].id() ==
