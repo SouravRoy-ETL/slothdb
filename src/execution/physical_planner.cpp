@@ -5983,6 +5983,22 @@ private:
                                         skip[p.col_idx] = true;
                                     }
                                 }
+                                // Q13/Q11/Q12-shape: when group col is VARCHAR
+                                // and all aggs are CountStar, the dict_fast
+                                // branch reads dict_indices+dict_values only;
+                                // str_data is dead weight (12-16 B per row of
+                                // string_t writes that nobody reads). Skip it;
+                                // the rare PLAIN page back-fills str_data
+                                // automatically and falls into the non-dict
+                                // branch (str_dict_encoded toggles false).
+                                bool q13_eligible_skip =
+                                    (pq->GetTypes()[group_col].id() ==
+                                     LogicalTypeId::VARCHAR);
+                                for (idx_t a = 0; a < num_aggs && q13_eligible_skip; a++) {
+                                    if (!agg_infos[a].is_count_star)
+                                        q13_eligible_skip = false;
+                                }
+                                if (q13_eligible_skip) skip[group_col] = true;
                                 pq->SetSkipStrData(std::move(skip));
                             }
                         }
@@ -6041,19 +6057,26 @@ private:
                                     const uint32_t *di = gcol.str_dict_indices.data();
                                     const string_t *dv = gcol.str_dict_values.data();
                                     idx_t dsz = gcol.str_dict_values.size();
-                                    for (idx_t r = 0; r < nrows; r++) {
-                                        if (tk_active) {
-                                            if (!tk[r]) continue;
-                                        } else if (single_has_filter_fused &&
-                                                   !EvalSimplePredicates(
-                                                       single_preds, work.cols, r))
-                                            continue;
-                                        if (!gcol.all_valid &&
-                                            !gcol.validity[r]) continue;
-                                        uint32_t d = di[r];
-                                        if (d >= dsz) continue;
-                                        str_agg.IncrementRow(t,
-                                            dv[d].GetData(), dv[d].GetSize());
+                                    if (!single_has_filter_fused || tk_active) {
+                                        // Bulk dict-aware: O(D) map ops vs O(N).
+                                        str_agg.IncrementByDictRG(
+                                            t, di, (uint32_t)nrows, dv,
+                                            (uint32_t)dsz,
+                                            gcol.all_valid ? nullptr
+                                                : gcol.validity.data(),
+                                            tk_active ? tk.data() : nullptr);
+                                    } else {
+                                        for (idx_t r = 0; r < nrows; r++) {
+                                            if (!EvalSimplePredicates(
+                                                    single_preds, work.cols, r))
+                                                continue;
+                                            if (!gcol.all_valid &&
+                                                !gcol.validity[r]) continue;
+                                            uint32_t d = di[r];
+                                            if (d >= dsz) continue;
+                                            str_agg.IncrementRow(t,
+                                                dv[d].GetData(), dv[d].GetSize());
+                                        }
                                     }
                                 } else if (!gcol.str_data.empty()) {
                                     const string_t *gs = gcol.str_data.data();

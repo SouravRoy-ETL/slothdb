@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "slothdb/common/types/string_type.hpp"
 #include "slothdb/execution/simple_i64_count_map.hpp"
 
 namespace slothdb {
@@ -124,6 +125,22 @@ public:
     // per-RG dict-aware path to push N rows worth of count for one dict
     // entry in a single hash + lookup, instead of per-row.
     void IncrementBy(int tid, const char* data, uint32_t size, int64_t delta);
+
+    // Bulk dict-aware ingest for one row group. Two passes:
+    //   1) Tight `cnt[di[r]]++` loop over `nrows` (no hash, no map).
+    //   2) Once per non-zero `cnt[d]`, one shard.find+emplace with bulk
+    //      count. Collapses O(N) per-row map ops to O(D_used) per-RG ops
+    //      where D_used <= dict_size << nrows on Q11/Q13 hot paths.
+    // `validity` may be null when the column is all-valid; `keep_mask`
+    // may be null when no filter is active for the RG. Mirrors DuckDB's
+    // GroupedAggregateHashTable::TryAddDictionaryGroups dict-amortization.
+    void IncrementByDictRG(int tid,
+                           const uint32_t* dict_indices,
+                           uint32_t nrows,
+                           const string_t* dict_values,
+                           uint32_t dict_size,
+                           const uint8_t* validity,
+                           const uint8_t* keep_mask);
 
     // Phase 2: parallel per-shard merge. One worker per shard.
     void MergeShard(int shard);

@@ -121,6 +121,9 @@ struct StrPerThread {
     std::array<ankerl::unordered_dense::map<std::string_view, int64_t>,
                STR_NSHARDS> shards;
     std::vector<StrArenaChunk> arena;
+    // Per-RG dict-counter scratch reused across RGs. Sized to dict_size
+    // on first use within an RG; zeroed at start of each RG ingest.
+    std::vector<int64_t> dict_count_scratch;
 
     char* alloc(size_t n) {
         if (arena.empty() || arena.back().bytes.size() - arena.back().used < n) {
@@ -177,6 +180,74 @@ void RadixCountAggStr::IncrementBy(int tid, const char* data, uint32_t size,
     char* dst = pt.alloc(size);
     if (size) std::memcpy(dst, data, size);
     m.emplace(std::string_view(dst, size), delta);
+}
+
+void RadixCountAggStr::IncrementByDictRG(int tid,
+                                         const uint32_t* dict_indices,
+                                         uint32_t nrows,
+                                         const string_t* dict_values,
+                                         uint32_t dict_size,
+                                         const uint8_t* validity,
+                                         const uint8_t* keep_mask) {
+    if (dict_size == 0 || nrows == 0) return;
+    auto& pt = *impl_->threads[tid];
+    if (pt.dict_count_scratch.size() < dict_size) {
+        pt.dict_count_scratch.assign(dict_size, 0);
+    } else {
+        std::fill_n(pt.dict_count_scratch.begin(), dict_size, 0);
+    }
+    int64_t* cnt = pt.dict_count_scratch.data();
+
+    // Pass 1: tight per-row counter increment. No hash, no map. Specialized
+    // by (validity?, keep_mask?) to keep the hot loop branch-free.
+    if (!validity && !keep_mask) {
+        for (uint32_t r = 0; r < nrows; r++) {
+            uint32_t d = dict_indices[r];
+            if (d < dict_size) cnt[d]++;
+        }
+    } else if (!validity && keep_mask) {
+        for (uint32_t r = 0; r < nrows; r++) {
+            if (!keep_mask[r]) continue;
+            uint32_t d = dict_indices[r];
+            if (d < dict_size) cnt[d]++;
+        }
+    } else if (validity && !keep_mask) {
+        for (uint32_t r = 0; r < nrows; r++) {
+            if (!validity[r]) continue;
+            uint32_t d = dict_indices[r];
+            if (d < dict_size) cnt[d]++;
+        }
+    } else {
+        for (uint32_t r = 0; r < nrows; r++) {
+            if (!keep_mask[r]) continue;
+            if (!validity[r]) continue;
+            uint32_t d = dict_indices[r];
+            if (d < dict_size) cnt[d]++;
+        }
+    }
+
+    // Pass 2: fold per-dict counters into per-thread shard maps. One hash
+    // + lookup per non-zero dict entry instead of one per row.
+    ankerl::unordered_dense::hash<std::string_view> H;
+    for (uint32_t d = 0; d < dict_size; d++) {
+        int64_t delta = cnt[d];
+        if (delta == 0) continue;
+        const string_t& sv = dict_values[d];
+        const char* data = sv.GetData();
+        uint32_t size = sv.GetSize();
+        std::string_view probe(data, size);
+        size_t h = H(probe);
+        int shard = (int)(h & (STR_NSHARDS - 1));
+        auto& m = pt.shards[shard];
+        auto it = m.find(probe);
+        if (it != m.end()) {
+            it->second += delta;
+        } else {
+            char* dst = pt.alloc(size);
+            if (size) std::memcpy(dst, data, size);
+            m.emplace(std::string_view(dst, size), delta);
+        }
+    }
 }
 
 void RadixCountAggStr::MergeShard(int shard) {
