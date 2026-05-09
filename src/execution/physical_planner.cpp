@@ -5991,11 +5991,20 @@ private:
                                 // the rare PLAIN page back-fills str_data
                                 // automatically and falls into the non-dict
                                 // branch (str_dict_encoded toggles false).
+                                // Q13_eligible_skip widened: group_col VARCHAR
+                                // dict_fast paths read str_dict_indices+
+                                // str_dict_values, never str_data. Safe to
+                                // skip iff NO agg targets the group_col
+                                // itself (count_star never targets cols, MIN/
+                                // MAX/SUM on a different col is unaffected).
+                                // Q11_base / Q22_URL / Q26 (MIN(URL) GROUP BY
+                                // SearchPhrase) all qualify.
                                 bool q13_eligible_skip =
                                     (pq->GetTypes()[group_col].id() ==
                                      LogicalTypeId::VARCHAR);
                                 for (idx_t a = 0; a < num_aggs && q13_eligible_skip; a++) {
-                                    if (!agg_infos[a].is_count_star)
+                                    if (!agg_infos[a].is_count_star &&
+                                        agg_infos[a].col_idx == group_col)
                                         q13_eligible_skip = false;
                                 }
                                 if (q13_eligible_skip) skip[group_col] = true;
