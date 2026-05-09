@@ -100,6 +100,7 @@ struct SimplePredicate {
     bool str_form = false;
     bool like_contains = false;  // VARCHAR LIKE '%literal%' (case-sensitive,
                                  // no _, no escapes, exactly one %...%)
+    bool like_negated = false;   // when like_contains: true means NOT LIKE
 };
 
 static bool ParseCmpOp(const std::string &s, SimpleCmpOp &out) {
@@ -140,9 +141,11 @@ static bool TryCompileSimplePredicateImpl(const BoundExpression &e,
     auto tid = col.GetReturnType().id();
     // LIKE '%literal%' (case-sensitive, no _, no escapes) on a VARCHAR
     // column. Stash the bare needle and route the row-loop through
-    // memmem/std::search instead of the per-row backtracker. ILIKE and
-    // NOT LIKE keep falling through to the legacy expression executor.
-    if (!swapped && cmp.op == "LIKE" && tid == LogicalTypeId::VARCHAR) {
+    // memmem/std::search instead of the per-row backtracker. ILIKE keeps
+    // falling through to the legacy expression executor. NOT LIKE goes
+    // through the same path with like_negated=true (Q23 needs this).
+    if (!swapped && (cmp.op == "LIKE" || cmp.op == "NOT LIKE") &&
+        tid == LogicalTypeId::VARCHAR) {
         if (con.value.IsNull()) return false;
         if (con.value.type().id() != LogicalTypeId::VARCHAR) return false;
         const auto &pat = con.value.GetValue<std::string>();
@@ -157,6 +160,7 @@ static bool TryCompileSimplePredicateImpl(const BoundExpression &e,
         sp.sval = std::move(needle);
         sp.str_form = true;
         sp.like_contains = true;
+        sp.like_negated = (cmp.op == "NOT LIKE");
         out.push_back(std::move(sp));
         return true;
     }
@@ -242,9 +246,16 @@ static inline bool EvalSimplePredicatesChunk(
             if (p.like_contains) {
                 const char *hs = s.GetData();
                 uint32_t hl = s.GetSize();
-                if (p.sval.empty()) continue;
-                if (hl < p.sval.size()) return false;
-                if (!FindSubstr(hs, hl, p.sval.data(), p.sval.size())) return false;
+                bool match;
+                if (p.sval.empty()) {
+                    match = true;
+                } else if (hl < p.sval.size()) {
+                    match = false;
+                } else {
+                    match = (FindSubstr(hs, hl, p.sval.data(), p.sval.size()) != nullptr);
+                }
+                if (p.like_negated) match = !match;
+                if (!match) return false;
                 continue;
             }
             bool eq = (s.GetSize() == p.sval.size()) &&
@@ -314,9 +325,16 @@ static inline bool EvalSimplePredicates(const std::vector<SimplePredicate> &pred
                 return false;
             }
             if (p.like_contains) {
-                if (p.sval.empty()) continue;
-                if (sl < p.sval.size()) return false;
-                if (!FindSubstr(sd, sl, p.sval.data(), p.sval.size())) return false;
+                bool match;
+                if (p.sval.empty()) {
+                    match = true;
+                } else if (sl < p.sval.size()) {
+                    match = false;
+                } else {
+                    match = (FindSubstr(sd, sl, p.sval.data(), p.sval.size()) != nullptr);
+                }
+                if (p.like_negated) match = !match;
+                if (!match) return false;
                 continue;
             }
             bool eq = (sl == p.sval.size()) &&
@@ -401,16 +419,21 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
             std::vector<uint8_t> dict_match(dsz, 0);
             if (p.like_contains) {
                 const auto &needle = p.sval;
+                uint8_t hit_v = p.like_negated ? 0 : 1;
+                uint8_t miss_v = p.like_negated ? 1 : 0;
                 if (needle.empty()) {
-                    std::fill(dict_match.begin(), dict_match.end(), 1);
+                    // empty needle: LIKE '%%' matches everything;
+                    // NOT LIKE '%%' matches nothing
+                    std::fill(dict_match.begin(), dict_match.end(), hit_v);
                 } else {
                     for (idx_t di = 0; di < dsz; di++) {
                         const auto &dv = c.str_dict_values[di];
                         const char *hs = dv.GetData();
                         uint32_t hl = dv.GetSize();
-                        if (hl < needle.size()) { dict_match[di] = 0; continue; }
+                        if (hl < needle.size()) { dict_match[di] = miss_v; continue; }
                         dict_match[di] =
-                            FindSubstr(hs, hl, needle.data(), needle.size()) ? 1 : 0;
+                            FindSubstr(hs, hl, needle.data(), needle.size())
+                                ? hit_v : miss_v;
                     }
                 }
             } else {
@@ -1793,9 +1816,16 @@ private:
                                 sl = col.str_data[i].GetSize();
                             } else { return false; }
                             if (p.like_contains) {
-                                if (p.sval.empty()) continue;
-                                if (sl < p.sval.size()) return false;
-                                if (!FindSubstr(sd, sl, p.sval.data(), p.sval.size())) return false;
+                                bool match;
+                                if (p.sval.empty()) {
+                                    match = true;
+                                } else if (sl < p.sval.size()) {
+                                    match = false;
+                                } else {
+                                    match = (FindSubstr(sd, sl, p.sval.data(), p.sval.size()) != nullptr);
+                                }
+                                if (p.like_negated) match = !match;
+                                if (!match) return false;
                             } else {
                                 bool eq = (sl == p.sval.size()) &&
                                           (p.sval.empty() ||
@@ -2336,9 +2366,16 @@ private:
                                     sl = col.str_data[i].GetSize();
                                 } else { return false; }
                                 if (p.like_contains) {
-                                    if (p.sval.empty()) continue;
-                                    if (sl < p.sval.size()) return false;
-                                    if (!FindSubstr(sd, sl, p.sval.data(), p.sval.size())) return false;
+                                    bool match;
+                                    if (p.sval.empty()) {
+                                        match = true;
+                                    } else if (sl < p.sval.size()) {
+                                        match = false;
+                                    } else {
+                                        match = (FindSubstr(sd, sl, p.sval.data(), p.sval.size()) != nullptr);
+                                    }
+                                    if (p.like_negated) match = !match;
+                                    if (!match) return false;
                                 } else {
                                     bool eq = (sl == p.sval.size()) &&
                                               (p.sval.empty() ||
@@ -2483,9 +2520,16 @@ private:
                                         return false;
                                     }
                                     if (p.like_contains) {
-                                        if (p.sval.empty()) continue;
-                                        if (sl < p.sval.size()) return false;
-                                        if (!FindSubstr(sd, sl, p.sval.data(), p.sval.size())) return false;
+                                        bool match;
+                                        if (p.sval.empty()) {
+                                            match = true;
+                                        } else if (sl < p.sval.size()) {
+                                            match = false;
+                                        } else {
+                                            match = (FindSubstr(sd, sl, p.sval.data(), p.sval.size()) != nullptr);
+                                        }
+                                        if (p.like_negated) match = !match;
+                                        if (!match) return false;
                                     } else {
                                         bool eq = (sl == p.sval.size()) &&
                                                   (p.sval.empty() ||
@@ -6930,11 +6974,16 @@ private:
                                                 sl = col.str_data[i].GetSize();
                                             } else { keep = false; break; }
                                             if (p.like_contains) {
-                                                if (p.sval.empty()) continue;
-                                                if (sl < p.sval.size()) { keep = false; break; }
-                                                if (!FindSubstr(sd, sl, p.sval.data(), p.sval.size())) {
-                                                    keep = false; break;
+                                                bool match;
+                                                if (p.sval.empty()) {
+                                                    match = true;
+                                                } else if (sl < p.sval.size()) {
+                                                    match = false;
+                                                } else {
+                                                    match = (FindSubstr(sd, sl, p.sval.data(), p.sval.size()) != nullptr);
                                                 }
+                                                if (p.like_negated) match = !match;
+                                                if (!match) { keep = false; break; }
                                             } else {
                                                 bool eq = (sl == p.sval.size()) &&
                                                           (p.sval.empty() ||
