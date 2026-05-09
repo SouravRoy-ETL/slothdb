@@ -8353,7 +8353,24 @@ private:
                     if (g_dict_idx) {
                         std::vector<slothdb::SimpleI64Set *>
                             di_to_set(g_dsz, nullptr);
+                        // Prefetch slot ~PFD rows ahead. Q11's iPad-dominated
+                        // hot path probes a single ~5MB per-thread set; the
+                        // L3 round-trip dominates latency. Loading the future
+                        // slot in parallel with the current insert hides it.
+                        constexpr idx_t PFD = 8;
                         for (idx_t r = 0; r < nrows; r++) {
+                            if (r + PFD < nrows) {
+                                uint32_t pf_di = g_dict_idx[r + PFD];
+                                if (pf_di < g_dsz) {
+                                    auto *pf_sp = di_to_set[pf_di];
+                                    if (pf_sp) {
+                                        int64_t pf_v = a_i64
+                                            ? a_i64[r + PFD]
+                                            : (int64_t)a_i32[r + PFD];
+                                        pf_sp->prefetch(pf_v);
+                                    }
+                                }
+                            }
                             if (!keep_row(r)) continue;
                             if (!acol.all_valid && !acol.validity[r]) continue;
                             uint32_t di = g_dict_idx[r];

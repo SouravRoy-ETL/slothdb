@@ -16,6 +16,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <emmintrin.h>  // _mm_prefetch
+#endif
+
 #include "third_party/unordered_dense.h"
 
 namespace slothdb {
@@ -52,6 +56,20 @@ public:
 
     size_t size() const noexcept { return count_ + (has_zero_ ? 1 : 0); }
     bool empty() const noexcept { return count_ == 0 && !has_zero_; }
+
+    // Hint that `v` is about to be inserted ~8 iterations later.
+    // Prefetches the first probe slot so the cache miss overlaps with
+    // unrelated work in the meantime. Cheap if called on uninstantiated
+    // (cap_ == 0) sets.
+    void prefetch(int64_t v) const noexcept {
+        if (cap_ == 0 || v == 0) return;
+        size_t i = ankerl::unordered_dense::hash<int64_t>{}(v) & mask_;
+#if defined(__GNUC__) || defined(__clang__)
+        __builtin_prefetch(&slots_[i], 1 /*write*/, 1 /*low locality*/);
+#elif defined(_MSC_VER)
+        _mm_prefetch(reinterpret_cast<const char*>(&slots_[i]), _MM_HINT_T1);
+#endif
+    }
 
     template <typename Fn>
     void for_each(Fn &&fn) const {
