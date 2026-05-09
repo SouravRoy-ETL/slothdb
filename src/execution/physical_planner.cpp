@@ -7882,6 +7882,26 @@ private:
                 need[agg_col] = true;
                 for (auto &p : dpd_preds) if (p.col_idx < need.size()) need[p.col_idx] = true;
                 pq->SetNeededOutputs(need);
+                // VARCHAR group/agg cols: dict_fast paths read
+                // str_dict_indices+str_dict_values only — str_data is dead
+                // weight (12-16 B per row of string_t writes nobody reads).
+                // Mid-RG PLAIN page back-fills via MaterialiseStrDataLazy.
+                std::vector<bool> skip(pq->GetTypes().size(), false);
+                auto try_skip_varchar = [&](idx_t ci) {
+                    if (ci < skip.size() &&
+                        pq->GetTypes()[ci].id() == LogicalTypeId::VARCHAR) {
+                        skip[ci] = true;
+                    }
+                };
+                for (auto gci : group_col_indices) try_skip_varchar(gci);
+                if (agg_tid == LogicalTypeId::VARCHAR) try_skip_varchar(agg_col);
+                for (auto &p : dpd_preds) {
+                    if (p.col_idx < skip.size() && p.str_form &&
+                        pq->GetTypes()[p.col_idx].id() == LogicalTypeId::VARCHAR) {
+                        skip[p.col_idx] = true;
+                    }
+                }
+                pq->SetSkipStrData(std::move(skip));
             }
             pq->Init();
 
