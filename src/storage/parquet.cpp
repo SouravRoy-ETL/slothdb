@@ -3,6 +3,7 @@
 #include "slothdb/common/exception.hpp"
 #include "miniz.h"
 #include "zstd.h"
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
@@ -1046,9 +1047,17 @@ void ParquetWriter::Finish() {
 // ============================================================================
 
 ParquetReader::ParquetReader(const std::string &path) : path_(path) {
-    // Map (or fread-small) the file. Gives us a stable read-only byte buffer
-    // all decode paths share - no per-column file opens.
+    // Accept MSYS / Cygwin / WSL-style paths like `/c/Users/foo` and
+    // translate to native Windows form (`C:/Users/foo`). Bench harnesses
+    // run via bash typically use `realpath` which produces the MSYS form;
+    // CreateFileA can't resolve `/c/...` itself.
 #ifdef _WIN32
+    if (path_.size() >= 3 && path_[0] == '/' && path_[2] == '/' &&
+        ((path_[1] >= 'a' && path_[1] <= 'z') ||
+         (path_[1] >= 'A' && path_[1] <= 'Z'))) {
+        char drive = (char)std::toupper((unsigned char)path_[1]);
+        path_ = std::string(1, drive) + ":" + path_.substr(2);
+    }
     HANDLE hFile = CreateFileA(path_.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE)
