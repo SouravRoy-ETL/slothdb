@@ -63,6 +63,11 @@ public:
     RadixCount2ColIntStr(const RadixCount2ColIntStr&) = delete;
     RadixCount2ColIntStr& operator=(const RadixCount2ColIntStr&) = delete;
 
+    // Pre-reserve per-thread per-shard maps to avoid resize copies during
+    // 99M-row inserts (Q22). Estimate total unique pairs across the agg —
+    // we divide by (max_threads * N_RADIX) for per-shard expected count.
+    void ReserveExpectedRows(int64_t total_unique_pairs);
+
     // Phase 1: per-thread emplace. Hashes (int_key, str_data[size]) → shard,
     // increments count. On miss copies string into per-thread arena.
     void IncrementRow(int tid, int64_t int_key,
@@ -97,6 +102,11 @@ public:
 
     // Phase 3: top-K (count DESC) across final shards.
     std::vector<RadixCount2ColIntStrResult> EmitTopK(int k) const;
+
+    // First-K (no ordering, stops as soon as K rows are accumulated).
+    // Used by LIMIT-without-ORDER-BY queries (Q22) so we don't pay 80M
+    // string copies before LIMIT truncates to 10.
+    std::vector<RadixCount2ColIntStrResult> EmitFirstK(int k) const;
 
     size_t TotalGroups() const;
 

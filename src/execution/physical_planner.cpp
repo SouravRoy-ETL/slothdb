@@ -4866,6 +4866,11 @@ public:
         topn_active_ = true;
     }
 
+    // Bare LIMIT (no ORDER BY) — no row ordering required, just emit the
+    // first N. Used by emit paths that would otherwise materialize every
+    // group (Q22: 80M string copies before LIMIT 10 truncates).
+    void SetRowLimit(idx_t n) override { row_limit_hint_ = n; }
+
     void Init() override {
         for (auto &child : children) child->Init();
         computed_ = false;
@@ -9389,7 +9394,15 @@ private:
                                              (int)num_aggs) {
                             top_k = (int)topn_limit_;
                         }
-                        auto results = agg2.EmitTopK(top_k);
+                        // Bare LIMIT (Q22): no ordering required, just need
+                        // the first K rows. Avoid materializing 80M Values
+                        // when the upstream PhysicalLimit will discard 99.99%.
+                        std::vector<RadixCount2ColIntStrResult> results;
+                        if (!topn_active_ && row_limit_hint_ > 0) {
+                            results = agg2.EmitFirstK((int)row_limit_hint_);
+                        } else {
+                            results = agg2.EmitTopK(top_k);
+                        }
                         result_rows_.reserve(results.size());
                         // Output column order matches group_col_indices: if
                         // INT was first in the SELECT list, emit (int, str);
@@ -10581,6 +10594,8 @@ private:
     idx_t topn_col_idx_ = 0;
     bool topn_ascending_ = true;
     idx_t topn_limit_ = 0;
+    // Bare LIMIT propagated from PhysicalLimit when no ORDER BY exists.
+    idx_t row_limit_hint_ = 0;
 };
 
 // ============================================================================

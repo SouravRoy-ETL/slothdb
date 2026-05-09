@@ -393,6 +393,17 @@ RadixCount2ColIntStr::RadixCount2ColIntStr(int max_threads)
 
 RadixCount2ColIntStr::~RadixCount2ColIntStr() = default;
 
+void RadixCount2ColIntStr::ReserveExpectedRows(int64_t total_unique_pairs) {
+    if (total_unique_pairs <= 0) return;
+    int64_t per_shard = total_unique_pairs /
+                        (impl_->max_threads * (int64_t)IS_NSHARDS);
+    per_shard = (per_shard * 5) / 4;  // 25% slack
+    if (per_shard < 256) per_shard = 256;
+    for (auto& tl_p : impl_->threads) {
+        for (auto& m : tl_p->shards) m.reserve((size_t)per_shard);
+    }
+}
+
 void RadixCount2ColIntStr::IncrementRow(int tid, int64_t int_key,
                                         const char* str_data, uint32_t str_size) {
     IncrementBy(tid, int_key, str_data, str_size, 1);
@@ -454,6 +465,22 @@ void RadixCount2ColIntStr::MergeShard(int shard) {
             }
         }
     }
+}
+
+std::vector<RadixCount2ColIntStrResult>
+RadixCount2ColIntStr::EmitFirstK(int k) const {
+    std::vector<RadixCount2ColIntStrResult> out;
+    if (k <= 0) return out;
+    out.reserve((size_t)k);
+    for (auto& m : impl_->final_maps) {
+        for (auto& kv : m) {
+            if ((int)out.size() >= k) return out;
+            out.push_back({kv.first.i,
+                           std::string(kv.first.s),
+                           kv.second});
+        }
+    }
+    return out;
 }
 
 std::vector<RadixCount2ColIntStrResult>
