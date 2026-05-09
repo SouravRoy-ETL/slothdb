@@ -7179,7 +7179,70 @@ private:
             // Sequential aggregate (parallel decode via slot mode). Q2's agg
             // work is already tiny - 80 RGs × SUM is <10ms - so paying per-
             // query thread-pool teardown+spawn to parallelize it nets negative.
-            if (auto *pq = dynamic_cast<PhysicalParquetScan *>(children[0].get())) {
+            // Also accepts AGG -> FILTER -> PARQUET via TryCompileSimplePredicate;
+            // the per-RG worker applies the typed-keep-mask before the per-row
+            // agg loop. Without this, no-group `COUNT(col) WHERE filter` over
+            // parquet falls into the chunk-by-chunk serial fallback (~40s on
+            // 99M-row hits).
+            PhysicalParquetScan *pq =
+                dynamic_cast<PhysicalParquetScan *>(children[0].get());
+            std::vector<SimplePredicate> nogr_preds;
+            bool nogr_has_filter = false;
+            if (!pq) {
+                if (auto *flt = dynamic_cast<PhysicalFilter *>(children[0].get())) {
+                    if (!flt->children.empty()) {
+                        if (auto *spq = dynamic_cast<PhysicalParquetScan *>(
+                                flt->children[0].get())) {
+                            std::vector<SimplePredicate> tmp;
+                            if (flt->GetCondition() &&
+                                TryCompileSimplePredicate(*flt->GetCondition(),
+                                                          tmp)) {
+                                pq = spq;
+                                nogr_preds = std::move(tmp);
+                                nogr_has_filter = true;
+                                std::vector<bool> need(pq->GetTypes().size(),
+                                                       false);
+                                bool any = false;
+                                for (auto &info : agg_infos) {
+                                    if (info.col_idx != INVALID_INDEX &&
+                                        info.col_idx < need.size()) {
+                                        need[info.col_idx] = true; any = true;
+                                    }
+                                }
+                                for (auto &p : nogr_preds) {
+                                    if (p.col_idx < need.size()) {
+                                        need[p.col_idx] = true; any = true;
+                                    }
+                                }
+                                if (any) pq->SetNeededOutputs(need);
+                                std::vector<bool> skip(pq->GetTypes().size(),
+                                                       false);
+                                for (auto &p : nogr_preds) {
+                                    if (p.col_idx < skip.size() && p.str_form &&
+                                        pq->GetTypes()[p.col_idx].id() ==
+                                            LogicalTypeId::VARCHAR) {
+                                        skip[p.col_idx] = true;
+                                    }
+                                }
+                                pq->SetSkipStrData(std::move(skip));
+                            }
+                        }
+                    }
+                }
+            }
+            // Filter-mode only safe for COUNT-shaped aggs in this scope —
+            // SUM/MIN/MAX with WHERE require touching the AVX2/4-lane hot
+            // loops, deferred. If the filter applied but an agg isn't a
+            // COUNT, abandon pq so the slow chunk-loop fallback runs (still
+            // correct, just not faster).
+            if (pq && nogr_has_filter) {
+                bool all_count = true;
+                for (auto &info : agg_infos) {
+                    if (info.name != "COUNT") { all_count = false; break; }
+                }
+                if (!all_count) pq = nullptr;
+            }
+            if (pq) {
                 // === STATS-ONLY FAST PATH ===
                 // When every agg is COUNT(*) / MIN(col) / MAX(col) and the
                 // column has per-RG min/max in the footer, fold from stats
@@ -7247,7 +7310,8 @@ private:
                 // per-row dict-gather; replaces with per-RG histogram +
                 // sum_idx (count[idx] * dict[idx]). See
                 // include/slothdb/execution/q4_dict_histogram.hpp.
-                if (num_aggs == 1 && !pq->HasPushdownFilters()) {
+                if (num_aggs == 1 && !pq->HasPushdownFilters() &&
+                    !nogr_has_filter) {
                     auto &info = agg_infos[0];
                     bool eligible = !info.is_count_star &&
                                     !info.is_distinct &&
@@ -7290,11 +7354,30 @@ private:
                                        idx_t rg_idx, int thread_id) {
                     auto &lstates = tl_states[thread_id];
                     idx_t nrows = pq->RowGroupSize(rg_idx);
+                    std::vector<uint8_t> tk_nogr;
+                    bool tk_nogr_active = false;
+                    if (nogr_has_filter) {
+                        tk_nogr_active = BuildTypedKeepMask(
+                            nogr_preds, work.cols, nrows, tk_nogr);
+                    }
+                    auto passing_for_rg = [&]() -> int64_t {
+                        if (!nogr_has_filter) return (int64_t)nrows;
+                        int64_t cnt = 0;
+                        if (tk_nogr_active) {
+                            for (idx_t i = 0; i < nrows; i++) cnt += tk_nogr[i];
+                        } else {
+                            for (idx_t i = 0; i < nrows; i++) {
+                                if (EvalSimplePredicates(
+                                        nogr_preds, work.cols, i)) cnt++;
+                            }
+                        }
+                        return cnt;
+                    };
                     for (idx_t a = 0; a < num_aggs; a++) {
                         auto &state = lstates[a];
                         auto &info = agg_infos[a];
                         if (info.name == "COUNT" && info.is_count_star) {
-                            state.count += static_cast<int64_t>(nrows);
+                            state.count += passing_for_rg();
                             continue;
                         }
                         if (info.col_idx == INVALID_INDEX) continue;
@@ -7307,7 +7390,9 @@ private:
                         // SUM/COUNT/MIN/MAX from the metadata directly and
                         // skip the typed inner loop. Q3 SUM(AdvEngineID)
                         // hits this constantly — most RGs are all-zero.
-                        if (meta_for_stats &&
+                        // Filter-mode disables the stats fold (stats don't
+                        // honor the per-row predicate).
+                        if (!nogr_has_filter && meta_for_stats &&
                             rg_idx < meta_for_stats->row_groups.size() &&
                             info.col_idx < meta_for_stats->row_groups[rg_idx].columns.size()) {
                             const auto &cmeta = meta_for_stats->row_groups[rg_idx].columns[info.col_idx];
@@ -7371,8 +7456,28 @@ private:
                         auto tid = col.type.id();
                         bool all_valid = col.all_valid;
                         if (info.name == "COUNT") {
-                            if (all_valid) state.count += static_cast<int64_t>(nrows);
-                            else {
+                            if (nogr_has_filter) {
+                                int64_t cnt = 0;
+                                if (tk_nogr_active) {
+                                    if (all_valid) {
+                                        for (idx_t i = 0; i < nrows; i++)
+                                            cnt += tk_nogr[i];
+                                    } else {
+                                        for (idx_t i = 0; i < nrows; i++)
+                                            cnt += tk_nogr[i] & col.validity[i];
+                                    }
+                                } else {
+                                    for (idx_t i = 0; i < nrows; i++) {
+                                        if (!EvalSimplePredicates(
+                                                nogr_preds, work.cols, i)) continue;
+                                        if (!all_valid && !col.validity[i]) continue;
+                                        cnt++;
+                                    }
+                                }
+                                state.count += cnt;
+                            } else if (all_valid) {
+                                state.count += static_cast<int64_t>(nrows);
+                            } else {
                                 for (idx_t i = 0; i < nrows; i++)
                                     if (col.validity[i]) state.count++;
                             }
