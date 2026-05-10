@@ -130,6 +130,21 @@ public:
         bool int_all_valid, bool str_all_valid,
         uint32_t nrows, const uint8_t* keep_mask);
 
+    // Q15-shape inner loop body: 2-col GROUP BY (INT/BIGINT + VARCHAR-dict)
+    // + only COUNT(*) aggs. Mirrors IngestRGStrIntDistinct but increments
+    // counts (not building a unique-pair set). Caller already filtered
+    // RGs and built keep_mask + validity. Lives here (not in
+    // physical_planner.cpp) so the planner's .text shrinks ~30 LOC vs the
+    // previous inline loop — keeps Q11/Q12 hot path stable.
+    void IngestRGTwoColCount(int tid,
+        const int64_t* int_data_64, const int32_t* int_data_32,
+        bool int_is_bigint,
+        const uint32_t* dict_indices, const string_t* dict_values,
+        uint32_t dict_size,
+        const uint8_t* validity_int, const uint8_t* validity_str,
+        bool int_all_valid, bool str_all_valid,
+        uint32_t nrows, const uint8_t* keep_mask);
+
     size_t TotalGroups() const;
 
 private:

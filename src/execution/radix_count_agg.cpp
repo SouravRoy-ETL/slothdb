@@ -578,6 +578,41 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinct(int tid,
     }
 }
 
+// Q15-shape inner loop body. Per-RG ingest of (int_key, dict_idx) → count.
+// Precomputes per-dict-entry hash (~10-30 ns saved per row), then per-row
+// IncrementByHashed. Replaces the previous inline ~35 LOC loop in
+// physical_planner.cpp. Net planner shrink keeps Q11/Q12 .text stable.
+void RadixCount2ColIntStr::IngestRGTwoColCount(int tid,
+    const int64_t* int_data_64, const int32_t* int_data_32,
+    bool int_is_bigint,
+    const uint32_t* dict_indices, const string_t* dict_values,
+    uint32_t dict_size,
+    const uint8_t* validity_int, const uint8_t* validity_str,
+    bool int_all_valid, bool str_all_valid,
+    uint32_t nrows, const uint8_t* keep_mask) {
+    if (dict_size == 0 || nrows == 0) return;
+    std::vector<size_t> dict_h(dict_size);
+    for (uint32_t d = 0; d < dict_size; d++) {
+        dict_h[d] = HashStr(dict_values[d].GetData(),
+                            dict_values[d].GetSize());
+    }
+    auto fetch_int = [&](uint32_t r) -> int64_t {
+        return int_is_bigint ? int_data_64[r] : (int64_t)int_data_32[r];
+    };
+    for (uint32_t r = 0; r < nrows; r++) {
+        if (keep_mask && !keep_mask[r]) continue;
+        if (!int_all_valid && !validity_int[r]) continue;
+        if (!str_all_valid && !validity_str[r]) continue;
+        uint32_t d = dict_indices[r];
+        if (d >= dict_size) continue;
+        int64_t k = fetch_int(r);
+        size_t ch = MixIntStrHash(k, dict_h[d]);
+        IncrementByHashed(tid, k,
+            dict_values[d].GetData(), dict_values[d].GetSize(),
+            ch, 1);
+    }
+}
+
 // 2-stage COUNT(DISTINCT INT) GROUP BY VARCHAR: Phase A (parallel)
 // builds per-shard local str_count maps from the unique-pair set;
 // Phase B reduces sequentially; Phase C heap top-K.
