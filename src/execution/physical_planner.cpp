@@ -20,6 +20,7 @@
 #include "slothdb/execution/radix_count_agg.hpp"
 #include "slothdb/execution/inline_row_agg.hpp"
 #include "slothdb/execution/literal_emit_filter.hpp"
+#include "slothdb/execution/q11_helper.hpp"
 #include "slothdb/execution/radix_multi_agg.hpp"
 #include <algorithm>
 #include <cmath>
@@ -8453,29 +8454,38 @@ private:
                     }
                     return;
                 }
-                // gstr × int distinct
+                // gstr × int distinct (Q11 path). Side-TU helpers in
+                // q11_helper.cpp keep the inline 50-LOC loop out of
+                // physical_planner.cpp .text per
+                // feedback_text_icache_shift.md. Slow-path filter (no
+                // typed-keep-mask) still falls through to the legacy
+                // EvalSimplePredicates loop below.
+                if (gstr && !agg_is_varchar &&
+                    (!dpd_has_filter || tk_active)) {
+                    const uint8_t *km = tk_active ? tk.data() : nullptr;
+                    if (g_dict_idx) {
+                        slothdb::IngestRGGstrIntDistinctDict(
+                            tl.str_g_int_d, g_dict_idx, g_dict_val, g_dsz,
+                            a_i64, a_i32,
+                            acol.all_valid,
+                            acol.all_valid ? nullptr : acol.validity.data(),
+                            km, dpd_has_filter, nrows);
+                    } else if (g_str) {
+                        slothdb::IngestRGGstrIntDistinctPlain(
+                            tl.str_g_int_d, g_str, a_i64, a_i32,
+                            acol.all_valid,
+                            acol.all_valid ? nullptr : acol.validity.data(),
+                            km, dpd_has_filter, nrows);
+                    }
+                    return;
+                }
+                // Slow-path: filter doesn't compile to typed-keep-mask
+                // (rare; keeps the per-row EvalSimplePredicates fallback).
                 if (gstr && !agg_is_varchar) {
                     if (g_dict_idx) {
                         std::vector<slothdb::SimpleI64Set *>
                             di_to_set(g_dsz, nullptr);
-                        // Prefetch slot ~PFD rows ahead. Q11's iPad-dominated
-                        // hot path probes a single ~5MB per-thread set; the
-                        // L3 round-trip dominates latency. Loading the future
-                        // slot in parallel with the current insert hides it.
-                        constexpr idx_t PFD = 8;
                         for (idx_t r = 0; r < nrows; r++) {
-                            if (r + PFD < nrows) {
-                                uint32_t pf_di = g_dict_idx[r + PFD];
-                                if (pf_di < g_dsz) {
-                                    auto *pf_sp = di_to_set[pf_di];
-                                    if (pf_sp) {
-                                        int64_t pf_v = a_i64
-                                            ? a_i64[r + PFD]
-                                            : (int64_t)a_i32[r + PFD];
-                                        pf_sp->prefetch(pf_v);
-                                    }
-                                }
-                            }
                             if (!keep_row(r)) continue;
                             if (!acol.all_valid && !acol.validity[r]) continue;
                             uint32_t di = g_dict_idx[r];
