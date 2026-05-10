@@ -12480,7 +12480,8 @@ static bool TryComputeQ14_2Stage(
         }
     }
     // 50MB threshold: SearchPhrase 830MB qualifies, MobilePhoneModel
-    // 9MB does not (Q11's low-card path stays optimal).
+    // 9MB does not (Q11's low-card path stays optimal — empirically
+    // verified: 2-stage on 9MB regressed Q11 ~530ms vs legacy ~500ms).
     if (group_total_uncompressed <= 50 * 1024 * 1024) return false;
 
     // Project group + agg + filter cols. Skip group_col str_data
