@@ -81,8 +81,23 @@ def _canon_num(t):
 def norm(s):
     # Strip box-drawing decoration; keep value-bearing numeric tokens (multiset compare).
     toks = []
-    for l in s.splitlines():
-        l = "".join(c for c in l if c not in _BOX).strip()
+    raw_lines = s.splitlines()
+    # Pre-strip box decoration once per line so we can index.
+    stripped = ["".join(c for c in l if c not in _BOX).strip() for l in raw_lines]
+    # Identify column-header rows: a line whose tokens are all type-only
+    # (varchar/int64/...) is DuckDB's type row. The line directly above it
+    # is the column-header row. SlothDB writes "expr" for SELECT-literal
+    # columns, but DuckDB writes the literal itself ("1") — the value-token
+    # would otherwise count as data. Skip those header rows here.
+    header_skip = set()
+    for i, sl in enumerate(stripped):
+        if not sl: continue
+        toks_sl = [t.strip() for t in sl.replace("|"," ").split() if t.strip()]
+        if toks_sl and all(t.lower() in _HDR for t in toks_sl):
+            if i > 0:
+                header_skip.add(i - 1)
+    for i, l in enumerate(stripped):
+        if i in header_skip: continue
         if not l or set(l) <= set("-+| ") or l.lower() in _HDR: continue
         if _FOOTER.match(l): continue
         for t in l.replace("|"," ").split():
