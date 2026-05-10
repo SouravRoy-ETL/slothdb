@@ -1488,6 +1488,45 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                          part == "EPOCH" || part == "DOW");
         bool is_calendar = (part == "YEAR" || part == "MONTH" || part == "DAY");
 
+        auto floor_mod = [](int64_t a, int64_t m) -> int64_t {
+            int64_t r = a % m;
+            if (r < 0) r += m;
+            return r;
+        };
+        auto floor_div = [](int64_t a, int64_t m) -> int64_t {
+            int64_t q = a / m;
+            if ((a % m) != 0 && ((a < 0) != (m < 0))) q--;
+            return q;
+        };
+
+        // Vectorized fast path: ClickBench EventTime is BIGINT epoch seconds,
+        // and the arithmetic parts (HOUR/MINUTE/SECOND/EPOCH/DOW) need only
+        // direct integer arithmetic. Skip Value-boxing each row — go straight
+        // from int64_t input slot to int64_t output slot. Cuts per-row cost
+        // from ~hundreds of ns to a handful of cycles. Q19 minute extract
+        // dropped from >30s timeout to a few seconds.
+        auto ts_tid = ts_vec.GetType().id();
+        if (is_arith && ts_tid == LogicalTypeId::BIGINT) {
+            const int64_t *ts_data = ts_vec.GetData<int64_t>();
+            int64_t *out_data = result.GetData<int64_t>();
+            const auto &ts_valid = ts_vec.GetValidity();
+            auto &out_valid = result.GetValidity();
+            for (idx_t i = 0; i < count; i++) {
+                if (!ts_valid.RowIsValid(i)) { out_valid.SetInvalid(i); continue; }
+                int64_t raw = ts_data[i];
+                int64_t abs_raw = raw < 0 ? -raw : raw;
+                int64_t seconds = (abs_raw >= 10000000000000LL) ? raw / 1000000 : raw;
+                int64_t extracted = 0;
+                if (part == "SECOND") extracted = floor_mod(seconds, 60);
+                else if (part == "MINUTE") extracted = floor_mod(floor_div(seconds, 60), 60);
+                else if (part == "HOUR") extracted = floor_mod(floor_div(seconds, 3600), 24);
+                else if (part == "EPOCH") extracted = seconds;
+                else if (part == "DOW") extracted = floor_mod(floor_div(seconds, 86400) + 4, 7);
+                out_data[i] = extracted;
+            }
+            return;
+        }
+
         auto to_seconds = [](const Value &v) -> int64_t {
             int64_t raw = 0;
             if (v.type().id() == LogicalTypeId::TIMESTAMP)
@@ -1514,17 +1553,6 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 
             int64_t extracted = 0;
             if (is_arith) {
-                // Floor-divide / floor-mod so negative seconds (pre-1970) work.
-                auto floor_mod = [](int64_t a, int64_t m) -> int64_t {
-                    int64_t r = a % m;
-                    if (r < 0) r += m;
-                    return r;
-                };
-                auto floor_div = [](int64_t a, int64_t m) -> int64_t {
-                    int64_t q = a / m;
-                    if ((a % m) != 0 && ((a < 0) != (m < 0))) q--;
-                    return q;
-                };
                 if (part == "SECOND") extracted = floor_mod(seconds, 60);
                 else if (part == "MINUTE") extracted = floor_mod(floor_div(seconds, 60), 60);
                 else if (part == "HOUR") extracted = floor_mod(floor_div(seconds, 3600), 24);
