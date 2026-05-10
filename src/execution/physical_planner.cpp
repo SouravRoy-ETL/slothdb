@@ -19,6 +19,7 @@
 #include "slothdb/execution/simple_i64_set.hpp"
 #include "slothdb/execution/radix_count_agg.hpp"
 #include "slothdb/execution/inline_row_agg.hpp"
+#include "slothdb/execution/literal_emit_filter.hpp"
 #include "slothdb/execution/radix_multi_agg.hpp"
 #include <algorithm>
 #include <cmath>
@@ -3023,72 +3024,6 @@ private:
     idx_t row_limit_ = 0;  // 0 = no limit pushdown, full sort path
 };
 
-// SELECT col WHERE col = literal: every output row's value is the literal
-// itself, so the matched row's column data never needs to flow through the
-// PhysicalFilter copy path. Counts matches via the same fused-count fast
-// path used by SELECT COUNT(*) WHERE col = literal (Q20: 75ms vs 257ms),
-// then emits literal × count_matches in VECTOR_SIZE chunks. The wrapped
-// PhysicalFilter / PhysicalParquetScan pair is consumed only for the count.
-class PhysicalLiteralEmitFilter : public PhysicalOperator {
-public:
-    PhysicalLiteralEmitFilter(std::vector<LogicalType> types, Value literal,
-                               PhysicalOpPtr counter)
-        : PhysicalOperator(PhysicalOperatorType::PROJECTION, std::move(types)),
-          literal_(std::move(literal)), counter_(std::move(counter)) {}
-
-    void SetNeededOutputs(const std::vector<bool> &) override {
-        std::vector<bool> count_mask(1, true);
-        counter_->SetNeededOutputs(count_mask);
-    }
-
-    void Init() override {
-        counter_->Init();
-        DataChunk chunk;
-        chunk.Initialize(counter_->GetTypes());
-        match_count_ = 0;
-        while (counter_->GetData(chunk)) {
-            if (chunk.size() > 0 && chunk.ColumnCount() > 0) {
-                auto v = chunk.GetValue(0, 0);
-                if (!v.IsNull()) {
-                    match_count_ = v.GetValue<int64_t>();
-                }
-            }
-            chunk.Reset();
-        }
-        emitted_ = 0;
-    }
-
-    bool GetData(DataChunk &result) override {
-        if (emitted_ >= match_count_) return false;
-        if (result.ColumnCount() != GetTypes().size()) result.Initialize(GetTypes());
-        else result.Reset();
-        idx_t remaining = static_cast<idx_t>(match_count_ - emitted_);
-        idx_t count = std::min<idx_t>(remaining, VECTOR_SIZE);
-        auto &vec = result.GetVector(0);
-        auto tid = vec.GetType().id();
-        if (tid == LogicalTypeId::BIGINT) {
-            int64_t lv = literal_.GetValue<int64_t>();
-            auto *d = vec.GetData<int64_t>();
-            for (idx_t i = 0; i < count; i++) d[i] = lv;
-        } else if (tid == LogicalTypeId::INTEGER) {
-            int32_t lv = (int32_t)literal_.GetValue<int64_t>();
-            auto *d = vec.GetData<int32_t>();
-            for (idx_t i = 0; i < count; i++) d[i] = lv;
-        } else {
-            for (idx_t i = 0; i < count; i++) vec.SetValue(i, literal_);
-        }
-        result.SetCardinality(count);
-        emitted_ += count;
-        return true;
-    }
-
-private:
-    Value literal_;
-    PhysicalOpPtr counter_;
-    int64_t match_count_ = 0;
-    int64_t emitted_ = 0;
-};
-
 class PhysicalLimit : public PhysicalOperator {
 public:
     PhysicalLimit(int64_t limit_count, int64_t offset_count, std::vector<LogicalType> types)
@@ -5158,6 +5093,15 @@ private:
         // pointing to it and skip the inner loop. Emit reads from the
         // primary's AggState. Drops Q30's 90 redundant column scans to 1.
         idx_t primary_idx = INVALID_INDEX;
+        // STRLEN/LENGTH(col_ref): when the agg arg is a scalar function
+        // computing a VARCHAR's byte length, we accumulate string sizes
+        // directly inside the parquet generic GROUP BY hot loop (Q28
+        // AVG(STRLEN(URL))) without falling through to the per-row
+        // ExpressionExecutor path. col_idx stays INVALID_INDEX so the
+        // numeric fast paths still bypass this agg correctly; the
+        // strlen-aware paths use strlen_col_idx instead.
+        bool strlen_of_col = false;
+        idx_t strlen_col_idx = INVALID_INDEX;
     };
 
     // Fused JOIN+aggregate hot-loop - defined out-of-class (needs full PhysicalHashJoin).
@@ -5253,8 +5197,24 @@ private:
                 auto &arg = *agg_expr.arguments[0];
                 if (arg.GetExpressionType() == BoundExpressionType::COLUMN_REF) {
                     agg_infos[a].col_idx = static_cast<BoundColumnRef &>(arg).column_index;
-                } else if (agg_infos[a].name == "SUM" && !agg_infos[a].is_distinct &&
-                           arg.GetExpressionType() == BoundExpressionType::ARITHMETIC) {
+                } else if (arg.GetExpressionType() == BoundExpressionType::FUNCTION) {
+                    // SUM/AVG/MIN/MAX/COUNT(LENGTH(col)) or STRLEN(col):
+                    // accumulate the byte length of each row's string. The
+                    // GROUP BY hot loop reads sizes directly from the parquet
+                    // VARCHAR column without per-row ExpressionExecutor cost.
+                    auto &fn = static_cast<BoundFunction &>(arg);
+                    auto fn_name = StringUtil::Upper(fn.function_name);
+                    if ((fn_name == "LENGTH" || fn_name == "STRLEN") &&
+                        fn.arguments.size() == 1 &&
+                        fn.arguments[0]->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                        agg_infos[a].strlen_of_col = true;
+                        agg_infos[a].strlen_col_idx =
+                            static_cast<BoundColumnRef &>(*fn.arguments[0]).column_index;
+                    }
+                }
+                if (!agg_infos[a].strlen_of_col &&
+                    agg_infos[a].name == "SUM" && !agg_infos[a].is_distinct &&
+                    arg.GetExpressionType() == BoundExpressionType::ARITHMETIC) {
                     // Detect SUM(col +/- const): share the base scan and
                     // derive each result at emit. Accept (col OP const) or
                     // (const + col); subtract is only valid as (col - const).
@@ -9724,6 +9684,8 @@ private:
                 for (auto &info : agg_infos) {
                     if (info.col_idx != INVALID_INDEX && info.col_idx < needed.size())
                         needed[info.col_idx] = true;
+                    if (info.strlen_of_col && info.strlen_col_idx < needed.size())
+                        needed[info.strlen_col_idx] = true;
                 }
                 for (idx_t a = 0; a < num_aggs; a++) {
                     if (expr_args[a]) collect_refs_local(*expr_args[a], needed);
@@ -9930,11 +9892,18 @@ private:
                 }
 
                 // Per-agg typed column pointers.
-                struct ACol { const ParquetColumnData *col; LogicalTypeId tid; bool decoded; bool all_valid; };
+                struct ACol { const ParquetColumnData *col; LogicalTypeId tid; bool decoded; bool all_valid; bool is_strlen; };
                 std::vector<ACol> acs(num_aggs);
                 for (idx_t a = 0; a < num_aggs; a++) {
                     auto &info = agg_infos[a];
-                    if (info.col_idx != INVALID_INDEX) {
+                    acs[a].is_strlen = false;
+                    if (info.strlen_of_col && info.strlen_col_idx != INVALID_INDEX) {
+                        acs[a].col = &work.cols[info.strlen_col_idx];
+                        acs[a].tid = acs[a].col->type.id();
+                        acs[a].decoded = acs[a].col->decoded;
+                        acs[a].all_valid = acs[a].col->all_valid;
+                        acs[a].is_strlen = true;
+                    } else if (info.col_idx != INVALID_INDEX) {
                         acs[a].col = &work.cols[info.col_idx];
                         acs[a].tid = acs[a].col->type.id();
                         acs[a].decoded = acs[a].col->decoded;
@@ -10145,6 +10114,37 @@ private:
                         }
                         if (!acol.decoded) continue;
                         if (!acol.all_valid && !acol.col->validity[r]) continue;
+                        // STRLEN/LENGTH(col): byte-length of the row's string.
+                        // Q28 AVG(STRLEN(URL)) / SUM/MIN/MAX/COUNT live here.
+                        if (acol.is_strlen) {
+                            if (acol.tid != LogicalTypeId::VARCHAR) continue;
+                            uint32_t sl;
+                            if (acol.col->str_dict_encoded &&
+                                !acol.col->str_dict_indices.empty()) {
+                                uint32_t di = acol.col->str_dict_indices[r];
+                                if (di >= acol.col->str_dict_values.size()) continue;
+                                sl = acol.col->str_dict_values[di].GetSize();
+                            } else if (!acol.col->str_data.empty()) {
+                                sl = acol.col->str_data[r].GetSize();
+                            } else continue;
+                            double val = (double)sl;
+                            switch (kinds[a]) {
+                            case AK::Count: state.count++; break;
+                            case AK::Sum:   state.sum += val; state.count++; break;
+                            case AK::Min:
+                                if (!state.has_min || val < state.sum_min) {
+                                    state.sum_min = val; state.has_min = true;
+                                }
+                                break;
+                            case AK::Max:
+                                if (!state.has_max || val > state.sum_max) {
+                                    state.sum_max = val; state.has_max = true;
+                                }
+                                break;
+                            default: break;
+                            }
+                            continue;
+                        }
                         // Distinct paths: insert into the typed dedup set;
                         // count++ only on new insert. The set itself is the
                         // source of truth so the result emit doesn't need
