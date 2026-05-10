@@ -600,29 +600,48 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     // CASE(when1, then1, when2, then2, ..., [else])
     // IF(c, t, f) and IIF(c, t, f) reach the executor with the same arg
     // layout (cond, then, else) so we route them through this path.
+    //
+    // Vectorized form: evaluate each branch's when/then over the FULL chunk
+    // once, then select per-row. The earlier per-row implementation was
+    // O(count^2) — it re-Executed when_vec for every row, so a 2048-row
+    // chunk paid 2048× the cost of a single Execute. ClickBench Q40 timed
+    // out >30s entirely in that loop. Now we Execute once per branch.
     if (name == "CASE" || name == "IF" || name == "IIF") {
-        for (idx_t i = 0; i < count; i++) {
-            bool matched = false;
-            // Arguments: pairs of (when, then), optional last else.
-            for (size_t a = 0; a + 1 < expr.arguments.size(); a += 2) {
-                Vector when_vec(LogicalType::BOOLEAN(), count);
-                Execute(*expr.arguments[a], input, when_vec, count);
-                if (when_vec.GetValidity().RowIsValid(i) && when_vec.GetData<bool>()[i]) {
-                    Vector then_vec(expr.GetReturnType(), count);
-                    Execute(*expr.arguments[a + 1], input, then_vec, count);
-                    result.SetValue(i, then_vec.GetValue(i));
-                    matched = true;
-                    break;
-                }
+        const size_t nargs = expr.arguments.size();
+        const bool has_else = (nargs % 2 == 1);
+        // Track which output rows are still unfilled (haven't matched a WHEN).
+        std::vector<uint8_t> need(count, 1);
+        idx_t remaining = count;
+        for (size_t a = 0; a + 1 < nargs && remaining > 0; a += 2) {
+            Vector when_vec(LogicalType::BOOLEAN(), count);
+            Execute(*expr.arguments[a], input, when_vec, count);
+            // Find rows that match THIS branch (when==true and not yet filled).
+            std::vector<idx_t> hits;
+            hits.reserve(remaining);
+            const bool *wd = when_vec.GetData<bool>();
+            const auto &wv = when_vec.GetValidity();
+            for (idx_t i = 0; i < count; i++) {
+                if (need[i] && wv.RowIsValid(i) && wd[i]) hits.push_back(i);
             }
-            if (!matched) {
-                // Check for ELSE clause (odd number of arguments).
-                if (expr.arguments.size() % 2 == 1) {
-                    Vector else_vec(expr.GetReturnType(), count);
-                    Execute(*expr.arguments.back(), input, else_vec, count);
-                    result.SetValue(i, else_vec.GetValue(i));
-                } else {
-                    result.GetValidity().SetInvalid(i);
+            if (hits.empty()) continue;
+            Vector then_vec(expr.GetReturnType(), count);
+            Execute(*expr.arguments[a + 1], input, then_vec, count);
+            for (idx_t i : hits) {
+                result.SetValue(i, then_vec.GetValue(i));
+                need[i] = 0;
+            }
+            remaining -= hits.size();
+        }
+        if (remaining > 0) {
+            if (has_else) {
+                Vector else_vec(expr.GetReturnType(), count);
+                Execute(*expr.arguments.back(), input, else_vec, count);
+                for (idx_t i = 0; i < count; i++) {
+                    if (need[i]) result.SetValue(i, else_vec.GetValue(i));
+                }
+            } else {
+                for (idx_t i = 0; i < count; i++) {
+                    if (need[i]) result.GetValidity().SetInvalid(i);
                 }
             }
         }
