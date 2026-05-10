@@ -96,6 +96,13 @@ def norm(s):
         if toks_sl and all(t.lower() in _HDR for t in toks_sl):
             if i > 0:
                 header_skip.add(i - 1)
+            continue
+        # SlothDB CLI: header row is the line directly above a separator
+        # row (all of "-+| "). DuckDB's already handled above (type row
+        # marker). Without this, `SELECT *` queries leak column names
+        # like "SilverlightVersion3" or "FlashMinor2" as data tokens.
+        if set(sl) <= set("-+| ") and i > 0:
+            header_skip.add(i - 1)
     for i, l in enumerate(stripped):
         if i in header_skip: continue
         if not l or set(l) <= set("-+| ") or l.lower() in _HDR: continue
