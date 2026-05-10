@@ -579,9 +579,15 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinct(int tid,
 }
 
 // Q15-shape inner loop body. Per-RG ingest of (int_key, dict_idx) → count.
-// Precomputes per-dict-entry hash (~10-30 ns saved per row), then per-row
-// IncrementByHashed. Replaces the previous inline ~35 LOC loop in
-// physical_planner.cpp. Net planner shrink keeps Q11/Q12 .text stable.
+// Precomputes per-dict-entry hash once per RG (~10-30 ns saved per row),
+// then per-row IncrementByHashed. Lives here (not physical_planner.cpp)
+// to keep the planner .text shrink stable across adjacent paths.
+//
+// Note: a flat-counter dict-amortization variant was attempted (per-RG
+// pool[unique_int][dict_size] + fold at end) but didn't move Q15 — the
+// pool reallocation + ankerl<int64,u32> int_to_idx overhead masks the
+// O(N) → O(unique * touched) insert savings on this shape. Per-row
+// IncrementByHashed is the simpler win.
 void RadixCount2ColIntStr::IngestRGTwoColCount(int tid,
     const int64_t* int_data_64, const int32_t* int_data_32,
     bool int_is_bigint,
