@@ -2414,59 +2414,21 @@ private:
                         return true;
                     };
 
-                    // Maintain a per-RG local heap of size K. Skip rows
-                    // whose key can't beat the current local-K threshold
-                    // (and the merged-global threshold for an even tighter
-                    // bound). DuckDB's TopN does the same — it's the
-                    // "boundary value" pushdown described in
-                    // _private/duckdb/src/execution/operator/order/physical_top_n.cpp.
-                    //
-                    // Earlier code pushed every row of every scanned RG
-                    // (~1.25M rows / RG) into a `local` vector before the
-                    // global merge. That cost dominated Q25/Q27 runs even
-                    // though the stats path correctly limits which RGs we
-                    // touch. With K=10 and a tight threshold, the local
-                    // heap stays at K, so RAM/dispatch cost ~0 per loser.
-                    LightHeap local_heap(light_cmp);
-                    auto try_global_thr = [&]() -> std::pair<T, bool> {
-                        std::lock_guard<std::mutex> lk(heap_mu);
-                        if (light_merged.size() >= k && !light_merged.top().is_null) {
-                            return {light_merged.top().key, true};
-                        }
-                        return {T{}, false};
-                    };
-                    auto thr = try_global_thr();
-                    bool have_thr = thr.second;
-                    T cur_thr = thr.first;
-                    auto beats_thr = [ascending](T a, T b) {
-                        return ascending ? a < b : a > b;
-                    };
+                    // Build local candidate list for this RG, then merge
+                    // under a single lock. Most rows lose to heap top so
+                    // batching cuts lock acquisitions.
+                    std::vector<LightEntry> local;
+                    local.reserve(k * 2);
                     for (idx_t i = 0; i < nrows; i++) {
                         if (mask_active && !mask[i]) continue;
                         if (fallback_row_loop && !eval_row(i)) continue;
                         bool key_is_null = !key_all_valid && !(i < kcol.validity.size() && kcol.validity[i]);
                         T key = key_is_null ? T{} : kdata[i];
-                        if (!key_is_null && have_thr && !beats_thr(key, cur_thr)) {
-                            continue;
-                        }
-                        if (local_heap.size() < k) {
-                            local_heap.push({key, (uint32_t)re.rg_idx,
-                                             (uint32_t)i, key_is_null});
-                        } else {
-                            LightEntry e{key, (uint32_t)re.rg_idx,
-                                         (uint32_t)i, key_is_null};
-                            if (light_cmp(e, local_heap.top())) {
-                                local_heap.pop();
-                                local_heap.push(e);
-                            }
-                        }
+                        local.push_back({key, (uint32_t)re.rg_idx, (uint32_t)i, key_is_null});
                     }
-                    if (local_heap.empty()) return;
                     {
                         std::lock_guard<std::mutex> lk(heap_mu);
-                        while (!local_heap.empty()) {
-                            auto e = local_heap.top();
-                            local_heap.pop();
+                        for (auto &e : local) {
                             if (light_merged.size() < k) {
                                 light_merged.push(e);
                             } else if (light_cmp(e, light_merged.top())) {
