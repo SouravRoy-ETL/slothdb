@@ -2445,6 +2445,17 @@ private:
                         eval_one_rg(i);
                     }
                 } else {
+                    // Eval the best RG sequentially FIRST so the heap is
+                    // populated and tight before parallel workers start.
+                    // Otherwise 8 workers grab RG 0..7 in parallel with an
+                    // empty heap (no threshold), all decode their RG fully,
+                    // then early-exit only kicks in for RG 8+. For Q25/Q27
+                    // (ORDER BY EventTime LIMIT 10 over date-clustered data)
+                    // this turns 8 wasted RG decodes into 0 wasted ones.
+                    if (!rg_order.empty()) {
+                        eval_one_rg(0);
+                        next_rg.store(1, std::memory_order_relaxed);
+                    }
                     std::vector<std::thread> ts;
                     ts.reserve(nthreads);
                     for (unsigned int t = 0; t < nthreads; t++) {
