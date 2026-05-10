@@ -12217,77 +12217,60 @@ PhysicalOpPtr PhysicalPlanner::PlanFilter(const LogicalFilter &op) {
     return result;
 }
 
+// Q20 peephole detection, marked noinline + cold so it stays out of the
+// hot .text region. Returns true and fills `out_literal` if the shape
+// matches (SELECT col WHERE col = literal); caller builds the synthetic
+// count_op and wraps it in PhysicalLiteralEmitFilter.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline, cold))
+#endif
+static bool MatchQ20LiteralEmit(const LogicalProjection &op, Value &out_literal) {
+    if (op.expressions.size() != 1 || op.children.empty()) return false;
+    auto &proj_expr = op.expressions[0];
+    if (!proj_expr || proj_expr->GetExpressionType() != BoundExpressionType::COLUMN_REF) return false;
+    auto proj_col = static_cast<const BoundColumnRef &>(*proj_expr).column_index;
+    auto *log_filter = dynamic_cast<const LogicalFilter *>(op.children[0].get());
+    if (!log_filter || !log_filter->condition || log_filter->children.empty()) return false;
+    auto &cond = *log_filter->condition;
+    if (cond.GetExpressionType() != BoundExpressionType::COMPARISON) return false;
+    auto &cmp = static_cast<const BoundComparison &>(cond);
+    if (cmp.op != "=" && cmp.op != "==") return false;
+    const BoundExpression *lhs = cmp.left.get();
+    const BoundExpression *rhs = cmp.right.get();
+    if (lhs && rhs && lhs->GetExpressionType() == BoundExpressionType::CONSTANT &&
+        rhs->GetExpressionType() == BoundExpressionType::COLUMN_REF) std::swap(lhs, rhs);
+    if (!lhs || !rhs ||
+        lhs->GetExpressionType() != BoundExpressionType::COLUMN_REF ||
+        rhs->GetExpressionType() != BoundExpressionType::CONSTANT) return false;
+    auto col = static_cast<const BoundColumnRef &>(*lhs).column_index;
+    if (col != proj_col || op.GetTypes().size() != 1) return false;
+    auto out_tid = op.GetTypes()[0].id();
+    if (out_tid != LogicalTypeId::BIGINT && out_tid != LogicalTypeId::INTEGER) return false;
+    const auto &literal = static_cast<const BoundConstant &>(*rhs).value;
+    auto literal_tid = literal.type().id();
+    if (literal_tid != LogicalTypeId::BIGINT && literal_tid != LogicalTypeId::INTEGER) return false;
+    if (out_tid == LogicalTypeId::BIGINT && literal_tid == LogicalTypeId::INTEGER)
+        out_literal = Value::BIGINT((int64_t)literal.GetValue<int32_t>());
+    else if (out_tid == LogicalTypeId::INTEGER && literal_tid == LogicalTypeId::BIGINT)
+        out_literal = Value::INTEGER((int32_t)literal.GetValue<int64_t>());
+    else
+        out_literal = literal;
+    return true;
+}
+
 PhysicalOpPtr PhysicalPlanner::PlanProjection(const LogicalProjection &op) {
     auto &mutable_op = const_cast<LogicalProjection &>(op);
-    // Q20 peephole: SELECT col WHERE col = literal projects only the
-    // literal — every output row's value is the literal itself, so we
-    // can skip the matched-RG decode and emit literal × match_count
-    // via the COUNT(*) WHERE filter fast path. Saves ~180ms on Q20
-    // (matched RG int64 column decode) for a 75ms total instead of 257ms.
-    if (mutable_op.expressions.size() == 1 && !op.children.empty()) {
-        auto &proj_expr = mutable_op.expressions[0];
-        if (proj_expr && proj_expr->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-            auto proj_col = static_cast<const BoundColumnRef &>(*proj_expr).column_index;
-            auto *log_filter = dynamic_cast<const LogicalFilter *>(op.children[0].get());
-            if (log_filter && log_filter->condition && !log_filter->children.empty()) {
-                auto &cond = *log_filter->condition;
-                if (cond.GetExpressionType() == BoundExpressionType::COMPARISON) {
-                    auto &cmp = static_cast<const BoundComparison &>(cond);
-                    if (cmp.op == "=" || cmp.op == "==") {
-                        const BoundExpression *lhs = cmp.left.get();
-                        const BoundExpression *rhs = cmp.right.get();
-                        if (lhs && rhs &&
-                            lhs->GetExpressionType() == BoundExpressionType::CONSTANT &&
-                            rhs->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                            std::swap(lhs, rhs);
-                        }
-                        if (lhs && rhs &&
-                            lhs->GetExpressionType() == BoundExpressionType::COLUMN_REF &&
-                            rhs->GetExpressionType() == BoundExpressionType::CONSTANT) {
-                            auto col = static_cast<const BoundColumnRef &>(*lhs).column_index;
-                            const auto &literal = static_cast<const BoundConstant &>(*rhs).value;
-                            auto literal_tid = literal.type().id();
-                            // Only INT/BIGINT scalar literals (well-defined
-                            // BIGINT projection emit). Other types fall through
-                            // to the regular path.
-                            if (col == proj_col &&
-                                (literal_tid == LogicalTypeId::BIGINT ||
-                                 literal_tid == LogicalTypeId::INTEGER) &&
-                                op.GetTypes().size() == 1 &&
-                                (op.GetTypes()[0].id() == LogicalTypeId::BIGINT ||
-                                 op.GetTypes()[0].id() == LogicalTypeId::INTEGER)) {
-                                // Build a synthetic Aggregate(COUNT(*)) over the
-                                // same Filter→Scan tree. PhysicalHashAggregate's
-                                // FUSED PARQUET FAST PATH handles the count.
-                                std::vector<BoundExprPtr> agg_groups;
-                                std::vector<BoundExprPtr> agg_funcs;
-                                agg_funcs.push_back(std::make_unique<BoundFunction>(
-                                    "COUNT", std::vector<BoundExprPtr>{},
-                                    LogicalType::BIGINT(), true, false));
-                                std::vector<LogicalType> agg_types{LogicalType::BIGINT()};
-                                auto count_op = std::make_unique<PhysicalHashAggregate>(
-                                    std::move(agg_groups), std::move(agg_funcs),
-                                    std::move(agg_types));
-                                count_op->children.push_back(Plan(*op.children[0]));
-                                Value coerced_literal = literal;
-                                if (op.GetTypes()[0].id() == LogicalTypeId::BIGINT &&
-                                    literal_tid == LogicalTypeId::INTEGER) {
-                                    coerced_literal = Value::BIGINT(
-                                        (int64_t)literal.GetValue<int32_t>());
-                                } else if (op.GetTypes()[0].id() == LogicalTypeId::INTEGER &&
-                                           literal_tid == LogicalTypeId::BIGINT) {
-                                    coerced_literal = Value::INTEGER(
-                                        (int32_t)literal.GetValue<int64_t>());
-                                }
-                                return std::make_unique<PhysicalLiteralEmitFilter>(
-                                    op.GetTypes(), std::move(coerced_literal),
-                                    std::move(count_op));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    Value emit_literal;
+    if (MatchQ20LiteralEmit(op, emit_literal)) {
+        std::vector<BoundExprPtr> agg_funcs;
+        agg_funcs.push_back(std::make_unique<BoundFunction>(
+            "COUNT", std::vector<BoundExprPtr>{}, LogicalType::BIGINT(), true, false));
+        auto count_op = std::make_unique<PhysicalHashAggregate>(
+            std::vector<BoundExprPtr>{}, std::move(agg_funcs),
+            std::vector<LogicalType>{LogicalType::BIGINT()});
+        count_op->children.push_back(Plan(*op.children[0]));
+        return std::make_unique<PhysicalLiteralEmitFilter>(
+            op.GetTypes(), std::move(emit_literal), std::move(count_op));
     }
     auto result = std::make_unique<PhysicalProjection>(
         std::move(mutable_op.expressions), op.GetTypes());
