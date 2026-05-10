@@ -35,4 +35,19 @@ void IngestRGGstrIntDistinctPlain(
     const std::uint8_t* keep_mask, bool has_filter,
     std::size_t nrows);
 
+// Same as IngestRGGstrIntDistinctDict, but with the WHERE-filter folded
+// into a dict-idx skip: rows where g_dict_idx[r] == skip_di (e.g. the
+// empty-string entry for `<col> <> ''`) are dropped without touching the
+// 100M-row keep_mask. Saves the BuildTypedKeepMask 100M-row pass plus the
+// 100MB keep_mask streaming read, on top of the wasted prefetch on
+// filtered rows. Used when the only WHERE predicate is `<group_col> <> ''`
+// against the dict-encoded group column.
+void IngestRGGstrIntDistinctDictSkipDi(
+    std::unordered_map<std::string, SimpleI64Set>& str_g_int_d,
+    const std::uint32_t* g_dict_idx, const string_t* g_dict_val, std::size_t g_dsz,
+    const std::int64_t* a_i64, const std::int32_t* a_i32,
+    bool a_all_valid, const std::uint8_t* a_validity,
+    std::uint32_t skip_di,
+    std::size_t nrows);
+
 }  // namespace slothdb

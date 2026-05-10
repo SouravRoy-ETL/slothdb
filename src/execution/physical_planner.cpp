@@ -8043,6 +8043,27 @@ private:
                 return;
             }
 
+            // Q11-fast-skip: when the only WHERE predicate is
+            // `<group_col> <> ''` against a dict-encoded VARCHAR group
+            // column AND the agg is COUNT(DISTINCT INT/BIGINT), we can
+            // fold the filter into a per-row dict-idx skip inside the
+            // helper. This bypasses BuildTypedKeepMask (a 100M-row pass
+            // that writes a 100MB mask read by the helper) and the per-
+            // row keep_mask streaming read. See feedback memory and
+            // q11_helper.cpp::IngestRGGstrIntDistinctDictSkipDi.
+            const bool q11_fs_eligible =
+                has_group && !two_col_group && num_aggs == 1 &&
+                agg_infos[0].name == "COUNT" && agg_infos[0].is_distinct &&
+                (agg_tid == LogicalTypeId::BIGINT ||
+                 agg_tid == LogicalTypeId::INTEGER) &&
+                group_tid == LogicalTypeId::VARCHAR &&
+                dpd_has_filter && dpd_preds.size() == 1 &&
+                dpd_preds[0].col_idx == group_col &&
+                dpd_preds[0].str_form &&
+                dpd_preds[0].op == SimpleCmpOp::NE &&
+                !dpd_preds[0].like_contains &&
+                dpd_preds[0].sval.empty();
+
             // Project group + agg + filter cols.
             {
                 std::vector<bool> need(pq->GetTypes().size(), false);
@@ -8149,12 +8170,43 @@ private:
                 if (!acol.decoded) return;
                 auto &tl = tls[tid % MAX_THREADS];
 
+                // Q11-fast-skip per-RG: locate empty dict_idx in this RG's
+                // group-col dict. If found, hand off to the SkipDi helper
+                // and skip BuildTypedKeepMask. Falls back to legacy if the
+                // group col isn't dict-encoded in this RG (rare on
+                // ClickBench's MobilePhoneModel/MobilePhone columns).
+                bool q11_fs_active = false;
+                uint32_t q11_fs_skip_di = 0;
+                if (q11_fs_eligible) {
+                    const auto &gcol_fs = work.cols[group_col];
+                    if (gcol_fs.decoded && gcol_fs.str_dict_encoded &&
+                        !gcol_fs.str_dict_indices.empty()) {
+                        const auto *dv = gcol_fs.str_dict_values.data();
+                        idx_t dsz = gcol_fs.str_dict_values.size();
+                        for (idx_t i = 0; i < dsz; i++) {
+                            if (dv[i].GetSize() == 0) {
+                                q11_fs_skip_di = (uint32_t)i;
+                                q11_fs_active = true;
+                                break;
+                            }
+                        }
+                        // Empty entry not in dict => filter is no-op for
+                        // this RG. UINT32_MAX never matches a real di so
+                        // the SkipDi helper degenerates to "ingest all".
+                        if (!q11_fs_active) {
+                            q11_fs_skip_di = UINT32_MAX;
+                            q11_fs_active = true;
+                        }
+                    }
+                }
+
                 std::vector<uint8_t> tk;
                 bool tk_active = false;
-                if (dpd_has_filter)
+                if (dpd_has_filter && !q11_fs_active)
                     tk_active = BuildTypedKeepMask(dpd_preds, work.cols, nrows, tk);
                 auto keep_row = [&](idx_t r) -> bool {
                     if (!dpd_has_filter) return true;
+                    if (q11_fs_active) return true;  // helper handles via skip_di
                     if (tk_active) return tk[r] != 0;
                     return EvalSimplePredicates(dpd_preds, work.cols, r);
                 };
@@ -8460,6 +8512,15 @@ private:
                 // feedback_text_icache_shift.md. Slow-path filter (no
                 // typed-keep-mask) still falls through to the legacy
                 // EvalSimplePredicates loop below.
+                if (gstr && !agg_is_varchar && q11_fs_active && g_dict_idx) {
+                    slothdb::IngestRGGstrIntDistinctDictSkipDi(
+                        tl.str_g_int_d, g_dict_idx, g_dict_val, g_dsz,
+                        a_i64, a_i32,
+                        acol.all_valid,
+                        acol.all_valid ? nullptr : acol.validity.data(),
+                        q11_fs_skip_di, nrows);
+                    return;
+                }
                 if (gstr && !agg_is_varchar &&
                     (!dpd_has_filter || tk_active)) {
                     const uint8_t *km = tk_active ? tk.data() : nullptr;
