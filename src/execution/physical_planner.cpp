@@ -9409,26 +9409,36 @@ private:
                                         multi_preds, work.cols, nrows, tk);
                                 }
                                 int t = tid % Q15_THREADS;
-                                if (dict_fast) {
+                                bool fast_filter_ok =
+                                    !multi_has_filter || tk_active;
+                                if (dict_fast && fast_filter_ok) {
+                                    // Per-RG dict amortization: cache-last
+                                    // (k) + counter[d], fold at RG end.
+                                    agg2.IncrementByDictRG2Col(t,
+                                        gi64, gi32, int_is_bigint,
+                                        scol.str_dict_indices.data(),
+                                        (uint32_t)nrows,
+                                        scol.str_dict_values.data(),
+                                        (uint32_t)scol.str_dict_values.size(),
+                                        icol.all_valid ? nullptr
+                                            : icol.validity.data(),
+                                        scol.all_valid ? nullptr
+                                            : scol.validity.data(),
+                                        icol.all_valid, scol.all_valid,
+                                        tk_active ? tk.data() : nullptr);
+                                } else if (dict_fast) {
                                     const uint32_t *di = scol.str_dict_indices.data();
                                     const string_t *dv = scol.str_dict_values.data();
                                     idx_t dsz = scol.str_dict_values.size();
-                                    // Precompute per-dict-entry string hashes.
-                                    // Reuse the same buffer across all rows of
-                                    // this RG. Without this, every per-row
-                                    // IncrementRow rehashes the string body —
-                                    // dominant cost on Q15/Q17 hot loops.
                                     std::vector<size_t> dict_h(dsz);
                                     for (idx_t d = 0; d < dsz; d++) {
                                         dict_h[d] = slothdb::RadixCount2ColIntStr::
                                             HashStr(dv[d].GetData(), dv[d].GetSize());
                                     }
                                     for (idx_t r = 0; r < nrows; r++) {
-                                        if (tk_active) {
-                                            if (!tk[r]) continue;
-                                        } else if (multi_has_filter &&
-                                                   !EvalSimplePredicates(
-                                                       multi_preds, work.cols, r))
+                                        if (multi_has_filter &&
+                                            !EvalSimplePredicates(
+                                                multi_preds, work.cols, r))
                                             continue;
                                         if (!icol.all_valid && !icol.validity[r])
                                             continue;

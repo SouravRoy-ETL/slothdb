@@ -578,6 +578,90 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinct(int tid,
     }
 }
 
+// Q15-shape per-RG dict amortization: 2-col GROUP BY (INT, dict-VARCHAR)
+// + COUNT(*). Cache-last pattern + flat counter pool. At RG end, fold
+// non-zero (k, d) cells into per-thread shard maps with precomputed
+// dict-hashes. Mirrors RadixCountAggStr::IncrementByDictRG but for the
+// composite (int, str) key path. Replaces 99M per-row IncrementByHashed
+// calls with O(unique_int_keys * dict_size) per-RG inserts.
+void RadixCount2ColIntStr::IncrementByDictRG2Col(int tid,
+    const int64_t* int_data_64, const int32_t* int_data_32,
+    bool int_is_bigint,
+    const uint32_t* dict_indices,
+    uint32_t nrows,
+    const string_t* dict_values, uint32_t dict_size,
+    const uint8_t* validity_int, const uint8_t* validity_str,
+    bool int_all_valid, bool str_all_valid,
+    const uint8_t* keep_mask) {
+    if (dict_size == 0 || nrows == 0) return;
+
+    ankerl::unordered_dense::map<int64_t, uint32_t> int_to_idx;
+    int_to_idx.reserve(32);
+    std::vector<int64_t> pool;
+    pool.reserve((size_t)32 * dict_size);
+    // Per-int-key list of touched dict_idx values, indexed by slot.
+    // Avoids O(num_unique_ints * dict_size) zero-scan at fold time.
+    std::vector<std::vector<uint32_t>> touched;
+    touched.reserve(32);
+    uint32_t pool_size = 0;
+    int64_t prev_k = 0;
+    bool prev_set = false;
+    int64_t* arr = nullptr;
+    std::vector<uint32_t>* prev_touched = nullptr;
+
+    auto fetch_int = [&](uint32_t r) -> int64_t {
+        return int_is_bigint ? int_data_64[r] : (int64_t)int_data_32[r];
+    };
+
+    for (uint32_t r = 0; r < nrows; r++) {
+        if (keep_mask && !keep_mask[r]) continue;
+        if (!int_all_valid && !validity_int[r]) continue;
+        if (!str_all_valid && !validity_str[r]) continue;
+        uint32_t d = dict_indices[r];
+        if (d >= dict_size) continue;
+        int64_t k = fetch_int(r);
+        if (!prev_set || k != prev_k) {
+            auto er = int_to_idx.try_emplace(k, pool_size);
+            if (er.second) {
+                ++pool_size;
+                pool.resize((size_t)pool_size * dict_size, 0);
+                touched.emplace_back();
+            }
+            // pool may have re-allocated; refresh arr from current data().
+            arr = pool.data() + (size_t)er.first->second * dict_size;
+            prev_touched = &touched[er.first->second];
+            prev_k = k;
+            prev_set = true;
+        }
+        if (arr[d] == 0) prev_touched->push_back(d);
+        arr[d]++;
+    }
+
+    if (pool_size == 0) return;
+    // Lazy dict-hash cache: only hash touched dict entries.
+    std::vector<size_t> dict_h(dict_size);
+    std::vector<uint8_t> hashed(dict_size, 0);
+    for (auto& kv : int_to_idx) {
+        int64_t k = kv.first;
+        uint32_t slot = kv.second;
+        int64_t* a = pool.data() + (size_t)slot * dict_size;
+        const auto& t_list = touched[slot];
+        for (uint32_t d : t_list) {
+            int64_t cnt = a[d];
+            if (cnt == 0) continue;
+            if (!hashed[d]) {
+                dict_h[d] = HashStr(dict_values[d].GetData(),
+                                    dict_values[d].GetSize());
+                hashed[d] = 1;
+            }
+            size_t ch = CombineIntStrHash(k, dict_h[d]);
+            IncrementByHashed(tid, k,
+                dict_values[d].GetData(), dict_values[d].GetSize(),
+                ch, cnt);
+        }
+    }
+}
+
 // 2-stage COUNT(DISTINCT INT) GROUP BY VARCHAR: Phase A (parallel)
 // builds per-shard local str_count maps from the unique-pair set;
 // Phase B reduces sequentially; Phase C heap top-K.

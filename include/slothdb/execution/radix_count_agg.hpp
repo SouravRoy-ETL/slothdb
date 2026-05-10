@@ -130,6 +130,23 @@ public:
         bool int_all_valid, bool str_all_valid,
         uint32_t nrows, const uint8_t* keep_mask);
 
+    // Q15-shape per-RG dict amortization: 2-col GROUP BY (INT, VARCHAR)
+    // + COUNT(*). Builds per-RG (int_key) → counter[dict_size] using a
+    // cache-last pattern (SearchEngineID is clustered: same int_key runs
+    // for many consecutive rows). At RG end, folds non-zero
+    // (int_key, dict_idx) counts into shard maps via IncrementByHashed
+    // with a precomputed dict-hash. Replaces 99M per-row hash inserts
+    // with O(unique_int_keys * dict_size) per-RG inserts.
+    void IncrementByDictRG2Col(int tid,
+        const int64_t* int_data_64, const int32_t* int_data_32,
+        bool int_is_bigint,
+        const uint32_t* dict_indices,
+        uint32_t nrows,
+        const string_t* dict_values, uint32_t dict_size,
+        const uint8_t* validity_int, const uint8_t* validity_str,
+        bool int_all_valid, bool str_all_valid,
+        const uint8_t* keep_mask);
+
     size_t TotalGroups() const;
 
 private:
