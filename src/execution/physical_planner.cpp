@@ -106,6 +106,10 @@ struct SimplePredicate {
     idx_t col_idx;
     SimpleCmpOp op;
     double dval;       // numeric form: comparison value cast to double
+    int64_t ival = 0;  // numeric form: original int64 (BIGINT literals
+                       // > 2^53 cannot round-trip through double — Q20's
+                       // UserID = 435090932899640449 lost ~64 in dval).
+                       // BIGINT/INTEGER paths must read ival, not (int64_t)dval.
     std::string sval;  // VARCHAR form: literal bytes (for EQ/NE: full literal;
                        // for like_contains: bare needle with %s stripped)
     bool str_form = false;
@@ -206,16 +210,17 @@ static bool TryCompileSimplePredicateImpl(const BoundExpression &e,
     if (tid != LogicalTypeId::BIGINT && tid != LogicalTypeId::INTEGER &&
         tid != LogicalTypeId::DOUBLE && tid != LogicalTypeId::FLOAT) return false;
     double d;
+    int64_t iv = 0;
     try {
         auto vtid = con.value.type().id();
         switch (vtid) {
-        case LogicalTypeId::BOOLEAN:  d = con.value.GetValue<bool>() ? 1.0 : 0.0; break;
-        case LogicalTypeId::TINYINT:  d = (double)con.value.GetValue<int8_t>(); break;
-        case LogicalTypeId::SMALLINT: d = (double)con.value.GetValue<int16_t>(); break;
-        case LogicalTypeId::INTEGER:  d = (double)con.value.GetValue<int32_t>(); break;
-        case LogicalTypeId::BIGINT:   d = (double)con.value.GetValue<int64_t>(); break;
-        case LogicalTypeId::FLOAT:    d = (double)con.value.GetValue<float>(); break;
-        case LogicalTypeId::DOUBLE:   d = con.value.GetValue<double>(); break;
+        case LogicalTypeId::BOOLEAN:  iv = con.value.GetValue<bool>() ? 1 : 0; d = (double)iv; break;
+        case LogicalTypeId::TINYINT:  iv = (int64_t)con.value.GetValue<int8_t>();  d = (double)iv; break;
+        case LogicalTypeId::SMALLINT: iv = (int64_t)con.value.GetValue<int16_t>(); d = (double)iv; break;
+        case LogicalTypeId::INTEGER:  iv = (int64_t)con.value.GetValue<int32_t>(); d = (double)iv; break;
+        case LogicalTypeId::BIGINT:   iv = con.value.GetValue<int64_t>(); d = (double)iv; break;
+        case LogicalTypeId::FLOAT:    d = (double)con.value.GetValue<float>();  iv = (int64_t)d; break;
+        case LogicalTypeId::DOUBLE:   d = con.value.GetValue<double>();         iv = (int64_t)d; break;
         default: return false;
         }
     } catch (...) { return false; }
@@ -223,6 +228,7 @@ static bool TryCompileSimplePredicateImpl(const BoundExpression &e,
     sp.col_idx = col.column_index;
     sp.op = op;
     sp.dval = d;
+    sp.ival = iv;
     out.push_back(std::move(sp));
     return true;
 }
@@ -355,10 +361,26 @@ static inline bool EvalSimplePredicates(const std::vector<SimplePredicate> &pred
             else                         { if (eq)  return false; }
             continue;
         }
+        // BIGINT/INTEGER paths must compare via int64 to avoid 2^53 dval
+        // rounding bug — Q20's UserID = 435090932899640449 lost precision in
+        // both the row value and literal when both went through double.
+        auto ctid = c.type.id();
+        if (ctid == LogicalTypeId::BIGINT || ctid == LogicalTypeId::INTEGER) {
+            int64_t v = (ctid == LogicalTypeId::BIGINT) ? c.i64_data[r]
+                                                        : (int64_t)c.i32_data[r];
+            int64_t lit = p.ival;
+            switch (p.op) {
+            case SimpleCmpOp::LT: if (!(v <  lit)) return false; break;
+            case SimpleCmpOp::LE: if (!(v <= lit)) return false; break;
+            case SimpleCmpOp::GT: if (!(v >  lit)) return false; break;
+            case SimpleCmpOp::GE: if (!(v >= lit)) return false; break;
+            case SimpleCmpOp::EQ: if (v != lit) return false; break;
+            case SimpleCmpOp::NE: if (v == lit) return false; break;
+            }
+            continue;
+        }
         double v;
-        switch (c.type.id()) {
-        case LogicalTypeId::BIGINT:  v = static_cast<double>(c.i64_data[r]); break;
-        case LogicalTypeId::INTEGER: v = static_cast<double>(c.i32_data[r]); break;
+        switch (ctid) {
         case LogicalTypeId::DOUBLE:  v = c.f64_data[r]; break;
         case LogicalTypeId::FLOAT:   v = static_cast<double>(c.f32_data[r]); break;
         default: return false;
@@ -459,7 +481,7 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
             const uint32_t *idx_arr = c.str_dict_indices.data();
             for (idx_t r = 0; r < nrows; r++) out_mask[r] &= dict_match[idx_arr[r]];
         } else {
-            int64_t pv = (int64_t)p.dval;
+            int64_t pv = p.ival;
             auto ctid = c.type.id();
             if (ctid == LogicalTypeId::INTEGER) {
                 const int32_t *arr = c.i32_data.data();
@@ -1846,7 +1868,7 @@ private:
                                 else                         { if (eq)  return false; }
                             }
                         } else {
-                            int64_t pv = (int64_t)p.dval;
+                            int64_t pv = p.ival;
                             int64_t v = 0;
                             if (col.type.id() == LogicalTypeId::INTEGER) v = col.i32_data[i];
                             else if (col.type.id() == LogicalTypeId::BIGINT) v = col.i64_data[i];
@@ -2396,7 +2418,7 @@ private:
                                     else                         { if (eq)  return false; }
                                 }
                             } else {
-                                int64_t pv = (int64_t)p.dval;
+                                int64_t pv = p.ival;
                                 int64_t v = 0;
                                 if (col.type.id() == LogicalTypeId::INTEGER) v = col.i32_data[i];
                                 else if (col.type.id() == LogicalTypeId::BIGINT) v = col.i64_data[i];
@@ -2561,7 +2583,7 @@ private:
                                         else                         { if (eq)  return false; }
                                     }
                                 } else {
-                                    int64_t pv = (int64_t)p.dval;
+                                    int64_t pv = p.ival;
                                     int64_t v = 0;
                                     if (col.type.id() == LogicalTypeId::INTEGER) v = col.i32_data[i];
                                     else if (col.type.id() == LogicalTypeId::BIGINT) v = col.i64_data[i];
@@ -2999,6 +3021,72 @@ private:
     bool collected_ = false;
     idx_t emit_pos_ = 0;
     idx_t row_limit_ = 0;  // 0 = no limit pushdown, full sort path
+};
+
+// SELECT col WHERE col = literal: every output row's value is the literal
+// itself, so the matched row's column data never needs to flow through the
+// PhysicalFilter copy path. Counts matches via the same fused-count fast
+// path used by SELECT COUNT(*) WHERE col = literal (Q20: 75ms vs 257ms),
+// then emits literal × count_matches in VECTOR_SIZE chunks. The wrapped
+// PhysicalFilter / PhysicalParquetScan pair is consumed only for the count.
+class PhysicalLiteralEmitFilter : public PhysicalOperator {
+public:
+    PhysicalLiteralEmitFilter(std::vector<LogicalType> types, Value literal,
+                               PhysicalOpPtr counter)
+        : PhysicalOperator(PhysicalOperatorType::PROJECTION, std::move(types)),
+          literal_(std::move(literal)), counter_(std::move(counter)) {}
+
+    void SetNeededOutputs(const std::vector<bool> &) override {
+        std::vector<bool> count_mask(1, true);
+        counter_->SetNeededOutputs(count_mask);
+    }
+
+    void Init() override {
+        counter_->Init();
+        DataChunk chunk;
+        chunk.Initialize(counter_->GetTypes());
+        match_count_ = 0;
+        while (counter_->GetData(chunk)) {
+            if (chunk.size() > 0 && chunk.ColumnCount() > 0) {
+                auto v = chunk.GetValue(0, 0);
+                if (!v.IsNull()) {
+                    match_count_ = v.GetValue<int64_t>();
+                }
+            }
+            chunk.Reset();
+        }
+        emitted_ = 0;
+    }
+
+    bool GetData(DataChunk &result) override {
+        if (emitted_ >= match_count_) return false;
+        if (result.ColumnCount() != GetTypes().size()) result.Initialize(GetTypes());
+        else result.Reset();
+        idx_t remaining = static_cast<idx_t>(match_count_ - emitted_);
+        idx_t count = std::min<idx_t>(remaining, VECTOR_SIZE);
+        auto &vec = result.GetVector(0);
+        auto tid = vec.GetType().id();
+        if (tid == LogicalTypeId::BIGINT) {
+            int64_t lv = literal_.GetValue<int64_t>();
+            auto *d = vec.GetData<int64_t>();
+            for (idx_t i = 0; i < count; i++) d[i] = lv;
+        } else if (tid == LogicalTypeId::INTEGER) {
+            int32_t lv = (int32_t)literal_.GetValue<int64_t>();
+            auto *d = vec.GetData<int32_t>();
+            for (idx_t i = 0; i < count; i++) d[i] = lv;
+        } else {
+            for (idx_t i = 0; i < count; i++) vec.SetValue(i, literal_);
+        }
+        result.SetCardinality(count);
+        emitted_ += count;
+        return true;
+    }
+
+private:
+    Value literal_;
+    PhysicalOpPtr counter_;
+    int64_t match_count_ = 0;
+    int64_t emitted_ = 0;
 };
 
 class PhysicalLimit : public PhysicalOperator {
@@ -7083,7 +7171,7 @@ private:
                             cp.type = col.type.id();
                             cp.op = p.op;
                             cp.dval = p.dval;
-                            cp.ival = static_cast<int64_t>(p.dval);
+                            cp.ival = p.ival;  // exact int64 — avoids 2^53 dval rounding
                             cp.validity = col.all_valid ? nullptr : col.validity.data();
                             cp.i64 = (cp.type == LogicalTypeId::BIGINT)  ? col.i64_data.data() : nullptr;
                             cp.i32 = (cp.type == LogicalTypeId::INTEGER) ? col.i32_data.data() : nullptr;
@@ -12131,6 +12219,76 @@ PhysicalOpPtr PhysicalPlanner::PlanFilter(const LogicalFilter &op) {
 
 PhysicalOpPtr PhysicalPlanner::PlanProjection(const LogicalProjection &op) {
     auto &mutable_op = const_cast<LogicalProjection &>(op);
+    // Q20 peephole: SELECT col WHERE col = literal projects only the
+    // literal — every output row's value is the literal itself, so we
+    // can skip the matched-RG decode and emit literal × match_count
+    // via the COUNT(*) WHERE filter fast path. Saves ~180ms on Q20
+    // (matched RG int64 column decode) for a 75ms total instead of 257ms.
+    if (mutable_op.expressions.size() == 1 && !op.children.empty()) {
+        auto &proj_expr = mutable_op.expressions[0];
+        if (proj_expr && proj_expr->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+            auto proj_col = static_cast<const BoundColumnRef &>(*proj_expr).column_index;
+            auto *log_filter = dynamic_cast<const LogicalFilter *>(op.children[0].get());
+            if (log_filter && log_filter->condition && !log_filter->children.empty()) {
+                auto &cond = *log_filter->condition;
+                if (cond.GetExpressionType() == BoundExpressionType::COMPARISON) {
+                    auto &cmp = static_cast<const BoundComparison &>(cond);
+                    if (cmp.op == "=" || cmp.op == "==") {
+                        const BoundExpression *lhs = cmp.left.get();
+                        const BoundExpression *rhs = cmp.right.get();
+                        if (lhs && rhs &&
+                            lhs->GetExpressionType() == BoundExpressionType::CONSTANT &&
+                            rhs->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                            std::swap(lhs, rhs);
+                        }
+                        if (lhs && rhs &&
+                            lhs->GetExpressionType() == BoundExpressionType::COLUMN_REF &&
+                            rhs->GetExpressionType() == BoundExpressionType::CONSTANT) {
+                            auto col = static_cast<const BoundColumnRef &>(*lhs).column_index;
+                            const auto &literal = static_cast<const BoundConstant &>(*rhs).value;
+                            auto literal_tid = literal.type().id();
+                            // Only INT/BIGINT scalar literals (well-defined
+                            // BIGINT projection emit). Other types fall through
+                            // to the regular path.
+                            if (col == proj_col &&
+                                (literal_tid == LogicalTypeId::BIGINT ||
+                                 literal_tid == LogicalTypeId::INTEGER) &&
+                                op.GetTypes().size() == 1 &&
+                                (op.GetTypes()[0].id() == LogicalTypeId::BIGINT ||
+                                 op.GetTypes()[0].id() == LogicalTypeId::INTEGER)) {
+                                // Build a synthetic Aggregate(COUNT(*)) over the
+                                // same Filter→Scan tree. PhysicalHashAggregate's
+                                // FUSED PARQUET FAST PATH handles the count.
+                                std::vector<BoundExprPtr> agg_groups;
+                                std::vector<BoundExprPtr> agg_funcs;
+                                agg_funcs.push_back(std::make_unique<BoundFunction>(
+                                    "COUNT", std::vector<BoundExprPtr>{},
+                                    LogicalType::BIGINT(), true, false));
+                                std::vector<LogicalType> agg_types{LogicalType::BIGINT()};
+                                auto count_op = std::make_unique<PhysicalHashAggregate>(
+                                    std::move(agg_groups), std::move(agg_funcs),
+                                    std::move(agg_types));
+                                count_op->children.push_back(Plan(*op.children[0]));
+                                Value coerced_literal = literal;
+                                if (op.GetTypes()[0].id() == LogicalTypeId::BIGINT &&
+                                    literal_tid == LogicalTypeId::INTEGER) {
+                                    coerced_literal = Value::BIGINT(
+                                        (int64_t)literal.GetValue<int32_t>());
+                                } else if (op.GetTypes()[0].id() == LogicalTypeId::INTEGER &&
+                                           literal_tid == LogicalTypeId::BIGINT) {
+                                    coerced_literal = Value::INTEGER(
+                                        (int32_t)literal.GetValue<int64_t>());
+                                }
+                                return std::make_unique<PhysicalLiteralEmitFilter>(
+                                    op.GetTypes(), std::move(coerced_literal),
+                                    std::move(count_op));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     auto result = std::make_unique<PhysicalProjection>(
         std::move(mutable_op.expressions), op.GetTypes());
     if (!op.children.empty()) {
