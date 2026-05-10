@@ -2794,10 +2794,19 @@ private:
             const idx_t kk = multi ? k * 4 : k;
             switch (tid) {
             case LogicalTypeId::BIGINT:
+            case LogicalTypeId::TIMESTAMP:
+            case LogicalTypeId::TIMESTAMP_TZ:
+            case LogicalTypeId::TIME:
+                // TIMESTAMP / TIMESTAMP_TZ / TIME store int64 microseconds
+                // internally; reuse the int64 primitive heap path. Q25/Q27
+                // (`ORDER BY EventTime LIMIT 10`) dropped through to the
+                // slow Value-based path before this case.
                 CollectTopN_Primitive<int64_t>(kk, cref.column_index, orders_[0].ascending);
                 if (multi) { ResortByFullKeys(); TrimToK(k); }
                 return;
             case LogicalTypeId::INTEGER:
+            case LogicalTypeId::DATE:
+                // DATE stores int32 days-since-epoch; same int32 path.
                 CollectTopN_Primitive<int32_t>(kk, cref.column_index, orders_[0].ascending);
                 if (multi) { ResortByFullKeys(); TrimToK(k); }
                 return;
