@@ -722,6 +722,7 @@ public:
 
     void SetProjection(std::vector<bool> mask) { projection_ = std::move(mask); }
     void SetNeededOutputs(const std::vector<bool> &mask) override { projection_ = mask; }
+    const std::vector<bool> &GetProjection() const { return projection_; }
     // Per-column hint: if set, VARCHAR dict-encoded cols skip per-row string_t
     // materialization (populate only str_dict_indices + str_dict_values).
     // Consumers (fused GROUP BY) must resolve strings via str_dict_values.
@@ -2630,13 +2631,23 @@ private:
             std::vector<std::vector<std::vector<Value>>> rg_fallback(unique_rgs.size(),
                 std::vector<std::vector<Value>>(ncols));
 
-            // Build the (rg, col) work list. Skip the key column.
+            // Build the (rg, col) work list. Skip the key column AND any
+            // column the parent projection didn't request — Q25 only outputs
+            // SearchPhrase but hits.parquet has 105 cols; without this filter
+            // pass 2 decoded all 104 (excluding key_col) per RG, dwarfing the
+            // pass-1 cost.
+            const auto &p2_proj = pq_scan->GetProjection();
+            auto col_needed_p2 = [&](idx_t c) -> bool {
+                if (c == key_col) return false;
+                if (p2_proj.empty()) return true;  // no projection → all cols
+                return c < p2_proj.size() && p2_proj[c];
+            };
             struct DecodeUnit { uint32_t rg; idx_t col; };
             std::vector<DecodeUnit> units;
             units.reserve(unique_rgs.size() * (ncols - 1));
             for (auto rg_u : unique_rgs) {
                 for (idx_t c = 0; c < ncols; c++) {
-                    if (c == key_col) continue;
+                    if (!col_needed_p2(c)) continue;
                     units.push_back({rg_u, c});
                 }
             }
