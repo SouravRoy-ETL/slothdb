@@ -554,6 +554,14 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinct(int tid,
             dict_h[d] = HashStr(dict_values[d].GetData(),
                                 dict_values[d].GetSize());
         }
+        // Cache-last (mirrors IngestRGTwoColCount): consecutive rows
+        // sharing the same (int, dict_idx) — common on Q14 SearchPhrase
+        // batches — skip the per-row hash table find. Stable counter
+        // pointer between hits because no insertion happens between them.
+        auto& pt = *impl_->threads[tid];
+        int64_t prev_k = 0;
+        uint32_t prev_d = UINT32_MAX;
+        int64_t* prev_cnt_ptr = nullptr;
         for (uint32_t r = 0; r < nrows; r++) {
             if (keep_mask && !keep_mask[r]) continue;
             if (!int_all_valid && !validity_int[r]) continue;
@@ -561,10 +569,30 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinct(int tid,
             uint32_t d = dict_indices[r];
             if (d >= dict_size) continue;
             int64_t k = fetch_int(r);
+            if (prev_cnt_ptr && k == prev_k && d == prev_d) {
+                ++(*prev_cnt_ptr);
+                continue;
+            }
             size_t ch = CombineIntStrHash(k, dict_h[d]);
-            IncrementByHashed(tid, k,
-                dict_values[d].GetData(), dict_values[d].GetSize(),
-                ch, 1);
+            IntStrKey probe{k,
+                            std::string_view(dict_values[d].GetData(),
+                                             dict_values[d].GetSize()),
+                            ch};
+            int shard = (int)(ch & (IS_NSHARDS - 1));
+            auto& m = pt.shards[shard];
+            auto it = m.find(probe);
+            if (it != m.end()) {
+                ++(it->second);
+                prev_cnt_ptr = &it->second;
+            } else {
+                uint32_t sz = dict_values[d].GetSize();
+                char* dst = pt.alloc(sz);
+                if (sz) std::memcpy(dst, dict_values[d].GetData(), sz);
+                auto ins = m.emplace(IntStrKey{k, std::string_view(dst, sz), ch}, 1);
+                prev_cnt_ptr = &ins.first->second;
+            }
+            prev_k = k;
+            prev_d = d;
         }
     } else if (str_data) {
         for (uint32_t r = 0; r < nrows; r++) {
@@ -605,6 +633,16 @@ void RadixCount2ColIntStr::IngestRGTwoColCount(int tid,
     auto fetch_int = [&](uint32_t r) -> int64_t {
         return int_is_bigint ? int_data_64[r] : (int64_t)int_data_32[r];
     };
+    // Cache-last: ClickBench Q15/Q17 see consecutive rows sharing the
+    // same (engine, search_phrase) pair (sorted-ish data — same
+    // SearchEngineID + SearchPhrase batched together). Skip the per-row
+    // hash + map-find when the pair is unchanged from prior row. The
+    // counter pointer stays stable between hits because no insertion
+    // happens between them; on miss we re-fetch via IncrementByHashed.
+    auto& pt = *impl_->threads[tid];
+    int64_t prev_k = 0;
+    uint32_t prev_d = UINT32_MAX;
+    int64_t* prev_cnt_ptr = nullptr;
     for (uint32_t r = 0; r < nrows; r++) {
         if (keep_mask && !keep_mask[r]) continue;
         if (!int_all_valid && !validity_int[r]) continue;
@@ -612,10 +650,30 @@ void RadixCount2ColIntStr::IngestRGTwoColCount(int tid,
         uint32_t d = dict_indices[r];
         if (d >= dict_size) continue;
         int64_t k = fetch_int(r);
+        if (prev_cnt_ptr && k == prev_k && d == prev_d) {
+            ++(*prev_cnt_ptr);
+            continue;
+        }
         size_t ch = MixIntStrHash(k, dict_h[d]);
-        IncrementByHashed(tid, k,
-            dict_values[d].GetData(), dict_values[d].GetSize(),
-            ch, 1);
+        IntStrKey probe{k,
+                        std::string_view(dict_values[d].GetData(),
+                                         dict_values[d].GetSize()),
+                        ch};
+        int shard = (int)(ch & (IS_NSHARDS - 1));
+        auto& m = pt.shards[shard];
+        auto it = m.find(probe);
+        if (it != m.end()) {
+            ++(it->second);
+            prev_cnt_ptr = &it->second;
+        } else {
+            uint32_t sz = dict_values[d].GetSize();
+            char* dst = pt.alloc(sz);
+            if (sz) std::memcpy(dst, dict_values[d].GetData(), sz);
+            auto ins = m.emplace(IntStrKey{k, std::string_view(dst, sz), ch}, 1);
+            prev_cnt_ptr = &ins.first->second;
+        }
+        prev_k = k;
+        prev_d = d;
     }
 }
 
