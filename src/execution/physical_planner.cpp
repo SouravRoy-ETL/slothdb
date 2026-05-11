@@ -2567,21 +2567,50 @@ private:
                         return true;
                     };
 
-                    // Build local candidate list for this RG, then merge
-                    // under a single lock. Most rows lose to heap top so
-                    // batching cuts lock acquisitions.
-                    std::vector<LightEntry> local;
-                    local.reserve(k * 2);
+                    // Per-RG local heap of size K (heap top = WORST of K-best).
+                    // Iterate row-major; cheap typed-key comparison against
+                    // local heap top filters losers without storing them.
+                    // Then merge local heap into global under a single lock.
+                    // Snapshot a hot threshold from light_merged once at the
+                    // start so most losers in this RG never touch the local
+                    // heap either.
+                    T hot_thr{}; bool hot_thr_set = false;
+                    {
+                        std::lock_guard<std::mutex> lk(heap_mu);
+                        if (light_merged.size() >= k && !light_merged.top().is_null) {
+                            hot_thr = light_merged.top().key;
+                            hot_thr_set = true;
+                        }
+                    }
+                    LightHeap local_heap(light_cmp);
                     for (idx_t i = 0; i < nrows; i++) {
                         if (mask_active && !mask[i]) continue;
                         if (fallback_row_loop && !eval_row(i)) continue;
                         bool key_is_null = !key_all_valid && !(i < kcol.validity.size() && kcol.validity[i]);
                         T key = key_is_null ? T{} : kdata[i];
-                        local.push_back({key, (uint32_t)re.rg_idx, (uint32_t)i, key_is_null});
+                        // Cheap typed prefilter against snapshot threshold.
+                        if (hot_thr_set && !key_is_null) {
+                            bool wins = ascending ? (key < hot_thr) : (key > hot_thr);
+                            if (!wins) continue;
+                        }
+                        LightEntry e{key, (uint32_t)re.rg_idx, (uint32_t)i, key_is_null};
+                        if (local_heap.size() < k) {
+                            local_heap.push(e);
+                        } else if (light_cmp(e, local_heap.top())) {
+                            local_heap.pop();
+                            local_heap.push(e);
+                        }
                     }
-                    {
+                    if (!local_heap.empty()) {
+                        // Drain local into a vector for ordered merge.
+                        std::vector<LightEntry> drain;
+                        drain.reserve(local_heap.size());
+                        while (!local_heap.empty()) {
+                            drain.push_back(local_heap.top());
+                            local_heap.pop();
+                        }
                         std::lock_guard<std::mutex> lk(heap_mu);
-                        for (auto &e : local) {
+                        for (auto &e : drain) {
                             if (light_merged.size() < k) {
                                 light_merged.push(e);
                             } else if (light_cmp(e, light_merged.top())) {
