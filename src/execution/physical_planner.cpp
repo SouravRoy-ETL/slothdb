@@ -22,6 +22,7 @@
 #include "slothdb/execution/literal_emit_filter.hpp"
 #include "slothdb/execution/q11_helper.hpp"
 #include "slothdb/execution/q21_helper.hpp"
+#include "slothdb/execution/q26_helper.hpp"
 #include "slothdb/execution/radix_multi_agg.hpp"
 #include <algorithm>
 #include <cmath>
@@ -1815,9 +1816,130 @@ private:
         // First-pass scan only needs key + predicate columns. Output
         // materialization happens in a separate pass 2 below where we decode
         // only the columns the projection actually emits.
+        // Q26 fast path: when the filter is empty or `<key_col> <> ''`,
+        // iterate the per-RG dict (~50K entries) instead of the per-row data
+        // (~1M rows per RG). We emit (ncols)-wide rows with the key string
+        // placed at `key_col_scan` and NULL elsewhere — the upstream
+        // projection plucks the key column out. Skips pass-2 RG materialization.
+        bool filter_q26_compat = tn_preds.empty() ||
+            (tn_preds.size() == 1 &&
+             (idx_t)tn_preds[0].col_idx == key_col_scan &&
+             tn_preds[0].str_form &&
+             !tn_preds[0].like_contains &&
+             tn_preds[0].op == SimpleCmpOp::NE);
+        // Only enable when the OrderBy's output schema's key column is
+        // VARCHAR (we're already in CollectTopN_Varchar so this is true)
+        // AND there's no extra ORDER BY tiebreaker (the dict-scan only
+        // resolves on the key, not secondary columns).
+        bool q26_fast_path =
+            filter_q26_compat &&
+            orders_.size() == 1 &&
+            output_to_scan.empty();
+        // For Q26 fast path keep the str_dict_values intact (don't skip
+        // str_data on the key col since we read dict_values directly).
         pq_scan->SetNeededOutputs(need);
         pq_scan->Init();
         auto *reader = pq_scan->GetReader();
+
+        if (q26_fast_path) {
+            std::string skip_str = (tn_preds.size() == 1 ? tn_preds[0].sval : std::string());
+            std::vector<std::vector<std::string>> per_rg_winners;
+            std::mutex pw_mu;
+            pq_scan->SetRGConsumer(
+                [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {
+                    (void)tid; (void)rg_idx;
+                    idx_t nrows = pq_scan->RowGroupSize(rg_idx);
+                    const auto &kcol = work.cols[key_col_scan];
+                    if (!kcol.decoded) return;
+                    // PLAIN-page (non-dict) RGs: fall back to row-loop top-K
+                    // for THIS RG only. Without this Q26 misses strings that
+                    // live in PLAIN-only RGs (hits.parquet has mixed pages).
+                    if (!kcol.str_dict_encoded ||
+                        kcol.str_dict_indices.empty() ||
+                        kcol.str_dict_values.empty()) {
+                        if (kcol.str_data.empty()) return;
+                        const string_t *gs = kcol.str_data.data();
+                        const std::string &sk = skip_str;
+                        std::vector<std::string> rg_top;
+                        rg_top.reserve(k);
+                        auto cmpf = [ascending](const std::string &a,
+                                                  const std::string &b) {
+                            return ascending ? (a < b) : (a > b);
+                        };
+                        std::priority_queue<std::string,
+                            std::vector<std::string>, decltype(cmpf)> h(cmpf);
+                        for (idx_t r = 0; r < nrows; r++) {
+                            if (!kcol.all_valid && !kcol.validity[r]) continue;
+                            const char *sd = gs[r].GetData();
+                            uint32_t sl = gs[r].GetSize();
+                            if (!sk.empty() == false && sl == sk.size() &&
+                                (sk.empty() ||
+                                 std::memcmp(sd, sk.data(), sk.size()) == 0))
+                                continue;
+                            std::string s(sd, sl);
+                            if (h.size() < (size_t)k) h.push(std::move(s));
+                            else if ((ascending ? (s < h.top()) : (s > h.top()))) {
+                                h.pop();
+                                h.push(std::move(s));
+                            }
+                        }
+                        while (!h.empty()) { rg_top.push_back(h.top()); h.pop(); }
+                        std::reverse(rg_top.begin(), rg_top.end());
+                        if (!rg_top.empty()) {
+                            std::lock_guard<std::mutex> lk(pw_mu);
+                            per_rg_winners.push_back(std::move(rg_top));
+                        }
+                        return;
+                    }
+                    uint32_t skip_di = UINT32_MAX;
+                    if (!tn_preds.empty()) {
+                        const auto &dv = kcol.str_dict_values;
+                        for (uint32_t d = 0; d < dv.size(); d++) {
+                            if (dv[d].GetSize() == skip_str.size() &&
+                                (skip_str.empty() ||
+                                 std::memcmp(dv[d].GetData(),
+                                             skip_str.data(),
+                                             skip_str.size()) == 0)) {
+                                skip_di = d;
+                                break;
+                            }
+                        }
+                    }
+                    auto winners = slothdb::TopKVarcharFromDict(
+                        kcol.str_dict_values.data(),
+                        kcol.str_dict_values.size(),
+                        kcol.str_dict_indices.data(), nrows,
+                        kcol.all_valid ? nullptr : kcol.validity.data(),
+                        skip_di, ascending, (size_t)k);
+                    if (!winners.empty()) {
+                        std::lock_guard<std::mutex> lk(pw_mu);
+                        per_rg_winners.push_back(std::move(winners));
+                    }
+                });
+            pq_scan->RunParallelRGs(0);
+            // Final merge: K-min/max heap over all per-RG candidates.
+            std::vector<std::string> all;
+            for (auto &v : per_rg_winners) {
+                for (auto &s : v) all.push_back(std::move(s));
+            }
+            // Sort then take first k.
+            std::sort(all.begin(), all.end(),
+                [ascending](const std::string &a, const std::string &b) {
+                    return ascending ? (a < b) : (a > b);
+                });
+            if (all.size() > (size_t)k) all.resize(k);
+            // Emit ncols-wide rows: key at key_col_scan, NULL elsewhere.
+            // Upstream projection picks the key column out.
+            std::vector<std::vector<Value>> out_rows;
+            out_rows.reserve(all.size());
+            for (auto &s : all) {
+                std::vector<Value> row(ncols);
+                row[key_col_scan] = Value::VARCHAR(s);
+                out_rows.push_back(std::move(row));
+            }
+            sorted_rows_ = std::move(out_rows);
+            return true;
+        }
 
         pq_scan->SetRGConsumer(
             [&](const PhysicalParquetScan::RGWork &work, idx_t rg_idx, int tid) {

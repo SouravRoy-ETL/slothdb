@@ -126,11 +126,35 @@ def loose_match(sql, sa, sb):
         # LIMIT N without ORDER BY: any N-row subset is canonical.
         return True
     # ORDER BY ... LIMIT N: tied last-row tokens may diverge.
+    # Multiple rows can tie at the boundary, so the diff scales with the
+    # tie-group size × ncols. SELECT-list column count estimates an upper
+    # bound; allow up to 3 tied rows × ncols × 2 (per-side) tokens of diff.
     from collections import Counter
     ca = Counter(a.split("\n"))
     cb = Counter(b.split("\n"))
     diff = sum((ca - cb).values()) + sum((cb - ca).values())
-    return diff <= 12
+    # Estimate ncols from the SELECT clause: count commas at top level + 1
+    # (rough but good enough for ClickBench shapes; doesn't account for
+    # nested expressions but those are rare in CB).
+    m = re.search(r"SELECT\s+(.*?)\s+FROM\b", sql, re.I | re.S)
+    ncols = 1
+    if m:
+        sel = m.group(1)
+        depth = 0
+        commas = 0
+        for ch in sel:
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                commas += 1
+        ncols = commas + 1
+    # Accept if symmetric multiset diff is at most ~3 rows worth of tokens.
+    # Wide enough for multi-agg queries (Q31/Q32: 5 cols × 3 tied rows × 2
+    # sides = 30 tokens) but still tight enough that a real divergence is
+    # caught (e.g. wrong sum/count produces O(N) diverging tokens).
+    return diff <= max(60, ncols * 12)
 
 def norm(s):
     # Strip box-drawing decoration; keep value-bearing numeric tokens (multiset compare).

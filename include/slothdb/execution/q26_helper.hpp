@@ -1,0 +1,39 @@
+#pragma once
+
+// Q26 helper: ORDER BY <varchar> ASC/DESC LIMIT N where the output is just
+// the order-by column. For a dict-encoded VARCHAR column, the K-smallest
+// (or K-largest) strings live in the per-RG dictionary — iterating dict
+// entries (~50K per RG) is O(D) instead of O(N) for 100M rows. Filter
+// shape supported: single predicate `<key_col> <> ''` (Q26 SearchPhrase).
+//
+// Lives in side TU per feedback_text_icache_shift.md so planner .text
+// stays stable.
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "slothdb/common/types/string_type.hpp"
+
+namespace slothdb {
+
+// Output: top-K (smallest if ascending else largest) non-skipped dict
+// strings whose dict_idx is referenced at least once by dict_indices.
+//
+//   dict_values / dict_size : per-RG dict
+//   dict_indices / nrows    : per-row dict-idx — used to filter orphan entries
+//   validity                : may be null (all valid)
+//   skip_di                 : UINT32_MAX = no skip
+//   ascending               : true for ASC, false for DESC
+//   k                       : top-K count
+//
+// Returns a vector of (sorted ascending-or-descending) strings, length <= k.
+std::vector<std::string> TopKVarcharFromDict(
+    const string_t* dict_values, std::size_t dict_size,
+    const std::uint32_t* dict_indices, std::size_t nrows,
+    const std::uint8_t* validity,
+    std::uint32_t skip_di,
+    bool ascending, std::size_t k);
+
+}  // namespace slothdb
