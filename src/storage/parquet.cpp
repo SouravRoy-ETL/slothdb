@@ -2692,6 +2692,18 @@ static bool CoerceForCompare(const Value &v, const Value &target, Value &out) {
         else out = Value::DOUBLE(d);
         return true;
     }
+    // VARCHAR → DATE: ClickBench Q37/Q38/Q39/Q42 use 'YYYY-MM-DD' string
+    // literals against EventDate. Without this coercion, the zone-map
+    // never prunes EventDate-bound RGs (string ne date type) → 100M-row
+    // decode where DuckDB prunes to a single July-2013 RG.
+    if (vid == LogicalTypeId::VARCHAR && tid == LogicalTypeId::DATE) {
+        const std::string &s = v.GetValue<std::string>();
+        int32_t days = 0;
+        if (Value::TryParseDateStringEpochDays(s.data(), s.size(), days)) {
+            out = Value::DATE(days);
+            return true;
+        }
+    }
     return false;
 }
 
