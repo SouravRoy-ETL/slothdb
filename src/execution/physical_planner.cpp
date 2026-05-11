@@ -1572,6 +1572,15 @@ public:
         : PhysicalOperator(PhysicalOperatorType::ORDER_BY, std::move(types)),
           orders_(std::move(orders)) {}
 
+    // Parent-projection pushdown: when a PhysicalProjection above this OrderBy
+    // only references columns {c1, c2, ...}, pass-2 of CollectTopN_Primitive
+    // (which decodes the K winning rows from parquet) can skip decoding all
+    // other columns. Q25 has 105-col hits.parquet but selects only
+    // SearchPhrase → without this we decode 104 unused cols (~1.2s wasted).
+    void SetParentProjectionCols(std::vector<bool> mask) {
+        parent_proj_mask_ = std::move(mask);
+    }
+
     // Top-N pushdown: PhysicalLimit propagates `limit + offset` here.
     // When set, we use a bounded min/max heap of that size instead of
     // collecting + sorting the full input. Critical for queries like
@@ -2830,8 +2839,14 @@ private:
             // pass 2 decoded all 104 (excluding key_col) per RG, dwarfing the
             // pass-1 cost.
             const auto &p2_proj = pq_scan->GetProjection();
+            const auto &p2_parent = parent_proj_mask_;
             auto col_needed_p2 = [&](idx_t c) -> bool {
                 if (c == key_col) return false;
+                // Parent-projection mask takes precedence: skip cols the
+                // downstream PhysicalProjection does not reference.
+                if (!p2_parent.empty()) {
+                    if (c >= p2_parent.size() || !p2_parent[c]) return false;
+                }
                 if (p2_proj.empty()) return true;  // no projection → all cols
                 return c < p2_proj.size() && p2_proj[c];
             };
@@ -3181,6 +3196,9 @@ private:
     bool collected_ = false;
     idx_t emit_pos_ = 0;
     idx_t row_limit_ = 0;  // 0 = no limit pushdown, full sort path
+    // Parent-projection pushdown mask. Empty = no info (decode all cols).
+    // Non-empty: parent_proj_mask_[c] = true → col c is consumed downstream.
+    std::vector<bool> parent_proj_mask_;
 };
 
 class PhysicalLimit : public PhysicalOperator {
@@ -9957,6 +9975,12 @@ private:
                 auto &info = agg_infos[a];
                 if (info.col_idx != INVALID_INDEX) continue;
                 if (info.is_count_star) continue;
+                // Q28 fast path: STRLEN(col_ref) is fully serviced by the
+                // is_strlen branch in apply_aggs (reads col->str_lengths
+                // directly). The expr_vals pre-fill at line ~10293 would
+                // duplicate that work and waste 1MB write/RG worker.
+                if (info.strlen_of_col &&
+                    info.strlen_col_idx != INVALID_INDEX) continue;
                 auto &agg_expr = static_cast<BoundFunction &>(*aggregates_[a]);
                 if (!agg_expr.arguments.empty())
                     expr_args[a] = agg_expr.arguments[0].get();
@@ -12620,6 +12644,86 @@ PhysicalOpPtr PhysicalPlanner::PlanProjection(const LogicalProjection &op) {
         std::move(mutable_op.expressions), op.GetTypes());
     if (!op.children.empty()) {
         result->children.push_back(Plan(*op.children[0]));
+    }
+    // Push the projection's referenced columns down into a child OrderBy.
+    // CollectTopN_Primitive's pass-2 decode then skips unprojected cols.
+    // Q25 (SELECT SearchPhrase ... ORDER BY EventTime LIMIT 10) drops from
+    // 1.7s -> ~225ms because pass-2 stops decoding 103 unused cols.
+    {
+        // Walk down through identity-projection/limit wrappers to find OrderBy.
+        PhysicalOperator *cur = result->children.empty() ? nullptr
+                                                         : result->children[0].get();
+        for (int hops = 0; cur && hops < 4; hops++) {
+            if (auto *ob = dynamic_cast<PhysicalOrderBy *>(cur)) {
+                // Build mask of referenced col indices over the OrderBy's
+                // INPUT schema. Each projection expression's column_index
+                // refers to that same input space.
+                std::vector<bool> mask(ob->GetTypes().size(), false);
+                bool simple = true;
+                std::function<void(const BoundExpression &)> walk =
+                    [&](const BoundExpression &e) {
+                        if (!simple) return;
+                        switch (e.GetExpressionType()) {
+                        case BoundExpressionType::COLUMN_REF: {
+                            auto &cr = static_cast<const BoundColumnRef &>(e);
+                            if (cr.column_index < mask.size())
+                                mask[cr.column_index] = true;
+                            else
+                                simple = false;
+                            break;
+                        }
+                        case BoundExpressionType::CONSTANT:
+                            break;
+                        case BoundExpressionType::COMPARISON: {
+                            auto &c = static_cast<const BoundComparison &>(e);
+                            walk(*c.left); walk(*c.right); break;
+                        }
+                        case BoundExpressionType::CONJUNCTION: {
+                            auto &c = static_cast<const BoundConjunction &>(e);
+                            walk(*c.left); walk(*c.right); break;
+                        }
+                        case BoundExpressionType::ARITHMETIC: {
+                            auto &a = static_cast<const BoundArithmetic &>(e);
+                            walk(*a.left); walk(*a.right); break;
+                        }
+                        case BoundExpressionType::NEGATION: {
+                            auto &n = static_cast<const BoundNegation &>(e);
+                            walk(*n.child); break;
+                        }
+                        case BoundExpressionType::UNARY_MINUS: {
+                            auto &u = static_cast<const BoundUnaryMinus &>(e);
+                            walk(*u.child); break;
+                        }
+                        case BoundExpressionType::CAST: {
+                            auto &c = static_cast<const BoundCast &>(e);
+                            walk(*c.child); break;
+                        }
+                        case BoundExpressionType::FUNCTION: {
+                            auto &f = static_cast<const BoundFunction &>(e);
+                            for (auto &arg : f.arguments) walk(*arg);
+                            break;
+                        }
+                        default:
+                            simple = false; break;
+                        }
+                    };
+                for (auto &e : result->GetExpressions()) {
+                    if (!e) { simple = false; break; }
+                    walk(*e);
+                }
+                if (simple) ob->SetParentProjectionCols(std::move(mask));
+                break;
+            }
+            // Allow PhysicalLimit / identity PhysicalProjection between us
+            // and the OrderBy. Anything else stops the walk.
+            if (dynamic_cast<PhysicalLimit *>(cur) ||
+                (dynamic_cast<PhysicalProjection *>(cur) &&
+                 static_cast<PhysicalProjection *>(cur)->IsIdentityProjection())) {
+                cur = cur->children.empty() ? nullptr : cur->children[0].get();
+                continue;
+            }
+            break;
+        }
     }
     return result;
 }
