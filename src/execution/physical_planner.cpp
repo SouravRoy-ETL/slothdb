@@ -12734,6 +12734,14 @@ static bool TryComputeQ14_2Stage(
 
     constexpr int Q14_THREADS = 8;
     slothdb::RadixCount2ColIntStr stage1(Q14_THREADS);
+    // Q14 skip-di detection: single pred = `<group_col> <> ''`. If
+    // the dict has the empty-string entry we can fold the filter into a
+    // dict-idx skip and bypass BuildTypedKeepMask + 100MB keep_mask read.
+    bool q14_skip_di_eligible =
+        dpd_has_filter && dpd_preds.size() == 1 &&
+        dpd_preds[0].str_form &&
+        (idx_t)dpd_preds[0].col_idx == group_col &&
+        dpd_preds[0].op == SimpleCmpOp::NE;
     pq->SetRGConsumer(
         [&](const PhysicalParquetScan::RGWork &work,
             idx_t rg_idx, int tid) {
@@ -12742,6 +12750,36 @@ static bool TryComputeQ14_2Stage(
             const auto &gcol = work.cols[group_col];
             const auto &acol = work.cols[agg_col];
             if (!gcol.decoded || !acol.decoded) return;
+            // Skip-di fast path: dict-encoded group col + single pred on it.
+            if (q14_skip_di_eligible && gcol.str_dict_encoded &&
+                !gcol.str_dict_indices.empty()) {
+                uint32_t skip_di = UINT32_MAX;
+                const auto &dv = gcol.str_dict_values;
+                const auto &skip_str = dpd_preds[0].sval;
+                for (uint32_t d = 0; d < dv.size(); d++) {
+                    if (dv[d].GetSize() == skip_str.size() &&
+                        (skip_str.empty() ||
+                         std::memcmp(dv[d].GetData(), skip_str.data(),
+                                     skip_str.size()) == 0)) {
+                        skip_di = d;
+                        break;
+                    }
+                }
+                stage1.IngestRGStrIntDistinctSkipDi(tid % Q14_THREADS,
+                    (acol.type.id() == LogicalTypeId::BIGINT)
+                        ? acol.i64_data.data() : nullptr,
+                    (acol.type.id() == LogicalTypeId::INTEGER)
+                        ? acol.i32_data.data() : nullptr,
+                    acol.type.id() == LogicalTypeId::BIGINT,
+                    gcol.str_dict_indices.data(),
+                    gcol.str_dict_values.data(),
+                    (uint32_t)gcol.str_dict_values.size(),
+                    acol.all_valid ? nullptr : acol.validity.data(),
+                    gcol.all_valid ? nullptr : gcol.validity.data(),
+                    acol.all_valid, gcol.all_valid,
+                    (uint32_t)nrows, skip_di);
+                return;
+            }
             std::vector<uint8_t> tk;
             bool tk_active = false;
             if (dpd_has_filter) {

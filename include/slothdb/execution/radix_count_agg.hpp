@@ -159,6 +159,17 @@ public:
         bool int_all_valid, bool str_all_valid,
         uint32_t nrows, uint32_t skip_di);
 
+    // Same as IngestRGStrIntDistinct but folds `<group_str_col> <> ''` into
+    // dict-idx skip. Used by Q14 2-stage path.
+    void IngestRGStrIntDistinctSkipDi(int tid,
+        const int64_t* int_data_64, const int32_t* int_data_32,
+        bool int_is_bigint,
+        const uint32_t* dict_indices, const string_t* dict_values,
+        uint32_t dict_size,
+        const uint8_t* validity_int, const uint8_t* validity_str,
+        bool int_all_valid, bool str_all_valid,
+        uint32_t nrows, uint32_t skip_di);
+
     size_t TotalGroups() const;
 
 private:

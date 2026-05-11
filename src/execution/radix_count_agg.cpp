@@ -660,6 +660,63 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinct(int tid,
     }
 }
 
+// Skip-di variant: SearchPhrase<>'' folded into dict-idx skip (Q14).
+void RadixCount2ColIntStr::IngestRGStrIntDistinctSkipDi(int tid,
+    const int64_t* int_data_64, const int32_t* int_data_32,
+    bool int_is_bigint,
+    const uint32_t* dict_indices, const string_t* dict_values,
+    uint32_t dict_size,
+    const uint8_t* validity_int, const uint8_t* validity_str,
+    bool int_all_valid, bool str_all_valid,
+    uint32_t nrows, uint32_t skip_di) {
+    if (dict_size == 0 || nrows == 0 || !dict_indices) return;
+    auto fetch_int = [&](uint32_t r) -> int64_t {
+        return int_is_bigint
+            ? int_data_64[r] : (int64_t)int_data_32[r];
+    };
+    std::vector<size_t> dict_h(dict_size);
+    for (uint32_t d = 0; d < dict_size; d++) {
+        dict_h[d] = HashStr(dict_values[d].GetData(),
+                            dict_values[d].GetSize());
+    }
+    auto& pt = *impl_->threads[tid];
+    int64_t prev_k = 0;
+    uint32_t prev_d = UINT32_MAX;
+    int64_t* prev_cnt_ptr = nullptr;
+    for (uint32_t r = 0; r < nrows; r++) {
+        uint32_t d = dict_indices[r];
+        if (d == skip_di) continue;
+        if (!int_all_valid && !validity_int[r]) continue;
+        if (!str_all_valid && !validity_str[r]) continue;
+        if (d >= dict_size) continue;
+        int64_t k = fetch_int(r);
+        if (prev_cnt_ptr && k == prev_k && d == prev_d) {
+            ++(*prev_cnt_ptr);
+            continue;
+        }
+        size_t ch = CombineIntStrHash(k, dict_h[d]);
+        IntStrKey probe{k,
+                        std::string_view(dict_values[d].GetData(),
+                                         dict_values[d].GetSize()),
+                        ch};
+        int shard = (int)(ch & (IS_NSHARDS - 1));
+        auto& m = pt.shards[shard];
+        auto it = m.find(probe);
+        if (it != m.end()) {
+            ++(it->second);
+            prev_cnt_ptr = &it->second;
+        } else {
+            uint32_t sz = dict_values[d].GetSize();
+            char* dst = pt.alloc(sz);
+            if (sz) std::memcpy(dst, dict_values[d].GetData(), sz);
+            auto ins = m.emplace(IntStrKey{k, std::string_view(dst, sz), ch}, 1);
+            prev_cnt_ptr = &ins.first->second;
+        }
+        prev_k = k;
+        prev_d = d;
+    }
+}
+
 // Q15-shape inner loop body. Per-RG ingest of (int_key, dict_idx) → count.
 // Precomputes per-dict-entry hash once per RG (~10-30 ns saved per row),
 // then per-row IncrementByHashed. Lives here (not physical_planner.cpp)
