@@ -102,6 +102,24 @@ set_target_properties(slothdb_zstd PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(slothdb_lib PRIVATE slothdb_zstd)
 target_include_directories(slothdb_lib PRIVATE ${SLOTHDB_ZSTD_DIR})
 
+# FastPFor bitpacking: per-bit-width specialized 32-element unpackers.
+# Replaces the scalar bit-pack loop in RleDecoder::NextBatch with a
+# vectorizable fixed-shift unrolled body. Licensed Apache 2.0, vendored
+# from DuckDB's third_party/fastpforlib.
+add_library(slothdb_fastpfor STATIC
+    ${CMAKE_SOURCE_DIR}/third_party/fastpforlib/bitpacking.cpp)
+target_include_directories(slothdb_fastpfor PUBLIC
+    ${CMAKE_SOURCE_DIR}/third_party/fastpforlib)
+if(MSVC)
+    target_compile_options(slothdb_fastpfor PRIVATE /w)
+else()
+    target_compile_options(slothdb_fastpfor PRIVATE -w)
+endif()
+set_target_properties(slothdb_fastpfor PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(slothdb_lib PRIVATE slothdb_fastpfor)
+target_include_directories(slothdb_lib PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/fastpforlib)
+
 target_include_directories(slothdb_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
