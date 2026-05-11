@@ -2594,12 +2594,16 @@ private:
                     // Snapshot a hot threshold from light_merged once at the
                     // start so most losers in this RG never touch the local
                     // heap either.
-                    T hot_thr{}; bool hot_thr_set = false;
+                    // Ratcheting prefilter: start at global threshold; once
+                    // local heap fills to K, tighten to local_heap.top() (the
+                    // K-th best seen in THIS RG). Most subsequent losers fail
+                    // the typed compare instead of the heavier light_cmp path.
+                    T tight_thr{}; bool tight_thr_set = false;
                     {
                         std::lock_guard<std::mutex> lk(heap_mu);
                         if (light_merged.size() >= k && !light_merged.top().is_null) {
-                            hot_thr = light_merged.top().key;
-                            hot_thr_set = true;
+                            tight_thr = light_merged.top().key;
+                            tight_thr_set = true;
                         }
                     }
                     LightHeap local_heap(light_cmp);
@@ -2608,17 +2612,24 @@ private:
                         if (fallback_row_loop && !eval_row(i)) continue;
                         bool key_is_null = !key_all_valid && !(i < kcol.validity.size() && kcol.validity[i]);
                         T key = key_is_null ? T{} : kdata[i];
-                        // Cheap typed prefilter against snapshot threshold.
-                        if (hot_thr_set && !key_is_null) {
-                            bool wins = ascending ? (key < hot_thr) : (key > hot_thr);
+                        if (tight_thr_set && !key_is_null) {
+                            bool wins = ascending ? (key < tight_thr) : (key > tight_thr);
                             if (!wins) continue;
                         }
                         LightEntry e{key, (uint32_t)re.rg_idx, (uint32_t)i, key_is_null};
                         if (local_heap.size() < k) {
                             local_heap.push(e);
+                            if (local_heap.size() == k && !local_heap.top().is_null) {
+                                tight_thr = local_heap.top().key;
+                                tight_thr_set = true;
+                            }
                         } else if (light_cmp(e, local_heap.top())) {
                             local_heap.pop();
                             local_heap.push(e);
+                            if (!local_heap.top().is_null) {
+                                tight_thr = local_heap.top().key;
+                                tight_thr_set = true;
+                            }
                         }
                     }
                     if (!local_heap.empty()) {
