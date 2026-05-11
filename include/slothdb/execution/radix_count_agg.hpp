@@ -145,6 +145,20 @@ public:
         bool int_all_valid, bool str_all_valid,
         uint32_t nrows, const uint8_t* keep_mask);
 
+    // Same as IngestRGTwoColCount but folds the WHERE `<str_group_col> <> ''`
+    // filter into a dict-idx skip: rows with dict_indices[r]==skip_di are
+    // dropped without a keep_mask materialization. Used by Q15/Q17 when the
+    // only filter is on the VARCHAR group column. `skip_di`=UINT32_MAX
+    // disables the skip.
+    void IngestRGTwoColCountSkipDi(int tid,
+        const int64_t* int_data_64, const int32_t* int_data_32,
+        bool int_is_bigint,
+        const uint32_t* dict_indices, const string_t* dict_values,
+        uint32_t dict_size,
+        const uint8_t* validity_int, const uint8_t* validity_str,
+        bool int_all_valid, bool str_all_valid,
+        uint32_t nrows, uint32_t skip_di);
+
     size_t TotalGroups() const;
 
 private:
@@ -188,6 +202,20 @@ public:
                            uint32_t dict_size,
                            const uint8_t* validity,
                            const uint8_t* keep_mask);
+
+    // Same as IncrementByDictRG but folds the WHERE `<group_col> <> <skip>`
+    // filter into a single dict-idx skip: rows with dict_indices[r]==skip_di
+    // are dropped without any keep_mask materialization. Used when the only
+    // filter is on the group column itself (Q13/Q14/Q15 SearchPhrase<>'').
+    // Saves the BuildTypedKeepMask O(N) pass + the 100MB keep_mask streaming
+    // read in Pass 1. `skip_di` = UINT32_MAX disables the skip.
+    void IncrementByDictRGSkipDi(int tid,
+                                 const uint32_t* dict_indices,
+                                 uint32_t nrows,
+                                 const string_t* dict_values,
+                                 uint32_t dict_size,
+                                 const uint8_t* validity,
+                                 uint32_t skip_di);
 
     // Phase 2: parallel per-shard merge. One worker per shard.
     void MergeShard(int shard);

@@ -251,6 +251,60 @@ void RadixCountAggStr::IncrementByDictRG(int tid,
     }
 }
 
+void RadixCountAggStr::IncrementByDictRGSkipDi(int tid,
+                                               const uint32_t* dict_indices,
+                                               uint32_t nrows,
+                                               const string_t* dict_values,
+                                               uint32_t dict_size,
+                                               const uint8_t* validity,
+                                               uint32_t skip_di) {
+    if (dict_size == 0 || nrows == 0) return;
+    auto& pt = *impl_->threads[tid];
+    if (pt.dict_count_scratch.size() < dict_size) {
+        pt.dict_count_scratch.assign(dict_size, 0);
+    } else {
+        std::fill_n(pt.dict_count_scratch.begin(), dict_size, 0);
+    }
+    int64_t* cnt = pt.dict_count_scratch.data();
+    // Pass 1: no keep_mask — single 3-cyc/row inner loop. Bounds check
+    // collapses to a single compare since dict_size fits in u32.
+    if (!validity) {
+        for (uint32_t r = 0; r < nrows; r++) {
+            uint32_t d = dict_indices[r];
+            if (d < dict_size) cnt[d]++;
+        }
+    } else {
+        for (uint32_t r = 0; r < nrows; r++) {
+            if (!validity[r]) continue;
+            uint32_t d = dict_indices[r];
+            if (d < dict_size) cnt[d]++;
+        }
+    }
+    // Zero out the skipped dict entry so Pass 2 ignores it.
+    if (skip_di < dict_size) cnt[skip_di] = 0;
+    // Pass 2: one hash + lookup per non-zero dict entry.
+    ankerl::unordered_dense::hash<std::string_view> H;
+    for (uint32_t d = 0; d < dict_size; d++) {
+        int64_t delta = cnt[d];
+        if (delta == 0) continue;
+        const string_t& sv = dict_values[d];
+        const char* data = sv.GetData();
+        uint32_t size = sv.GetSize();
+        std::string_view probe(data, size);
+        size_t h = H(probe);
+        int shard = (int)(h & (STR_NSHARDS - 1));
+        auto& m = pt.shards[shard];
+        auto it = m.find(probe);
+        if (it != m.end()) {
+            it->second += delta;
+        } else {
+            char* dst = pt.alloc(size);
+            if (size) std::memcpy(dst, data, size);
+            m.emplace(std::string_view(dst, size), delta);
+        }
+    }
+}
+
 void RadixCountAggStr::MergeShard(int shard) {
     // Disjoint by hash → only this worker writes to final_maps[shard].
     auto& out = impl_->final_maps[shard];
@@ -648,6 +702,65 @@ void RadixCount2ColIntStr::IngestRGTwoColCount(int tid,
         if (!int_all_valid && !validity_int[r]) continue;
         if (!str_all_valid && !validity_str[r]) continue;
         uint32_t d = dict_indices[r];
+        if (d >= dict_size) continue;
+        int64_t k = fetch_int(r);
+        if (prev_cnt_ptr && k == prev_k && d == prev_d) {
+            ++(*prev_cnt_ptr);
+            continue;
+        }
+        size_t ch = MixIntStrHash(k, dict_h[d]);
+        IntStrKey probe{k,
+                        std::string_view(dict_values[d].GetData(),
+                                         dict_values[d].GetSize()),
+                        ch};
+        int shard = (int)(ch & (IS_NSHARDS - 1));
+        auto& m = pt.shards[shard];
+        auto it = m.find(probe);
+        if (it != m.end()) {
+            ++(it->second);
+            prev_cnt_ptr = &it->second;
+        } else {
+            uint32_t sz = dict_values[d].GetSize();
+            char* dst = pt.alloc(sz);
+            if (sz) std::memcpy(dst, dict_values[d].GetData(), sz);
+            auto ins = m.emplace(IntStrKey{k, std::string_view(dst, sz), ch}, 1);
+            prev_cnt_ptr = &ins.first->second;
+        }
+        prev_k = k;
+        prev_d = d;
+    }
+}
+
+// Same as IngestRGTwoColCount but folds the dict-idx skip in place of a
+// keep_mask, skipping the BuildTypedKeepMask + 100MB keep_mask read for the
+// SearchPhrase<>'' filter shape. Pass 1's inner loop drops two loads per row
+// (no keep_mask + no validity_str when all_valid).
+void RadixCount2ColIntStr::IngestRGTwoColCountSkipDi(int tid,
+    const int64_t* int_data_64, const int32_t* int_data_32,
+    bool int_is_bigint,
+    const uint32_t* dict_indices, const string_t* dict_values,
+    uint32_t dict_size,
+    const uint8_t* validity_int, const uint8_t* validity_str,
+    bool int_all_valid, bool str_all_valid,
+    uint32_t nrows, uint32_t skip_di) {
+    if (dict_size == 0 || nrows == 0) return;
+    std::vector<size_t> dict_h(dict_size);
+    for (uint32_t d = 0; d < dict_size; d++) {
+        dict_h[d] = HashStr(dict_values[d].GetData(),
+                            dict_values[d].GetSize());
+    }
+    auto fetch_int = [&](uint32_t r) -> int64_t {
+        return int_is_bigint ? int_data_64[r] : (int64_t)int_data_32[r];
+    };
+    auto& pt = *impl_->threads[tid];
+    int64_t prev_k = 0;
+    uint32_t prev_d = UINT32_MAX;
+    int64_t* prev_cnt_ptr = nullptr;
+    for (uint32_t r = 0; r < nrows; r++) {
+        uint32_t d = dict_indices[r];
+        if (d == skip_di) continue;
+        if (!int_all_valid && !validity_int[r]) continue;
+        if (!str_all_valid && !validity_str[r]) continue;
         if (d >= dict_size) continue;
         int64_t k = fetch_int(r);
         if (prev_cnt_ptr && k == prev_k && d == prev_d) {

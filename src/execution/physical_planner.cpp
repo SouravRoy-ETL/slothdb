@@ -6196,9 +6196,37 @@ private:
                                 if (!gcol.decoded) return;
                                 bool dict_fast = gcol.str_dict_encoded &&
                                     !gcol.str_dict_indices.empty();
+                                // Q13/Q14-style fast skip: when the only
+                                // filter is `<group_col> <> ''` (or any
+                                // equality on the same col), find its
+                                // dict_idx and fold the filter into a
+                                // per-row dict-idx skip. Avoids the O(N)
+                                // BuildTypedKeepMask + 100MB keep_mask read.
+                                uint32_t skip_di_q13 = UINT32_MAX;
+                                bool single_pred_skip = false;
+                                if (dict_fast && single_has_filter_fused &&
+                                    single_preds.size() == 1) {
+                                    const auto &p = single_preds[0];
+                                    if (p.str_form &&
+                                        (idx_t)p.col_idx == group_col &&
+                                        p.op == SimpleCmpOp::NE) {
+                                        const auto &dv0 = gcol.str_dict_values;
+                                        for (uint32_t d = 0; d < dv0.size(); d++) {
+                                            if (dv0[d].GetSize() == p.sval.size() &&
+                                                (p.sval.empty() ||
+                                                 std::memcmp(dv0[d].GetData(),
+                                                             p.sval.data(),
+                                                             p.sval.size()) == 0)) {
+                                                skip_di_q13 = d;
+                                                break;
+                                            }
+                                        }
+                                        single_pred_skip = true;
+                                    }
+                                }
                                 std::vector<uint8_t> tk;
                                 bool tk_active = false;
-                                if (single_has_filter_fused) {
+                                if (single_has_filter_fused && !single_pred_skip) {
                                     tk_active = BuildTypedKeepMask(
                                         single_preds, work.cols, nrows, tk);
                                 }
@@ -6207,7 +6235,15 @@ private:
                                     const uint32_t *di = gcol.str_dict_indices.data();
                                     const string_t *dv = gcol.str_dict_values.data();
                                     idx_t dsz = gcol.str_dict_values.size();
-                                    if (!single_has_filter_fused || tk_active) {
+                                    if (single_pred_skip) {
+                                        // Skip-di fast path: no keep_mask alloc.
+                                        str_agg.IncrementByDictRGSkipDi(
+                                            t, di, (uint32_t)nrows, dv,
+                                            (uint32_t)dsz,
+                                            gcol.all_valid ? nullptr
+                                                : gcol.validity.data(),
+                                            skip_di_q13);
+                                    } else if (!single_has_filter_fused || tk_active) {
                                         // Bulk dict-aware: O(D) map ops vs O(N).
                                         str_agg.IncrementByDictRG(
                                             t, di, (uint32_t)nrows, dv,
@@ -9578,14 +9614,51 @@ private:
                                     ? icol.i32_data.data() : nullptr;
                                 bool dict_fast = scol.str_dict_encoded &&
                                     !scol.str_dict_indices.empty();
+                                // Q15/Q17 skip-di fast path: single pred =
+                                // `<str_gc> <> ''` collapses to a per-row
+                                // dict_idx skip. Avoids BuildTypedKeepMask.
+                                uint32_t skip_di_q15 = UINT32_MAX;
+                                bool single_pred_skip_2c = false;
+                                if (dict_fast && multi_has_filter &&
+                                    multi_preds.size() == 1) {
+                                    const auto &p = multi_preds[0];
+                                    if (p.str_form &&
+                                        (idx_t)p.col_idx == str_gc &&
+                                        p.op == SimpleCmpOp::NE) {
+                                        const auto &dv0 = scol.str_dict_values;
+                                        for (uint32_t d = 0; d < dv0.size(); d++) {
+                                            if (dv0[d].GetSize() == p.sval.size() &&
+                                                (p.sval.empty() ||
+                                                 std::memcmp(dv0[d].GetData(),
+                                                             p.sval.data(),
+                                                             p.sval.size()) == 0)) {
+                                                skip_di_q15 = d;
+                                                break;
+                                            }
+                                        }
+                                        single_pred_skip_2c = true;
+                                    }
+                                }
                                 std::vector<uint8_t> tk;
                                 bool tk_active = false;
-                                if (multi_has_filter) {
+                                if (multi_has_filter && !single_pred_skip_2c) {
                                     tk_active = BuildTypedKeepMask(
                                         multi_preds, work.cols, nrows, tk);
                                 }
                                 int t = tid % Q15_THREADS;
-                                if (dict_fast && (!multi_has_filter || tk_active)) {
+                                if (dict_fast && single_pred_skip_2c) {
+                                    agg2.IngestRGTwoColCountSkipDi(t,
+                                        gi64, gi32, int_is_bigint,
+                                        scol.str_dict_indices.data(),
+                                        scol.str_dict_values.data(),
+                                        (uint32_t)scol.str_dict_values.size(),
+                                        icol.all_valid ? nullptr
+                                            : icol.validity.data(),
+                                        scol.all_valid ? nullptr
+                                            : scol.validity.data(),
+                                        icol.all_valid, scol.all_valid,
+                                        (uint32_t)nrows, skip_di_q15);
+                                } else if (dict_fast && (!multi_has_filter || tk_active)) {
                                     // Side-TU helper: shrinks planner .text
                                     // ~30 LOC vs prior inline loop, keeps Q11/Q12
                                     // I-cache stable.
