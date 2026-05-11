@@ -1809,13 +1809,20 @@ private:
         idx_t ncols = pq_scan->GetTypes().size();
         // VARCHAR predicate cols benefit from SkipStrData on the predicate
         // col (preserve dict_indices for BuildTypedKeepMask). The key col
-        // also stays VARCHAR — but because we MUST materialise the key
-        // string per surviving row, we DO NOT skip str_data on key_col_scan.
-        if (!tn_preds.empty()) {
+        // also stays VARCHAR — both consumer paths (Q26 fast path via
+        // q26_helper + non-fast eval_row + get_key) prefer str_dict_values
+        // when available. PLAIN-only pages back-fill str_data on demand via
+        // MaterialiseStrDataLazy, so skipping is safe in both branches and
+        // shaves ~24MB/RG of pointless string_t writes on SearchPhrase.
+        {
             std::vector<bool> skip_pre(ncols, false);
             for (auto &p : tn_preds) {
                 if (p.col_idx < ncols && p.str_form && p.col_idx != key_col_scan)
                     skip_pre[p.col_idx] = true;
+            }
+            if (key_col_scan < ncols &&
+                pq_scan->GetTypes()[key_col_scan].id() == LogicalTypeId::VARCHAR) {
+                skip_pre[key_col_scan] = true;
             }
             pq_scan->SetSkipStrData(std::move(skip_pre));
         }
