@@ -10190,7 +10190,10 @@ private:
                         if (acol.is_strlen) {
                             if (acol.tid != LogicalTypeId::VARCHAR) continue;
                             uint32_t sl;
-                            if (acol.col->str_dict_encoded &&
+                            if (acol.col->str_lengths_only &&
+                                r < acol.col->str_lengths.size()) {
+                                sl = acol.col->str_lengths[r];
+                            } else if (acol.col->str_dict_encoded &&
                                 !acol.col->str_dict_indices.empty()) {
                                 uint32_t di = acol.col->str_dict_indices[r];
                                 if (di >= acol.col->str_dict_values.size()) continue;
