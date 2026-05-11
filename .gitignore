@@ -93,3 +93,4 @@ cloudflare/cors-proxy/.wrangler/
 third_party/snappy/
 include/slothdb/util/
 test/unit/util/
+topn_dbg.log

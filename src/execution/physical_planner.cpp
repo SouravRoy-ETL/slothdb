@@ -1846,10 +1846,21 @@ private:
         // VARCHAR (we're already in CollectTopN_Varchar so this is true)
         // AND there's no extra ORDER BY tiebreaker (the dict-scan only
         // resolves on the key, not secondary columns).
+        // Projection rule: fast path emits ncols-wide rows with key value
+        // at key_col_scan and NULL elsewhere, so the parent projection must
+        // only reference key_col_scan (i.e. identity output OR every output
+        // expression points at the key column). Q26 SELECT SearchPhrase
+        // ORDER BY SearchPhrase is the canonical fit.
+        auto proj_refs_only_key = [&]() {
+            if (output_to_scan.empty()) return true;
+            for (idx_t sc : output_to_scan)
+                if (sc != key_col_scan) return false;
+            return true;
+        };
         bool q26_fast_path =
             filter_q26_compat &&
             orders_.size() == 1 &&
-            output_to_scan.empty();
+            proj_refs_only_key();
         // For Q26 fast path keep the str_dict_values intact (don't skip
         // str_data on the key col since we read dict_values directly).
         pq_scan->SetNeededOutputs(need);
