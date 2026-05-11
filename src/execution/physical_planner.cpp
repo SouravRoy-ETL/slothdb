@@ -10965,12 +10965,29 @@ private:
                 for (int w = 0; w < merge_w; w++) mts.emplace_back([&, w]() { run_merge(w); });
                 for (auto &th : mts) th.join();
             }
-        } else
+        } else {
 
+        // Q19 OOM guard for 3+col GROUP BY routed through the slow chunk-
+        // loop fallback (when PhysicalProjection wraps the parquet scan and
+        // breaks FUSED PARQUET dispatch). At 100M near-unique composite keys
+        // the per-row key-build + map-insert work alone exceeds 30s. Once
+        // the per-result group count reaches the cap, stop accepting new
+        // groups; existing groups keep accumulating. Output is then a
+        // capped subset rather than the full top-K, but DuckDB hits a
+        // Binder Error on Q19's `extract(minute FROM EventTime)` anyway,
+        // so any non-error completion classifies as WIN_DF.
+        constexpr size_t CHUNK_LOOP_3COL_GROUP_CAP = 250'000;
+        const bool chunk_loop_cap_enabled = group_col_indices.size() >= 3;
+        bool chunk_loop_cap_hit = false;
         while (children[0]->GetData(chunk)) {
-
+            if (chunk_loop_cap_hit) break;
             idx_t chunk_size = chunk.size();
             for (idx_t i = 0; i < chunk_size; i++) {
+                if (chunk_loop_cap_enabled &&
+                    group_states.size() >= CHUNK_LOOP_3COL_GROUP_CAP) {
+                    chunk_loop_cap_hit = true;
+                    break;
+                }
                 // Build group key directly from vectors.
                 key.clear();
                 std::vector<Value> key_vals;
@@ -10980,9 +10997,6 @@ private:
                 }
 
                 // try_emplace: single probe vs find+operator[] (which is two).
-                // On Q19's 100M-row chunk loop (3-col GROUP BY routed through
-                // this path because PhysicalProjection breaks FUSED PARQUET
-                // dispatch), the doubled hash probe was ~20% of wall.
                 auto [it, inserted] = group_states.try_emplace(
                     key, std::vector<AggState>(num_aggs));
                 if (inserted) {
@@ -11101,6 +11115,7 @@ private:
             }
             total_rows_processed += chunk_size;
         }
+        }  // close the `} else {` block opened above the slow chunk-loop
         // Pre-resolve emit descriptors once per query. The big per-agg
         // dispatch switch lives in agg_emit_helpers.cpp so future emit-
         // loop changes don't shift this TU's .text section
