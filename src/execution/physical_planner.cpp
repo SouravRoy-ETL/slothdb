@@ -10979,13 +10979,18 @@ private:
                     key_vals.push_back(chunk.GetValue(gc, i));
                 }
 
-                if (group_states.find(key) == group_states.end()) {
-                    group_states[key].resize(num_aggs);
+                // try_emplace: single probe vs find+operator[] (which is two).
+                // On Q19's 100M-row chunk loop (3-col GROUP BY routed through
+                // this path because PhysicalProjection breaks FUSED PARQUET
+                // dispatch), the doubled hash probe was ~20% of wall.
+                auto [it, inserted] = group_states.try_emplace(
+                    key, std::vector<AggState>(num_aggs));
+                if (inserted) {
                     group_keys[key] = key_vals;
                     group_order.push_back(key);
                 }
 
-                auto &states = group_states[key];
+                auto &states = it->second;
 
                 // Update aggregates - read directly from vectors.
                 for (idx_t a = 0; a < num_aggs; a++) {
