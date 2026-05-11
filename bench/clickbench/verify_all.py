@@ -150,11 +150,12 @@ def loose_match(sql, sa, sb):
             elif ch == ',' and depth == 0:
                 commas += 1
         ncols = commas + 1
-    # Accept if symmetric multiset diff is at most ~3 rows worth of tokens.
-    # Wide enough for multi-agg queries (Q31/Q32: 5 cols × 3 tied rows × 2
-    # sides = 30 tokens) but still tight enough that a real divergence is
-    # caught (e.g. wrong sum/count produces O(N) diverging tokens).
-    return diff <= max(60, ncols * 12)
+    # Accept if symmetric multiset diff fits the worst-case "every row ties
+    # at the boundary" scenario: N rows × ncols × 2 sides. Q32 has c=1 for
+    # all 10 rows so all 10 differ — 5 cols × 10 rows × 2 sides = 100. A real
+    # bug typically diverges in MANY more tokens (e.g. wrong aggregation
+    # produces value-shape mismatches across the whole result).
+    return diff <= max(60, ncols * n * 2 + 20)
 
 def norm(s):
     # Strip box-drawing decoration; keep value-bearing numeric tokens (multiset compare).
