@@ -668,41 +668,32 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinct(int tid,
     }
 }
 
-// Skip-di variant: SearchPhrase<>'' folded into dict-idx skip (Q14).
-void RadixCount2ColIntStr::IngestRGStrIntDistinctSkipDi(int tid,
-    const int64_t* int_data_64, const int32_t* int_data_32,
-    bool int_is_bigint,
+namespace {
+template <typename IntT, bool INT_ALL_VALID, bool STR_ALL_VALID>
+inline void StrIntDistinctSkipDiInner(
+    RadixCount2ColIntStrImpl& impl, int tid,
+    const IntT* int_data,
     const uint32_t* dict_indices, const string_t* dict_values,
     uint32_t dict_size,
     const uint8_t* validity_int, const uint8_t* validity_str,
-    bool int_all_valid, bool str_all_valid,
+    const size_t* dict_h,
     uint32_t nrows, uint32_t skip_di) {
-    if (dict_size == 0 || nrows == 0 || !dict_indices) return;
-    auto fetch_int = [&](uint32_t r) -> int64_t {
-        return int_is_bigint
-            ? int_data_64[r] : (int64_t)int_data_32[r];
-    };
-    std::vector<size_t> dict_h(dict_size);
-    for (uint32_t d = 0; d < dict_size; d++) {
-        dict_h[d] = HashStr(dict_values[d].GetData(),
-                            dict_values[d].GetSize());
-    }
-    auto& pt = *impl_->threads[tid];
+    auto& pt = *impl.threads[tid];
     int64_t prev_k = 0;
     uint32_t prev_d = UINT32_MAX;
     int64_t* prev_cnt_ptr = nullptr;
     for (uint32_t r = 0; r < nrows; r++) {
         uint32_t d = dict_indices[r];
         if (d == skip_di) continue;
-        if (!int_all_valid && !validity_int[r]) continue;
-        if (!str_all_valid && !validity_str[r]) continue;
+        if constexpr (!INT_ALL_VALID) { if (!validity_int[r]) continue; }
+        if constexpr (!STR_ALL_VALID) { if (!validity_str[r]) continue; }
         if (d >= dict_size) continue;
-        int64_t k = fetch_int(r);
+        int64_t k = (int64_t)int_data[r];
         if (prev_cnt_ptr && k == prev_k && d == prev_d) {
             ++(*prev_cnt_ptr);
             continue;
         }
-        size_t ch = CombineIntStrHash(k, dict_h[d]);
+        size_t ch = MixIntStrHash(k, dict_h[d]);
         IntStrKey probe{k,
                         std::string_view(dict_values[d].GetData(),
                                          dict_values[d].GetSize()),
@@ -723,6 +714,35 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinctSkipDi(int tid,
         prev_k = k;
         prev_d = d;
     }
+}
+}  // namespace
+
+// Skip-di variant: SearchPhrase<>'' folded into dict-idx skip (Q14).
+void RadixCount2ColIntStr::IngestRGStrIntDistinctSkipDi(int tid,
+    const int64_t* int_data_64, const int32_t* int_data_32,
+    bool int_is_bigint,
+    const uint32_t* dict_indices, const string_t* dict_values,
+    uint32_t dict_size,
+    const uint8_t* validity_int, const uint8_t* validity_str,
+    bool int_all_valid, bool str_all_valid,
+    uint32_t nrows, uint32_t skip_di) {
+    if (dict_size == 0 || nrows == 0 || !dict_indices) return;
+    std::vector<size_t> dict_h(dict_size);
+    for (uint32_t d = 0; d < dict_size; d++) {
+        dict_h[d] = HashStr(dict_values[d].GetData(),
+                            dict_values[d].GetSize());
+    }
+#define DISPATCH(T, DATA) \
+    if (int_all_valid) { \
+        if (str_all_valid) StrIntDistinctSkipDiInner<T, true,  true >(*impl_, tid, DATA, dict_indices, dict_values, dict_size, nullptr, nullptr, dict_h.data(), nrows, skip_di); \
+        else               StrIntDistinctSkipDiInner<T, true,  false>(*impl_, tid, DATA, dict_indices, dict_values, dict_size, nullptr, validity_str, dict_h.data(), nrows, skip_di); \
+    } else { \
+        if (str_all_valid) StrIntDistinctSkipDiInner<T, false, true >(*impl_, tid, DATA, dict_indices, dict_values, dict_size, validity_int, nullptr, dict_h.data(), nrows, skip_di); \
+        else               StrIntDistinctSkipDiInner<T, false, false>(*impl_, tid, DATA, dict_indices, dict_values, dict_size, validity_int, validity_str, dict_h.data(), nrows, skip_di); \
+    }
+    if (int_is_bigint) { DISPATCH(int64_t, int_data_64) }
+    else               { DISPATCH(int32_t, int_data_32) }
+#undef DISPATCH
 }
 
 // Q15-shape inner loop body. Per-RG ingest of (int_key, dict_idx) → count.
