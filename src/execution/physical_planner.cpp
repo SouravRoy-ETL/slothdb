@@ -8317,8 +8317,13 @@ private:
             // that writes a 100MB mask read by the helper) and the per-
             // row keep_mask streaming read. See feedback memory and
             // q11_helper.cpp::IngestRGGstrIntDistinctDictSkipDi.
+            // Precheck above already guarantees every agg is COUNT(DISTINCT
+            // same_col), so num_aggs >= 1 is safe — the planner sometimes
+            // duplicates the agg when ORDER BY references its alias (Q11
+            // produces num_aggs=2 for `COUNT(DISTINCT UserID) AS u ... ORDER
+            // BY u`). Tightening to ==1 misses Q11.
             const bool q11_fs_eligible =
-                has_group && !two_col_group && num_aggs == 1 &&
+                has_group && !two_col_group && num_aggs >= 1 &&
                 agg_infos[0].name == "COUNT" && agg_infos[0].is_distinct &&
                 (agg_tid == LogicalTypeId::BIGINT ||
                  agg_tid == LogicalTypeId::INTEGER) &&
