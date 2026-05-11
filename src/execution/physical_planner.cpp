@@ -21,6 +21,7 @@
 #include "slothdb/execution/inline_row_agg.hpp"
 #include "slothdb/execution/literal_emit_filter.hpp"
 #include "slothdb/execution/q11_helper.hpp"
+#include "slothdb/execution/q21_helper.hpp"
 #include "slothdb/execution/radix_multi_agg.hpp"
 #include <algorithm>
 #include <cmath>
@@ -7034,6 +7035,31 @@ private:
                         // non-dict RGs.
                         bool any_str = false;
                         for (auto &p : fused_count_preds) if (p.str_form) { any_str = true; break; }
+                        // Q21 fused fast path: single LIKE '%needle%' pred on a
+                        // dict-encoded VARCHAR column. Skip BuildTypedKeepMask's
+                        // out_mask materialization (3 passes -> 1 pass).
+                        if (fused_count_preds.size() == 1 &&
+                            fused_count_preds[0].str_form &&
+                            fused_count_preds[0].like_contains) {
+                            const auto &p = fused_count_preds[0];
+                            if (p.col_idx < work.cols.size()) {
+                                const auto &col = work.cols[p.col_idx];
+                                if (col.decoded && col.all_valid &&
+                                    col.str_dict_encoded &&
+                                    !col.str_dict_indices.empty()) {
+                                    int64_t local = slothdb::CountDictLikeContains(
+                                        col.str_dict_values.data(),
+                                        col.str_dict_values.size(),
+                                        col.str_dict_indices.data(),
+                                        nrows,
+                                        p.sval.data(), p.sval.size(),
+                                        p.like_negated);
+                                    tl_match[tid % MAX_THREADS].fetch_add(
+                                        local, std::memory_order_relaxed);
+                                    return;
+                                }
+                            }
+                        }
                         if (any_str) {
                             std::vector<uint8_t> mask;
                             if (BuildTypedKeepMask(fused_count_preds, work.cols, nrows, mask)) {
