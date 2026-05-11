@@ -586,6 +586,14 @@ size_t RadixCount2ColIntStr::TotalGroups() const {
     return total;
 }
 
+size_t RadixCount2ColIntStr::LiveGroupCount() const {
+    size_t total = 0;
+    for (auto& tl_p : impl_->threads) {
+        for (auto& m : tl_p->shards) total += m.size();
+    }
+    return total;
+}
+
 // Q14 Stage 1 inner loop. Per-row IncrementByHashed on (int, str) pairs.
 // Specialized for the gstr × int distinct shape: dict path with
 // precomputed per-dict-entry str hashes amortizes hashing across rows

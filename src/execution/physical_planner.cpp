@@ -829,6 +829,12 @@ public:
         std::function<void(const RGWork &, idx_t rg_idx, int thread_id)>;
     void SetRGConsumer(RGConsumerFn cb) { rg_consumer_ = std::move(cb); }
 
+    // Signal in-flight workers to stop picking new RGs. Workers that have
+    // already started decoding the current RG finish it; remaining undecoded
+    // RGs are dropped. Used by bare-LIMIT queries (Q18) once enough groups
+    // have been seen.
+    void RequestStop() { stop_.store(true); }
+
     int RunParallelRGs(int num_threads_hint = 0) {
         // Lazy-start: ignore any slot-mode workers; consumer-mode runs its own.
         StopWorkers();
@@ -9722,6 +9728,16 @@ private:
 
                         constexpr int Q15_THREADS = 8;
                         slothdb::RadixCount2ColIntStr agg2(Q15_THREADS);
+                        // Bare-LIMIT early-exit (Q18 shape). Stop picking
+                        // new RGs once we've accumulated row_limit_hint_+slack
+                        // distinct groups across all threads. Disabled for
+                        // TopN paths (Q15/Q17): top-K needs all groups.
+                        const bool q18_early_exit =
+                            !topn_active_ && row_limit_hint_ > 0;
+                        const size_t q18_stop_threshold =
+                            q18_early_exit
+                                ? (size_t)row_limit_hint_ + 64
+                                : 0;
                         pq->SetRGConsumer(
                             [&](const PhysicalParquetScan::RGWork &work,
                                 idx_t rg_idx, int tid) {
@@ -9835,6 +9851,10 @@ private:
                                         agg2.IncrementRow(t, k,
                                             gs[r].GetData(), gs[r].GetSize());
                                     }
+                                }
+                                if (q18_early_exit &&
+                                    agg2.LiveGroupCount() >= q18_stop_threshold) {
+                                    pq->RequestStop();
                                 }
                             });
                         pq->RunParallelRGs();

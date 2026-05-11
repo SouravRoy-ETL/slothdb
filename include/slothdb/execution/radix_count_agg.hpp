@@ -172,6 +172,11 @@ public:
 
     size_t TotalGroups() const;
 
+    // Sum of per-thread shard sizes BEFORE MergeShard. Used by bare-LIMIT
+    // early-exit (Q18). Race-y w.r.t. concurrent ingest; gives a lower-
+    // bound estimate sufficient for "have we seen enough groups yet?".
+    size_t LiveGroupCount() const;
+
 private:
     std::unique_ptr<RadixCount2ColIntStrImpl> impl_;
 };
