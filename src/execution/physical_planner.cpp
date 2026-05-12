@@ -8644,6 +8644,13 @@ private:
                         return (uint64_t)lo | ((uint64_t)hi << 32);
                     };
                     std::string k;
+                    // Q12 hot-path: consecutive rows commonly repeat the
+                    // exact same (pair, value) tuple (e.g. one user with
+                    // many sessions, same MobilePhone/Model). Skipping the
+                    // SimpleI64Set::insert open-addressing probe on a
+                    // duplicate is essentially free.
+                    uint64_t prev_pkey = UINT64_MAX;
+                    int64_t prev_v_int = 0;
                     for (idx_t r = 0; r < nrows; r++) {
                         if (!keep_row(r)) continue;
                         if (!acol.all_valid && !acol.validity[r]) continue;
@@ -8654,6 +8661,8 @@ private:
                         if (packed) {
                             pkey = pair_key(r);
                             if (!agg_is_varchar) {
+                                int64_t cur_v = a_i64 ? a_i64[r] : (int64_t)a_i32[r];
+                                if (pkey == prev_pkey && cur_v == prev_v_int) continue;
                                 auto cit = rg_pair_int.find(pkey);
                                 if (cit != rg_pair_int.end()) sp = cit->second;
                             } else {
@@ -8692,7 +8701,9 @@ private:
                             }
                         }
                         if (sp) {
-                            sp->insert(a_i64 ? a_i64[r] : (int64_t)a_i32[r]);
+                            int64_t v = a_i64 ? a_i64[r] : (int64_t)a_i32[r];
+                            sp->insert(v);
+                            if (packed) { prev_pkey = pkey; prev_v_int = v; }
                         } else if (strset) {
                             const char *sd; uint32_t sl;
                             if (a_dict_idx) {
