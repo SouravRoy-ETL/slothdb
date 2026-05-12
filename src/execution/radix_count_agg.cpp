@@ -552,20 +552,50 @@ RadixCount2ColIntStr::EmitTopK(int k) const {
         }
         return all;
     }
+    // Parallel top-K: each worker scans 1/NWORKERS final_maps shards and
+    // builds a local K-heap. Then merge local heaps into a global K-heap.
+    // For Q15/Q17 (~50M unique pairs), single-threaded walk + heap-push was
+    // ~2.5s of wall; parallel cuts to ~300ms.
     auto cmp = [](const RadixCount2ColIntStrResult& a,
                   const RadixCount2ColIntStrResult& b) {
         return a.count > b.count;  // min-heap
     };
-    std::priority_queue<RadixCount2ColIntStrResult,
-                        std::vector<RadixCount2ColIntStrResult>, decltype(cmp)>
-        heap(cmp);
-    for (auto& m : impl_->final_maps) {
-        for (auto& kv : m) {
+    using Heap = std::priority_queue<RadixCount2ColIntStrResult,
+        std::vector<RadixCount2ColIntStrResult>, decltype(cmp)>;
+    constexpr int NWORKERS = 8;
+    static_assert(N_RADIX % NWORKERS == 0, "shards must split evenly");
+    std::vector<Heap> local_heaps;
+    local_heaps.reserve(NWORKERS);
+    for (int i = 0; i < NWORKERS; i++) local_heaps.emplace_back(cmp);
+    auto worker = [&](int w) {
+        auto& h = local_heaps[w];
+        for (int s = w; s < N_RADIX; s += NWORKERS) {
+            const auto& m = impl_->final_maps[s];
+            for (const auto& kv : m) {
+                if ((int)h.size() < k) {
+                    h.push({kv.first.i, std::string(kv.first.s), kv.second});
+                } else if (kv.second > h.top().count) {
+                    h.pop();
+                    h.push({kv.first.i, std::string(kv.first.s), kv.second});
+                }
+            }
+        }
+    };
+    std::vector<std::thread> ts;
+    for (int w = 1; w < NWORKERS; w++) ts.emplace_back(worker, w);
+    worker(0);
+    for (auto& t : ts) t.join();
+    // Merge into global heap.
+    Heap heap(cmp);
+    for (auto& lh : local_heaps) {
+        while (!lh.empty()) {
+            auto e = std::move(const_cast<RadixCount2ColIntStrResult&>(lh.top()));
+            lh.pop();
             if ((int)heap.size() < k) {
-                heap.push({kv.first.i, std::string(kv.first.s), kv.second});
-            } else if (kv.second > heap.top().count) {
+                heap.push(std::move(e));
+            } else if (e.count > heap.top().count) {
                 heap.pop();
-                heap.push({kv.first.i, std::string(kv.first.s), kv.second});
+                heap.push(std::move(e));
             }
         }
     }
