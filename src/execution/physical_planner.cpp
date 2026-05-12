@@ -10610,19 +10610,15 @@ private:
                                 if (!state.has_min) {
                                     state.min_val() = Value::VARCHAR(std::string(sd, sl));
                                     state.has_min = true;
-                                } else {
-                                    auto cur = state.min_val().template GetValue<std::string>();
-                                    if (sv < std::string_view(cur))
-                                        state.min_val() = Value::VARCHAR(std::string(sd, sl));
+                                } else if (sv < std::string_view(state.min_val().StringRef())) {
+                                    state.min_val() = Value::VARCHAR(std::string(sd, sl));
                                 }
                             } else {
                                 if (!state.has_max) {
                                     state.max_val() = Value::VARCHAR(std::string(sd, sl));
                                     state.has_max = true;
-                                } else {
-                                    auto cur = state.max_val().template GetValue<std::string>();
-                                    if (sv > std::string_view(cur))
-                                        state.max_val() = Value::VARCHAR(std::string(sd, sl));
+                                } else if (sv > std::string_view(state.max_val().StringRef())) {
+                                    state.max_val() = Value::VARCHAR(std::string(sd, sl));
                                 }
                             }
                             continue;

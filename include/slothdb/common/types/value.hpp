@@ -72,6 +72,11 @@ public:
     bool IsNull() const { return is_null_; }
     const LogicalType &type() const { return type_; }
 
+    // Borrow the string storage without copying. Caller must ensure
+    // type() is VARCHAR. Used by hot aggregation paths (MIN/MAX VARCHAR)
+    // where GetValue<std::string>() per-row copy was ~100ns/row overhead.
+    const std::string &StringRef() const { return str_value_; }
+
     // Extract the value as a C++ type. Throws on type mismatch.
     template <class T>
     T GetValue() const;
