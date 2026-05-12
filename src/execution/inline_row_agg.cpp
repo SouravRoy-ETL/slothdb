@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <queue>
-#include <thread>
 
 #include "third_party/unordered_dense.h"
 
@@ -206,43 +205,17 @@ InlineRowAgg<NumAggs>::EmitTopK(int k) const {
     auto cmp = [](const HeapEntry& a, const HeapEntry& b) {
         return a.count_star > b.count_star;
     };
-    using Heap = std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)>;
-    // Parallel top-K: split N_SHARDS across NWORKERS workers; each builds a
-    // local K-heap; merge into a global K-heap. For Q31/Q32 with ~5M unique
-    // pairs per shard × 16 shards, single-threaded walk dominated wall.
-    constexpr int NWORKERS = 8;
-    static_assert(N_SHARDS % NWORKERS == 0, "shards must split evenly");
-    std::vector<Heap> local_heaps;
-    local_heaps.reserve(NWORKERS);
-    for (int i = 0; i < NWORKERS; i++) local_heaps.emplace_back(cmp);
-    auto worker = [&](int w) {
-        auto& h = local_heaps[w];
-        for (int sh = w; sh < N_SHARDS; sh += NWORKERS) {
-            const auto& rows = impl_->final_shards[sh].rows;
-            for (size_t i = 0; i < rows.size(); i++) {
-                int64_t cs = rows[i].count_star;
-                if ((int)h.size() < k) {
-                    h.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
-                } else if (cs > h.top().count_star) {
-                    h.pop();
-                    h.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
-                }
-            }
-        }
-    };
-    std::vector<std::thread> ts;
-    for (int w = 1; w < NWORKERS; w++) ts.emplace_back(worker, w);
-    worker(0);
-    for (auto& t : ts) t.join();
-    Heap heap(cmp);
-    for (auto& lh : local_heaps) {
-        while (!lh.empty()) {
-            HeapEntry e = lh.top(); lh.pop();
+    std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)>
+        heap(cmp);
+    for (int sh = 0; sh < N_SHARDS; sh++) {
+        const auto& rows = impl_->final_shards[sh].rows;
+        for (size_t i = 0; i < rows.size(); i++) {
+            int64_t cs = rows[i].count_star;
             if ((int)heap.size() < k) {
-                heap.push(e);
-            } else if (e.count_star > heap.top().count_star) {
+                heap.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
+            } else if (cs > heap.top().count_star) {
                 heap.pop();
-                heap.push(e);
+                heap.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
             }
         }
     }
@@ -473,40 +446,17 @@ InlineRowAggBigKey<NumAggs>::EmitTopK(int k) const {
     auto cmp = [](const HeapEntry& a, const HeapEntry& b) {
         return a.count_star > b.count_star;
     };
-    using Heap = std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)>;
-    constexpr int NWORKERS = 8;
-    static_assert(N_SHARDS % NWORKERS == 0, "shards must split evenly");
-    std::vector<Heap> local_heaps;
-    local_heaps.reserve(NWORKERS);
-    for (int i = 0; i < NWORKERS; i++) local_heaps.emplace_back(cmp);
-    auto worker = [&](int w) {
-        auto& h = local_heaps[w];
-        for (int sh = w; sh < N_SHARDS; sh += NWORKERS) {
-            const auto& rows = impl_->final_shards[sh].rows;
-            for (size_t i = 0; i < rows.size(); i++) {
-                int64_t cs = rows[i].count_star;
-                if ((int)h.size() < k) {
-                    h.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
-                } else if (cs > h.top().count_star) {
-                    h.pop();
-                    h.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
-                }
-            }
-        }
-    };
-    std::vector<std::thread> ts;
-    for (int w = 1; w < NWORKERS; w++) ts.emplace_back(worker, w);
-    worker(0);
-    for (auto& t : ts) t.join();
-    Heap heap(cmp);
-    for (auto& lh : local_heaps) {
-        while (!lh.empty()) {
-            HeapEntry e = lh.top(); lh.pop();
+    std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)>
+        heap(cmp);
+    for (int sh = 0; sh < N_SHARDS; sh++) {
+        const auto& rows = impl_->final_shards[sh].rows;
+        for (size_t i = 0; i < rows.size(); i++) {
+            int64_t cs = rows[i].count_star;
             if ((int)heap.size() < k) {
-                heap.push(e);
-            } else if (e.count_star > heap.top().count_star) {
+                heap.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
+            } else if (cs > heap.top().count_star) {
                 heap.pop();
-                heap.push(e);
+                heap.push(HeapEntry{cs, (uint32_t)sh, (uint32_t)i});
             }
         }
     }
