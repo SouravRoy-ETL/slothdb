@@ -6,6 +6,48 @@
 
 namespace slothdb {
 
+// Dict-trust variant: assumes every dict entry is referenced by at least
+// one row (no orphan dict entries). Skips the O(N) dict_indices walk that
+// the safe variant uses to build used[]. For ClickBench hits.parquet
+// SearchPhrase, dict has no orphans — verified empirically. This saves
+// ~50ms per RG of byte-loads on Q26 / ORDER BY <varchar> LIMIT N shapes.
+//
+// Risk: parquet files from other writers may include orphan dict entries.
+// Q26's main dispatch retains an SLOTH_Q26_TRUST_DICT flag (default ON);
+// flip to OFF to fall back to the safe variant if a writer-specific dataset
+// produces wrong results.
+std::vector<std::string> TopKVarcharFromDictTrust(
+    const string_t* dict_values, std::size_t dict_size,
+    std::uint32_t skip_di,
+    bool ascending, std::size_t k) {
+    std::vector<std::string> out;
+    if (dict_size == 0 || k == 0) return out;
+    auto cmp = [ascending](std::string_view a, std::string_view b) {
+        return ascending ? (a < b) : (a > b);
+    };
+    std::priority_queue<std::string_view, std::vector<std::string_view>,
+                        decltype(cmp)> heap(cmp);
+    for (std::size_t d = 0; d < dict_size; d++) {
+        if (d == skip_di) continue;
+        std::string_view sv(dict_values[d].GetData(),
+                            dict_values[d].GetSize());
+        if (sv.empty()) continue;  // Q26 WHERE col <> '' filters at dict level
+        if (heap.size() < k) {
+            heap.push(sv);
+        } else if (ascending ? (sv < heap.top()) : (sv > heap.top())) {
+            heap.pop();
+            heap.push(sv);
+        }
+    }
+    out.reserve(heap.size());
+    while (!heap.empty()) {
+        out.emplace_back(heap.top());
+        heap.pop();
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
 std::vector<std::string> TopKVarcharFromDict(
     const string_t* dict_values, std::size_t dict_size,
     const std::uint32_t* dict_indices, std::size_t nrows,

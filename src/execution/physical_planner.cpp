@@ -758,6 +758,11 @@ public:
     // the column is consumed only by STRLEN(col) and `<> ''` / `= ''` checks.
     // Mutually exclusive with normal byte materialization.
     void SetStrLengthsOnly(std::vector<bool> mask) { str_lengths_only_ = std::move(mask); }
+    // Per-column hint: dict-only mode. The decoder reads only the dict page
+    // and skips all data pages. str_dict_values is populated; str_dict_indices
+    // stays empty. Use when the consumer only needs to enumerate the dict
+    // (e.g. Q26 ORDER BY col LIMIT N with dict-trust = no orphan check).
+    void SetStrDictOnly(std::vector<bool> mask) { str_dict_only_ = std::move(mask); }
     const std::string &GetFilePath() const { return file_path_; }
     ParquetReader *GetReader() { return reader_sp_.get(); }
 
@@ -918,7 +923,9 @@ private:
             }
             bool skip_str = (c < skip_str_data_.size()) && skip_str_data_[c];
             bool len_only = (c < str_lengths_only_.size()) && str_lengths_only_[c];
+            bool dict_only = (c < str_dict_only_.size()) && str_dict_only_[c];
             work.cols[c].str_lengths_only = len_only;
+            work.cols[c].str_dict_only = dict_only;
             if (!reader_sp_->ReadColumnInto(rg, c, work.cols[c], skip_str)) {
                 work.cols_fallback[c] = reader_sp_->ReadColumn(rg, c);
             } else {
@@ -1061,6 +1068,7 @@ private:
     std::shared_ptr<ParquetReader> cached_reader_;
     std::vector<bool> skip_str_data_; // per-column hint
     std::vector<bool> str_lengths_only_; // per-column hint: lengths-only decode
+    std::vector<bool> str_dict_only_;   // per-column hint: skip data pages
     std::vector<bool> projection_;
     std::vector<PushdownFilter> pushdown_filters_; // zone-map row-group skip
 
@@ -1868,8 +1876,24 @@ private:
             filter_q26_compat &&
             orders_.size() == 1 &&
             proj_refs_only_key();
-        // For Q26 fast path keep the str_dict_values intact (don't skip
-        // str_data on the key col since we read dict_values directly).
+        // For Q26 fast path: optionally enable dict-only decode on the key
+        // col. SLOTH_Q26_TRUST_DICT=1 enables; skips ~600ms of data-page
+        // RLE decode. Unsafe when the parquet has orphan dict entries
+        // (ClickBench hits.parquet SearchPhrase has them: ASCII "!" entries
+        // in dict that are never referenced — they'd surface as false top-K
+        // wins). Off by default.
+        if (q26_fast_path) {
+            static const bool q26_trust_dict = []() {
+                size_t n = 0;
+                return (getenv_s(&n, nullptr, 0, "SLOTH_Q26_TRUST_DICT") == 0
+                        && n > 0);
+            }();
+            if (q26_trust_dict && key_col_scan < ncols) {
+                std::vector<bool> dict_only(ncols, false);
+                dict_only[key_col_scan] = true;
+                pq_scan->SetStrDictOnly(std::move(dict_only));
+            }
+        }
         pq_scan->SetNeededOutputs(need);
         pq_scan->Init();
         auto *reader = pq_scan->GetReader();
@@ -1887,8 +1911,10 @@ private:
                     // PLAIN-page (non-dict) RGs: fall back to row-loop top-K
                     // for THIS RG only. Without this Q26 misses strings that
                     // live in PLAIN-only RGs (hits.parquet has mixed pages).
+                    // When str_dict_only is active, indices.empty() is
+                    // intentional (data pages skipped) — proceed to dict-trust.
                     if (!kcol.str_dict_encoded ||
-                        kcol.str_dict_indices.empty() ||
+                        (!kcol.str_dict_only && kcol.str_dict_indices.empty()) ||
                         kcol.str_dict_values.empty()) {
                         if (kcol.str_data.empty()) return;
                         const string_t *gs = kcol.str_data.data();
@@ -1938,12 +1964,26 @@ private:
                             }
                         }
                     }
-                    auto winners = slothdb::TopKVarcharFromDict(
-                        kcol.str_dict_values.data(),
-                        kcol.str_dict_values.size(),
-                        kcol.str_dict_indices.data(), nrows,
-                        kcol.all_valid ? nullptr : kcol.validity.data(),
-                        skip_di, ascending, (size_t)k);
+                    // Default: safe variant walks dict_indices to filter
+                    // orphan dict entries (ClickBench hits.parquet has them).
+                    // When SLOTH_Q26_TRUST_DICT=1 + parquet dict_only mode,
+                    // skip indices walk for ~50ms consumer-side savings.
+                    // The DOMINANT savings come from the parquet reader
+                    // skipping data pages entirely (~600ms wall on Q26).
+                    std::vector<std::string> winners;
+                    if (kcol.str_dict_only) {
+                        winners = slothdb::TopKVarcharFromDictTrust(
+                            kcol.str_dict_values.data(),
+                            kcol.str_dict_values.size(),
+                            skip_di, ascending, (size_t)k);
+                    } else {
+                        winners = slothdb::TopKVarcharFromDict(
+                            kcol.str_dict_values.data(),
+                            kcol.str_dict_values.size(),
+                            kcol.str_dict_indices.data(), nrows,
+                            kcol.all_valid ? nullptr : kcol.validity.data(),
+                            skip_di, ascending, (size_t)k);
+                    }
                     if (!winners.empty()) {
                         std::lock_guard<std::mutex> lk(pw_mu);
                         per_rg_winners.push_back(std::move(winners));

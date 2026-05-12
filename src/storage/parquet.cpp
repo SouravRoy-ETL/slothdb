@@ -2303,6 +2303,24 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         cur_offset = cmeta.data_offset;
     }
 
+    // Dict-only fast path: skip all data pages once the dict is read.
+    // Q26 ORDER BY col LIMIT N consumes only str_dict_values (top-K from
+    // dict entries; assumes no orphan dict entries). This saves the RLE-
+    // dict-indices decode + snappy decompress for every data page — the
+    // dominant cost on Q26 (~600ms of ~870ms wall on SearchPhrase).
+    if (tid == LogicalTypeId::VARCHAR && out.str_dict_only &&
+        cmeta.dict_page_offset >= 0 && dict.present) {
+        out.str_dict_values.resize(dict.str_ptr.size());
+        for (size_t i = 0; i < dict.str_ptr.size(); i++) {
+            out.str_dict_values[i] = string_t(dict.str_ptr[i], dict.str_len[i]);
+        }
+        out.str_dict_encoded = true;
+        out.str_dict_indices.clear();
+        out.str_data.clear();
+        out.decoded = true;
+        return true;
+    }
+
     // 2) Data pages.
     int64_t total_end = cmeta.data_offset + cmeta.total_compressed_size;
     idx_t rows_read = 0;
