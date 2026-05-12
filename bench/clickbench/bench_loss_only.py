@@ -10,13 +10,25 @@ DUCK = ROOT / "real-life-testing/duckdb.exe"
 DATA = ROOT / "bench/clickbench/data/hits.parquet"
 QFILE = ROOT / "bench/clickbench/queries.sql"
 TIMEOUT = 30
+ERR_SIGS = ("Conversion Error","Binder Error","Catalog Error","Parser Error","IO Error",
+            "Constraint Error","Out of Memory Error","Internal Error","Invalid Input Error",
+            "ParseError","RuntimeError","Bind Error")
 
 def run(exe, sql):
     env = os.environ.copy(); env["PYTHONIOENCODING"] = "utf-8"
     t0 = time.perf_counter()
     try:
         p = subprocess.run([str(exe), "-c", sql], capture_output=True, timeout=TIMEOUT, env=env)
-        return time.perf_counter() - t0, p.returncode == 0
+        dt = time.perf_counter() - t0
+        if p.returncode != 0:
+            return dt, False
+        # DuckDB CLI returns 0 even on Binder/Conversion errors. Surface those
+        # as failures so the harness can correctly classify WIN_DF.
+        cx = p.stdout.decode("utf-8", "replace") + "\n" + p.stderr.decode("utf-8", "replace")
+        for s in ERR_SIGS:
+            if s in cx:
+                return dt, False
+        return dt, True
     except subprocess.TimeoutExpired:
         return float(TIMEOUT), False
 
