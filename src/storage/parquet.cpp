@@ -247,6 +247,11 @@ struct ParqColMetaFull {
     // Stats (raw bytes; interpretation depends on type).
     bool has_stats = false;
     std::string min_bytes, max_bytes;
+    // distinct_count from Statistics field 4 (optional, -1 = not present).
+    // When >= 0 and equals dict.num_values, the dict has no orphan entries:
+    // every dict_idx is referenced by at least one row. Enables Q26-style
+    // trust-dict variants safely.
+    int64_t distinct_count = -1;
 };
 
 struct ParqRGFull {
@@ -292,6 +297,10 @@ void ParseStatistics(ThriftRd &r, ParqColMetaFull &m) {
             uint64_t l = r.VarU64();
             m.min_bytes.assign(reinterpret_cast<const char*>(&r.data[r.pos]), l);
             r.pos += l; m.has_stats = true;
+            break;
+        }
+        case 4: { // distinct_count (i64). Equal to dict size ⇒ no orphan entries.
+            m.distinct_count = r.ZigI64();
             break;
         }
         default: r.Skip(tid); break;
