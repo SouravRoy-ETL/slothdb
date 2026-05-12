@@ -73,7 +73,15 @@ inline void SkipDiInner(
     const std::uint8_t* a_validity,
     std::uint32_t skip_di, std::size_t nrows) {
     std::vector<SimpleI64Set*> di_to_set(g_dsz, nullptr);
-    constexpr std::size_t PFD = 8;
+    // Prefetch distance bumped from 8 → 16. Q11's SimpleI64Set grows to
+    // ~500K entries × ~100 mobile-models = many L3-miss probes per insert.
+    // PFD=16 keeps ~2 cache lines in flight per row (16 rows × 8 B/insert).
+    constexpr std::size_t PFD = 16;
+    // Local last-(di, val) cache: Q11 data is mildly clustered, consecutive
+    // rows often share dict_idx AND value, so skipping the set::insert
+    // open-addressing probe on a duplicate is essentially free.
+    std::uint32_t prev_di = UINT32_MAX;
+    std::int64_t prev_v = 0;
     for (std::size_t r = 0; r < nrows; r++) {
         std::uint32_t di = g_dict_idx[r];
         if (di == skip_di) continue;
@@ -88,6 +96,8 @@ inline void SkipDiInner(
                 }
             }
         }
+        std::int64_t v = (std::int64_t)a_data[r];
+        if (di == prev_di && v == prev_v) continue;
         auto* sp = di_to_set[di];
         if (!sp) {
             std::string key(g_dict_val[di].GetData(),
@@ -95,7 +105,9 @@ inline void SkipDiInner(
             sp = &str_g_int_d[key];
             di_to_set[di] = sp;
         }
-        sp->insert((std::int64_t)a_data[r]);
+        sp->insert(v);
+        prev_di = di;
+        prev_v = v;
     }
 }
 }  // namespace
