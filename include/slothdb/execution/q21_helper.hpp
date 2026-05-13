@@ -27,4 +27,14 @@ std::int64_t CountDictLikeContains(
     const char* needle, std::size_t nlen,
     bool like_negated);
 
+// PLAIN-encoded fast path. Walks str_data with a needle-size-specialized
+// substring search (uint32 prefix compare for 4-7 byte needles, mirroring
+// DuckDB's FindStrInStr). Avoids the generic memcmp tail loop that runs
+// on every match-candidate in the legacy row-loop. Used by Q21 PLAIN RGs
+// (~205/226 of URL RGs on hits.parquet).
+std::int64_t CountPlainLikeContains(
+    const string_t* str_data, std::size_t nrows,
+    const char* needle, std::size_t nlen,
+    bool like_negated);
+
 }  // namespace slothdb

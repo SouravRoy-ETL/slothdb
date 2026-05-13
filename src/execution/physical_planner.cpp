@@ -7338,6 +7338,23 @@ private:
                                         local, std::memory_order_relaxed);
                                     return;
                                 }
+                                // PLAIN-encoded fast path: most URL RGs on
+                                // hits.parquet are PLAIN (205/226). Walks
+                                // str_data with DuckDB-style uint32 prefix
+                                // compare, skipping the generic-memcmp
+                                // tail loop used by the row-loop fallback.
+                                if (col.decoded && col.all_valid &&
+                                    !col.str_dict_encoded &&
+                                    !col.str_data.empty() &&
+                                    col.str_data.size() >= nrows) {
+                                    int64_t local = slothdb::CountPlainLikeContains(
+                                        col.str_data.data(), nrows,
+                                        p.sval.data(), p.sval.size(),
+                                        p.like_negated);
+                                    tl_match[tid % MAX_THREADS].fetch_add(
+                                        local, std::memory_order_relaxed);
+                                    return;
+                                }
                             }
                         }
                         if (any_str) {
