@@ -1084,7 +1084,7 @@ private:
     void SpawnWorkers() {
         workers_spawned_ = true;
         unsigned int nt = HWThreads();
-        if (nt > 8) nt = 8;
+        if (nt > 6) nt = 6;
         // effective_num_rgs_ shrinks for row-limit-pushdown queries; no
         // point spawning more workers than RGs we'll actually decode.
         idx_t budget = effective_num_rgs_;
@@ -2613,7 +2613,7 @@ private:
                 std::atomic<size_t> next_rg{0};
                 std::atomic<bool> done{false};
                 unsigned int nthreads = HWThreads();
-                if (nthreads > 8) nthreads = 8;
+                if (nthreads > 6) nthreads = 6;
                 if (nthreads > rg_order.size())
                     nthreads = static_cast<unsigned int>(rg_order.size());
                 if (nthreads < 1) nthreads = 1;
