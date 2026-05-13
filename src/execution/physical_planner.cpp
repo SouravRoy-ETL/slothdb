@@ -8919,6 +8919,19 @@ private:
                     }
                 }
                 pq->SetSkipStrData(std::move(skip));
+                // Q6 dict-used optimization: ungrouped COUNT(DISTINCT VARCHAR)
+                // with no filter — the unique strings ARE the dict entries
+                // referenced at least once. Decoder builds str_dict_used[]
+                // directly; consumer iterates dict (~30K entries) instead of
+                // rows (~442K). Skips per-RG ~25MB str_dict_indices write +
+                // per-row keep_row/validity branches.
+                if (!has_group && agg_tid == LogicalTypeId::VARCHAR &&
+                    !dpd_has_filter &&
+                    agg_col < (idx_t)pq->GetTypes().size()) {
+                    std::vector<bool> used_only(pq->GetTypes().size(), false);
+                    used_only[agg_col] = true;
+                    pq->SetStrDictUsedOnly(std::move(used_only));
+                }
             }
             pq->Init();
 
@@ -9049,7 +9062,13 @@ private:
                                               acol.str_dict_encoded &&
                                               !acol.str_dict_indices.empty())
                                                   ? acol.str_dict_indices.data() : nullptr;
-                const string_t *a_dict_val = a_dict_idx ? acol.str_dict_values.data()
+                // Dict values are also valid when str_dict_used_only is set
+                // (decoder populates str_dict_values + str_dict_used; indices
+                // empty by design). Q6 dict-used fast path needs both.
+                bool a_dict_avail = (acol.type.id() == LogicalTypeId::VARCHAR &&
+                                     acol.str_dict_encoded &&
+                                     !acol.str_dict_values.empty());
+                const string_t *a_dict_val = a_dict_avail ? acol.str_dict_values.data()
                                                           : nullptr;
                 idx_t a_dsz = a_dict_val ? acol.str_dict_values.size() : 0;
 
@@ -9078,7 +9097,22 @@ private:
                         // Merge phase below unions disjoint shards in parallel
                         // — no rehash, no duplicate alloc.
                         const int q6tid = tid % MAX_THREADS;
-                        if (a_dict_idx) {
+                        // Dict-used fast path: when decoder built used[] bitmap
+                        // directly (Q6 with dpd_has_filter=false), iterate the
+                        // ~30K-entry dict instead of ~442K rows. The decoder's
+                        // batched used[idx]=1 already deduped per-RG; we just
+                        // emit each used entry. Skips the per-row keep_row +
+                        // validity + dict_idx fetch loop entirely.
+                        if (!dpd_has_filter && acol.str_dict_used_only &&
+                            !acol.str_dict_used.empty()) {
+                            const uint8_t *u = acol.str_dict_used.data();
+                            for (idx_t d = 0; d < a_dsz; d++) {
+                                if (!u[d]) continue;
+                                q6_emplace(q6_state, q6tid,
+                                           a_dict_val[d].GetData(),
+                                           a_dict_val[d].GetSize());
+                            }
+                        } else if (a_dict_idx) {
                             std::vector<uint8_t> seen(a_dsz, 0);
                             for (idx_t r = 0; r < nrows; r++) {
                                 if (!keep_row(r)) continue;
