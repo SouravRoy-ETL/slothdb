@@ -13099,6 +13099,23 @@ static bool TryComputeQ14_2Stage(
 
     constexpr int Q14_THREADS = 8;
     slothdb::RadixCount2ColIntStr stage1(Q14_THREADS);
+    // Estimate total unique (sp, uid) pairs for shard reservation.
+    // ClickBench Q14: ~13M survivor rows after SP<>'' filter; nearly all
+    // pairs are distinct (a user rarely repeats the same SearchPhrase).
+    // Use total_rows × ~0.13 as a rough upper bound for pre-reserve to
+    // avoid 14+ map grows per shard (each grow rehashes accumulated
+    // entries — ~100ms wall cumulative on Q14).
+    {
+        int64_t total_rows = 0;
+        if (reader) {
+            for (auto &rg : reader->GetMeta().row_groups) total_rows += rg.num_rows;
+        }
+        // SearchPhrase non-empty ratio ~13%; bound below to handle smaller
+        // datasets where the estimate would be tiny.
+        int64_t expected = (total_rows / 8) > 1'000'000
+                              ? (total_rows / 8) : 1'000'000;
+        stage1.ReserveExpectedRows(expected);
+    }
     // Q14 skip-di detection: single pred = `<group_col> <> ''`. If
     // the dict has the empty-string entry we can fold the filter into a
     // dict-idx skip and bypass BuildTypedKeepMask + 100MB keep_mask read.
