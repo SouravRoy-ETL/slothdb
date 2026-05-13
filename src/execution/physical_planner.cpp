@@ -930,7 +930,7 @@ public:
         StopWorkers();
         unsigned int nt = (unsigned int)num_threads_hint;
         if (nt == 0) nt = HWThreads();
-        if (nt > 8) nt = 8;
+        if (nt > 6) nt = 6;
         if (num_rgs_ == 0) nt = 0;
         else if ((idx_t)nt > num_rgs_) nt = static_cast<unsigned int>(num_rgs_);
 
