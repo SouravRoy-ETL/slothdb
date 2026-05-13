@@ -145,6 +145,14 @@ struct ParquetColumnData {
     // ORDER BY col LIMIT N with no orphan-check) set this to skip ~hundreds
     // of MB of RLE+snappy decode for the data pages.
     bool str_dict_only = false;
+    // Dict-used fast path: decode dict + data pages, but only mark which dict
+    // entries are referenced. Skips str_dict_indices buffer materialization
+    // (~25MB/RG write) AND the consumer's O(N) used[] scan. The decoder fills
+    // str_dict_used bitmap (size = dict_size) directly from the RLE-decoded
+    // batch buffer. Used by Q26 (ORDER BY col LIMIT N) when an orphan-safe
+    // dict-trust path is needed.
+    std::vector<uint8_t> str_dict_used;
+    bool str_dict_used_only = false;
 
     void Clear() {
         count = 0;
@@ -161,6 +169,8 @@ struct ParquetColumnData {
         str_lengths.clear();
         str_lengths_only = false;
         str_dict_only = false;
+        str_dict_used.clear();
+        str_dict_used_only = false;
     }
 };
 

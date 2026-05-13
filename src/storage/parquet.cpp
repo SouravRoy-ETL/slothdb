@@ -2108,6 +2108,12 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
         const bool want_indices = !out.str_dict_indices.empty();
         uint32_t *idx_dst = want_indices ? (out.str_dict_indices.data() + row_offset)
                                           : nullptr;
+        // Dict-used mode: write into str_dict_used bitmap directly from the
+        // batch buffer. Skips ~25MB/RG str_dict_indices write and the
+        // consumer's O(N) used[]-build pass. Used by Q26 dispatch.
+        const bool want_used = out.str_dict_used_only && !out.str_dict_used.empty();
+        uint8_t *used_dst = want_used ? out.str_dict_used.data() : nullptr;
+        uint32_t used_n = want_used ? static_cast<uint32_t>(out.str_dict_used.size()) : 0;
         // No-nulls batched fast path. Drops the RleDecoder per-call cost
         // (state save/restore + mode dispatch) from once-per-row to
         // once-per-256-rows; the inner per-index work (idx range check +
@@ -2122,9 +2128,19 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
                 int want = left < 256 ? left : 256;
                 int got = rd.NextBatch(buf, want);
                 if (got <= 0) break;
+                if (want_used && !dst && !want_indices) {
+                    // Fast path: only need used[] bitmap. No idx_dst, no dst.
+                    for (int j = 0; j < got; j++) {
+                        uint32_t idx = buf[j];
+                        if (idx < used_n) used_dst[idx] = 1u;
+                    }
+                    off += got; left -= got;
+                    continue;
+                }
                 for (int j = 0; j < got; j++) {
                     uint32_t idx = buf[j];
                     if (want_indices) idx_dst[off + j] = idx;
+                    if (want_used && idx < used_n) used_dst[idx] = 1u;
                     if (!dst) continue;
                     if (idx >= dn) { dst[off + j] = string_t(); continue; }
                     dst[off + j] = string_t(str_ptrs[idx], str_lens[idx]);
@@ -2137,6 +2153,7 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
             if (!def_mask[i]) continue;
             uint32_t idx = idx_for(i);
             if (want_indices) idx_dst[i] = idx;
+            if (want_used && idx < used_n) used_dst[idx] = 1u;
             if (!dst) continue;
             if (idx >= dict.str_ptr.size()) { dst[i] = string_t(); continue; }
             uint32_t len = dict.str_len[idx];
@@ -2285,7 +2302,13 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         out.str_heap = std::make_shared<std::vector<char>>();
         out.str_heap->reserve((size_t)cmeta.total_uncompressed_size + 64);
         if (cmeta.dict_page_offset >= 0 && !out.str_lengths_only) {
-            out.str_dict_indices.resize(total_rows);
+            // Dict-used mode: skip str_dict_indices buffer; decoder will
+            // write into str_dict_used[] (resized after dict page read).
+            if (!out.str_dict_used_only) {
+                out.str_dict_indices.resize(total_rows);
+            } else {
+                out.str_dict_indices.clear();
+            }
             out.str_dict_encoded = true;
         }
         break;
@@ -2328,6 +2351,14 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         out.str_data.clear();
         out.decoded = true;
         return true;
+    }
+
+    // Dict-used fast path setup: size the presence bitmap to dict_size now
+    // that the dict page has been read. Decoder writes used[idx]=1 in the
+    // per-batch loop below INSTEAD of materializing str_dict_indices.
+    if (tid == LogicalTypeId::VARCHAR && out.str_dict_used_only &&
+        cmeta.dict_page_offset >= 0 && dict.present) {
+        out.str_dict_used.assign(dict.str_ptr.size(), 0u);
     }
 
     // 2) Data pages.
@@ -2406,6 +2437,10 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
             hdr.encoding != 2 && hdr.encoding != 8) {
             out.str_dict_encoded = false;
             out.str_dict_indices.clear();
+            // str_dict_used also stale: prior dict-page rows contributed
+            // partial bits, but PLAIN-page rows would never appear in
+            // dict_indices. Consumer fallback handles via str_data.
+            out.str_dict_used.clear();
         }
         rows_read += (idx_t)hdr.num_values;
         if (cur_offset >= total_end) break;

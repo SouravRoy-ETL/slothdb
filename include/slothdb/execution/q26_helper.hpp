@@ -44,4 +44,14 @@ std::vector<std::string> TopKVarcharFromDictTrust(
     std::uint32_t skip_di,
     bool ascending, std::size_t k);
 
+// Used-bitmap variant: same orphan-safety as TopKVarcharFromDict but reads
+// the pre-built used[] bitmap supplied by the parquet decoder (str_dict_used).
+// Skips the O(N) dict_indices walk — that work moved into the decode batch
+// loop where it costs near-zero (used[] writes hit L1 once the bitmap fits).
+std::vector<std::string> TopKVarcharFromDictUsed(
+    const string_t* dict_values, std::size_t dict_size,
+    const std::uint8_t* used,
+    std::uint32_t skip_di,
+    bool ascending, std::size_t k);
+
 }  // namespace slothdb

@@ -48,6 +48,40 @@ std::vector<std::string> TopKVarcharFromDictTrust(
     return out;
 }
 
+std::vector<std::string> TopKVarcharFromDictUsed(
+    const string_t* dict_values, std::size_t dict_size,
+    const std::uint8_t* used,
+    std::uint32_t skip_di,
+    bool ascending, std::size_t k) {
+    std::vector<std::string> out;
+    if (dict_size == 0 || k == 0 || !used) return out;
+    auto cmp = [ascending](std::string_view a, std::string_view b) {
+        return ascending ? (a < b) : (a > b);
+    };
+    std::priority_queue<std::string_view, std::vector<std::string_view>,
+                        decltype(cmp)> heap(cmp);
+    for (std::size_t d = 0; d < dict_size; d++) {
+        if (!used[d]) continue;
+        if (d == skip_di) continue;
+        std::string_view sv(dict_values[d].GetData(),
+                            dict_values[d].GetSize());
+        if (sv.empty()) continue;
+        if (heap.size() < k) {
+            heap.push(sv);
+        } else if (ascending ? (sv < heap.top()) : (sv > heap.top())) {
+            heap.pop();
+            heap.push(sv);
+        }
+    }
+    out.reserve(heap.size());
+    while (!heap.empty()) {
+        out.emplace_back(heap.top());
+        heap.pop();
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
 std::vector<std::string> TopKVarcharFromDict(
     const string_t* dict_values, std::size_t dict_size,
     const std::uint32_t* dict_indices, std::size_t nrows,
