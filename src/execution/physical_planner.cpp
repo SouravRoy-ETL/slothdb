@@ -470,6 +470,34 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
                     if (p.like_negated)
                         for (idx_t r = 0; r < nrows; r++) out_mask[r] = 0;
                     // else: keep mask unchanged (empty needle matches all)
+                } else if (needle.size() == 6) {
+                    // Q22 "google" hot path: uint32 prefix compare avoids
+                    // the generic byte-loop memcmp on every match candidate.
+                    // Mirrors DuckDB FindStrInStr 6-byte specialization.
+                    uint32_t n32; std::memcpy(&n32, needle.data(), 4);
+                    uint16_t ntl; std::memcpy(&ntl, needle.data() + 4, 2);
+                    unsigned char first = (unsigned char)(n32 & 0xFF);
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (!out_mask[r]) continue;
+                        const char *hs = sdata[r].GetData();
+                        uint32_t hl = sdata[r].GetSize();
+                        if (hl < 6) { out_mask[r] = miss_v; continue; }
+                        const char *hp = hs;
+                        const char *end = hs + (hl - 5);
+                        bool found = false;
+                        while (hp < end) {
+                            const char *m = static_cast<const char *>(
+                                std::memchr(hp, first, (size_t)(end - hp)));
+                            if (!m) break;
+                            uint32_t v32; std::memcpy(&v32, m, 4);
+                            if (v32 == n32) {
+                                uint16_t vtl; std::memcpy(&vtl, m + 4, 2);
+                                if (vtl == ntl) { found = true; break; }
+                            }
+                            hp = m + 1;
+                        }
+                        out_mask[r] = found ? hit_v : miss_v;
+                    }
                 } else {
                     for (idx_t r = 0; r < nrows; r++) {
                         if (!out_mask[r]) continue;
