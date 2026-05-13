@@ -498,6 +498,30 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
                         }
                         out_mask[r] = found ? hit_v : miss_v;
                     }
+                } else if (needle.size() == 8) {
+                    // Q23 ".google." 8-byte needle: uint64 compare in one
+                    // instruction. Mirrors DuckDB FindStrInStr case 8
+                    // (Contains<uint64_t, ContainsAligned>).
+                    uint64_t n64; std::memcpy(&n64, needle.data(), 8);
+                    unsigned char first = (unsigned char)(n64 & 0xFF);
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (!out_mask[r]) continue;
+                        const char *hs = sdata[r].GetData();
+                        uint32_t hl = sdata[r].GetSize();
+                        if (hl < 8) { out_mask[r] = miss_v; continue; }
+                        const char *hp = hs;
+                        const char *end = hs + (hl - 7);
+                        bool found = false;
+                        while (hp < end) {
+                            const char *m = static_cast<const char *>(
+                                std::memchr(hp, first, (size_t)(end - hp)));
+                            if (!m) break;
+                            uint64_t v64; std::memcpy(&v64, m, 8);
+                            if (v64 == n64) { found = true; break; }
+                            hp = m + 1;
+                        }
+                        out_mask[r] = found ? hit_v : miss_v;
+                    }
                 } else {
                     for (idx_t r = 0; r < nrows; r++) {
                         if (!out_mask[r]) continue;
