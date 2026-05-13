@@ -9631,12 +9631,33 @@ private:
                             (getenv_s(&_legacy_len, nullptr, 0,
                                       "SLOTH_LEGACY_AGG") == 0 &&
                              _legacy_len > 0);
+                        // Estimate unique-group cardinality from parquet
+                        // metadata × filter-survival ratio. Pre-sizing per-
+                        // thread per-shard storage avoids the ~17 table
+                        // doublings + rows.emplace_back grows on Q31 (~10M
+                        // unique pairs post-SearchPhrase<>'' filter), each
+                        // grow rebuilds the entire shard table. SearchPhrase
+                        // <>'' survival is ~13% on ClickBench; safe upper
+                        // bound 25%. Only apply when a WHERE filter is
+                        // present — unfiltered Q31-shape would request a
+                        // huge reserve and force zero-fill before any work.
+                        size_t q31_reserve_estimate = 0;
+                        if (multi_has_filter) {
+                            if (auto *q31_reader = pq->GetReader()) {
+                                int64_t total = 0;
+                                for (auto &rg : q31_reader->GetMeta().row_groups) total += rg.num_rows;
+                                int64_t est = (int64_t)((double)total * 0.25);
+                                if (est > 20'000'000) est = 20'000'000;
+                                if (est < 1024) est = 1024;
+                                q31_reserve_estimate = (size_t)est;
+                            }
+                        }
                         if (!legacy_override && sa_n >= 1 && sa_n <= 4) {
                             switch (sa_n) {
-                            case 1: { slothdb::InlineRowAgg<1> a(Q31_THREADS); run_q31(a); break; }
-                            case 2: { slothdb::InlineRowAgg<2> a(Q31_THREADS); run_q31(a); break; }
-                            case 3: { slothdb::InlineRowAgg<3> a(Q31_THREADS); run_q31(a); break; }
-                            case 4: { slothdb::InlineRowAgg<4> a(Q31_THREADS); run_q31(a); break; }
+                            case 1: { slothdb::InlineRowAgg<1> a(Q31_THREADS); a.ReserveExpectedRows(q31_reserve_estimate); run_q31(a); break; }
+                            case 2: { slothdb::InlineRowAgg<2> a(Q31_THREADS); a.ReserveExpectedRows(q31_reserve_estimate); run_q31(a); break; }
+                            case 3: { slothdb::InlineRowAgg<3> a(Q31_THREADS); a.ReserveExpectedRows(q31_reserve_estimate); run_q31(a); break; }
+                            case 4: { slothdb::InlineRowAgg<4> a(Q31_THREADS); a.ReserveExpectedRows(q31_reserve_estimate); run_q31(a); break; }
                             }
                         } else {
                             slothdb::RadixMultiAggI64Key a(Q31_THREADS, sa_n);
@@ -9894,12 +9915,26 @@ private:
                             (getenv_s(&_bk_legacy_len, nullptr, 0,
                                       "SLOTH_LEGACY_AGG") == 0 &&
                              _bk_legacy_len > 0);
+                        // Pre-reserve estimate. Q32 requires a filter (gate
+                        // above is multi_has_filter); BIGINT × INT pairs at
+                        // 100M rows + WHERE filter typically yield ~10-20M
+                        // unique. 25% of total_rows is the same heuristic
+                        // used for Q31.
+                        size_t bk_reserve_estimate = 0;
+                        if (auto *bk_reader = pq->GetReader()) {
+                            int64_t total = 0;
+                            for (auto &rg : bk_reader->GetMeta().row_groups) total += rg.num_rows;
+                            int64_t est = (int64_t)((double)total * 0.25);
+                            if (est > 20'000'000) est = 20'000'000;
+                            if (est < 1024) est = 1024;
+                            bk_reserve_estimate = (size_t)est;
+                        }
                         if (!bk_legacy_override && bk_sa_n >= 1 && bk_sa_n <= 4) {
                             switch (bk_sa_n) {
-                            case 1: { slothdb::InlineRowAggBigKey<1> a(BK_THREADS); run_q32(a); break; }
-                            case 2: { slothdb::InlineRowAggBigKey<2> a(BK_THREADS); run_q32(a); break; }
-                            case 3: { slothdb::InlineRowAggBigKey<3> a(BK_THREADS); run_q32(a); break; }
-                            case 4: { slothdb::InlineRowAggBigKey<4> a(BK_THREADS); run_q32(a); break; }
+                            case 1: { slothdb::InlineRowAggBigKey<1> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_q32(a); break; }
+                            case 2: { slothdb::InlineRowAggBigKey<2> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_q32(a); break; }
+                            case 3: { slothdb::InlineRowAggBigKey<3> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_q32(a); break; }
+                            case 4: { slothdb::InlineRowAggBigKey<4> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_q32(a); break; }
                             }
                         } else {
                             slothdb::RadixMultiAggBigKey a(BK_THREADS, bk_sa_n);

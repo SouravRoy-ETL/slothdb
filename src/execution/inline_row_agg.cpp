@@ -85,6 +85,25 @@ template <int NumAggs>
 InlineRowAgg<NumAggs>::~InlineRowAgg() = default;
 
 template <int NumAggs>
+void InlineRowAgg<NumAggs>::ReserveExpectedRows(size_t total_unique_groups) {
+    if (total_unique_groups == 0 || impl_->threads.empty()) return;
+    // Each unique group lands in exactly one shard (determined by hash low
+    // bits), but every thread that sees a row in that group inserts it
+    // into its own per-thread shard. So per-thread per-shard size is
+    // ~total_unique / N_RADIX (NOT divided by thread count).
+    size_t per_bucket = total_unique_groups / (size_t)N_RADIX;
+    per_bucket = per_bucket + per_bucket / 4;  // 25% slack
+    if (per_bucket < 256) per_bucket = 256;
+    // Cap per-bucket reserve to avoid huge up-front allocations when the
+    // estimate is overshot. Row<NumAggs> is 8 * (3 + 2 * NumAggs) bytes.
+    constexpr size_t MAX_PER_BUCKET = 2'000'000;
+    if (per_bucket > MAX_PER_BUCKET) per_bucket = MAX_PER_BUCKET;
+    for (auto& tarr : impl_->threads) {
+        for (auto& s : tarr) s.Reserve(per_bucket);
+    }
+}
+
+template <int NumAggs>
 void InlineRowAgg<NumAggs>::Update(int tid, uint64_t packed_key,
                                     const int64_t* agg_vals,
                                     const uint8_t* agg_valid) {
@@ -322,6 +341,19 @@ InlineRowAggBigKey<NumAggs>::InlineRowAggBigKey(int max_threads)
 
 template <int NumAggs>
 InlineRowAggBigKey<NumAggs>::~InlineRowAggBigKey() = default;
+
+template <int NumAggs>
+void InlineRowAggBigKey<NumAggs>::ReserveExpectedRows(size_t total_unique_groups) {
+    if (total_unique_groups == 0 || impl_->threads.empty()) return;
+    size_t per_bucket = total_unique_groups / (size_t)N_SHARDS;
+    per_bucket = per_bucket + per_bucket / 4;
+    if (per_bucket < 256) per_bucket = 256;
+    constexpr size_t MAX_PER_BUCKET = 2'000'000;
+    if (per_bucket > MAX_PER_BUCKET) per_bucket = MAX_PER_BUCKET;
+    for (auto& tarr : impl_->threads) {
+        for (auto& s : tarr) s.Reserve(per_bucket);
+    }
+}
 
 template <int NumAggs>
 void InlineRowAggBigKey<NumAggs>::Update(int tid, int64_t key_a, int64_t key_b,

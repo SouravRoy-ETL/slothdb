@@ -45,6 +45,13 @@ public:
     InlineRowAgg(const InlineRowAgg&) = delete;
     InlineRowAgg& operator=(const InlineRowAgg&) = delete;
 
+    // Pre-size per-thread per-shard storage to the expected total unique
+    // group count. Each thread × shard gets total / (threads × N_RADIX).
+    // Avoids the table-doubling + Row-vector-grow trail when the caller
+    // knows the post-filter cardinality upper bound (Q31 ~10M unique
+    // pairs after SearchPhrase<>'').
+    void ReserveExpectedRows(size_t total_unique_groups);
+
     // Phase 1: per-thread emplace. Caller passes an already-packed key
     // (typically two INT cols packed into a uint64) plus per-agg input
     // values + null mask. count_star is implicit.
@@ -92,6 +99,11 @@ public:
     ~InlineRowAggBigKey();
     InlineRowAggBigKey(const InlineRowAggBigKey&) = delete;
     InlineRowAggBigKey& operator=(const InlineRowAggBigKey&) = delete;
+
+    // Same purpose as InlineRowAgg::ReserveExpectedRows — pre-size per-
+    // thread per-shard storage to avoid table/row growth on high-card
+    // 2-col BIGINT GROUP BY (Q32).
+    void ReserveExpectedRows(size_t total_unique_groups);
 
     void Update(int tid, int64_t key_a, int64_t key_b,
                 const int64_t* agg_vals,
