@@ -9971,6 +9971,22 @@ private:
 
                         constexpr int Q15_THREADS = 8;
                         slothdb::RadixCount2ColIntStr agg2(Q15_THREADS);
+                        // Pre-reserve shard maps for Q15/Q17 (high-card
+                        // (int, str) pairs). Without reserve each shard
+                        // grows 8 -> 16 -> ... -> 8K through ~10 rehashes
+                        // during 100M-row ingest. Estimate expected
+                        // unique pairs from parquet total_rows (rough
+                        // upper bound — pairs may repeat across rows).
+                        {
+                            int64_t total_rows = 0;
+                            if (auto *r2 = pq->GetReader()) {
+                                for (auto &rg : r2->GetMeta().row_groups)
+                                    total_rows += rg.num_rows;
+                            }
+                            int64_t expected = total_rows / 8;
+                            if (expected < 1'000'000) expected = 1'000'000;
+                            agg2.ReserveExpectedRows(expected);
+                        }
                         // Bare-LIMIT early-exit (Q18 shape). Stop picking
                         // new RGs once we've accumulated row_limit_hint_+slack
                         // distinct groups across all threads. Disabled for
