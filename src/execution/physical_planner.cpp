@@ -425,7 +425,15 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
                 (p.op == SimpleCmpOp::EQ || p.op == SimpleCmpOp::NE)) {
                 continue;
             }
-            if (!c.str_dict_encoded || c.str_dict_indices.empty()) return false;
+            if (!c.str_dict_encoded || c.str_dict_indices.empty()) {
+                // PLAIN VARCHAR LIKE: walk str_data with the running mask
+                // (only rows still keep=1). Q22 (URL LIKE %google% AND
+                // SearchPhrase <> '') lands here — SearchPhrase NE drops
+                // ~87% of rows before URL LIKE fires.
+                if (p.like_contains && !c.str_data.empty() &&
+                    c.str_data.size() >= nrows) continue;
+                return false;
+            }
             if (p.like_contains) continue;
             if (p.op != SimpleCmpOp::EQ && p.op != SimpleCmpOp::NE) return false;
         } else {
@@ -446,6 +454,31 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
                     for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(L[r] == 0);
                 } else {
                     for (idx_t r = 0; r < nrows; r++) out_mask[r] &= (uint8_t)(L[r] != 0);
+                }
+                continue;
+            }
+            // PLAIN VARCHAR LIKE: process only rows where keep_mask is
+            // still 1. The prior preds (sorted non-LIKE-first by
+            // TryCompileSimplePredicate) have already pruned out_mask, so
+            // this skips ~87% of rows on Q22's URL LIKE check.
+            if (!c.str_dict_encoded && p.like_contains && !c.str_data.empty()) {
+                const string_t *sdata = c.str_data.data();
+                const auto &needle = p.sval;
+                uint8_t miss_v = p.like_negated ? 1 : 0;
+                uint8_t hit_v  = p.like_negated ? 0 : 1;
+                if (needle.empty()) {
+                    if (p.like_negated)
+                        for (idx_t r = 0; r < nrows; r++) out_mask[r] = 0;
+                    // else: keep mask unchanged (empty needle matches all)
+                } else {
+                    for (idx_t r = 0; r < nrows; r++) {
+                        if (!out_mask[r]) continue;
+                        const char *hs = sdata[r].GetData();
+                        uint32_t hl = sdata[r].GetSize();
+                        if (hl < needle.size()) { out_mask[r] = miss_v; continue; }
+                        out_mask[r] = FindSubstr(hs, hl, needle.data(),
+                                                  needle.size()) ? hit_v : miss_v;
+                    }
                 }
                 continue;
             }
