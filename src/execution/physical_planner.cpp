@@ -3373,68 +3373,12 @@ private:
                 if (!mask_active) fallback_row_loop = true;
             }
 
-            auto eval_row = [&](idx_t i) -> bool {
-                for (auto &p : tn_preds) {
-                    const auto &col = pcols[p.col_idx];
-                    if (!col.decoded) return false;
-                    if (!col.all_valid && i < col.validity.size() && !col.validity[i]) return false;
-                    if (p.str_form) {
-                        if (col.str_lengths_only && !col.str_lengths.empty() &&
-                            !p.like_contains && p.sval.empty() &&
-                            (p.op == SimpleCmpOp::EQ || p.op == SimpleCmpOp::NE)) {
-                            bool is_empty = (col.str_lengths[i] == 0);
-                            if (p.op == SimpleCmpOp::EQ) { if (!is_empty) return false; }
-                            else                         { if (is_empty)  return false; }
-                            continue;
-                        }
-                        const char *sd = nullptr; uint32_t sl = 0;
-                        if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
-                            uint32_t di = col.str_dict_indices[i];
-                            if (di >= col.str_dict_values.size()) return false;
-                            sd = col.str_dict_values[di].GetData();
-                            sl = col.str_dict_values[di].GetSize();
-                        } else if (i < col.str_data.size()) {
-                            sd = col.str_data[i].GetData();
-                            sl = col.str_data[i].GetSize();
-                        } else { return false; }
-                        if (p.like_contains) {
-                            bool match;
-                            if (p.sval.empty()) match = true;
-                            else if (sl < p.sval.size()) match = false;
-                            else match = (FindSubstr(sd, sl, p.sval.data(), p.sval.size()) != nullptr);
-                            if (p.like_negated) match = !match;
-                            if (!match) return false;
-                        } else {
-                            bool eq = (sl == p.sval.size()) &&
-                                      (p.sval.empty() ||
-                                       std::memcmp(sd, p.sval.data(), p.sval.size()) == 0);
-                            if (p.op == SimpleCmpOp::EQ) { if (!eq) return false; }
-                            else                         { if (eq)  return false; }
-                        }
-                    } else {
-                        int64_t pv = p.ival, v = 0;
-                        if (col.type.id() == LogicalTypeId::INTEGER) v = col.i32_data[i];
-                        else if (col.type.id() == LogicalTypeId::BIGINT) v = col.i64_data[i];
-                        else return false;
-                        switch (p.op) {
-                        case SimpleCmpOp::EQ: if (v != pv) return false; break;
-                        case SimpleCmpOp::NE: if (v == pv) return false; break;
-                        case SimpleCmpOp::LT: if (!(v <  pv)) return false; break;
-                        case SimpleCmpOp::LE: if (!(v <= pv)) return false; break;
-                        case SimpleCmpOp::GT: if (!(v >  pv)) return false; break;
-                        case SimpleCmpOp::GE: if (!(v >= pv)) return false; break;
-                        }
-                    }
-                }
-                return true;
-            };
-
             auto &vcol = pcols[value_col];
             HeapV local(cmp);
             EntryV cur;
             for (idx_t i = 0; i < nrows; i++) {
                 if (mask_active && !mask[i]) continue;
-                if (fallback_row_loop && !eval_row(i)) continue;
+                if (fallback_row_loop && !EvalSimplePredicates(tn_preds, pcols, i)) continue;
                 bool key_is_null = !key_all_valid && !(i < kcol.validity.size() && kcol.validity[i]);
                 T key = key_is_null ? T{} : kdata[i];
                 // Fast prefilter against global threshold (no value compare —
