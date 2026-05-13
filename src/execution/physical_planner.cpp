@@ -3147,6 +3147,424 @@ private:
         std::reverse(sorted_rows_.begin(), sorted_rows_.end());
     }
 
+    // Q27-shape inline-value fast path. When the ORDER BY is
+    // (primitive_key [, varchar_value]) and the output is a single VARCHAR
+    // column that is ALSO a predicate col, the regular two-pass primitive
+    // TopN's `kk = k*4` oversample is wasteful: a composite-key heap of
+    // exactly K entries captures the correct top-K directly, and the K
+    // winning value strings are captured inline during pass-1, eliminating
+    // pass-2's re-decode of the value col across 3-4 unique RGs.
+    //
+    // Returns true if dispatch succeeded. Caller then skips both
+    // CollectTopN_Primitive and ResortByFullKeys.
+    template <typename T>
+    bool TryCollectTopN_InlineValue(idx_t k, idx_t key_col, bool key_asc,
+                                    idx_t value_col, bool value_asc) {
+        // Resolve the parquet scan tree (mirrors CollectTopN_Primitive's
+        // unwrap; we need pq_scan + tn_preds before we can decode).
+        PhysicalParquetScan *pq_scan = dynamic_cast<PhysicalParquetScan *>(children[0].get());
+        std::vector<SimplePredicate> tn_preds;
+        if (!pq_scan) {
+            if (auto *proj = dynamic_cast<PhysicalProjection *>(children[0].get())) {
+                if (proj->IsIdentityProjection() && !proj->children.empty())
+                    pq_scan = dynamic_cast<PhysicalParquetScan *>(proj->children[0].get());
+            }
+        }
+        if (!pq_scan) {
+            PhysicalFilter *flt = dynamic_cast<PhysicalFilter *>(children[0].get());
+            if (!flt) {
+                if (auto *proj = dynamic_cast<PhysicalProjection *>(children[0].get())) {
+                    if (proj->IsIdentityProjection() && !proj->children.empty())
+                        flt = dynamic_cast<PhysicalFilter *>(proj->children[0].get());
+                }
+            }
+            if (flt && flt->GetCondition() && !flt->children.empty()) {
+                std::vector<SimplePredicate> tmp;
+                if (TryCompileSimplePredicate(*flt->GetCondition(), tmp)) {
+                    PhysicalParquetScan *cand = dynamic_cast<PhysicalParquetScan *>(flt->children[0].get());
+                    if (!cand) {
+                        if (auto *p2 = dynamic_cast<PhysicalProjection *>(flt->children[0].get())) {
+                            if (p2->IsIdentityProjection() && !p2->children.empty())
+                                cand = dynamic_cast<PhysicalParquetScan *>(p2->children[0].get());
+                        }
+                    }
+                    if (cand) { pq_scan = cand; tn_preds = std::move(tmp); }
+                }
+            }
+        }
+        if (!pq_scan) return false;
+
+        idx_t ncols = pq_scan->GetTypes().size();
+        if (key_col >= ncols || value_col >= ncols) return false;
+        if (pq_scan->GetTypes()[value_col].id() != LogicalTypeId::VARCHAR) return false;
+
+        // Confirm value_col is one of the predicate cols (so the decoder
+        // is going to touch it anyway — adding dict-index population is
+        // marginal extra cost vs the full pass-2 re-decode we save).
+        bool value_is_pred = false;
+        for (auto &p : tn_preds) {
+            if (p.col_idx == value_col && p.str_form) { value_is_pred = true; break; }
+        }
+        if (!value_is_pred) return false;
+
+        // Confirm output is JUST {value_col} (+ optionally key_col). If
+        // anything else is downstream, pass-2 is still needed.
+        if (parent_proj_mask_.empty()) return false;  // unknown → safer to bail
+        for (idx_t c = 0; c < parent_proj_mask_.size() && c < ncols; c++) {
+            if (parent_proj_mask_[c] && c != key_col && c != value_col) return false;
+        }
+
+        // Heap entry stores BOTH key and value bytes. Composite compare:
+        // key first, then value (per orders_).
+        struct EntryV {
+            T key;
+            std::string value;
+            bool key_null = false;
+            bool value_null = false;
+        };
+        auto cmp = [key_asc, value_asc](const EntryV &a, const EntryV &b) {
+            if (a.key_null && b.key_null) {
+                // tie on key — fall through to value compare
+            } else if (a.key_null) {
+                return !key_asc;
+            } else if (b.key_null) {
+                return key_asc;
+            } else if (a.key < b.key) {
+                return key_asc;
+            } else if (b.key < a.key) {
+                return !key_asc;
+            }
+            // keys are equal — value tiebreak
+            if (a.value_null && b.value_null) return false;
+            if (a.value_null) return !value_asc;
+            if (b.value_null) return value_asc;
+            return value_asc ? a.value < b.value : a.value > b.value;
+        };
+        using HeapV = std::priority_queue<EntryV, std::vector<EntryV>, decltype(cmp)>;
+
+        // SetSkipStrData on every str predicate col EXCEPT preserve dict
+        // index population (str_lengths_only stays false for value_col so
+        // str_dict_indices is filled — we need it to extract value bytes).
+        std::vector<bool> tn_lo_pred(ncols, false);
+        {
+            std::vector<bool> skip_pre(ncols, false);
+            for (auto &p : tn_preds) {
+                if (p.col_idx < ncols && p.str_form) {
+                    skip_pre[p.col_idx] = true;
+                    // lengths-only is fine for predicate-only cols, but for
+                    // value_col we need dict_indices.
+                    if (p.col_idx != value_col &&
+                        !p.like_contains && p.sval.empty() &&
+                        (p.op == SimpleCmpOp::EQ || p.op == SimpleCmpOp::NE)) {
+                        tn_lo_pred[p.col_idx] = true;
+                    }
+                }
+            }
+            pq_scan->SetSkipStrData(std::move(skip_pre));
+        }
+        pq_scan->Init();
+        auto *reader = pq_scan->GetReader();
+        const auto &meta = reader->GetMeta();
+        idx_t num_rgs = meta.row_groups.size();
+
+        struct RGEntry { T order_key; idx_t rg_idx; bool has_stats; };
+        std::vector<RGEntry> rg_order;
+        rg_order.reserve(num_rgs);
+        bool all_have_stats = true;
+        for (idx_t rg = 0; rg < num_rgs; rg++) {
+            if (key_col >= meta.row_groups[rg].columns.size()) {
+                all_have_stats = false;
+                rg_order.push_back({T{}, rg, false}); continue;
+            }
+            auto &cmeta = meta.row_groups[rg].columns[key_col];
+            if (!cmeta.has_stats) {
+                all_have_stats = false;
+                rg_order.push_back({T{}, rg, false}); continue;
+            }
+            T sk;
+            try { sk = key_asc ? cmeta.min_value.GetValue<T>() : cmeta.max_value.GetValue<T>(); }
+            catch (...) {
+                all_have_stats = false;
+                rg_order.push_back({T{}, rg, false}); continue;
+            }
+            rg_order.push_back({sk, rg, true});
+        }
+        if (!all_have_stats) return false;  // fall back to safer path
+
+        std::sort(rg_order.begin(), rg_order.end(),
+            [key_asc](const RGEntry &a, const RGEntry &b) {
+                return key_asc ? a.order_key < b.order_key : a.order_key > b.order_key;
+            });
+
+        HeapV merged(cmp);
+        std::mutex merged_mu;
+        std::atomic<size_t> next_rg{0};
+        std::atomic<bool> done{false};
+
+        unsigned int nthreads = HWThreads();
+        if (nthreads > 6) nthreads = 6;
+        if (nthreads > rg_order.size())
+            nthreads = static_cast<unsigned int>(rg_order.size());
+        if (nthreads < 1) nthreads = 1;
+
+        auto extract_value = [&](const ParquetColumnData &vcol, idx_t i,
+                                 std::string &out, bool &is_null) {
+            is_null = !vcol.all_valid && i < vcol.validity.size() && !vcol.validity[i];
+            if (is_null) { out.clear(); return; }
+            if (vcol.str_dict_encoded && i < vcol.str_dict_indices.size()) {
+                uint32_t di = vcol.str_dict_indices[i];
+                if (di < vcol.str_dict_values.size()) {
+                    out.assign(vcol.str_dict_values[di].GetData(),
+                               vcol.str_dict_values[di].GetSize());
+                    return;
+                }
+            }
+            if (i < vcol.str_data.size()) {
+                out.assign(vcol.str_data[i].GetData(), vcol.str_data[i].GetSize());
+                return;
+            }
+            out.clear();
+        };
+
+        auto eval_one_rg = [&](size_t order_idx) {
+            auto &re = rg_order[order_idx];
+            // Snapshot global threshold under lock; bail if this RG can't beat.
+            EntryV thr_snap{};
+            bool have_thr = false;
+            {
+                std::lock_guard<std::mutex> lk(merged_mu);
+                if (merged.size() >= k) {
+                    thr_snap = merged.top();
+                    if (!thr_snap.key_null) {
+                        bool beats = key_asc ? (re.order_key < thr_snap.key)
+                                             : (re.order_key > thr_snap.key);
+                        if (!beats) {
+                            done.store(true, std::memory_order_relaxed);
+                            return;
+                        }
+                        have_thr = true;
+                    }
+                }
+            }
+
+            idx_t nrows = pq_scan->RowGroupSize(re.rg_idx);
+            std::vector<ParquetColumnData> pcols(ncols);
+            if (!reader->ReadColumnInto(re.rg_idx, key_col, pcols[key_col])) return;
+            for (auto &p : tn_preds) {
+                if (p.col_idx >= ncols) return;
+                if (p.col_idx == key_col) continue;
+                pcols[p.col_idx].str_lengths_only = tn_lo_pred[p.col_idx];
+                if (!reader->ReadColumnInto(re.rg_idx, p.col_idx, pcols[p.col_idx])) return;
+            }
+            auto &kcol = pcols[key_col];
+            const T *kdata = nullptr;
+            if constexpr (std::is_same_v<T, int64_t>) kdata = reinterpret_cast<const T *>(kcol.i64_data.data());
+            else if constexpr (std::is_same_v<T, int32_t>) kdata = reinterpret_cast<const T *>(kcol.i32_data.data());
+            else if constexpr (std::is_same_v<T, double>)  kdata = reinterpret_cast<const T *>(kcol.f64_data.data());
+            else if constexpr (std::is_same_v<T, float>)   kdata = reinterpret_cast<const T *>(kcol.f32_data.data());
+            if (!kdata) return;
+            bool key_all_valid = kcol.all_valid;
+
+            std::vector<uint8_t> mask;
+            bool mask_active = false;
+            bool fallback_row_loop = false;
+            if (!tn_preds.empty()) {
+                mask_active = BuildTypedKeepMask(tn_preds, pcols, nrows, mask);
+                if (!mask_active) fallback_row_loop = true;
+            }
+
+            auto eval_row = [&](idx_t i) -> bool {
+                for (auto &p : tn_preds) {
+                    const auto &col = pcols[p.col_idx];
+                    if (!col.decoded) return false;
+                    if (!col.all_valid && i < col.validity.size() && !col.validity[i]) return false;
+                    if (p.str_form) {
+                        if (col.str_lengths_only && !col.str_lengths.empty() &&
+                            !p.like_contains && p.sval.empty() &&
+                            (p.op == SimpleCmpOp::EQ || p.op == SimpleCmpOp::NE)) {
+                            bool is_empty = (col.str_lengths[i] == 0);
+                            if (p.op == SimpleCmpOp::EQ) { if (!is_empty) return false; }
+                            else                         { if (is_empty)  return false; }
+                            continue;
+                        }
+                        const char *sd = nullptr; uint32_t sl = 0;
+                        if (col.str_dict_encoded && !col.str_dict_indices.empty()) {
+                            uint32_t di = col.str_dict_indices[i];
+                            if (di >= col.str_dict_values.size()) return false;
+                            sd = col.str_dict_values[di].GetData();
+                            sl = col.str_dict_values[di].GetSize();
+                        } else if (i < col.str_data.size()) {
+                            sd = col.str_data[i].GetData();
+                            sl = col.str_data[i].GetSize();
+                        } else { return false; }
+                        if (p.like_contains) {
+                            bool match;
+                            if (p.sval.empty()) match = true;
+                            else if (sl < p.sval.size()) match = false;
+                            else match = (FindSubstr(sd, sl, p.sval.data(), p.sval.size()) != nullptr);
+                            if (p.like_negated) match = !match;
+                            if (!match) return false;
+                        } else {
+                            bool eq = (sl == p.sval.size()) &&
+                                      (p.sval.empty() ||
+                                       std::memcmp(sd, p.sval.data(), p.sval.size()) == 0);
+                            if (p.op == SimpleCmpOp::EQ) { if (!eq) return false; }
+                            else                         { if (eq)  return false; }
+                        }
+                    } else {
+                        int64_t pv = p.ival, v = 0;
+                        if (col.type.id() == LogicalTypeId::INTEGER) v = col.i32_data[i];
+                        else if (col.type.id() == LogicalTypeId::BIGINT) v = col.i64_data[i];
+                        else return false;
+                        switch (p.op) {
+                        case SimpleCmpOp::EQ: if (v != pv) return false; break;
+                        case SimpleCmpOp::NE: if (v == pv) return false; break;
+                        case SimpleCmpOp::LT: if (!(v <  pv)) return false; break;
+                        case SimpleCmpOp::LE: if (!(v <= pv)) return false; break;
+                        case SimpleCmpOp::GT: if (!(v >  pv)) return false; break;
+                        case SimpleCmpOp::GE: if (!(v >= pv)) return false; break;
+                        }
+                    }
+                }
+                return true;
+            };
+
+            auto &vcol = pcols[value_col];
+            HeapV local(cmp);
+            EntryV cur;
+            for (idx_t i = 0; i < nrows; i++) {
+                if (mask_active && !mask[i]) continue;
+                if (fallback_row_loop && !eval_row(i)) continue;
+                bool key_is_null = !key_all_valid && !(i < kcol.validity.size() && kcol.validity[i]);
+                T key = key_is_null ? T{} : kdata[i];
+                // Fast prefilter against global threshold (no value compare —
+                // value is unknown without extraction. If key alone can't
+                // beat global thr, we know composite can't either.)
+                if (have_thr && !key_is_null && !thr_snap.key_null) {
+                    bool key_wins  = key_asc ? (key < thr_snap.key) : (key > thr_snap.key);
+                    bool key_tied  = (key == thr_snap.key);
+                    if (!key_wins && !key_tied) continue;
+                }
+                // Local prefilter: same logic against local heap top.
+                if (local.size() >= k) {
+                    const auto &t = local.top();
+                    if (!t.key_null && !key_is_null) {
+                        bool key_wins = key_asc ? (key < t.key) : (key > t.key);
+                        bool key_tied = (key == t.key);
+                        if (!key_wins && !key_tied) continue;
+                    }
+                }
+                // Now we need value bytes. Extract & try insert.
+                cur.key = key;
+                cur.key_null = key_is_null;
+                extract_value(vcol, i, cur.value, cur.value_null);
+                if (local.size() < k) {
+                    local.push(cur);
+                } else if (cmp(cur, local.top())) {
+                    local.pop();
+                    local.push(cur);
+                }
+            }
+            if (local.empty()) return;
+            std::vector<EntryV> drain;
+            drain.reserve(local.size());
+            while (!local.empty()) { drain.push_back(std::move(const_cast<EntryV &>(local.top()))); local.pop(); }
+            std::lock_guard<std::mutex> lk(merged_mu);
+            for (auto &e : drain) {
+                if (merged.size() < k) merged.push(std::move(e));
+                else if (cmp(e, merged.top())) {
+                    merged.pop();
+                    merged.push(std::move(e));
+                }
+            }
+        };
+
+        if (nthreads <= 1) {
+            for (size_t i = 0; i < rg_order.size(); i++) {
+                if (done.load(std::memory_order_relaxed)) break;
+                eval_one_rg(i);
+            }
+        } else {
+            // Sequential warm-up of the best RG before parallel workers
+            // start, mirroring CollectTopN_Primitive — populates the global
+            // threshold so parallel workers can early-bail.
+            if (!rg_order.empty()) {
+                eval_one_rg(0);
+                next_rg.store(1, std::memory_order_relaxed);
+            }
+            std::vector<std::thread> ts;
+            ts.reserve(nthreads);
+            for (unsigned int t = 0; t < nthreads; t++) {
+                ts.emplace_back([&] {
+                    while (true) {
+                        if (done.load(std::memory_order_relaxed)) return;
+                        size_t idx = next_rg.fetch_add(1, std::memory_order_relaxed);
+                        if (idx >= rg_order.size()) return;
+                        eval_one_rg(idx);
+                    }
+                });
+            }
+            for (auto &t : ts) if (t.joinable()) t.join();
+        }
+
+        // Drain merged into sorted (best-first) order, then emit ncols-wide
+        // rows with key at key_col and value at value_col (parent projection
+        // plucks them out).
+        std::vector<EntryV> winners;
+        winners.reserve(merged.size());
+        while (!merged.empty()) { winners.push_back(std::move(const_cast<EntryV &>(merged.top()))); merged.pop(); }
+        std::reverse(winners.begin(), winners.end());
+
+        std::vector<std::vector<Value>> output_rows;
+        output_rows.reserve(winners.size());
+        for (auto &w : winners) {
+            std::vector<Value> row(ncols);
+            if (w.key_null) row[key_col] = Value();
+            else {
+                if constexpr (std::is_same_v<T, int64_t>) row[key_col] = Value::BIGINT(w.key);
+                else if constexpr (std::is_same_v<T, int32_t>) row[key_col] = Value::INTEGER(w.key);
+                else if constexpr (std::is_same_v<T, double>)  row[key_col] = Value::DOUBLE(w.key);
+                else if constexpr (std::is_same_v<T, float>)   row[key_col] = Value::FLOAT(w.key);
+            }
+            row[value_col] = w.value_null ? Value() : Value::VARCHAR(w.value);
+            output_rows.push_back(std::move(row));
+        }
+        sorted_rows_ = std::move(output_rows);
+        return true;
+    }
+
+    // True iff the planned shape matches the inline-value fast path:
+    // primitive ORDER BY [, varchar tiebreaker] + LIMIT, output is exactly
+    // {key_col, value_col} (subset OK), value_col is a `<> ''`-style predicate.
+    bool DetectInlineValueShape(idx_t &value_col, bool &value_asc) const {
+        if (orders_.empty() || parent_proj_mask_.empty()) return false;
+        if (orders_[0].expression->GetExpressionType() != BoundExpressionType::COLUMN_REF) return false;
+        idx_t key_col = static_cast<BoundColumnRef &>(*orders_[0].expression).column_index;
+        idx_t found = INVALID_INDEX;
+        for (idx_t c = 0; c < parent_proj_mask_.size(); c++) {
+            if (parent_proj_mask_[c] && c != key_col) {
+                if (found != INVALID_INDEX) return false;  // > 1 non-key output
+                found = c;
+            }
+        }
+        if (found == INVALID_INDEX) return false;
+        value_col = found;
+        value_asc = true;
+        for (size_t i = 1; i < orders_.size(); i++) {
+            if (orders_[i].expression->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                auto &cr = static_cast<BoundColumnRef &>(*orders_[i].expression);
+                if ((idx_t)cr.column_index == found) {
+                    value_asc = orders_[i].ascending;
+                    return true;
+                }
+            }
+            // Secondary ORDER BY is something else — bail (composite compare
+            // would be incorrect).
+            return false;
+        }
+        return true;  // single ORDER BY (Q25 shape) or no extra orders
+    }
+
     void CollectTopN(idx_t k) {
         // Try the fast specialised path first. Single-column ORDER BY on a
         // primitive type avoids Value boxing per losing row — drops the
@@ -3165,6 +3583,34 @@ private:
             auto tid = orders_[0].expression->GetReturnType().id();
             const bool multi = orders_.size() > 1;
             const idx_t kk = multi ? k * 4 : k;
+            // Try inline-value path for Q25/Q27 shape (one VARCHAR output
+            // col that's also a predicate col). Composite-key heap captures
+            // exact top-K with K=k (no oversample), skipping pass-2.
+            {
+                idx_t value_col = INVALID_INDEX;
+                bool value_asc = true;
+                if (DetectInlineValueShape(value_col, value_asc)) {
+                    bool ok = false;
+                    switch (tid) {
+                    case LogicalTypeId::BIGINT:
+                    case LogicalTypeId::TIMESTAMP:
+                    case LogicalTypeId::TIMESTAMP_TZ:
+                    case LogicalTypeId::TIME:
+                        ok = TryCollectTopN_InlineValue<int64_t>(
+                            k, cref.column_index, orders_[0].ascending,
+                            value_col, value_asc);
+                        break;
+                    case LogicalTypeId::INTEGER:
+                    case LogicalTypeId::DATE:
+                        ok = TryCollectTopN_InlineValue<int32_t>(
+                            k, cref.column_index, orders_[0].ascending,
+                            value_col, value_asc);
+                        break;
+                    default: break;
+                    }
+                    if (ok) return;
+                }
+            }
             switch (tid) {
             case LogicalTypeId::BIGINT:
             case LogicalTypeId::TIMESTAMP:
