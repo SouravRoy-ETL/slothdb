@@ -120,6 +120,26 @@ target_link_libraries(slothdb_lib PRIVATE slothdb_fastpfor)
 target_include_directories(slothdb_lib PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/fastpforlib)
 
+# Vendored google/snappy 1.2.1 — fast back-ref + literal copy (16-byte SSSE3
+# shuffle + IncrementalCopy slop buffer). Replaces the hand-rolled byte-by-byte
+# back-ref loop in SnappyDecompressBody for VARCHAR-heavy ClickBench queries
+# (Q15/Q22/Q23/Q26 — URL/Title/SearchPhrase with high back-ref density).
+set(SLOTHDB_SNAPPY_DIR ${CMAKE_SOURCE_DIR}/third_party/snappy)
+add_library(slothdb_snappy STATIC
+    ${SLOTHDB_SNAPPY_DIR}/snappy.cc
+    ${SLOTHDB_SNAPPY_DIR}/snappy-sinksource.cc
+    ${SLOTHDB_SNAPPY_DIR}/snappy-stubs-internal.cc
+    ${SLOTHDB_SNAPPY_DIR}/snappy-c.cc)
+target_include_directories(slothdb_snappy PUBLIC ${SLOTHDB_SNAPPY_DIR})
+if(MSVC)
+    target_compile_options(slothdb_snappy PRIVATE /w)
+else()
+    target_compile_options(slothdb_snappy PRIVATE -w)
+endif()
+set_target_properties(slothdb_snappy PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(slothdb_lib PRIVATE slothdb_snappy)
+target_include_directories(slothdb_lib PRIVATE ${SLOTHDB_SNAPPY_DIR})
+
 target_include_directories(slothdb_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )

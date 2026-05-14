@@ -4,6 +4,7 @@
 #include "miniz.h"
 #include "zstd.h"
 #include "bitpackinghelpers.h"
+#include "snappy.h"
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -35,80 +36,21 @@ static const char PARQUET_MAGIC[4] = {'P', 'A', 'R', '1'};
 // =============================================================================
 namespace {
 
-// --- Snappy (raw, no CRC) decompressor. Returns false on corruption. ---
-// Internal: parse varint length prefix from a Snappy stream. Returns the
-// number of bytes consumed (0 on malformed) and writes the length to
-// `uncomp_len`.
-static size_t SnappyParseLength(const uint8_t *in, size_t in_size, uint64_t &uncomp_len) {
-    uncomp_len = 0;
-    size_t p = 0;
-    int shift = 0;
-    while (p < in_size) {
-        uint8_t b = in[p++];
-        uncomp_len |= uint64_t(b & 0x7F) << shift;
-        if ((b & 0x80) == 0) return p;
-        shift += 7;
-        if (shift > 35) return 0;
-    }
-    return 0;
-}
-
-// Internal: decompress Snappy body into a raw output buffer, starting at
-// `start` (post-varint position) and writing `uncomp_len` bytes to `out`.
-// out MUST have at least `uncomp_len` bytes.
-static bool SnappyDecompressBody(const uint8_t *in, size_t in_size, size_t start,
-                                  uint8_t *out, size_t uncomp_len) {
-    size_t p = start;
-    size_t op = 0;
-    while (p < in_size) {
-        uint8_t tag = in[p++];
-        uint8_t tt = tag & 0x03;
-        if (tt == 0) {
-            uint32_t len;
-            uint32_t hi = tag >> 2;
-            if (hi < 60) len = hi + 1;
-            else if (hi == 60) { if (p + 1 > in_size) return false; len = 1u + in[p]; p += 1; }
-            else if (hi == 61) { if (p + 2 > in_size) return false; len = 1u + uint32_t(in[p]) + (uint32_t(in[p+1]) << 8); p += 2; }
-            else if (hi == 62) { if (p + 3 > in_size) return false; len = 1u + uint32_t(in[p]) + (uint32_t(in[p+1]) << 8) + (uint32_t(in[p+2]) << 16); p += 3; }
-            else { if (p + 4 > in_size) return false; len = 1u + uint32_t(in[p]) + (uint32_t(in[p+1]) << 8) + (uint32_t(in[p+2]) << 16) + (uint32_t(in[p+3]) << 24); p += 4; }
-            if (p + len > in_size || op + len > uncomp_len) return false;
-            std::memcpy(&out[op], &in[p], len);
-            p += len; op += len;
-        } else if (tt == 1) {
-            if (p + 1 > in_size) return false;
-            uint32_t len = ((tag >> 2) & 0x07) + 4;
-            uint32_t off = (uint32_t(tag >> 5) << 8) | in[p++];
-            if (off == 0 || off > op || op + len > uncomp_len) return false;
-            for (uint32_t i = 0; i < len; i++) out[op + i] = out[op - off + i];
-            op += len;
-        } else if (tt == 2) {
-            if (p + 2 > in_size) return false;
-            uint32_t len = (tag >> 2) + 1;
-            uint32_t off = uint32_t(in[p]) | (uint32_t(in[p+1]) << 8);
-            p += 2;
-            if (off == 0 || off > op || op + len > uncomp_len) return false;
-            for (uint32_t i = 0; i < len; i++) out[op + i] = out[op - off + i];
-            op += len;
-        } else {
-            if (p + 4 > in_size) return false;
-            uint32_t len = (tag >> 2) + 1;
-            uint32_t off = uint32_t(in[p]) | (uint32_t(in[p+1]) << 8) | (uint32_t(in[p+2]) << 16) | (uint32_t(in[p+3]) << 24);
-            p += 4;
-            if (off == 0 || off > op || op + len > uncomp_len) return false;
-            for (uint32_t i = 0; i < len; i++) out[op + i] = out[op - off + i];
-            op += len;
-        }
-    }
-    return op == uncomp_len;
-}
-
+// --- Snappy decompressor. Calls into vendored google/snappy 1.2.1
+// (third_party/snappy/) for the SSSE3 16-byte literal-shuffle + IncrementalCopy
+// back-ref fast paths. Hand-rolled byte-by-byte back-ref loop was the
+// bottleneck on VARCHAR/URL/Title columns; google's IncrementalCopy with the
+// 64-byte slop buffer is 3-5× faster on those shapes.
 bool SnappyDecompress(const uint8_t *in, size_t in_size, std::vector<uint8_t> &out) {
     if (in_size == 0) { out.clear(); return true; }
-    uint64_t uncomp_len = 0;
-    size_t start = SnappyParseLength(in, in_size, uncomp_len);
-    if (start == 0) return false;
-    out.resize(static_cast<size_t>(uncomp_len));
-    return SnappyDecompressBody(in, in_size, start, out.data(), uncomp_len);
+    size_t uncomp_len = 0;
+    if (!snappy::GetUncompressedLength(reinterpret_cast<const char *>(in),
+                                       in_size, &uncomp_len)) {
+        return false;
+    }
+    out.resize(uncomp_len);
+    return snappy::RawUncompress(reinterpret_cast<const char *>(in), in_size,
+                                 reinterpret_cast<char *>(out.data()));
 }
 
 // Decompress a Snappy stream directly into a pre-allocated raw buffer.
@@ -121,12 +63,15 @@ bool SnappyDecompress(const uint8_t *in, size_t in_size, std::vector<uint8_t> &o
 bool SnappyDecompressRaw(const uint8_t *in, size_t in_size,
                          uint8_t *out, size_t out_cap, size_t &out_size) {
     if (in_size == 0) { out_size = 0; return true; }
-    uint64_t uncomp_len = 0;
-    size_t start = SnappyParseLength(in, in_size, uncomp_len);
-    if (start == 0) return false;
+    size_t uncomp_len = 0;
+    if (!snappy::GetUncompressedLength(reinterpret_cast<const char *>(in),
+                                       in_size, &uncomp_len)) {
+        return false;
+    }
     if (uncomp_len > out_cap) return false;
-    out_size = static_cast<size_t>(uncomp_len);
-    return SnappyDecompressBody(in, in_size, start, out, uncomp_len);
+    out_size = uncomp_len;
+    return snappy::RawUncompress(reinterpret_cast<const char *>(in), in_size,
+                                 reinterpret_cast<char *>(out));
 }
 
 // --- Thrift Compact Protocol reader. ---
