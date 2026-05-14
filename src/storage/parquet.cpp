@@ -2226,16 +2226,33 @@ bool ReadDictionaryPage(const uint8_t *file_base, size_t file_size, int64_t offs
         if (!heap) return false;
         dict.str_ptr.resize(ndv);
         dict.str_len.resize(ndv);
+        // Single-pass length scan + size pre-compute, then bulk copy.
+        // Skips ~30k vector::insert calls per dict page (each does a
+        // capacity-check + size-update); also lets us reserve once and
+        // memcpy the bytes in one block. ClickBench Q15/Q22 typical
+        // dict is ~30k × ~20-byte strings — 600KB/RG × 95 RGs cumulative.
+        size_t bytes_total = 0;
+        {
+            size_t scan = pos;
+            for (int32_t i = 0; i < ndv; i++) {
+                if (scan + 4 > body_size) return false;
+                uint32_t len = ReadLEU32(body + scan); scan += 4;
+                if (scan + len > body_size) return false;
+                bytes_total += len;
+                scan += len;
+            }
+        }
+        size_t heap_start = heap->size();
+        if (heap_start + bytes_total > heap->capacity()) return false;
+        heap->resize(heap_start + bytes_total);
+        char *dst = heap->data() + heap_start;
+        size_t out_off = 0;
         for (int32_t i = 0; i < ndv; i++) {
-            if (pos + 4 > body_size) return false;
             uint32_t len = ReadLEU32(body + pos); pos += 4;
-            if (pos + len > body_size) return false;
-            if (heap->size() + len > heap->capacity()) return false; // over-reserve bug
-            size_t start = heap->size();
-            heap->insert(heap->end(), reinterpret_cast<const char *>(body + pos),
-                         reinterpret_cast<const char *>(body + pos) + len);
-            dict.str_ptr[i] = heap->data() + start;
+            std::memcpy(dst + out_off, body + pos, len);
+            dict.str_ptr[i] = dst + out_off;
             dict.str_len[i] = len;
+            out_off += len;
             pos += len;
         }
         return true;
