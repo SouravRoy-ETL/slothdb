@@ -2181,7 +2181,37 @@ bool ReadDictionaryPage(const uint8_t *file_base, size_t file_size, int64_t offs
     if (hdr.type != 2) return false;
 
     std::vector<uint8_t> decomp;
-    if (codec != 0) {
+    // Zero-copy BYTE_ARRAY dict path: when compressed + heap available,
+    // decompress straight into the caller's heap. The body pointer ends up
+    // inside heap, so the BYTE_ARRAY parse loop below can point str_ptr[i]
+    // at heap-resident bytes without an additional memcpy. Saves ~600KB ×
+    // 95 RGs × 6 threads = ~342MB of cumulative copies on SearchPhrase/
+    // SearchEngineID dict pages.
+    size_t heap_dict_start = 0;
+    bool body_in_heap = false;
+    if (codec != 0 && ptype == ParquetType::BYTE_ARRAY && heap) {
+        size_t uncomp = (size_t)hdr.uncompressed_page_size;
+        if (heap->size() + uncomp <= heap->capacity()) {
+            heap_dict_start = heap->size();
+            heap->resize(heap_dict_start + uncomp);
+            uint8_t *dst = reinterpret_cast<uint8_t *>(heap->data() + heap_dict_start);
+            size_t actual = 0;
+            if (codec == 1 /* SNAPPY */ &&
+                SnappyDecompressRaw(body, body_size, dst, uncomp, actual)) {
+                body = dst;
+                body_size = actual;
+                body_in_heap = true;
+            } else {
+                // Fall back to decomp-scratch path for non-snappy / failure.
+                heap->resize(heap_dict_start);
+                if (!DecompressPage(codec, body, body_size, uncomp, decomp)) return false;
+                body = decomp.data(); body_size = decomp.size();
+            }
+        } else {
+            if (!DecompressPage(codec, body, body_size, uncomp, decomp)) return false;
+            body = decomp.data(); body_size = decomp.size();
+        }
+    } else if (codec != 0) {
         if (!DecompressPage(codec, body, body_size,
                             (size_t)hdr.uncompressed_page_size, decomp)) return false;
         body = decomp.data(); body_size = decomp.size();
@@ -2226,6 +2256,20 @@ bool ReadDictionaryPage(const uint8_t *file_base, size_t file_size, int64_t offs
         if (!heap) return false;
         dict.str_ptr.resize(ndv);
         dict.str_len.resize(ndv);
+        if (body_in_heap) {
+            // Zero-copy: body bytes already live in heap. Point str_ptr
+            // directly into them; LEN prefixes stay inline (~120KB waste,
+            // negligible vs the 600KB memcpy we'd otherwise pay).
+            for (int32_t i = 0; i < ndv; i++) {
+                if (pos + 4 > body_size) return false;
+                uint32_t len = ReadLEU32(body + pos); pos += 4;
+                if (pos + len > body_size) return false;
+                dict.str_ptr[i] = reinterpret_cast<const char *>(body + pos);
+                dict.str_len[i] = len;
+                pos += len;
+            }
+            return true;
+        }
         // Single-pass length scan + size pre-compute, then bulk copy.
         // Skips ~30k vector::insert calls per dict page (each does a
         // capacity-check + size-update); also lets us reserve once and
