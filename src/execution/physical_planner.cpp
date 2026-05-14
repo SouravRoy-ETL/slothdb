@@ -934,7 +934,11 @@ public:
         StopWorkers();
         unsigned int nt = (unsigned int)num_threads_hint;
         if (nt == 0) nt = HWThreads();
-        if (nt > 6) nt = 6;
+        // 8-thread cap: on a 6P+12L machine, the prior 6-cap left HT siblings
+        // idle. Snappy decompress + RLE decode are memory-bandwidth bound but
+        // also benefit from HT instruction-level parallelism. Capping at 8
+        // (vs uncapped) avoids oversubscription on small core counts.
+        if (nt > 8) nt = 8;
         if (num_rgs_ == 0) nt = 0;
         else if ((idx_t)nt > num_rgs_) nt = static_cast<unsigned int>(num_rgs_);
 
