@@ -131,10 +131,13 @@ add_library(slothdb_snappy STATIC
     ${SLOTHDB_SNAPPY_DIR}/snappy-stubs-internal.cc
     ${SLOTHDB_SNAPPY_DIR}/snappy-c.cc)
 target_include_directories(slothdb_snappy PUBLIC ${SLOTHDB_SNAPPY_DIR})
+# AVX2 enables BMI2 (PEXT) for the back-ref offset extraction and SSSE3 for
+# the 16-byte vector-byte-shuffle in literal copy. SlothDB targets x86-64
+# Haswell+ (same as the rest of the build).
 if(MSVC)
-    target_compile_options(slothdb_snappy PRIVATE /w)
+    target_compile_options(slothdb_snappy PRIVATE /w /arch:AVX2)
 else()
-    target_compile_options(slothdb_snappy PRIVATE -w)
+    target_compile_options(slothdb_snappy PRIVATE -w -mavx2 -mbmi2)
 endif()
 set_target_properties(slothdb_snappy PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(slothdb_lib PRIVATE slothdb_snappy)
