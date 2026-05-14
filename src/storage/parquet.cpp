@@ -1777,11 +1777,32 @@ size_t ReadDefLevels(const uint8_t *data, size_t size, int32_t n_values,
                      bool has_length_prefix, size_t explicit_len) {
     out_non_null = n_values;
     def_mask.clear();
+    // Inline all-valid fast path: when the entire def_levels stream is a
+    // single RLE run with value=1 spanning all rows, skip the per-row decode
+    // and don't materialize def_mask at all. ClickBench hits.parquet has
+    // nullable-schema columns whose data is null-free in practice — every
+    // page would otherwise pay 100M rd.Next() calls + a 100MB memset for
+    // a buffer we immediately clear.
+    auto try_all_valid = [&](RleDecoder &rd) -> bool {
+        if (!rd.FetchRun()) return false;
+        if (rd.mode == 0 && rd.rle_value == 1 &&
+            (int32_t)rd.rle_count >= n_values) {
+            rd.rle_count -= (uint32_t)n_values;
+            if (rd.rle_count == 0) rd.mode = -1;
+            return true;
+        }
+        // Not a single-run all-valid stream — fall through and decode normally.
+        return false;
+    };
     if (has_length_prefix) {
         if (size < 4) return 0;
         uint32_t def_len = ReadLEU32(data);
         if (def_len + 4 > size) return 0;
         RleDecoder rd(data + 4, def_len, 1);
+        if (try_all_valid(rd)) {
+            out_non_null = n_values;
+            return 4 + def_len;
+        }
         def_mask.resize(n_values, 1);
         int32_t nn = 0;
         bool saw_null = false;
@@ -1798,6 +1819,10 @@ size_t ReadDefLevels(const uint8_t *data, size_t size, int32_t n_values,
         if (explicit_len > size) return 0;
         if (explicit_len == 0) return 0;
         RleDecoder rd(data, explicit_len, 1);
+        if (try_all_valid(rd)) {
+            out_non_null = n_values;
+            return explicit_len;
+        }
         def_mask.resize(n_values, 1);
         int32_t nn = 0;
         bool saw_null = false;
