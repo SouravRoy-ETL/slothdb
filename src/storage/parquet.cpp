@@ -2201,7 +2201,18 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     out.str_dict_encoded = false;
     out.str_dict_indices.clear();
     out.str_dict_values.clear();
-    out.str_heap.reset();
+    // Reuse str_heap when this RGWork owns it uniquely. Fused-aggregation
+    // paths (Q15/Q14/Q22/etc.) never AttachHeap on a Vector, so use_count
+    // stays at 1 across RGs — we just clear() the buffer and keep the
+    // 1 MB+ capacity. Saves ~226 mallocs/free per parquet column on
+    // hits.parquet which on Windows HeapAlloc serialise across worker
+    // threads. Legacy Vector-emit paths AttachHeap which bumps use_count;
+    // those allocate fresh as before.
+    if (out.str_heap && out.str_heap.use_count() == 1) {
+        out.str_heap->clear();
+    } else {
+        out.str_heap.reset();
+    }
     if (!is_standard_parquet_) return false;
     if (rg_idx >= meta_.row_groups.size()) return false;
     auto &rg = meta_.row_groups[rg_idx];
@@ -2244,7 +2255,9 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
             out.str_data.reserve(total_rows);
         }
         out.str_data_skipped = skip_str_data;
-        out.str_heap = std::make_shared<std::vector<char>>();
+        if (!out.str_heap) {
+            out.str_heap = std::make_shared<std::vector<char>>();
+        }
         out.str_heap->reserve((size_t)cmeta.total_uncompressed_size + 64);
         if (cmeta.dict_page_offset >= 0 && !out.str_lengths_only) {
             // Dict-used mode: skip str_dict_indices buffer; decoder will
@@ -2309,11 +2322,12 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     // 2) Data pages.
     int64_t total_end = cmeta.data_offset + cmeta.total_compressed_size;
     idx_t rows_read = 0;
-    // Decompression scratch reused across pages — saves a malloc/free
-    // pair per page (~10-20 pages per RG × 80 RGs = lots) on ZSTD/GZIP/SNAPPY
-    // codecs. The vector is resized to each page's uncompressed_size; once
-    // capacity reaches the largest page, no further allocation happens.
-    std::vector<uint8_t> decomp;
+    // Decompression scratch reused across pages AND across RG/col calls via
+    // thread_local. ReadColumnInto runs in the parquet worker thread; making
+    // decomp thread_local saves another malloc per (RG, col) on Windows
+    // HeapAlloc which serialises across threads.
+    thread_local std::vector<uint8_t> decomp;
+    decomp.clear();
     while (rows_read < total_rows && cur_offset < (int64_t)file_size_) {
         ParqPageHeader hdr;
         const uint8_t *body; size_t body_size;
