@@ -1957,7 +1957,18 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
                 int want = left < 256 ? left : 256;
                 int got = rd.NextBatch(buf, want);
                 if (got <= 0) break;
-                for (int j = 0; j < got; j++) {
+                // Unrolled dict gather. 4 lookups per loop iteration so the
+                // compiler can overlap loads; dict.i32 is typically L1-hot
+                // (small cardinality columns like SearchEngineID).
+                int j = 0;
+                for (; j + 4 <= got; j += 4) {
+                    uint32_t i0 = buf[j], i1 = buf[j+1], i2 = buf[j+2], i3 = buf[j+3];
+                    dst[off + j    ] = i0 < dn ? dv[i0] : 0;
+                    dst[off + j + 1] = i1 < dn ? dv[i1] : 0;
+                    dst[off + j + 2] = i2 < dn ? dv[i2] : 0;
+                    dst[off + j + 3] = i3 < dn ? dv[i3] : 0;
+                }
+                for (; j < got; j++) {
                     uint32_t idx = buf[j];
                     dst[off + j] = idx < dn ? dv[idx] : 0;
                 }
@@ -1984,7 +1995,15 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
                 int want = left < 256 ? left : 256;
                 int got = rd.NextBatch(buf, want);
                 if (got <= 0) break;
-                for (int j = 0; j < got; j++) {
+                int j = 0;
+                for (; j + 4 <= got; j += 4) {
+                    uint32_t i0 = buf[j], i1 = buf[j+1], i2 = buf[j+2], i3 = buf[j+3];
+                    dst[off + j    ] = i0 < dn ? dv[i0] : 0;
+                    dst[off + j + 1] = i1 < dn ? dv[i1] : 0;
+                    dst[off + j + 2] = i2 < dn ? dv[i2] : 0;
+                    dst[off + j + 3] = i3 < dn ? dv[i3] : 0;
+                }
+                for (; j < got; j++) {
                     uint32_t idx = buf[j];
                     dst[off + j] = idx < dn ? dv[idx] : 0;
                 }
@@ -2069,6 +2088,20 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
             const auto *str_lens = dict.str_len.data();
             uint32_t dn = static_cast<uint32_t>(dict.str_ptr.size());
             int32_t left = n_values, off = 0;
+            // Q15/Q17 fast path: when only indices are needed (skip_str_data
+            // + no dict_used bitmap + no nulls), let NextBatch write directly
+            // into idx_dst+off. Eliminates the buf-stage round-trip and the
+            // per-element copy loop. The RLE decoder writes sequentially so
+            // direct output is safe.
+            if (want_indices && !dst && !want_used) {
+                while (left > 0) {
+                    int want = left < 256 ? left : 256;
+                    int got = rd.NextBatch(idx_dst + off, want);
+                    if (got <= 0) break;
+                    off += got; left -= got;
+                }
+                return true;
+            }
             while (left > 0) {
                 int want = left < 256 ? left : 256;
                 int got = rd.NextBatch(buf, want);
