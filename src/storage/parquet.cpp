@@ -1749,6 +1749,71 @@ bool DecodePlainStringInto(const uint8_t *data, size_t size, int32_t n_values,
     return true;
 }
 
+// Mask-aware variant: skip dst[i] writes for rows where filter_mask[i]==0.
+// The 4-byte length read still happens (PLAIN has no random access — we
+// must advance `pos`), but we skip the string_t construction and the
+// downstream consumer never reads dst[i] for those rows (it has its own
+// keep mask combining filter_mask with later predicates). For Q22 with
+// SearchPhrase NE '' keeping ~13% of rows, this avoids ~87% × 100M × 16B
+// of string_t writes (~1.4 GB) on PLAIN URL pages. Kept as a separate
+// function so the no-mask path (most queries) stays bit-identical to the
+// pre-pushdown code — no per-row branch on a null filter_mask pointer.
+bool DecodePlainStringIntoMasked(const uint8_t *data, size_t size, int32_t n_values,
+                                  const std::vector<uint8_t> &def, string_t *dst,
+                                  std::vector<char> &heap, bool data_is_stable,
+                                  const uint8_t *filter_mask) {
+    size_t pos = 0;
+    if (data_is_stable) {
+        if (def.empty()) {
+            for (int32_t i = 0; i < n_values; i++) {
+                if (pos + 4 > size) return false;
+                uint32_t len = ReadLEU32(data + pos); pos += 4;
+                if (pos + len > size) return false;
+                if (filter_mask[i]) {
+                    dst[i] = string_t(reinterpret_cast<const char *>(data + pos), len);
+                }
+                pos += len;
+            }
+            return true;
+        }
+        for (int32_t i = 0; i < n_values; i++) {
+            if (!def[i]) continue;
+            if (pos + 4 > size) return false;
+            uint32_t len = ReadLEU32(data + pos); pos += 4;
+            if (pos + len > size) return false;
+            if (filter_mask[i]) {
+                dst[i] = string_t(reinterpret_cast<const char *>(data + pos), len);
+            }
+            pos += len;
+        }
+        return true;
+    }
+    // Non-stable (compressed into transient decomp buffer): inline copy for
+    // small strings stays in string_t's inline storage; large strings would
+    // require heap append. For masked-out rows we skip both. Heap-append
+    // path on small string_t is bit-identical to non-masked: stable inline
+    // storage. Large strings on masked-out rows are skipped (no append).
+    for (int32_t i = 0; i < n_values; i++) {
+        if (!def.empty() && !def[i]) continue;
+        if (pos + 4 > size) return false;
+        uint32_t len = ReadLEU32(data + pos); pos += 4;
+        if (pos + len > size) return false;
+        if (filter_mask[i]) {
+            if (len <= string_t::INLINE_LENGTH) {
+                dst[i] = string_t(reinterpret_cast<const char *>(data + pos), len);
+            } else {
+                size_t old_size = heap.size();
+                if (old_size + len > heap.capacity()) return false;
+                heap.insert(heap.end(), reinterpret_cast<const char *>(data + pos),
+                            reinterpret_cast<const char *>(data + pos) + len);
+                dst[i] = string_t(heap.data() + old_size, len);
+            }
+        }
+        pos += len;
+    }
+    return true;
+}
+
 // Lengths-only PLAIN VARCHAR decode. Reads the 4-byte length prefix per row
 // into `dst_lengths[i]`, then advances past the byte data without copying.
 // Used when the consumer only needs string LENGTH (e.g. STRLEN, `<> ''`).
@@ -1888,7 +1953,8 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
                          ParquetType ptype, const ParquetDict &dict,
                          ParquetColumnData &out, idx_t row_offset,
                          bool skip_str_data, bool is_required = false,
-                         bool data_is_stable = false) {
+                         bool data_is_stable = false,
+                         const uint8_t *filter_mask = nullptr) {
     const uint8_t *p = data;
     size_t remaining = size;
     int32_t n_values = hdr.num_values;
@@ -1987,6 +2053,16 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
             if (out.str_data_skipped && out.str_data.empty())
                 MaterialiseStrDataLazy(out, dict.str_ptr.data(), dict.str_len.data(),
                                        (uint32_t)dict.str_ptr.size(), row_offset);
+            if (filter_mask) {
+                // Selection-vector pushdown — only used when a prior phase
+                // built a per-row keep mask from a cheaper filter col
+                // (Q22-shape). No-mask path stays in DecodePlainStringInto
+                // (bit-identical to pre-pushdown).
+                return DecodePlainStringIntoMasked(p, remaining, n_values, def_mask,
+                                                    out.str_data.data() + row_offset,
+                                                    *out.str_heap, data_is_stable,
+                                                    filter_mask);
+            }
             return DecodePlainStringInto(p, remaining, n_values, def_mask,
                                          out.str_data.data() + row_offset, *out.str_heap,
                                          data_is_stable);
@@ -2352,7 +2428,8 @@ bool ReadDictionaryPage(const uint8_t *file_base, size_t file_size, int64_t offs
 } // namespace
 
 bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnData &out,
-                                    bool skip_str_data) {
+                                    bool skip_str_data,
+                                    const std::vector<uint8_t> *filter_mask) {
     // Don't Clear() - reuse any existing capacity from a prior RG. We reset
     // only the control fields; the numeric data vectors are resized below,
     // which is a no-op when sizes match and only zero-fills the delta
@@ -2548,9 +2625,20 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
             body_is_stable = true;
         }
 
+        // Selection-vector pushdown: extract per-page slice of filter_mask
+        // (mask covers the whole RG; the page covers [rows_read, rows_read+
+        // num_values)). When filter_mask is nullptr the page_mask stays
+        // nullptr and DecodeDataPageTyped takes the bit-identical
+        // pre-pushdown path.
+        const uint8_t *page_mask = nullptr;
+        if (filter_mask &&
+            filter_mask->size() >= rows_read + (idx_t)hdr.num_values) {
+            page_mask = filter_mask->data() + rows_read;
+        }
         if (!DecodeDataPageTyped(hdr, body, body_size, cmeta.parquet_type, dict, out,
                                   rows_read, out.str_data_skipped,
-                                  cmeta.repetition_type == 0, body_is_stable)) {
+                                  cmeta.repetition_type == 0, body_is_stable,
+                                  page_mask)) {
             return false;
         }
         // A PLAIN (non-dict) data page invalidates the dict-index fast path

@@ -210,8 +210,16 @@ public:
     // + `str_dict_values`). Saves ~160 MB of string_t writes on a 10M-row
     // dict-encoded VARCHAR column. The caller is responsible for reading
     // `str_dict_values[str_dict_indices[r]]` to get the string value.
+    //
+    // `filter_mask`: optional per-row keep mask (size == column rows). When
+    // non-null, the PLAIN VARCHAR decoder skips dst[i] writes for masked-
+    // out rows (Q22-shape selection-vector pushdown). The downstream
+    // consumer must combine this with its own keep mask so it never reads
+    // dst[i] on skipped rows. When nullptr (default), the decoder takes
+    // the original bit-identical path — no per-row overhead.
     bool ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnData &out,
-                        bool skip_str_data = false);
+                        bool skip_str_data = false,
+                        const std::vector<uint8_t> *filter_mask = nullptr);
 
     // Streaming: read one row group directly into a DataChunk.
     // If projection is non-empty, only loads columns where projection[col]==true.

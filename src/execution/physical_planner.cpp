@@ -852,6 +852,28 @@ public:
     // str_dict_indices materialization). Used by Q26 dispatch when we need
     // an orphan-safe dict scan but want to skip the per-row indices write.
     void SetStrDictUsedOnly(std::vector<bool> mask) { str_dict_used_only_ = std::move(mask); }
+
+    // Two-phase decode (selection-vector pushdown). When `early_cols` is
+    // non-empty AND `build_mask_fn` is set:
+    //   1. Worker decodes only `early_cols` (cheap filter cols, e.g.
+    //      SearchPhrase dict_indices on Q22).
+    //   2. Worker calls build_mask_fn(work.cols, mask) to derive a per-row
+    //      keep mask.
+    //   3. Worker decodes the remaining projected cols WITH the mask:
+    //      PLAIN VARCHAR decoder skips dst[i] writes for masked rows
+    //      (Q22 URL: ~87% of rows skipped → ~1.4 GB string_t writes saved).
+    // Otherwise the worker takes the original single-pass decode path
+    // (DecodeRowGroupInto stays bit-identical to pre-pushdown).
+    using BuildMaskFn = std::function<void(const std::vector<ParquetColumnData>&,
+                                            std::vector<uint8_t>&)>;
+    void SetTwoPhaseDecode(std::vector<idx_t> early_cols, BuildMaskFn fn) {
+        two_phase_early_cols_ = std::move(early_cols);
+        two_phase_build_mask_fn_ = std::move(fn);
+    }
+    bool HasTwoPhaseDecode() const {
+        return !two_phase_early_cols_.empty() && two_phase_build_mask_fn_;
+    }
+
     const std::string &GetFilePath() const { return file_path_; }
     ParquetReader *GetReader() { return reader_sp_.get(); }
 
@@ -1029,6 +1051,69 @@ private:
         }
     }
 
+    // Two-phase variant: decode early_cols → build mask → decode remaining
+    // cols with mask. Used by selection-vector pushdown (Q22-shape: cheap
+    // VARCHAR NE filter on dict_indices builds a ~13% keep mask, gates
+    // dst[i] writes in subsequent PLAIN VARCHAR decodes). Lives as a
+    // separate method so the single-pass DecodeRowGroupInto above stays
+    // bit-identical to pre-pushdown — prior attempt that branched inside
+    // the hot loop regressed Q31/Q32 ~2× (lambda + per-RG branch costs).
+    void DecodeRowGroupIntoTwoPhase(idx_t rg, RGWork &work) {
+        if (IsRowGroupPruned(rg)) {
+            work.pruned = true;
+            for (auto &c : work.cols) c.Clear();
+            for (auto &v : work.cols_fallback) v.clear();
+            return;
+        }
+        work.pruned = false;
+        idx_t num_cols = static_cast<idx_t>(GetTypes().size());
+        if (work.cols.size() != num_cols) work.cols.resize(num_cols);
+        if (work.cols_fallback.size() != num_cols) work.cols_fallback.resize(num_cols);
+        // is_early[c]: whether column c is in the early-decode set.
+        // Kept as thread_local to avoid per-RG allocation.
+        thread_local std::vector<uint8_t> is_early_tls;
+        is_early_tls.assign(num_cols, 0);
+        for (idx_t c : two_phase_early_cols_) {
+            if (c < num_cols) is_early_tls[c] = 1;
+        }
+        auto setup_and_decode = [&](idx_t c, const std::vector<uint8_t> *mask) {
+            bool skip_str = (c < skip_str_data_.size()) && skip_str_data_[c];
+            bool len_only = (c < str_lengths_only_.size()) && str_lengths_only_[c];
+            bool dict_only = (c < str_dict_only_.size()) && str_dict_only_[c];
+            bool used_only = (c < str_dict_used_only_.size()) && str_dict_used_only_[c];
+            work.cols[c].str_lengths_only = len_only;
+            work.cols[c].str_dict_only = dict_only;
+            work.cols[c].str_dict_used_only = used_only;
+            if (!reader_sp_->ReadColumnInto(rg, c, work.cols[c], skip_str, mask)) {
+                work.cols_fallback[c] = reader_sp_->ReadColumn(rg, c);
+            } else {
+                work.cols_fallback[c].clear();
+            }
+        };
+        // Phase 1: decode early cols (no mask).
+        for (idx_t c : two_phase_early_cols_) {
+            if (c >= num_cols) continue;
+            if (!projection_.empty() && c < projection_.size() && !projection_[c]) continue;
+            setup_and_decode(c, nullptr);
+        }
+        // Phase 2: build mask from early-decoded cols.
+        thread_local std::vector<uint8_t> phase_mask;
+        phase_mask.clear();
+        two_phase_build_mask_fn_(work.cols, phase_mask);
+        const std::vector<uint8_t> *mask_ptr =
+            phase_mask.empty() ? nullptr : &phase_mask;
+        // Phase 3: decode remaining projected cols, masked.
+        for (idx_t c = 0; c < num_cols; c++) {
+            if (is_early_tls[c]) continue;
+            if (!projection_.empty() && c < projection_.size() && !projection_[c]) {
+                work.cols[c].Clear();
+                work.cols_fallback[c].clear();
+                continue;
+            }
+            setup_and_decode(c, mask_ptr);
+        }
+    }
+
     void WorkerLoop(int thread_id = 0) {
         // Bound decode-ahead in slot mode so memory doesn't balloon. Consumer
         // mode has no queue - work is freed right after the callback - so no
@@ -1046,7 +1131,15 @@ private:
                 // Cheap zone-map check before decode — pruned RGs cost
                 // metadata reads only, not column-chunk decoding.
                 if (IsRowGroupPruned(rg)) continue;
-                DecodeRowGroupInto(rg, consumer_work);
+                // Dispatch to two-phase decode iff configured. The branch
+                // is per-RG (~95×), not per-row — Q31/Q32 hot path stays
+                // on the single-pass DecodeRowGroupInto when two-phase
+                // isn't set.
+                if (HasTwoPhaseDecode()) {
+                    DecodeRowGroupIntoTwoPhase(rg, consumer_work);
+                } else {
+                    DecodeRowGroupInto(rg, consumer_work);
+                }
                 if (rg_consumer_) rg_consumer_(consumer_work, rg, thread_id);
                 // consumer_work retains its buffer capacity; the NEXT RG's
                 // decode reuses the same memory instead of mallocing afresh.
@@ -1167,6 +1260,13 @@ private:
     std::vector<bool> str_dict_used_only_;   // per-column hint: dict-presence bitmap
     std::vector<bool> projection_;
     std::vector<PushdownFilter> pushdown_filters_; // zone-map row-group skip
+    // Two-phase decode (Q22-style selection-vector pushdown). When set, the
+    // worker decodes early_cols first, runs build_mask_fn on them, then
+    // decodes the remaining projected cols WITH the resulting mask passed
+    // through to ReadColumnInto. Empty by default — the single-pass
+    // DecodeRowGroupInto path is bit-identical to pre-pushdown.
+    std::vector<idx_t> two_phase_early_cols_;
+    BuildMaskFn two_phase_build_mask_fn_;
 
     // Parallel decode state.
     idx_t num_rgs_ = 0;
@@ -6897,6 +6997,90 @@ private:
                                 }
                                 if (q13_eligible_skip) skip[group_col] = true;
                                 pq->SetSkipStrData(std::move(skip));
+
+                                // Selection-vector pushdown (Q22 / Q23 / Q26
+                                // shape): when the WHERE filter has a
+                                // <>'' / ='' predicate on a dict-encoded
+                                // VARCHAR col, decode that col FIRST and
+                                // build a row mask. The mask gates dst[i]
+                                // writes in subsequent PLAIN VARCHAR decodes
+                                // — e.g. on Q22 the SearchPhrase NE filter
+                                // keeps ~13% of rows; URL is then decoded
+                                // with the mask, skipping ~87% × 100M × 16B
+                                // of string_t writes (~1.4 GB).
+                                //
+                                // Routes through SetTwoPhaseDecode → the
+                                // SEPARATE DecodeRowGroupIntoTwoPhase method.
+                                // The single-pass DecodeRowGroupInto stays
+                                // bit-identical to pre-pushdown — Q31/Q32
+                                // 2-col GROUP BY hot path is untouched.
+                                idx_t filt_col_2p = INVALID_INDEX;
+                                bool filt_ne_2p = false;
+                                for (auto &p : single_preds) {
+                                    if (!p.str_form) continue;
+                                    if (p.col_idx >= pq->GetTypes().size()) continue;
+                                    if (pq->GetTypes()[p.col_idx].id() !=
+                                        LogicalTypeId::VARCHAR) continue;
+                                    if (p.like_contains) continue;
+                                    if (p.op != SimpleCmpOp::NE &&
+                                        p.op != SimpleCmpOp::EQ) continue;
+                                    if (!p.sval.empty()) continue;  // only ""
+                                    filt_col_2p = p.col_idx;
+                                    filt_ne_2p = (p.op == SimpleCmpOp::NE);
+                                    break;
+                                }
+                                // Two-phase pays off only if there's a
+                                // projected OTHER VARCHAR col whose
+                                // str_data writes we can mask out.
+                                bool other_varchar_2p = false;
+                                if (filt_col_2p != INVALID_INDEX) {
+                                    for (idx_t c = 0; c < pq->GetTypes().size(); c++) {
+                                        if (c == filt_col_2p) continue;
+                                        if (c >= need.size() || !need[c]) continue;
+                                        if (pq->GetTypes()[c].id() ==
+                                            LogicalTypeId::VARCHAR) {
+                                            other_varchar_2p = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (other_varchar_2p) {
+                                    std::vector<idx_t> early = {filt_col_2p};
+                                    idx_t filt_col_cap = filt_col_2p;
+                                    bool ne_cap = filt_ne_2p;
+                                    pq->SetTwoPhaseDecode(
+                                        std::move(early),
+                                        [filt_col_cap, ne_cap]
+                                        (const std::vector<ParquetColumnData>& cols,
+                                         std::vector<uint8_t>& mask) {
+                                            if (filt_col_cap >= cols.size()) return;
+                                            const auto &c = cols[filt_col_cap];
+                                            if (!c.decoded) return;
+                                            if (!c.str_dict_encoded ||
+                                                c.str_dict_indices.empty()) return;
+                                            // Find dict_idx of the empty string.
+                                            uint32_t empty_di = UINT32_MAX;
+                                            for (uint32_t d = 0;
+                                                 d < c.str_dict_values.size(); d++) {
+                                                if (c.str_dict_values[d].GetSize() == 0) {
+                                                    empty_di = d;
+                                                    break;
+                                                }
+                                            }
+                                            const auto *idx = c.str_dict_indices.data();
+                                            idx_t n = c.str_dict_indices.size();
+                                            mask.resize(n);
+                                            if (ne_cap) {
+                                                for (idx_t r = 0; r < n; r++) {
+                                                    mask[r] = (uint8_t)(idx[r] != empty_di);
+                                                }
+                                            } else {
+                                                for (idx_t r = 0; r < n; r++) {
+                                                    mask[r] = (uint8_t)(idx[r] == empty_di);
+                                                }
+                                            }
+                                        });
+                                }
                             }
                         }
                     }
