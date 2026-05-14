@@ -1673,6 +1673,13 @@ bool DecodePlainNumericInto(const uint8_t *data, size_t size, int32_t n_values,
     return true;
 }
 
+// Mask-aware INT/BIGINT/FLOAT/DOUBLE PLAIN decode was implemented and
+// tested but removed: the per-row branch on filter_mask is slower than
+// the SIMD memcpy it replaces (4-8 B writes are memcpy-bandwidth bound,
+// not write-count bound). Pushdown is only beneficial for VARCHAR where
+// each write is a 16 B string_t plus a potential heap append. INT cols
+// continue to use the unmasked SIMD-memcpy path in DecodePlainNumericInto.
+
 // PLAIN BOOLEAN is bit-packed (1 bit per value).
 bool DecodePlainBoolInto(const uint8_t *data, size_t size, int32_t n_values,
                          const std::vector<uint8_t> &def, uint8_t *dst) {
@@ -2028,6 +2035,12 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
 
     if (!dict_enc) {
         // PLAIN decode into typed buffer at [row_offset .. row_offset+n_values).
+        // Numeric types ignore filter_mask — masked decode replaces the
+        // SIMD-memcpy fast path with a per-row branch, which is net-negative
+        // for INT/BIGINT/FLOAT/DOUBLE (4-8 B per write at memcpy bandwidth
+        // beats the ~1 cycle/row branch we'd save). The mask path is
+        // worthwhile only for VARCHAR PLAIN below where each write is a
+        // 16 B string_t plus potential heap append.
         switch (tid) {
         case LogicalTypeId::BOOLEAN:
             return DecodePlainBoolInto(p, remaining, n_values, def_mask,

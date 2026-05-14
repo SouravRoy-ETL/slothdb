@@ -9975,6 +9975,14 @@ private:
                 }
             }
 
+            // NOTE: The Q31/Q32 (2-col GROUP BY + multi-INT-agg + VARCHAR
+            // filter) shape was tested with selection-vector pushdown here.
+            // The masked PLAIN INT decoder is per-row (vs the no-mask path's
+            // memcpy), which is *slower* than the writes it saves — INT is
+            // 4-8 bytes/row and SIMD-memcpy-bound, not write-bound. Pushdown
+            // is only enabled for VARCHAR projected cols (Q22-shape) where
+            // string_t writes (16 B + heap-append) dominate.
+
             // === Q31-shape: 2-col GROUP BY (INTEGER + INTEGER) + simple
             //     aggs (COUNT(*) / SUM / AVG / COUNT(c)) on direct INT/BIGINT
             //     cols. ClickBench Q31 (SearchEngineID, ClientIP, COUNT(*),
