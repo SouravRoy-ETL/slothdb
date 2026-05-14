@@ -1777,22 +1777,60 @@ size_t ReadDefLevels(const uint8_t *data, size_t size, int32_t n_values,
                      bool has_length_prefix, size_t explicit_len) {
     out_non_null = n_values;
     def_mask.clear();
-    // Inline all-valid fast path: when the entire def_levels stream is a
-    // single RLE run with value=1 spanning all rows, skip the per-row decode
-    // and don't materialize def_mask at all. ClickBench hits.parquet has
-    // nullable-schema columns whose data is null-free in practice — every
-    // page would otherwise pay 100M rd.Next() calls + a 100MB memset for
-    // a buffer we immediately clear.
+    // Inline all-valid fast path: walk the entire def_levels stream by
+    // RLE run headers (not per-row) and check that every run has value=1
+    // and the total run lengths == n_values. If so, no nulls — skip the
+    // per-row decode and don't materialize def_mask at all. ClickBench
+    // hits.parquet has nullable-schema columns whose data is null-free in
+    // practice; def_levels can span multiple RLE runs even when all-1 (e.g.
+    // page-boundary splits). Without this multi-run extension, columns
+    // would fall through to the per-row N-iteration loop + 1MB memset
+    // + 1MB std::vector dtor on every page.
     auto try_all_valid = [&](RleDecoder &rd) -> bool {
-        if (!rd.FetchRun()) return false;
-        if (rd.mode == 0 && rd.rle_value == 1 &&
-            (int32_t)rd.rle_count >= n_values) {
-            rd.rle_count -= (uint32_t)n_values;
-            if (rd.rle_count == 0) rd.mode = -1;
-            return true;
+        // Save the decoder state in case we need to roll back.
+        size_t saved_pos = rd.pos;
+        int saved_mode = rd.mode;
+        uint32_t saved_rle_value = rd.rle_value;
+        uint32_t saved_rle_count = rd.rle_count;
+        uint32_t saved_bp_count = rd.bp_count;
+        uint64_t saved_bitbuf = rd.bitbuf;
+        int saved_bits_in_buf = rd.bits_in_buf;
+
+        int32_t remaining = n_values;
+        while (remaining > 0) {
+            if (!rd.FetchRun()) {
+                // Stream ended early — not all-valid.
+                rd.pos = saved_pos; rd.mode = saved_mode;
+                rd.rle_value = saved_rle_value; rd.rle_count = saved_rle_count;
+                rd.bp_count = saved_bp_count; rd.bitbuf = saved_bitbuf;
+                rd.bits_in_buf = saved_bits_in_buf;
+                return false;
+            }
+            if (rd.mode == 0) {
+                // RLE run: must be value=1 (valid) to count toward all-valid.
+                if (rd.rle_value != 1) {
+                    rd.pos = saved_pos; rd.mode = saved_mode;
+                    rd.rle_value = saved_rle_value; rd.rle_count = saved_rle_count;
+                    rd.bp_count = saved_bp_count; rd.bitbuf = saved_bitbuf;
+                    rd.bits_in_buf = saved_bits_in_buf;
+                    return false;
+                }
+                int32_t take = (rd.rle_count < (uint32_t)remaining)
+                                ? (int32_t)rd.rle_count : remaining;
+                rd.rle_count -= (uint32_t)take;
+                if (rd.rle_count == 0) rd.mode = -1;
+                remaining -= take;
+            } else {
+                // Bit-packed run: any mixed pattern could include 0s.
+                // Bail and decode per-row.
+                rd.pos = saved_pos; rd.mode = saved_mode;
+                rd.rle_value = saved_rle_value; rd.rle_count = saved_rle_count;
+                rd.bp_count = saved_bp_count; rd.bitbuf = saved_bitbuf;
+                rd.bits_in_buf = saved_bits_in_buf;
+                return false;
+            }
         }
-        // Not a single-run all-valid stream — fall through and decode normally.
-        return false;
+        return true;
     };
     if (has_length_prefix) {
         if (size < 4) return 0;
@@ -1854,7 +1892,13 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
     const uint8_t *p = data;
     size_t remaining = size;
     int32_t n_values = hdr.num_values;
-    std::vector<uint8_t> def_mask;
+    // thread_local def_mask: ReadDefLevels resizes to n_values (~1M for
+    // ClickBench RGs) and the destructor would free per page → ~1000
+    // HeapAlloc/free pairs per RG × workers. On Windows HeapAlloc serializes
+    // across threads, so amortizing this saves real wall time.
+    thread_local std::vector<uint8_t> def_mask_tls;
+    def_mask_tls.clear();
+    std::vector<uint8_t> &def_mask = def_mask_tls;
     int32_t non_null = n_values;
 
     if (is_required) {
