@@ -764,7 +764,8 @@ void RadixCount2ColIntStr::IngestRGTwoColCount(int tid,
     bool int_all_valid, bool str_all_valid,
     uint32_t nrows, const uint8_t* keep_mask) {
     if (dict_size == 0 || nrows == 0) return;
-    std::vector<size_t> dict_h(dict_size);
+    thread_local std::vector<size_t> dict_h;
+    if (dict_h.size() < dict_size) dict_h.resize(dict_size);
     for (uint32_t d = 0; d < dict_size; d++) {
         dict_h[d] = HashStr(dict_values[d].GetData(),
                             dict_values[d].GetSize());
@@ -878,7 +879,10 @@ void RadixCount2ColIntStr::IngestRGTwoColCountSkipDi(int tid,
     bool int_all_valid, bool str_all_valid,
     uint32_t nrows, uint32_t skip_di) {
     if (dict_size == 0 || nrows == 0) return;
-    std::vector<size_t> dict_h(dict_size);
+    // thread_local hash cache. dict_size ~30K typical for SearchPhrase RG;
+    // per-RG std::vector alloc cost compounds across 95 RGs × 6 threads.
+    thread_local std::vector<size_t> dict_h;
+    if (dict_h.size() < dict_size) dict_h.resize(dict_size);
     for (uint32_t d = 0; d < dict_size; d++) {
         dict_h[d] = HashStr(dict_values[d].GetData(),
                             dict_values[d].GetSize());
