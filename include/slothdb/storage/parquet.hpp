@@ -236,6 +236,18 @@ public:
     bool RowGroupMightMatch(idx_t rg_idx, idx_t col_idx,
                             const std::string &op, const Value &val) const;
 
+    // Read only the dictionary page for a VARCHAR column in a row group.
+    // Used for filter pre-checks: e.g. URL LIKE '%google%' — if no dict entry
+    // contains 'google', the entire RG can be pruned without decompressing
+    // any data page. Mirrors DuckDB's DictionaryDecoder::InitializeDictionary
+    // + HasFilteredOutAllValues path. Returns false if the column has no
+    // dict page, isn't VARCHAR, or read fails. On true, out_strs has pointers
+    // into out_heap (caller owns both buffers).
+    bool ReadStringDictOnly(idx_t rg_idx, idx_t col_idx,
+                            std::vector<const char *> &out_str_ptrs,
+                            std::vector<uint32_t> &out_str_lens,
+                            std::vector<char> &out_heap) const;
+
 private:
     void ReadMetadata();
     std::vector<Value> ReadColumnChunk(const ParquetColumnMeta &meta);

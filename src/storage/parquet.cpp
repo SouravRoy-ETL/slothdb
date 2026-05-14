@@ -2836,6 +2836,121 @@ bool ParquetReader::DictSkipPossible(idx_t rg_idx, idx_t col_idx,
     return !present;
 }
 
+// Read ONLY the dictionary page for a VARCHAR column in a row group AND
+// verify the column chunk is FULLY dict-encoded (all data pages reference
+// the dict; no PLAIN-encoded pages exist). Returns true only when both
+// conditions hold — i.e. when checking dict entries against a predicate is
+// sufficient to decide whether ANY row in this RG could match.
+//
+// Mirrors DuckDB's DictionaryDecoder::InitializeDictionary + the page-level
+// encoding check before HasFilteredOutAllValues. On hits.parquet, URL has
+// 21/226 RGs fully dict-encoded and 205/226 with PLAIN pages — the latter
+// must NOT be pre-filtered (dict is unused/stale once writer fell back).
+//
+// On false, output buffers are cleared; caller must do a full decode.
+bool ParquetReader::ReadStringDictOnly(idx_t rg_idx, idx_t col_idx,
+                                        std::vector<const char *> &out_str_ptrs,
+                                        std::vector<uint32_t> &out_str_lens,
+                                        std::vector<char> &out_heap) const {
+    out_str_ptrs.clear();
+    out_str_lens.clear();
+    out_heap.clear();
+    if (!file_data_) return false;
+    if (rg_idx >= meta_.row_groups.size()) return false;
+    auto &rg = meta_.row_groups[rg_idx];
+    if (col_idx >= rg.columns.size()) return false;
+    auto &col = rg.columns[col_idx];
+    if (col.parquet_type != ParquetType::BYTE_ARRAY) return false;
+    if (col.dict_page_offset < 0) return false;
+    if (col.codec != 0 && col.codec != 1 && col.codec != 2 && col.codec != 6) return false;
+
+    ParqPageHeader hdr;
+    const uint8_t *body = nullptr; size_t body_size = 0;
+    size_t consumed = ReadOnePageMapped(file_data_, file_size_, col.dict_page_offset,
+                                         hdr, body, body_size);
+    if (consumed == 0 || hdr.type != 2 || body == nullptr) return false;
+
+    // Verify EVERY data page in the chunk is dict-encoded. Parquet writers
+    // (parquet-cpp, parquet-mr) commonly fall back from PLAIN_DICTIONARY to
+    // PLAIN mid-chunk once the dict grows beyond a size threshold. Checking
+    // only the first page is insufficient — the dict pre-filter must be
+    // sound for ALL rows in the chunk, not just the first page. We read just
+    // the page headers (no decompression, no body) so the scan is cheap:
+    // ~10 pages × 50-byte headers × 226 RGs is sub-ms total per query.
+    {
+        // Per parquet.thrift, total_compressed_size INCLUDES the dictionary
+        // page. Data pages end at chunk_start_byte_offset + total_compressed_size,
+        // where chunk_start_byte_offset is min(dict_page_offset, data_offset).
+        int64_t cur = col.dict_page_offset + (int64_t)consumed;
+        if (cur < col.data_offset) cur = col.data_offset;
+        int64_t chunk_start = (col.dict_page_offset >= 0 &&
+                                col.dict_page_offset < col.data_offset)
+                                  ? col.dict_page_offset : col.data_offset;
+        int64_t chunk_end = chunk_start + col.total_compressed_size;
+        int pcount = 0;
+        while (cur < chunk_end) {
+            ParqPageHeader phdr;
+            const uint8_t *pbody = nullptr; size_t psize = 0;
+            size_t pconsumed = ReadOnePageMapped(file_data_, file_size_, cur,
+                                                  phdr, pbody, psize);
+            if (pconsumed == 0 || pbody == nullptr) return false;
+            if (phdr.type == 2) {
+                cur += (int64_t)pconsumed;
+                pcount++;
+                continue;
+            }
+            if (phdr.encoding != 2 && phdr.encoding != 8) return false;
+            cur += (int64_t)pconsumed;
+            pcount++;
+            if (pcount > 10000) return false; // sanity bound
+        }
+    }
+
+    std::vector<uint8_t> decompressed;
+    if (col.codec != 0) {
+        if (!DecompressPage(col.codec, body, body_size,
+                            (size_t)hdr.uncompressed_page_size, decompressed)) {
+            return false;
+        }
+        body = decompressed.data();
+        body_size = decompressed.size();
+    }
+
+    int32_t ndv = hdr.dict_num_values;
+    if (ndv <= 0) return false;
+    out_str_ptrs.resize(ndv);
+    out_str_lens.resize(ndv);
+    // Pre-reserve heap to uncompressed dict bytes — exact upper bound since
+    // each entry is 4-byte length prefix + payload, payload alone ≤ uncompressed.
+    out_heap.reserve(body_size);
+    size_t pos = 0;
+    for (int32_t i = 0; i < ndv; i++) {
+        if (pos + 4 > body_size) return false;
+        uint32_t len = uint32_t(body[pos]) | (uint32_t(body[pos+1]) << 8) |
+                       (uint32_t(body[pos+2]) << 16) | (uint32_t(body[pos+3]) << 24);
+        pos += 4;
+        if (pos + len > body_size) return false;
+        size_t start = out_heap.size();
+        out_heap.insert(out_heap.end(),
+                        reinterpret_cast<const char *>(body + pos),
+                        reinterpret_cast<const char *>(body + pos + len));
+        out_str_ptrs[i] = out_heap.data() + start;
+        out_str_lens[i] = len;
+        pos += len;
+    }
+    // The heap may have been re-allocated during insert(); patch pointers to
+    // the final contiguous storage. (Reserve above prevents this in practice,
+    // but defensive.)
+    {
+        size_t cur = 0;
+        for (int32_t i = 0; i < ndv; i++) {
+            out_str_ptrs[i] = out_heap.data() + cur;
+            cur += out_str_lens[i];
+        }
+    }
+    return true;
+}
+
 bool ParquetReader::RowGroupMightMatch(idx_t rg_idx, idx_t col_idx,
                                         const std::string &op, const Value &val) const {
     if (rg_idx >= meta_.row_groups.size()) return false;
