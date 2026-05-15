@@ -529,6 +529,10 @@ void RadixHashCountStr::IngestPlainRG(int tid, const string_t* str_data,
     }
 }
 
+void RadixHashCountStr::IngestKey(int tid, const char* data, uint32_t size) {
+    HcIngest(*impl_->threads[tid], data, size, 1);
+}
+
 void RadixHashCountStr::Finalize() {
     bool _pf = PqProfileOn();
     auto _t0 = _pf ? std::chrono::steady_clock::now()
@@ -629,6 +633,59 @@ std::vector<RadixCountStrResult> RadixHashCountStr::EmitTopK(int k) const {
     }
     std::reverse(out.begin(), out.end());
     return out;
+}
+
+int64_t RadixHashCountStr::CountDistinctGroups() const {
+    // k-way merge counting distinct hash groups, parallelised by hash range.
+    // A group is a single hash value, so a range boundary partitions groups
+    // cleanly — no group is split across two range workers.
+    const int T = impl_->max_threads;
+    int P = T < 1 ? 1 : T;
+    auto cmp_hash = [](const HcEnt& x, uint64_t b) { return x.hash < b; };
+    std::vector<int64_t> partial((size_t)P, 0);
+    auto do_range = [&](int w) {
+        const uint64_t span = UINT64_MAX / (uint64_t)P;
+        uint64_t lo = (uint64_t)w * span;
+        bool last = (w == P - 1);
+        uint64_t hi = last ? 0 : (uint64_t)(w + 1) * span;
+        std::vector<size_t> cur((size_t)T), end((size_t)T);
+        for (int t = 0; t < T; t++) {
+            const auto& e = impl_->threads[(size_t)t]->entries;
+            cur[(size_t)t] = (size_t)(
+                std::lower_bound(e.begin(), e.end(), lo, cmp_hash) - e.begin());
+            end[(size_t)t] = last ? e.size() : (size_t)(
+                std::lower_bound(e.begin(), e.end(), hi, cmp_hash) - e.begin());
+        }
+        int64_t groups = 0;
+        bool have = false;
+        uint64_t cur_hash = 0;
+        while (true) {
+            int mt = -1;
+            uint64_t mh = 0;
+            for (int t = 0; t < T; t++) {
+                if (cur[(size_t)t] >= end[(size_t)t]) continue;
+                uint64_t h = impl_->threads[(size_t)t]->entries[cur[(size_t)t]].hash;
+                if (mt < 0 || h < mh) { mh = h; mt = t; }
+            }
+            if (mt < 0) break;
+            uint64_t h = impl_->threads[(size_t)mt]->entries[cur[(size_t)mt]].hash;
+            cur[(size_t)mt]++;
+            if (!have || h != cur_hash) { groups++; cur_hash = h; have = true; }
+        }
+        partial[(size_t)w] = groups;
+    };
+    if (P <= 1) {
+        do_range(0);
+    } else {
+        std::vector<std::thread> ws;
+        ws.reserve((size_t)(P - 1));
+        for (int w = 1; w < P; w++) ws.emplace_back(do_range, w);
+        do_range(0);
+        for (auto& t : ws) if (t.joinable()) t.join();
+    }
+    int64_t total = 0;
+    for (auto p : partial) total += p;
+    return total;
 }
 
 // =====================================================================

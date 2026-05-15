@@ -279,11 +279,21 @@ public:
     void IngestPlainRG(int tid, const string_t* str_data, uint32_t nrows,
                        const uint8_t* validity, bool skip_empty);
 
+    // Phase 1, single key (count 1). For COUNT(DISTINCT) callers (Q6) that
+    // ingest one value at a time and have no per-row count to push.
+    void IngestKey(int tid, const char* data, uint32_t size);
+
     // Phase 2: aggregate each spill partition into a hash table.
     void Finalize();
 
     // Phase 3: top-K by count DESC (k<=0 -> all groups).
     std::vector<RadixCountStrResult> EmitTopK(int k) const;
+
+    // Phase 3 variant: number of distinct keys (COUNT(DISTINCT)). Call after
+    // Finalize(). Groups on the 64-bit key hash — collision-free in practice
+    // (P ~1e-6 for ~6M keys); callers needing an exact count should verify
+    // against a reference once for the target dataset.
+    int64_t CountDistinctGroups() const;
 
 private:
     std::unique_ptr<RadixHashCountStrImpl> impl_;

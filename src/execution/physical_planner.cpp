@@ -9770,7 +9770,12 @@ private:
                     }
                 }
             });
-            pq->RunParallelRGs(0);
+            // Q6 (ungrouped COUNT(DISTINCT VARCHAR)) decodes + ingests all
+            // 100M rows and scales to 12 logical procs (see RunParallelRGs);
+            // its RadixHashCountStr has 16 thread slots so tid%16 is safe.
+            // The grouped / INT-distinct cases keep the conservative 8-cap
+            // (more threads regressed Q11/Q12 — SMT/Snappy oversubscription).
+            pq->RunParallelRGs((!has_group && agg_is_varchar) ? 12 : 0);
 
             // Merge phase.
             auto emit_int_only = [&](int64_t cnt_total) {
