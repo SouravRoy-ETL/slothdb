@@ -954,13 +954,28 @@ public:
     int RunParallelRGs(int num_threads_hint = 0) {
         // Lazy-start: ignore any slot-mode workers; consumer-mode runs its own.
         StopWorkers();
+        auto _rp_t0 = std::chrono::steady_clock::now();
+        if (slothdb::PqProfileOn()) slothdb::g_pq_profile.Reset();
         unsigned int nt = (unsigned int)num_threads_hint;
+        bool had_hint = (nt != 0);
         if (nt == 0) nt = HWThreads();
-        // 8-thread cap: on a 6P+12L machine, the prior 6-cap left HT siblings
-        // idle. Snappy decompress + RLE decode are memory-bandwidth bound but
-        // also benefit from HT instruction-level parallelism. Capping at 8
-        // (vs uncapped) avoids oversubscription on small core counts.
-        if (nt > 8) nt = 8;
+        unsigned int hw = HWThreads();
+        if (nt > hw) nt = hw; // never oversubscribe past logical procs
+        // No-hint callers keep the conservative 8-thread cap: their per-thread
+        // shard state is sized 8 (tid % 8). Hinted callers opt into more by
+        // sizing shard state to match the hint. ClickBench decode-bound
+        // queries (Q13/Q15-shape) scale to all 12 logical procs on the 6C/12T
+        // chip - HT siblings hide Snappy/RLE pipeline bubbles (sweep: Q15
+        // 8t 1.01x -> 12t 1.10x; Q13 8t 0.80x -> 12t 0.93x). SLOTH_MAXTHREADS
+        // overrides for tuning experiments.
+        if (!had_hint && nt > 8) nt = 8;
+        {
+            char _mtbuf[16]; size_t _mtn = 0;
+            if (getenv_s(&_mtn, _mtbuf, sizeof(_mtbuf), "SLOTH_MAXTHREADS") == 0 && _mtn > 0) {
+                int v = std::atoi(_mtbuf);
+                if (v >= 1 && v <= (int)hw) nt = (unsigned int)v;
+            }
+        }
         if (num_rgs_ == 0) nt = 0;
         else if ((idx_t)nt > num_rgs_) nt = static_cast<unsigned int>(num_rgs_);
 
@@ -978,6 +993,29 @@ public:
             workers_.clear();
         }
         consumer_mode_ = false;
+        if (slothdb::PqProfileOn()) {
+            double wall = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - _rp_t0).count() / 1e6;
+            double d = (nt ? nt : 1);
+            double dc = slothdb::g_pq_profile.decomp_ns.load() / 1e6;
+            double pd = slothdb::g_pq_profile.pagedecode_ns.load() / 1e6;
+            double rd = slothdb::g_pq_profile.rgdecode_ns.load() / 1e6;
+            double cs = slothdb::g_pq_profile.consume_ns.load() / 1e6;
+            double p1 = slothdb::g_pq_profile.agg_pass1_ns.load() / 1e6;
+            double p2 = slothdb::g_pq_profile.agg_pass2_ns.load() / 1e6;
+            unsigned long long dsum = slothdb::g_pq_profile.agg_dict_sum.load();
+            fprintf(stderr,
+                "[SLOTH_PROFILE] RunParallelRGs wall=%.0fms nt=%u pages=%llu | "
+                "per-thread: rgdecode=%.0fms (decomp=%.0fms pagedecode=%.0fms other=%.0fms) "
+                "consume=%.0fms (agg_p1=%.0fms agg_p2=%.0fms) | acct=%.0fms dict_sum=%llu "
+                "| branches skipdi=%llu dictrg=%llu perrow=%llu\n",
+                wall, nt, (unsigned long long)slothdb::g_pq_profile.npages.load(),
+                rd / d, dc / d, pd / d, (rd - dc - pd) / d, cs / d, p1 / d, p2 / d,
+                (rd + cs) / d, dsum,
+                (unsigned long long)slothdb::g_pq_profile.c_skipdi.load(),
+                (unsigned long long)slothdb::g_pq_profile.c_dictrg.load(),
+                (unsigned long long)slothdb::g_pq_profile.c_perrow.load());
+        }
         return (int)nt;
     }
 
@@ -1135,12 +1173,26 @@ private:
                 // is per-RG (~95×), not per-row — Q31/Q32 hot path stays
                 // on the single-pass DecodeRowGroupInto when two-phase
                 // isn't set.
+                bool _prof = slothdb::PqProfileOn();
+                auto _d0 = _prof ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
                 if (HasTwoPhaseDecode()) {
                     DecodeRowGroupIntoTwoPhase(rg, consumer_work);
                 } else {
                     DecodeRowGroupInto(rg, consumer_work);
                 }
+                auto _d1 = _prof ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
                 if (rg_consumer_) rg_consumer_(consumer_work, rg, thread_id);
+                if (_prof) {
+                    auto _d2 = std::chrono::steady_clock::now();
+                    slothdb::g_pq_profile.rgdecode_ns.fetch_add(
+                        (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            _d1 - _d0).count(), std::memory_order_relaxed);
+                    slothdb::g_pq_profile.consume_ns.fetch_add(
+                        (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            _d2 - _d1).count(), std::memory_order_relaxed);
+                }
                 // consumer_work retains its buffer capacity; the NEXT RG's
                 // decode reuses the same memory instead of mallocing afresh.
                 continue;
@@ -7116,7 +7168,9 @@ private:
                         // GROUP BY + only COUNT(*). Per-thread radix-shard
                         // map<string_view, count> with bump arena. q6-style
                         // pattern but with count tracking.
-                        constexpr int Q13_THREADS = 8;
+                        // 12 decode shards: Q13 is parquet-decode-bound and
+                        // scales to all 12 logical procs (see RunParallelRGs).
+                        constexpr int Q13_THREADS = 12;
                         slothdb::RadixCountAggStr str_agg(Q13_THREADS);
                         pq->SetRGConsumer(
                             [&](const PhysicalParquetScan::RGWork &work,
@@ -7168,6 +7222,7 @@ private:
                                     idx_t dsz = gcol.str_dict_values.size();
                                     if (single_pred_skip) {
                                         // Skip-di fast path: no keep_mask alloc.
+                                        slothdb::g_pq_profile.c_skipdi.fetch_add(1, std::memory_order_relaxed);
                                         str_agg.IncrementByDictRGSkipDi(
                                             t, di, (uint32_t)nrows, dv,
                                             (uint32_t)dsz,
@@ -7176,6 +7231,7 @@ private:
                                             skip_di_q13);
                                     } else if (!single_has_filter_fused || tk_active) {
                                         // Bulk dict-aware: O(D) map ops vs O(N).
+                                        slothdb::g_pq_profile.c_dictrg.fetch_add(1, std::memory_order_relaxed);
                                         str_agg.IncrementByDictRG(
                                             t, di, (uint32_t)nrows, dv,
                                             (uint32_t)dsz,
@@ -7183,6 +7239,7 @@ private:
                                                 : gcol.validity.data(),
                                             tk_active ? tk.data() : nullptr);
                                     } else {
+                                        slothdb::g_pq_profile.c_perrow.fetch_add(1, std::memory_order_relaxed);
                                         for (idx_t r = 0; r < nrows; r++) {
                                             if (!EvalSimplePredicates(
                                                     single_preds, work.cols, r))
@@ -7196,6 +7253,7 @@ private:
                                         }
                                     }
                                 } else if (!gcol.str_data.empty()) {
+                                    slothdb::g_pq_profile.c_perrow.fetch_add(1, std::memory_order_relaxed);
                                     const string_t *gs = gcol.str_data.data();
                                     for (idx_t r = 0; r < nrows; r++) {
                                         if (tk_active) {
@@ -7211,7 +7269,7 @@ private:
                                     }
                                 }
                             });
-                        pq->RunParallelRGs();
+                        pq->RunParallelRGs(Q13_THREADS);
                         std::vector<std::thread> mts;
                         for (int s = 1; s < slothdb::RadixCountAggStr::N_RADIX; s++) {
                             mts.emplace_back([&str_agg, s]() {
@@ -10614,7 +10672,9 @@ private:
                         }
                         pq->Init();
 
-                        constexpr int Q15_THREADS = 8;
+                        // 12 decode shards: Q15 is parquet-decode-bound and
+                        // scales to all 12 logical procs (see RunParallelRGs).
+                        constexpr int Q15_THREADS = 12;
                         slothdb::RadixCount2ColIntStr agg2(Q15_THREADS);
                         // Pre-reserve shard maps for Q15/Q17 (high-card
                         // (int, str) pairs). Without reserve each shard
@@ -10761,7 +10821,7 @@ private:
                                     pq->RequestStop();
                                 }
                             });
-                        pq->RunParallelRGs();
+                        pq->RunParallelRGs(Q15_THREADS);
                         std::vector<std::thread> mts;
                         for (int s = 1;
                              s < slothdb::RadixCount2ColIntStr::N_RADIX; s++) {

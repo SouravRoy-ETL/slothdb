@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <queue>
 #include <string_view>
 #include <thread>
 
 #include "third_party/unordered_dense.h"
+#include "slothdb/storage/parquet.hpp"
 
 namespace slothdb {
 
@@ -266,6 +268,9 @@ void RadixCountAggStr::IncrementByDictRGSkipDi(int tid,
         std::fill_n(pt.dict_count_scratch.begin(), dict_size, 0);
     }
     int64_t* cnt = pt.dict_count_scratch.data();
+    bool _pf = PqProfileOn();
+    auto _t0 = _pf ? std::chrono::steady_clock::now()
+                   : std::chrono::steady_clock::time_point{};
     // Pass 1: no keep_mask — single 3-cyc/row inner loop. Bounds check
     // collapses to a single compare since dict_size fits in u32.
     if (!validity) {
@@ -282,6 +287,8 @@ void RadixCountAggStr::IncrementByDictRGSkipDi(int tid,
     }
     // Zero out the skipped dict entry so Pass 2 ignores it.
     if (skip_di < dict_size) cnt[skip_di] = 0;
+    auto _t1 = _pf ? std::chrono::steady_clock::now()
+                   : std::chrono::steady_clock::time_point{};
     // Pass 2: one hash + lookup per non-zero dict entry.
     ankerl::unordered_dense::hash<std::string_view> H;
     for (uint32_t d = 0; d < dict_size; d++) {
@@ -302,6 +309,16 @@ void RadixCountAggStr::IncrementByDictRGSkipDi(int tid,
             if (size) std::memcpy(dst, data, size);
             m.emplace(std::string_view(dst, size), delta);
         }
+    }
+    if (_pf) {
+        auto _t2 = std::chrono::steady_clock::now();
+        g_pq_profile.agg_pass1_ns.fetch_add(
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                _t1 - _t0).count(), std::memory_order_relaxed);
+        g_pq_profile.agg_pass2_ns.fetch_add(
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                _t2 - _t1).count(), std::memory_order_relaxed);
+        g_pq_profile.agg_dict_sum.fetch_add(dict_size, std::memory_order_relaxed);
     }
 }
 

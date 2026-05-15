@@ -10,8 +10,39 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 
 namespace slothdb {
+
+// Decode profiling (SLOTH_PROFILE=1). Nanosecond accumulators summed across
+// parquet worker threads. Diagnostic only - one predicted-false branch per
+// page/call when disabled.
+struct PqDecodeProfile {
+    std::atomic<uint64_t> decomp_ns{0};      // codec decompression (Snappy/etc)
+    std::atomic<uint64_t> pagedecode_ns{0};  // DecodeDataPageTyped (def+RLE+gather+writes)
+    std::atomic<uint64_t> rgdecode_ns{0};    // whole DecodeRowGroupInto (incl dict parse + headers)
+    std::atomic<uint64_t> consume_ns{0};     // RGConsumer callback (the aggregation)
+    std::atomic<uint64_t> agg_pass1_ns{0};   // agg: per-row histogram pass
+    std::atomic<uint64_t> agg_pass2_ns{0};   // agg: per-dict-entry fold-into-map pass
+    std::atomic<uint64_t> agg_dict_sum{0};   // agg: sum of dict_size across RG calls
+    std::atomic<uint64_t> npages{0};
+    std::atomic<uint64_t> c_skipdi{0};       // consumer RGs taking SkipDi branch
+    std::atomic<uint64_t> c_dictrg{0};       // consumer RGs taking IncrementByDictRG branch
+    std::atomic<uint64_t> c_perrow{0};       // consumer RGs taking per-row IncrementRow branch
+    void Reset() { decomp_ns = 0; pagedecode_ns = 0; rgdecode_ns = 0; consume_ns = 0;
+                   agg_pass1_ns = 0; agg_pass2_ns = 0; agg_dict_sum = 0; npages = 0;
+                   c_skipdi = 0; c_dictrg = 0; c_perrow = 0; }
+};
+inline PqDecodeProfile g_pq_profile;
+inline bool PqProfileOn() {
+    static const bool on = [] {
+        char b[8]; size_t n = 0;
+        return getenv_s(&n, b, sizeof(b), "SLOTH_PROFILE") == 0 && n > 0;
+    }();
+    return on;
+}
 
 // Parquet physical types (from spec).
 enum class ParquetType : int32_t {

@@ -43,14 +43,21 @@ namespace {
 // 64-byte slop buffer is 3-5× faster on those shapes.
 bool SnappyDecompress(const uint8_t *in, size_t in_size, std::vector<uint8_t> &out) {
     if (in_size == 0) { out.clear(); return true; }
+    auto _t0 = std::chrono::steady_clock::now();
     size_t uncomp_len = 0;
     if (!snappy::GetUncompressedLength(reinterpret_cast<const char *>(in),
                                        in_size, &uncomp_len)) {
         return false;
     }
     out.resize(uncomp_len);
-    return snappy::RawUncompress(reinterpret_cast<const char *>(in), in_size,
-                                 reinterpret_cast<char *>(out.data()));
+    bool ok = snappy::RawUncompress(reinterpret_cast<const char *>(in), in_size,
+                                    reinterpret_cast<char *>(out.data()));
+    if (PqProfileOn())
+        g_pq_profile.decomp_ns.fetch_add(
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - _t0).count(),
+            std::memory_order_relaxed);
+    return ok;
 }
 
 // Decompress a Snappy stream directly into a pre-allocated raw buffer.
@@ -70,8 +77,15 @@ bool SnappyDecompressRaw(const uint8_t *in, size_t in_size,
     }
     if (uncomp_len > out_cap) return false;
     out_size = uncomp_len;
-    return snappy::RawUncompress(reinterpret_cast<const char *>(in), in_size,
-                                 reinterpret_cast<char *>(out));
+    auto _t0 = std::chrono::steady_clock::now();
+    bool ok = snappy::RawUncompress(reinterpret_cast<const char *>(in), in_size,
+                                    reinterpret_cast<char *>(out));
+    if (PqProfileOn())
+        g_pq_profile.decomp_ns.fetch_add(
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - _t0).count(),
+            std::memory_order_relaxed);
+    return ok;
 }
 
 // --- Thrift Compact Protocol reader. ---
@@ -2648,10 +2662,19 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
             filter_mask->size() >= rows_read + (idx_t)hdr.num_values) {
             page_mask = filter_mask->data() + rows_read;
         }
-        if (!DecodeDataPageTyped(hdr, body, body_size, cmeta.parquet_type, dict, out,
+        auto _pd_t0 = std::chrono::steady_clock::now();
+        bool _pd_ok = DecodeDataPageTyped(hdr, body, body_size, cmeta.parquet_type, dict, out,
                                   rows_read, out.str_data_skipped,
                                   cmeta.repetition_type == 0, body_is_stable,
-                                  page_mask)) {
+                                  page_mask);
+        if (PqProfileOn()) {
+            g_pq_profile.pagedecode_ns.fetch_add(
+                (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - _pd_t0).count(),
+                std::memory_order_relaxed);
+            g_pq_profile.npages.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (!_pd_ok) {
             return false;
         }
         // A PLAIN (non-dict) data page invalidates the dict-index fast path
