@@ -9784,6 +9784,9 @@ private:
             // (more threads regressed Q11/Q12 — SMT/Snappy oversubscription).
             pq->RunParallelRGs((!has_group && agg_is_varchar) ? 12 : 0);
 
+            bool _q11pf = slothdb::PqProfileOn();
+            auto _q11_t0 = _q11pf ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
             // Merge phase.
             auto emit_int_only = [&](int64_t cnt_total) {
                 std::string sk;
@@ -9982,69 +9985,75 @@ private:
                     }
                 } else {
                     // VARCHAR group key.
-                    std::unordered_map<std::string,
-                        slothdb::SimpleI64Set> merged_int;
-                    std::unordered_map<std::string,
-                        ankerl::unordered_dense::set<std::string>> merged_str;
-                    std::vector<std::string> all_keys;
-                    for (int t = 0; t < MAX_THREADS; t++) {
-                        for (auto &kv : tls[t].str_g_int_d) {
-                            if (merged_int.find(kv.first) == merged_int.end()) {
-                                merged_int[kv.first];
-                                all_keys.push_back(kv.first);
-                            }
-                        }
-                        for (auto &kv : tls[t].str_g_str_d) {
-                            if (merged_str.find(kv.first) == merged_str.end()) {
-                                merged_str[kv.first];
-                                if (merged_int.find(kv.first) == merged_int.end())
-                                    all_keys.push_back(kv.first);
-                            }
-                        }
-                    }
-                    int merge_w = (int)std::min<size_t>(MAX_THREADS, all_keys.size());
-                    if (merge_w < 1) merge_w = 1;
-                    auto run = [&](int wi) {
-                        for (size_t i = wi; i < all_keys.size(); i += merge_w) {
-                            const std::string &key = all_keys[i];
-                            if (!agg_is_varchar) {
-                                auto &dst = merged_int[key];
-                                for (int t = 0; t < MAX_THREADS; t++) {
-                                    auto it = tls[t].str_g_int_d.find(key);
-                                    if (it == tls[t].str_g_int_d.end()) continue;
-                                    if (dst.empty()) dst = std::move(it->second);
-                                    else dst.merge(std::move(it->second));
-                                }
-                            } else {
-                                auto &dst = merged_str[key];
-                                for (int t = 0; t < MAX_THREADS; t++) {
-                                    auto it = tls[t].str_g_str_d.find(key);
-                                    if (it == tls[t].str_g_str_d.end()) continue;
-                                    if (dst.empty()) dst = std::move(it->second);
-                                    else {
-                                        if (it->second.size() > dst.size()) std::swap(dst, it->second);
-                                        dst.insert(it->second.begin(), it->second.end());
-                                    }
-                                }
-                            }
-                        }
-                    };
-                    if (merge_w == 1) run(0);
-                    else {
-                        std::vector<std::thread> mts;
-                        for (int w = 0; w < merge_w; w++) mts.emplace_back([&, w]() { run(w); });
-                        for (auto &t : mts) t.join();
-                    }
                     if (!agg_is_varchar) {
-                        for (auto &kv : merged_int) {
+                        // Q11: COUNT(DISTINCT <int>) GROUP BY <varchar>.
+                        // Skew-aware parallel merge: the old per-group
+                        // round-robin merge made one dominant group
+                        // (iPad, ~1M distinct UserIDs) the single-worker
+                        // long pole. See q11_helper.cpp.
+                        std::vector<std::unordered_map<std::string,
+                            slothdb::SimpleI64Set>*> per_thread;
+                        per_thread.reserve(MAX_THREADS);
+                        for (int t = 0; t < MAX_THREADS; t++)
+                            per_thread.push_back(&tls[t].str_g_int_d);
+                        // 12 = all logical procs. The merge is compute-only
+                        // (no parquet decode), so the 8-thread decode cap
+                        // (Snappy/SMT oversubscription) does not apply.
+                        auto counts = slothdb::MergeStrGroupIntDistinct(
+                            per_thread, 12);
+                        for (auto &kv : counts) {
                             auto &states = group_states[kv.first];
                             states.resize(num_aggs);
-                            int64_t cnt = (int64_t)kv.second.size();
-                            for (auto &s : states) s.count = cnt;
+                            for (auto &s : states) s.count = kv.second;
                             group_keys[kv.first] = {Value::VARCHAR(kv.first)};
                             group_order.push_back(kv.first);
                         }
                     } else {
+                        // gstr x str distinct (rare): per-group union of
+                        // string sets, round-robin across workers.
+                        std::unordered_map<std::string,
+                            ankerl::unordered_dense::set<std::string>>
+                            merged_str;
+                        std::vector<std::string> all_keys;
+                        for (int t = 0; t < MAX_THREADS; t++) {
+                            for (auto &kv : tls[t].str_g_str_d) {
+                                if (merged_str.find(kv.first) ==
+                                    merged_str.end()) {
+                                    merged_str[kv.first];
+                                    all_keys.push_back(kv.first);
+                                }
+                            }
+                        }
+                        int merge_w = (int)std::min<size_t>(
+                            MAX_THREADS, all_keys.size());
+                        if (merge_w < 1) merge_w = 1;
+                        auto run = [&](int wi) {
+                            for (size_t i = wi; i < all_keys.size();
+                                 i += merge_w) {
+                                const std::string &key = all_keys[i];
+                                auto &dst = merged_str[key];
+                                for (int t = 0; t < MAX_THREADS; t++) {
+                                    auto it = tls[t].str_g_str_d.find(key);
+                                    if (it == tls[t].str_g_str_d.end())
+                                        continue;
+                                    if (dst.empty())
+                                        dst = std::move(it->second);
+                                    else {
+                                        if (it->second.size() > dst.size())
+                                            std::swap(dst, it->second);
+                                        dst.insert(it->second.begin(),
+                                                   it->second.end());
+                                    }
+                                }
+                            }
+                        };
+                        if (merge_w == 1) run(0);
+                        else {
+                            std::vector<std::thread> mts;
+                            for (int w = 0; w < merge_w; w++)
+                                mts.emplace_back([&, w]() { run(w); });
+                            for (auto &t : mts) t.join();
+                        }
                         for (auto &kv : merged_str) {
                             auto &states = group_states[kv.first];
                             states.resize(num_aggs);
@@ -10055,6 +10064,12 @@ private:
                         }
                     }
                 }
+            }
+            if (_q11pf) {
+                fprintf(stderr, "[SLOTH_PROFILE] Q11 merge %.0fms\n",
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - _q11_t0).count()
+                        / 1e6);
             }
         } else if (
             (void)0,

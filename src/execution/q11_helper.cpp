@@ -1,6 +1,12 @@
 #include "slothdb/execution/q11_helper.hpp"
 
+#include <algorithm>
+#include <cstddef>
+#include <string_view>
+#include <thread>
 #include <vector>
+
+#include "third_party/unordered_dense.h"
 
 namespace slothdb {
 
@@ -153,6 +159,140 @@ void IngestRGGstrIntDistinctPlain(
         }
         cached->insert(a_i64 ? a_i64[r] : (std::int64_t)a_i32[r]);
     }
+}
+
+namespace {
+// Union one group's per-thread distinct-int sets and return the distinct
+// count. For W>=2 the union is split into W uid-hash buckets so a single
+// huge group cannot serialise the whole merge. Each uid hashes to exactly
+// one bucket, so the per-bucket unions are disjoint and their sizes sum
+// to the true distinct count.
+std::int64_t UnionCountParallel(const std::vector<SimpleI64Set*>& sets,
+                                int W) {
+    const int ns = (int)sets.size();
+    if (ns == 0) return 0;
+    if (W < 2) {
+        SimpleI64Set acc;
+        bool first = true;
+        for (auto* s : sets) {
+            if (first) { acc = std::move(*s); first = false; }
+            else acc.merge(std::move(*s));
+        }
+        return (std::int64_t)acc.size();
+    }
+    // Phase A: set-owner i scatters its values into W hash buckets.
+    std::vector<std::vector<std::vector<std::int64_t>>> buckets(
+        (std::size_t)ns);
+    auto scatter = [&](int i) {
+        auto& b = buckets[(std::size_t)i];
+        b.assign((std::size_t)W, {});
+        sets[(std::size_t)i]->for_each([&](std::int64_t v) {
+            std::size_t h = ankerl::unordered_dense::hash<std::int64_t>{}(v);
+            b[h % (std::size_t)W].push_back(v);
+        });
+    };
+    {
+        std::vector<std::thread> ts;
+        for (int i = 1; i < ns; i++) ts.emplace_back(scatter, i);
+        scatter(0);
+        for (auto& t : ts) t.join();
+    }
+    // Phase B: worker w unions bucket w from every owner.
+    std::vector<std::int64_t> partial((std::size_t)W, 0);
+    auto unite = [&](int w) {
+        SimpleI64Set acc;
+        for (int i = 0; i < ns; i++)
+            for (std::int64_t v : buckets[(std::size_t)i][(std::size_t)w])
+                acc.insert(v);
+        partial[(std::size_t)w] = (std::int64_t)acc.size();
+    };
+    {
+        std::vector<std::thread> ts;
+        for (int w = 1; w < W; w++) ts.emplace_back(unite, w);
+        unite(0);
+        for (auto& t : ts) t.join();
+    }
+    std::int64_t total = 0;
+    for (std::int64_t p : partial) total += p;
+    return total;
+}
+}  // namespace
+
+std::vector<std::pair<std::string, std::int64_t>>
+MergeStrGroupIntDistinct(
+    const std::vector<std::unordered_map<std::string, SimpleI64Set>*>&
+        per_thread,
+    int n_workers) {
+    if (n_workers < 1) n_workers = 1;
+    const int T = (int)per_thread.size();
+
+    // Index every group: the per-thread sets that hold it + summed size
+    // (an upper bound on its cross-thread union cost).
+    struct GRef { std::vector<SimpleI64Set*> sets; std::size_t cost = 0; };
+    std::unordered_map<std::string_view, GRef> idx;
+    for (int t = 0; t < T; t++)
+        for (auto& kv : *per_thread[(std::size_t)t]) {
+            auto& g = idx[std::string_view(kv.first)];
+            g.sets.push_back(&kv.second);
+            g.cost += kv.second.size();
+        }
+
+    std::vector<std::pair<std::string_view, GRef*>> groups;
+    groups.reserve(idx.size());
+    std::size_t total_cost = 0;
+    for (auto& kv : idx) {
+        groups.push_back({kv.first, &kv.second});
+        total_cost += kv.second.cost;
+    }
+
+    std::vector<std::pair<std::string, std::int64_t>> out(groups.size());
+    // Heavy = a group whose single-worker union would exceed a balanced
+    // per-worker share of the total merge work.
+    const std::size_t balanced = total_cost / (std::size_t)n_workers + 1;
+    std::vector<int> light, heavy;
+    for (int i = 0; i < (int)groups.size(); i++) {
+        if (T > 1 && groups[(std::size_t)i].second->cost > balanced)
+            heavy.push_back(i);
+        else
+            light.push_back(i);
+    }
+
+    // Heavy groups first: each uses all workers (union split by uid hash).
+    for (int i : heavy) {
+        out[(std::size_t)i] = {
+            std::string(groups[(std::size_t)i].first),
+            UnionCountParallel(groups[(std::size_t)i].second->sets,
+                               n_workers) };
+    }
+    // Light groups: round-robin one-per-worker, sequential union each.
+    auto do_light = [&](int w, int nw) {
+        for (std::size_t li = (std::size_t)w; li < light.size();
+             li += (std::size_t)nw) {
+            int i = light[li];
+            SimpleI64Set acc;
+            bool first = true;
+            for (auto* s : groups[(std::size_t)i].second->sets) {
+                if (first) { acc = std::move(*s); first = false; }
+                else acc.merge(std::move(*s));
+            }
+            out[(std::size_t)i] = {
+                std::string(groups[(std::size_t)i].first),
+                (std::int64_t)acc.size() };
+        }
+    };
+    if (!light.empty()) {
+        int nw = (int)std::min<std::size_t>((std::size_t)n_workers,
+                                            light.size());
+        if (nw <= 1) {
+            do_light(0, 1);
+        } else {
+            std::vector<std::thread> ts;
+            for (int w = 1; w < nw; w++) ts.emplace_back(do_light, w, nw);
+            do_light(0, nw);
+            for (auto& t : ts) t.join();
+        }
+    }
+    return out;
 }
 
 }  // namespace slothdb

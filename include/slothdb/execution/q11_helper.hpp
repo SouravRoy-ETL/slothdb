@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "slothdb/common/types/string_type.hpp"
 #include "slothdb/execution/simple_i64_set.hpp"
@@ -49,5 +51,17 @@ void IngestRGGstrIntDistinctDictSkipDi(
     bool a_all_valid, const std::uint8_t* a_validity,
     std::uint32_t skip_di,
     std::size_t nrows);
+
+// Skew-aware parallel merge of the per-thread (VARCHAR-group -> distinct-
+// int set) maps. Returns one (group, distinct_count) pair per group.
+// Heavy groups (Q11 "iPad", ~1M distinct UserIDs) have their cross-thread
+// union split across all workers by uid hash, so one dominant group is
+// not the merge long pole — the per-group round-robin merge it replaces
+// was single-worker-bound on that group.
+std::vector<std::pair<std::string, std::int64_t>>
+MergeStrGroupIntDistinct(
+    const std::vector<std::unordered_map<std::string, SimpleI64Set>*>&
+        per_thread,
+    int n_workers);
 
 }  // namespace slothdb
