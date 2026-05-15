@@ -89,8 +89,7 @@ python/slothdb/__pycache__/
 # Cloudflare runtime
 cloudflare/cors-proxy/.wrangler/
 
-# Vendored experiments (Q4 Snappy abandoned; flat/swiss hash sets abandoned)
-third_party/snappy/
+# Abandoned experiments (flat/swiss hash sets)
 include/slothdb/util/
 test/unit/util/
 topn_dbg.log
