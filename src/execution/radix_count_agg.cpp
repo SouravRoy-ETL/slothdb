@@ -571,68 +571,140 @@ std::vector<RadixCountStrResult> RadixHashCountStr::EmitTopK(int k) const {
     // Consecutive entries with the same hash are one group (the 64-bit hash
     // is trusted as the group identity — P(collision among ~6M keys) ~1e-6,
     // and a collision would have to land on a top-K group to change the
-    // answer). emit() feeds either a full list (k<=0) or a top-K min-heap.
+    // answer).
+    //
+    // A group lives entirely in one hash value, so splitting the hash space
+    // into disjoint ranges partitions groups cleanly — no group spans two
+    // ranges. For k>0 we run one merge worker per range in parallel (each
+    // produces a local top-k), then combine. Single-threaded k-way merge
+    // over the full ~5-10M entries was ~150ms+ unparallelised. The k<=0
+    // full-emit path stays single-threaded (rare; no LIMIT).
+    bool _pf = PqProfileOn();
+    auto _t0 = _pf ? std::chrono::steady_clock::now()
+                   : std::chrono::steady_clock::time_point{};
     const int T = impl_->max_threads;
-    std::vector<size_t> cur((size_t)T, 0);
 
-    std::vector<RadixCountStrResult> all;  // k<=0 path
-    auto cmp = [](const RadixCountStrResult& a, const RadixCountStrResult& b) {
-        return a.count > b.count;  // min-heap: smallest count on top
-    };
-    std::priority_queue<RadixCountStrResult,
-                        std::vector<RadixCountStrResult>, decltype(cmp)>
-        heap(cmp);
-    auto emit = [&](const char* s, uint32_t l, int64_t c) {
-        if (k <= 0) {
-            all.push_back({std::string(s, l), c});
-        } else if ((int)heap.size() < k) {
-            heap.push({std::string(s, l), c});
-        } else if (c > heap.top().count) {
-            heap.pop();
-            heap.push({std::string(s, l), c});
-        }
-    };
-
-    bool have = false;
-    uint64_t cur_hash = 0;
-    const char* cur_str = nullptr;
-    uint32_t cur_len = 0;
-    int64_t cur_count = 0;
-    while (true) {
-        int mt = -1;
-        uint64_t mh = 0;
+    // Merge entries whose hash is in [lo, hi) (or [lo, end] when `last`).
+    auto merge_range = [this, T](uint64_t lo, uint64_t hi, bool last, int k,
+                                 std::vector<RadixCountStrResult>& out) {
+        auto cmp_hash = [](const HcEnt& x, uint64_t b) { return x.hash < b; };
+        std::vector<size_t> cur((size_t)T), end((size_t)T);
         for (int t = 0; t < T; t++) {
             const auto& e = impl_->threads[(size_t)t]->entries;
-            if (cur[(size_t)t] >= e.size()) continue;
-            uint64_t h = e[cur[(size_t)t]].hash;
-            if (mt < 0 || h < mh) { mh = h; mt = t; }
+            cur[(size_t)t] = (size_t)(
+                std::lower_bound(e.begin(), e.end(), lo, cmp_hash) - e.begin());
+            end[(size_t)t] = last ? e.size() : (size_t)(
+                std::lower_bound(e.begin(), e.end(), hi, cmp_hash) - e.begin());
         }
-        if (mt < 0) break;
-        const HcThread& th = *impl_->threads[(size_t)mt];
-        const HcEnt& e = th.entries[cur[(size_t)mt]];
-        cur[(size_t)mt]++;
-        if (have && e.hash == cur_hash) {
-            cur_count += e.count;
-        } else {
-            if (have) emit(cur_str, cur_len, cur_count);
-            cur_hash = e.hash;
-            cur_str = th.sbytes.data() + e.off;
-            cur_len = e.len;
-            cur_count = e.count;
-            have = true;
+        auto cmp = [](const RadixCountStrResult& a,
+                      const RadixCountStrResult& b) {
+            return a.count > b.count;  // min-heap: smallest count on top
+        };
+        std::priority_queue<RadixCountStrResult,
+                            std::vector<RadixCountStrResult>, decltype(cmp)>
+            heap(cmp);
+        auto emit = [&](const char* s, uint32_t l, int64_t c) {
+            if (k <= 0) {
+                out.push_back({std::string(s, l), c});
+            } else if ((int)heap.size() < k) {
+                heap.push({std::string(s, l), c});
+            } else if (c > heap.top().count) {
+                heap.pop();
+                heap.push({std::string(s, l), c});
+            }
+        };
+        bool have = false;
+        uint64_t cur_hash = 0;
+        const char* cur_str = nullptr;
+        uint32_t cur_len = 0;
+        int64_t cur_count = 0;
+        while (true) {
+            int mt = -1;
+            uint64_t mh = 0;
+            for (int t = 0; t < T; t++) {
+                if (cur[(size_t)t] >= end[(size_t)t]) continue;
+                uint64_t h = impl_->threads[(size_t)t]
+                                 ->entries[cur[(size_t)t]].hash;
+                if (mt < 0 || h < mh) { mh = h; mt = t; }
+            }
+            if (mt < 0) break;
+            const HcThread& th = *impl_->threads[(size_t)mt];
+            const HcEnt& e = th.entries[cur[(size_t)mt]];
+            cur[(size_t)mt]++;
+            if (have && e.hash == cur_hash) {
+                cur_count += e.count;
+            } else {
+                if (have) emit(cur_str, cur_len, cur_count);
+                cur_hash = e.hash;
+                cur_str = th.sbytes.data() + e.off;
+                cur_len = e.len;
+                cur_count = e.count;
+                have = true;
+            }
         }
-    }
-    if (have) emit(cur_str, cur_len, cur_count);
+        if (have) emit(cur_str, cur_len, cur_count);
+        if (k > 0) {
+            out.reserve(heap.size());
+            while (!heap.empty()) {
+                out.push_back(std::move(
+                    const_cast<RadixCountStrResult&>(heap.top())));
+                heap.pop();
+            }
+        }
+    };
 
-    if (k <= 0) return all;
-    std::vector<RadixCountStrResult> out;
-    out.reserve(heap.size());
-    while (!heap.empty()) {
-        out.push_back(std::move(const_cast<RadixCountStrResult&>(heap.top())));
-        heap.pop();
+    std::vector<RadixCountStrResult> result;
+    if (k <= 0 || T <= 1) {
+        merge_range(0, 0, true, k, result);
+    } else {
+        const int P = T;
+        std::vector<std::vector<RadixCountStrResult>> partials((size_t)P);
+        const uint64_t span = UINT64_MAX / (uint64_t)P;
+        auto do_range = [&](int w) {
+            uint64_t lo = (uint64_t)w * span;
+            bool last = (w == P - 1);
+            uint64_t hi = last ? 0 : (uint64_t)(w + 1) * span;
+            merge_range(lo, hi, last, k, partials[(size_t)w]);
+        };
+        std::vector<std::thread> ws;
+        ws.reserve((size_t)(P - 1));
+        for (int w = 1; w < P; w++) ws.emplace_back(do_range, w);
+        do_range(0);
+        for (auto& t : ws) if (t.joinable()) t.join();
+        // Combine the P local top-k lists into the global top-k. The global
+        // winners are a subset of the per-range winners (a global top-k
+        // member is also among the top-k of its own range).
+        auto cmp = [](const RadixCountStrResult& a,
+                      const RadixCountStrResult& b) {
+            return a.count > b.count;
+        };
+        std::priority_queue<RadixCountStrResult,
+                            std::vector<RadixCountStrResult>, decltype(cmp)>
+            heap(cmp);
+        for (auto& pv : partials) {
+            for (auto& r : pv) {
+                if ((int)heap.size() < k) {
+                    heap.push(std::move(r));
+                } else if (r.count > heap.top().count) {
+                    heap.pop();
+                    heap.push(std::move(r));
+                }
+            }
+        }
+        result.reserve(heap.size());
+        while (!heap.empty()) {
+            result.push_back(std::move(
+                const_cast<RadixCountStrResult&>(heap.top())));
+            heap.pop();
+        }
     }
-    std::reverse(out.begin(), out.end());
-    return out;
+    if (k > 0) std::reverse(result.begin(), result.end());
+    if (_pf) {
+        fprintf(stderr, "[SLOTH_PROFILE] RadixHashCountStr::EmitTopK %.0fms\n",
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - _t0).count() / 1e6);
+    }
+    return result;
 }
 
 int64_t RadixHashCountStr::CountDistinctGroups() const {
