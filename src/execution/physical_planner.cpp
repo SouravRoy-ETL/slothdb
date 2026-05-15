@@ -9158,8 +9158,9 @@ private:
             const idx_t agg_col = agg_infos[0].col_idx;
             const auto group_tid = has_group ? pq->GetTypes()[group_col].id()
                                               : LogicalTypeId::INVALID;
-            const auto group_tid2 = two_col_group ? pq->GetTypes()[group_col2].id()
-                                                   : LogicalTypeId::INVALID;
+            [[maybe_unused]] const auto group_tid2 =
+                two_col_group ? pq->GetTypes()[group_col2].id()
+                              : LogicalTypeId::INVALID;
             const auto agg_tid = pq->GetTypes()[agg_col].id();
 
             // Q14: GROUP BY VARCHAR + COUNT(DISTINCT INT) + TopN with
@@ -9269,9 +9270,15 @@ private:
                     ankerl::unordered_dense::set<std::string>> g2_str_d;
                 std::unordered_map<std::string, std::vector<Value>> g2_key_parts;
             };
+#if defined(_MSC_VER)
+            // Layout tripwire for the MSVC build the perf work is tuned on.
+            // sizeof depends on the standard library (libstdc++/libc++ size
+            // their map and string internals differently from MSVC's STL),
+            // so the pin is MSVC-only; elsewhere it would false-trip.
             static_assert(sizeof(TLDistinct) == 960,
                 "TLDistinct layout pinned: growing this struct shifts cache lines"
                 " and regresses Q7/Q8/Q30 (see memory feedback_struct_growth_cache_shifts.md)");
+#endif
             std::vector<TLDistinct> tls(MAX_THREADS);
             // Q6 path B: per-thread radix-shard for ungrouped VARCHAR
             // distinct. Lives outside TLDistinct (960-byte assert pinned)

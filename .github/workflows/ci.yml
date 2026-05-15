@@ -30,7 +30,9 @@ jobs:
       run: ctest --test-dir build --output-on-failure
 
   build-macos:
-    runs-on: macos-latest
+    # macos-13 is the x86_64 runner; SlothDB targets x86-64 (the analytics
+    # core uses AVX2/BMI2 intrinsics). macos-14+ is Apple Silicon.
+    runs-on: macos-13
     steps:
     - uses: actions/checkout@v4
     - name: Configure
