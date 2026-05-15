@@ -38,8 +38,7 @@ struct PqDecodeProfile {
 inline PqDecodeProfile g_pq_profile;
 inline bool PqProfileOn() {
     static const bool on = [] {
-        char b[8]; size_t n = 0;
-        return getenv_s(&n, b, sizeof(b), "SLOTH_PROFILE") == 0 && n > 0;
+        return std::getenv("SLOTH_PROFILE") != nullptr;
     }();
     return on;
 }

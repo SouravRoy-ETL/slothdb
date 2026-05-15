@@ -1,7 +1,9 @@
 if(MSVC)
     add_compile_options(/W4 /WX /utf-8)
-    # Disable some overly noisy MSVC warnings
-    add_compile_options(/wd4244 /wd4267 /wd4100)
+    # Disable some overly noisy MSVC warnings. 4996 is the getenv/strcpy
+    # "consider the _s variant" deprecation; std::getenv is standard C++
+    # and is used so the GCC/Clang build stays portable.
+    add_compile_options(/wd4244 /wd4267 /wd4100 /wd4996)
     # Whole-program optimization + link-time codegen for Release builds.
     # Enables cross-TU inlining of hot helpers (the radix_count_agg /
     # q21_helper / parquet inner loops are split across TUs to avoid the

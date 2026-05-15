@@ -971,9 +971,8 @@ public:
         // overrides for tuning experiments.
         if (!had_hint && nt > 8) nt = 8;
         {
-            char _mtbuf[16]; size_t _mtn = 0;
-            if (getenv_s(&_mtn, _mtbuf, sizeof(_mtbuf), "SLOTH_MAXTHREADS") == 0 && _mtn > 0) {
-                int v = std::atoi(_mtbuf);
+            if (const char *_mtenv = std::getenv("SLOTH_MAXTHREADS")) {
+                int v = std::atoi(_mtenv);
                 if (v >= 1 && v <= (int)hw) nt = (unsigned int)v;
             }
         }
@@ -2133,9 +2132,7 @@ private:
         // wins). Off by default.
         if (q26_fast_path) {
             static const bool q26_trust_dict = []() {
-                size_t n = 0;
-                return (getenv_s(&n, nullptr, 0, "SLOTH_Q26_TRUST_DICT") == 0
-                        && n > 0);
+                return std::getenv("SLOTH_Q26_TRUST_DICT") != nullptr;
             }();
             if (q26_trust_dict && key_col_scan < ncols) {
                 std::vector<bool> dict_only(ncols, false);
@@ -10383,11 +10380,8 @@ private:
                         // +arena on Q31 per A/B). SLOTH_LEGACY_AGG=1 falls
                         // back to the prior ankerl::map+arena path as a
                         // rollback escape hatch.
-                        size_t _legacy_len = 0;
                         const bool legacy_override =
-                            (getenv_s(&_legacy_len, nullptr, 0,
-                                      "SLOTH_LEGACY_AGG") == 0 &&
-                             _legacy_len > 0);
+                            std::getenv("SLOTH_LEGACY_AGG") != nullptr;
                         // Estimate unique-group cardinality from parquet
                         // metadata × filter-survival ratio. Pre-sizing per-
                         // thread per-shard storage avoids the ~17 table
@@ -10667,11 +10661,8 @@ private:
                         }
                         };  // end run_q32 generic lambda
 
-                        size_t _bk_legacy_len = 0;
                         const bool bk_legacy_override =
-                            (getenv_s(&_bk_legacy_len, nullptr, 0,
-                                      "SLOTH_LEGACY_AGG") == 0 &&
-                             _bk_legacy_len > 0);
+                            std::getenv("SLOTH_LEGACY_AGG") != nullptr;
                         // Pre-reserve estimate. Q32 requires a filter (gate
                         // above is multi_has_filter); BIGINT × INT pairs at
                         // 100M rows + WHERE filter typically yield ~10-20M
