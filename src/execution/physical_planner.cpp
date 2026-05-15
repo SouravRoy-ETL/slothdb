@@ -7168,11 +7168,13 @@ private:
                         // GROUP BY + only COUNT(*). 12 threads = all logical
                         // procs on the 6C/12T chip (see RunParallelRGs).
                         constexpr int Q13_THREADS = 12;
-                        // `group_col <> ''` filter (Q13): bounded survivor
-                        // count -> the bounded-HT + radix-spill aggregation
-                        // applies. It caps every per-row probe at an
-                        // L2-resident table; for a high-card VARCHAR GROUP BY
-                        // the aggregation (not parquet decode) is the wall.
+                        // `group_col <> ''` filter (Q13) gives a bounded
+                        // survivor count; no filter at all (Q34/Q35 GROUP BY
+                        // URL) ingests every row. Both feed the bounded-HT +
+                        // radix-spill aggregation: it caps every per-row probe
+                        // at an L2-resident table and spills scatter-free. For
+                        // a high-card VARCHAR GROUP BY the aggregation (not
+                        // parquet decode) is the wall.
                         bool hc_ne_empty = false;
                         if (single_has_filter_fused && single_preds.size() == 1) {
                             const auto &p0 = single_preds[0];
@@ -7180,10 +7182,13 @@ private:
                                 (idx_t)p0.col_idx == group_col &&
                                 p0.op == SimpleCmpOp::NE && p0.sval.empty();
                         }
-                        if (hc_ne_empty) {
+                        // No filter -> ingest every row (keep the empty group).
+                        bool hc_take = hc_ne_empty || !single_has_filter_fused;
+                        if (hc_take) {
+                            const bool hc_skip_empty = hc_ne_empty;
                             slothdb::RadixHashCountStr hagg(Q13_THREADS);
                             pq->SetRGConsumer(
-                                [&](const PhysicalParquetScan::RGWork &work,
+                                [&, hc_skip_empty](const PhysicalParquetScan::RGWork &work,
                                     idx_t rg_idx, int tid) {
                                     if (work.pruned) return;
                                     idx_t nrows = pq->RowGroupSize(rg_idx);
@@ -7196,9 +7201,11 @@ private:
                                         !gcol.str_dict_indices.empty()) {
                                         const auto &dv = gcol.str_dict_values;
                                         uint32_t skip_di = UINT32_MAX;
-                                        for (uint32_t d = 0; d < dv.size(); d++) {
-                                            if (dv[d].GetSize() == 0) {
-                                                skip_di = d; break;
+                                        if (hc_skip_empty) {
+                                            for (uint32_t d = 0; d < dv.size(); d++) {
+                                                if (dv[d].GetSize() == 0) {
+                                                    skip_di = d; break;
+                                                }
                                             }
                                         }
                                         hagg.IngestDictRG(t,
@@ -7208,7 +7215,7 @@ private:
                                     } else if (!gcol.str_data.empty()) {
                                         hagg.IngestPlainRG(t,
                                             gcol.str_data.data(),
-                                            (uint32_t)nrows, val, true);
+                                            (uint32_t)nrows, val, hc_skip_empty);
                                     }
                                 });
                             pq->RunParallelRGs(Q13_THREADS);
