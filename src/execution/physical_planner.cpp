@@ -7165,12 +7165,73 @@ private:
                                       group_tid_q16 == LogicalTypeId::VARCHAR);
                     if (q13_shape) {
                         // Q13/Q34/Q35-shape: high-card single-col VARCHAR
-                        // GROUP BY + only COUNT(*). Per-thread radix-shard
-                        // map<string_view, count> with bump arena. q6-style
-                        // pattern but with count tracking.
-                        // 12 decode shards: Q13 is parquet-decode-bound and
-                        // scales to all 12 logical procs (see RunParallelRGs).
+                        // GROUP BY + only COUNT(*). 12 threads = all logical
+                        // procs on the 6C/12T chip (see RunParallelRGs).
                         constexpr int Q13_THREADS = 12;
+                        // `group_col <> ''` filter (Q13): bounded survivor
+                        // count -> the bounded-HT + radix-spill aggregation
+                        // applies. It caps every per-row probe at an
+                        // L2-resident table; for a high-card VARCHAR GROUP BY
+                        // the aggregation (not parquet decode) is the wall.
+                        bool hc_ne_empty = false;
+                        if (single_has_filter_fused && single_preds.size() == 1) {
+                            const auto &p0 = single_preds[0];
+                            hc_ne_empty = p0.str_form &&
+                                (idx_t)p0.col_idx == group_col &&
+                                p0.op == SimpleCmpOp::NE && p0.sval.empty();
+                        }
+                        if (hc_ne_empty) {
+                            slothdb::RadixHashCountStr hagg(Q13_THREADS);
+                            pq->SetRGConsumer(
+                                [&](const PhysicalParquetScan::RGWork &work,
+                                    idx_t rg_idx, int tid) {
+                                    if (work.pruned) return;
+                                    idx_t nrows = pq->RowGroupSize(rg_idx);
+                                    const auto &gcol = work.cols[group_col];
+                                    if (!gcol.decoded) return;
+                                    int t = tid % Q13_THREADS;
+                                    const uint8_t *val = gcol.all_valid
+                                        ? nullptr : gcol.validity.data();
+                                    if (gcol.str_dict_encoded &&
+                                        !gcol.str_dict_indices.empty()) {
+                                        const auto &dv = gcol.str_dict_values;
+                                        uint32_t skip_di = UINT32_MAX;
+                                        for (uint32_t d = 0; d < dv.size(); d++) {
+                                            if (dv[d].GetSize() == 0) {
+                                                skip_di = d; break;
+                                            }
+                                        }
+                                        hagg.IngestDictRG(t,
+                                            gcol.str_dict_indices.data(),
+                                            (uint32_t)nrows, dv.data(),
+                                            (uint32_t)dv.size(), val, skip_di);
+                                    } else if (!gcol.str_data.empty()) {
+                                        hagg.IngestPlainRG(t,
+                                            gcol.str_data.data(),
+                                            (uint32_t)nrows, val, true);
+                                    }
+                                });
+                            pq->RunParallelRGs(Q13_THREADS);
+                            hagg.Finalize();
+                            int hc_top_k = 0;
+                            if (topn_active_ && topn_limit_ > 0 &&
+                                !topn_ascending_ && topn_col_idx_ >= 1 &&
+                                topn_col_idx_ <= num_aggs) {
+                                hc_top_k = (int)topn_limit_;
+                            }
+                            auto hc_results = hagg.EmitTopK(hc_top_k);
+                            result_rows_.reserve(hc_results.size());
+                            for (auto &res : hc_results) {
+                                std::vector<Value> row;
+                                row.reserve(1 + num_aggs);
+                                row.push_back(Value::VARCHAR(res.key));
+                                for (idx_t a = 0; a < num_aggs; a++) {
+                                    row.push_back(Value::BIGINT(res.count));
+                                }
+                                result_rows_.push_back(std::move(row));
+                            }
+                            return;
+                        }
                         slothdb::RadixCountAggStr str_agg(Q13_THREADS);
                         pq->SetRGConsumer(
                             [&](const PhysicalParquetScan::RGWork &work,

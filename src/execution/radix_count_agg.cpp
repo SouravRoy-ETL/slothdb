@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <queue>
 #include <string_view>
@@ -384,6 +385,269 @@ size_t RadixCountAggStr::TotalGroups() const {
     size_t total = 0;
     for (auto& m : impl_->final_maps) total += m.size();
     return total;
+}
+
+// =====================================================================
+// RadixHashCountStr — bounded-HT + radix-spill VARCHAR GROUP-BY COUNT
+// =====================================================================
+
+namespace {
+
+constexpr int HC_NPART = RadixHashCountStr::NPART;        // 256 final partitions
+constexpr int HC_COARSE = 16;                             // level-1 radix fanout
+constexpr int HC_FINE = HC_NPART / HC_COARSE;             // level-2 fanout (16)
+constexpr size_t HC_ACTIVE_CAP = 16384;                   // flush threshold
+constexpr size_t HC_ARENA_BYTES = 4u * 1024 * 1024;       // per-thread, fixed
+
+// One spill partition: (key bytes, key length, count) triples.
+struct HcSpill {
+    std::vector<char> bytes;
+    std::vector<uint32_t> lens;
+    std::vector<int64_t> counts;
+    inline void push(const char* d, uint32_t n, int64_t c) {
+        size_t old = bytes.size();
+        bytes.resize(old + n);
+        if (n) std::memcpy(bytes.data() + old, d, n);
+        lens.push_back(n);
+        counts.push_back(c);
+    }
+};
+
+struct HcThread {
+    // Bounded active hash table — capped at HC_ACTIVE_CAP so it stays
+    // L2-resident; flushed (radix-spilled + cleared) when it fills.
+    ankerl::unordered_dense::map<std::string_view, int64_t> active;
+    // Fixed-size arena holding the active window's key bytes. Never grown
+    // (the active map's string_view keys must not be invalidated); a flush
+    // is forced if it would overflow. Reset to offset 0 on each flush.
+    std::vector<char> arena;
+    size_t arena_used = 0;
+    // Level-1 spill: 16 coarse buffers. A flush radix-scatters into these
+    // 16-way (tails fit L1) — a 256-way flush thrashes cache (~1.5s on Q13).
+    std::array<HcSpill, HC_COARSE> spill;
+    std::vector<int64_t> dict_scratch;  // dict-RG histogram, reused per RG
+};
+
+}  // anonymous namespace
+
+struct RadixHashCountStrImpl {
+    int max_threads = 1;
+    std::vector<std::unique_ptr<HcThread>> threads;
+    // Level-2 spill: 256 fine buffers, filled by Finalize's re-scatter.
+    // Owned here so the result maps' string_view keys stay valid.
+    std::array<HcSpill, HC_NPART> fine;
+    // Phase-3 output: one hash table per fine partition. Keys are
+    // string_views into `fine[*].bytes` (alive until EmitTopK).
+    std::array<ankerl::unordered_dense::map<std::string_view, int64_t>,
+               HC_NPART> result;
+};
+
+namespace {
+
+// Flush the active table: radix-spill every (key,count) into the level-1
+// coarse buffers (16-way), then reset the table and arena.
+inline void HcFlush(HcThread& th) {
+    ankerl::unordered_dense::hash<std::string_view> H;
+    for (auto& kv : th.active) {
+        std::string_view sv = kv.first;
+        size_t h = H(sv);
+        HcSpill& sb = th.spill[h & (HC_COARSE - 1)];
+        sb.push(sv.data(), (uint32_t)sv.size(), kv.second);
+    }
+    th.active.clear();
+    th.arena_used = 0;
+}
+
+// Ingest one (string, count) pair into the bounded active table.
+inline void HcIngest(HcThread& th, const char* data, uint32_t sz, int64_t c) {
+    std::string_view probe(data, sz);
+    auto it = th.active.find(probe);
+    if (it != th.active.end()) {
+        it->second += c;
+        return;
+    }
+    if (th.active.size() >= HC_ACTIVE_CAP ||
+        th.arena_used + sz > th.arena.size()) {
+        HcFlush(th);
+    }
+    char* dst = th.arena.data() + th.arena_used;
+    th.arena_used += sz;
+    if (sz) std::memcpy(dst, data, sz);
+    th.active.emplace(std::string_view(dst, sz), c);
+}
+
+}  // anonymous namespace
+
+RadixHashCountStr::RadixHashCountStr(int max_threads)
+    : impl_(std::make_unique<RadixHashCountStrImpl>()) {
+    impl_->max_threads = max_threads < 1 ? 1 : max_threads;
+    impl_->threads.reserve(impl_->max_threads);
+    for (int i = 0; i < impl_->max_threads; i++) {
+        auto th = std::make_unique<HcThread>();
+        th->arena.resize(HC_ARENA_BYTES);
+        th->active.reserve(HC_ACTIVE_CAP + HC_ACTIVE_CAP / 4);
+        // Pre-reserve coarse spill buffers so per-flush appends don't realloc.
+        for (auto& sp : th->spill) {
+            sp.bytes.reserve(1u << 20);
+            sp.lens.reserve(1u << 15);
+            sp.counts.reserve(1u << 15);
+        }
+        impl_->threads.emplace_back(std::move(th));
+    }
+}
+
+RadixHashCountStr::~RadixHashCountStr() = default;
+
+void RadixHashCountStr::IngestDictRG(int tid, const uint32_t* dict_indices,
+                                     uint32_t nrows,
+                                     const string_t* dict_values,
+                                     uint32_t dict_size,
+                                     const uint8_t* validity,
+                                     uint32_t skip_di) {
+    if (dict_size == 0 || nrows == 0) return;
+    auto& th = *impl_->threads[tid];
+    if (th.dict_scratch.size() < dict_size) th.dict_scratch.assign(dict_size, 0);
+    else std::fill_n(th.dict_scratch.begin(), dict_size, 0);
+    int64_t* cnt = th.dict_scratch.data();
+    if (!validity) {
+        for (uint32_t r = 0; r < nrows; r++) {
+            uint32_t d = dict_indices[r];
+            if (d < dict_size) cnt[d]++;
+        }
+    } else {
+        for (uint32_t r = 0; r < nrows; r++) {
+            if (!validity[r]) continue;
+            uint32_t d = dict_indices[r];
+            if (d < dict_size) cnt[d]++;
+        }
+    }
+    if (skip_di < dict_size) cnt[skip_di] = 0;  // fold WHERE col<>'' filter
+    for (uint32_t d = 0; d < dict_size; d++) {
+        int64_t c = cnt[d];
+        if (c == 0) continue;
+        HcIngest(th, dict_values[d].GetData(), dict_values[d].GetSize(), c);
+    }
+}
+
+void RadixHashCountStr::IngestPlainRG(int tid, const string_t* str_data,
+                                      uint32_t nrows, const uint8_t* validity,
+                                      bool skip_empty) {
+    if (nrows == 0) return;
+    auto& th = *impl_->threads[tid];
+    for (uint32_t r = 0; r < nrows; r++) {
+        if (validity && !validity[r]) continue;
+        uint32_t sz = str_data[r].GetSize();
+        if (skip_empty && sz == 0) continue;  // fold WHERE col<>'' filter
+        HcIngest(th, str_data[r].GetData(), sz, 1);
+    }
+}
+
+void RadixHashCountStr::Finalize() {
+    bool _pf = PqProfileOn();
+    auto _t0 = _pf ? std::chrono::steady_clock::now()
+                   : std::chrono::steady_clock::time_point{};
+    // Flush whatever is still in each thread's active table.
+    for (auto& thp : impl_->threads) {
+        if (!thp->active.empty()) HcFlush(*thp);
+    }
+    // Process one coarse partition end to end. Writes only fine[c*16..+15]
+    // and result[c*16..+15] -> disjoint per c, so workers never conflict.
+    auto do_coarse = [this](int c) {
+        ankerl::unordered_dense::hash<std::string_view> H;
+        // Pass B: re-scatter coarse partition c (from every thread) into 16
+        // fine sub-buffers by hash bits 4-7 (16-way -> tails fit L1).
+        for (auto& thp : impl_->threads) {
+            const HcSpill& cb = thp->spill[c];
+            const char* base = cb.bytes.data();
+            size_t off = 0;
+            const size_t n = cb.lens.size();
+            for (size_t i = 0; i < n; i++) {
+                uint32_t len = cb.lens[i];
+                const char* p = base + off;
+                off += len;
+                size_t h = H(std::string_view(p, len));
+                impl_->fine[c * HC_FINE + (int)((h >> 4) & (HC_FINE - 1))]
+                    .push(p, len, cb.counts[i]);
+            }
+        }
+        // Pass C: aggregate each fine sub-buffer. The buffer and its ~20K-
+        // entry hash table both stay ~L2-resident.
+        for (int s = 0; s < HC_FINE; s++) {
+            int fid = c * HC_FINE + s;
+            const HcSpill& fb = impl_->fine[fid];
+            auto& ht = impl_->result[fid];
+            const size_t n = fb.lens.size();
+            if (n == 0) continue;
+            ht.reserve(n);
+            const char* base = fb.bytes.data();
+            size_t off = 0;
+            for (size_t i = 0; i < n; i++) {
+                uint32_t len = fb.lens[i];
+                std::string_view sv(base + off, len);
+                off += len;
+                auto it = ht.find(sv);
+                if (it != ht.end()) it->second += fb.counts[i];
+                else ht.emplace(sv, fb.counts[i]);
+            }
+        }
+    };
+    int nt = impl_->max_threads;
+    if (nt > HC_COARSE) nt = HC_COARSE;
+    if (nt <= 1) {
+        for (int c = 0; c < HC_COARSE; c++) do_coarse(c);
+        return;
+    }
+    std::vector<std::thread> ws;
+    ws.reserve(nt - 1);
+    for (int w = 1; w < nt; w++) {
+        ws.emplace_back([&do_coarse, w, nt]() {
+            for (int c = w; c < HC_COARSE; c += nt) do_coarse(c);
+        });
+    }
+    for (int c = 0; c < HC_COARSE; c += nt) do_coarse(c);
+    for (auto& t : ws) if (t.joinable()) t.join();
+    if (_pf) {
+        fprintf(stderr, "[SLOTH_PROFILE] RadixHashCountStr::Finalize %.0fms\n",
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - _t0).count() / 1e6);
+    }
+}
+
+std::vector<RadixCountStrResult> RadixHashCountStr::EmitTopK(int k) const {
+    if (k <= 0) {
+        std::vector<RadixCountStrResult> all;
+        size_t total = 0;
+        for (auto& m : impl_->result) total += m.size();
+        all.reserve(total);
+        for (auto& m : impl_->result)
+            for (auto& kv : m)
+                all.push_back({std::string(kv.first), kv.second});
+        return all;
+    }
+    auto cmp = [](const RadixCountStrResult& a, const RadixCountStrResult& b) {
+        return a.count > b.count;  // min-heap: smallest count on top
+    };
+    std::priority_queue<RadixCountStrResult,
+                        std::vector<RadixCountStrResult>, decltype(cmp)>
+        heap(cmp);
+    for (auto& m : impl_->result) {
+        for (auto& kv : m) {
+            if ((int)heap.size() < k) {
+                heap.push({std::string(kv.first), kv.second});
+            } else if (kv.second > heap.top().count) {
+                heap.pop();
+                heap.push({std::string(kv.first), kv.second});
+            }
+        }
+    }
+    std::vector<RadixCountStrResult> out;
+    out.reserve(heap.size());
+    while (!heap.empty()) {
+        out.push_back(std::move(const_cast<RadixCountStrResult&>(heap.top())));
+        heap.pop();
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
 }
 
 // =====================================================================

@@ -245,6 +245,50 @@ private:
     std::unique_ptr<RadixCountAggStrImpl> impl_;
 };
 
+// Bounded-hash-table COUNT(*) GROUP BY for high-cardinality VARCHAR keys
+// (Q13: `SearchPhrase<>'' GROUP BY SearchPhrase`, ~13M rows / ~6M groups).
+//
+// RadixCountAggStr builds one per-thread hash table covering ~all 6M groups
+// (300 MB+) — every probe is a cache-cold RAM round-trip (~750 ns/op on the
+// 15W 6C/12T laptop). This class instead bounds the ACTIVE table: each
+// thread aggregates into a small map capped at ~16K entries (~512 KB,
+// L2-resident); when it fills, it is FLUSHED — its (key,count) pairs are
+// radix-spilled into NPART per-thread partition buffers and the map is
+// reset. So every per-row probe hits an L2-resident table. Phase 2
+// aggregates each spill partition (each ~L3-resident). Mirrors DuckDB's
+// GroupedAggregateHashTable abandon/repartition design. Bounded survivor
+// count required — the planner gates this on a selective filter.
+struct RadixHashCountStrImpl;
+class RadixHashCountStr {
+public:
+    static constexpr int NPART = 256;
+    explicit RadixHashCountStr(int max_threads);
+    ~RadixHashCountStr();
+    RadixHashCountStr(const RadixHashCountStr&) = delete;
+    RadixHashCountStr& operator=(const RadixHashCountStr&) = delete;
+
+    // Phase 1, dict-encoded row group: histogram the dict indices then
+    // ingest one (dict_value, count) pair per used dict entry. `skip_di`
+    // (UINT32_MAX disables) drops the WHERE `col <> ''` empty group.
+    void IngestDictRG(int tid, const uint32_t* dict_indices, uint32_t nrows,
+                      const string_t* dict_values, uint32_t dict_size,
+                      const uint8_t* validity, uint32_t skip_di);
+
+    // Phase 1, PLAIN-encoded row group: ingest one (string,1) pair per row.
+    // `skip_empty` drops size==0 rows (the `col <> ''` filter).
+    void IngestPlainRG(int tid, const string_t* str_data, uint32_t nrows,
+                       const uint8_t* validity, bool skip_empty);
+
+    // Phase 2: aggregate each spill partition into a hash table.
+    void Finalize();
+
+    // Phase 3: top-K by count DESC (k<=0 -> all groups).
+    std::vector<RadixCountStrResult> EmitTopK(int k) const;
+
+private:
+    std::unique_ptr<RadixHashCountStrImpl> impl_;
+};
+
 class RadixCountAgg {
 public:
     static constexpr int N_RADIX = 16;
