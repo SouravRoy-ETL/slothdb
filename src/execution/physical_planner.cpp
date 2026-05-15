@@ -20,6 +20,7 @@
 #include "slothdb/execution/radix_count_agg.hpp"
 #include "slothdb/execution/inline_row_agg.hpp"
 #include "slothdb/execution/literal_emit_filter.hpp"
+#include "slothdb/execution/q10_agg.hpp"
 #include "slothdb/execution/q11_helper.hpp"
 #include "slothdb/execution/q21_helper.hpp"
 #include "slothdb/execution/q26_helper.hpp"
@@ -11156,6 +11157,114 @@ private:
                 else if (info.name == "MIN")                       kinds[a] = AK::Min;
                 else if (info.name == "MAX")                       kinds[a] = AK::Max;
                 else                                                kinds[a] = AK::Other;
+            }
+
+            // === Q10 fast path: single INT32-column GROUP BY (no filter)
+            //     + aggs in {COUNT(*), SUM/AVG of an int col, COUNT(DISTINCT
+            //     int col)}. The generic per-row per-agg dispatch loop below
+            //     costs ~90 ns/row on this shape; Q10Agg (side TU) hardcodes
+            //     the agg kinds and skew-balances the distinct-set merge.
+            //     ClickBench Q10 (RegionID, SUM(AdvEngineID), COUNT(*),
+            //     AVG(ResolutionWidth), COUNT(DISTINCT UserID)) lands here. ==
+            if (group_col_indices.size() == 1 && !multi_has_filter &&
+                num_aggs >= 1 &&
+                pq->GetTypes()[group_col_indices[0]].id() ==
+                    LogicalTypeId::INTEGER) {
+                bool q10_ok = true;
+                std::vector<slothdb::Q10Kind> q10kinds((size_t)num_aggs);
+                std::vector<bool> q10_big((size_t)num_aggs, false);
+                std::vector<idx_t> q10_col((size_t)num_aggs, INVALID_INDEX);
+                for (idx_t a = 0; a < num_aggs && q10_ok; a++) {
+                    auto &info = agg_infos[a];
+                    if (kinds[a] == AK::CountStar) {
+                        q10kinds[a] = slothdb::Q10Kind::CountStar;
+                    } else if (kinds[a] == AK::Sum ||
+                               kinds[a] == AK::CountDistinctInt) {
+                        if (info.col_idx == INVALID_INDEX) {
+                            q10_ok = false; break;
+                        }
+                        auto ct = pq->GetTypes()[info.col_idx].id();
+                        if (ct != LogicalTypeId::INTEGER &&
+                            ct != LogicalTypeId::BIGINT) {
+                            q10_ok = false; break;
+                        }
+                        q10kinds[a] = (kinds[a] == AK::Sum)
+                            ? slothdb::Q10Kind::Sum
+                            : slothdb::Q10Kind::CountDistinct;
+                        q10_big[a] = (ct == LogicalTypeId::BIGINT);
+                        q10_col[a] = info.col_idx;
+                    } else {
+                        q10_ok = false;
+                    }
+                }
+                if (q10_ok) {
+                    constexpr int Q10_THREADS = 8;
+                    idx_t q10_gci = group_col_indices[0];
+                    slothdb::Q10Agg q10agg(Q10_THREADS, q10kinds);
+                    pq->SetRGConsumer(
+                        [&](const PhysicalParquetScan::RGWork &work,
+                            idx_t rg_idx, int tid) {
+                            if (work.pruned) return;
+                            idx_t nrows = pq->RowGroupSize(rg_idx);
+                            const auto &gc = work.cols[q10_gci];
+                            if (!gc.decoded ||
+                                gc.type.id() != LogicalTypeId::INTEGER) return;
+                            const int32_t *grp = gc.i32_data.data();
+                            const uint8_t *gv = gc.all_valid
+                                ? nullptr : gc.validity.data();
+                            std::vector<const int64_t*> ai64(
+                                (size_t)num_aggs, nullptr);
+                            std::vector<const int32_t*> ai32(
+                                (size_t)num_aggs, nullptr);
+                            std::vector<const uint8_t*> av(
+                                (size_t)num_aggs, nullptr);
+                            bool ok = true;
+                            for (idx_t a = 0; a < num_aggs; a++) {
+                                if (q10kinds[a] ==
+                                    slothdb::Q10Kind::CountStar) continue;
+                                const auto &ac = work.cols[q10_col[a]];
+                                if (!ac.decoded) { ok = false; break; }
+                                if (q10_big[a]) ai64[a] = ac.i64_data.data();
+                                else            ai32[a] = ac.i32_data.data();
+                                av[a] = ac.all_valid
+                                    ? nullptr : ac.validity.data();
+                            }
+                            if (!ok) return;
+                            q10agg.ConsumeRG(tid % Q10_THREADS,
+                                             (uint32_t)nrows,
+                                             grp, gv, ai64, ai32, av);
+                        });
+                    pq->RunParallelRGs(Q10_THREADS);
+                    auto q10groups = q10agg.MergeAll();
+                    // Emit through the shared EmitAggValue helper so the
+                    // result Values are byte-identical to the generic path.
+                    std::vector<EmitAggDesc> q10_descs((size_t)num_aggs);
+                    for (idx_t a = 0; a < num_aggs; a++) {
+                        auto &ae =
+                            static_cast<BoundFunction &>(*aggregates_[a]);
+                        q10_descs[a].kind = ResolveEmitAggKind(
+                            StringUtil::Upper(ae.function_name));
+                        q10_descs[a].return_type_id =
+                            ae.GetReturnType().id();
+                        q10_descs[a].sum_with_offset =
+                            agg_infos[a].sum_with_offset;
+                        q10_descs[a].sum_offset = agg_infos[a].sum_offset;
+                    }
+                    result_rows_.reserve(q10groups.size());
+                    for (auto &gr : q10groups) {
+                        std::vector<Value> row;
+                        row.reserve(1 + (size_t)num_aggs);
+                        row.push_back(Value::INTEGER(gr.key));
+                        for (idx_t a = 0; a < num_aggs; a++) {
+                            EmitAggView view;
+                            view.count = gr.aggs[a].count;
+                            view.sum = gr.aggs[a].sum;
+                            EmitAggValue(q10_descs[a], view, row);
+                        }
+                        result_rows_.push_back(std::move(row));
+                    }
+                    return;
+                }
             }
 
             // Packability check: a multi-col key fits in a single uint64 if every
