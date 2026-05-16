@@ -100,8 +100,11 @@ jobs:
         name: slothdb-macos
         path: build/src/slothdb
 
+  # Windows + Linux assets attach as soon as those builds finish. macOS is
+  # handled by a separate job so the slow, queue-prone Intel runner never
+  # blocks the release.
   release:
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-windows, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -114,13 +117,10 @@ jobs:
         VERSION="${TAG#v}"
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-    # Rename platform binaries so each asset has a distinct, platform-
-    # tagged filename when attached to the GitHub Release. Without this
-    # the three `slothdb` files collide on upload.
-    - name: Rename assets
-      run: |
-        mv slothdb-linux-x64/slothdb slothdb-linux-x64/slothdb-linux-x64
-        mv slothdb-macos/slothdb     slothdb-macos/slothdb-macos
+    # Rename the Linux binary so it has a distinct, platform-tagged
+    # filename when attached to the GitHub Release.
+    - name: Rename Linux binary
+      run: mv slothdb-linux-x64/slothdb slothdb-linux-x64/slothdb-linux-x64
     # Delete any pre-existing assets of the same name so a re-run of this
     # workflow on an existing tag (workflow_dispatch) replaces stale
     # binaries rather than silently keeping them.
@@ -130,7 +130,7 @@ jobs:
       run: |
         TAG="${{ steps.ver.outputs.tag }}"
         VERSION="${{ steps.ver.outputs.version }}"
-        for asset in slothdb.exe slothdb-linux-x64 slothdb-macos "slothdb_${VERSION}_amd64.deb"; do
+        for asset in slothdb.exe slothdb-linux-x64 "slothdb_${VERSION}_amd64.deb"; do
           gh release delete-asset "$TAG" "$asset" --yes --repo "$GITHUB_REPOSITORY" || true
         done
     - name: Attach to release
@@ -140,7 +140,34 @@ jobs:
         files: |
           slothdb-windows-x64/slothdb.exe
           slothdb-linux-x64/slothdb-linux-x64
-          slothdb-macos/slothdb-macos
           slothdb-deb/slothdb_${{ steps.ver.outputs.version }}_amd64.deb
-        # Don't overwrite the hand-written release notes — only attach files.
+        # Don't overwrite the hand-written release notes, only attach files.
+        fail_on_unmatched_files: true
+
+  # macOS binary attaches on its own track. The macos-13 Intel runner can
+  # sit in a long queue; this keeps that off the Windows / Linux critical
+  # path. If build-macos fails or is cancelled, this job is skipped.
+  attach-macos:
+    needs: build-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: slothdb-macos
+    - name: Derive tag
+      id: ver
+      run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+    - name: Rename binary
+      run: mv slothdb slothdb-macos
+    - name: Remove stale asset
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh release delete-asset "${{ steps.ver.outputs.tag }}" slothdb-macos --yes --repo "$GITHUB_REPOSITORY" || true
+    - name: Attach to release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.ver.outputs.tag }}
+        files: slothdb-macos
         fail_on_unmatched_files: true
