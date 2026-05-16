@@ -37,7 +37,10 @@ A from-scratch C++ embedded database, ahead of DuckDB on the majority of
 the industry-standard analytical benchmark.
 
 <div align="center">
-<img src="docs/assets/benchmarks/clickbench_outcomes.png" alt="ClickBench-43: SlothDB vs DuckDB" width="60%">
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/benchmarks/clickbench_outcomes_light.png">
+  <img src="docs/assets/benchmarks/clickbench_outcomes.png" alt="ClickBench-43: SlothDB vs DuckDB" width="60%">
+</picture>
 </div>
 
 [ClickBench](https://github.com/ClickHouse/ClickBench) is the standard
@@ -49,7 +52,10 @@ a type-strictness difference and SlothDB runs. Standout margins: Q24 about
 10x, Q18 about 8x, Q7 about 5x, Q1 about 3x faster than DuckDB.
 
 <div align="center">
-<img src="docs/assets/benchmarks/clickbench_speedup.png" alt="ClickBench-43 per-query speedup vs DuckDB" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/benchmarks/clickbench_speedup_light.png">
+  <img src="docs/assets/benchmarks/clickbench_speedup.png" alt="ClickBench-43 per-query speedup vs DuckDB" width="100%">
+</picture>
 </div>
 
 The 8 queries SlothDB loses are shown in red, not hidden: high-cardinality
