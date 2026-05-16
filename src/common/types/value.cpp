@@ -1,10 +1,27 @@
 #include "slothdb/common/types/value.hpp"
 #include "slothdb/common/exception.hpp"
-#include <charconv>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace slothdb {
+
+// Shortest decimal string that parses back to the original value, used
+// to render FLOAT / DOUBLE. A portable stand-in for std::to_chars on
+// floating point: GCC < 11's libstdc++ (used for the manylinux wheels)
+// rejects that call as ambiguous, and libc++ marks it unavailable below
+// macOS 13.3 (the baseline-macOS wheels).
+template <typename T>
+static std::string ShortestFloatString(T value) {
+    const int max_digits = sizeof(T) == 4 ? 9 : 17;
+    char buf[40];
+    for (int prec = 1; prec <= max_digits; ++prec) {
+        std::snprintf(buf, sizeof(buf), "%.*g", prec,
+                      static_cast<double>(value));
+        if (static_cast<T>(std::strtod(buf, nullptr)) == value) break;
+    }
+    return buf;
+}
 
 // Convert days-since-1970-01-01 to (Y, M, D) using Howard Hinnant's
 // civil-from-days. Used to render DATE values as ISO-8601 strings instead
@@ -342,19 +359,12 @@ std::string Value::ToString() const {
         return std::to_string(uinteger_);
     case LogicalTypeId::UBIGINT:
         return std::to_string(ubigint_);
-    case LogicalTypeId::FLOAT: {
-        // std::to_string(float) gives 6 decimals padded with zeros. Use
-        // std::to_chars (chars_format::general) for shortest round-trip
-        // representation, matching DuckDB's output.
-        char buf[32];
-        auto res = std::to_chars(buf, buf + sizeof(buf), float_);
-        return std::string(buf, res.ptr);
-    }
-    case LogicalTypeId::DOUBLE: {
-        char buf[32];
-        auto res = std::to_chars(buf, buf + sizeof(buf), double_);
-        return std::string(buf, res.ptr);
-    }
+    case LogicalTypeId::FLOAT:
+        // Shortest round-trip representation, matching DuckDB's output.
+        // std::to_string(float) would pad to a fixed 6 decimals.
+        return ShortestFloatString(float_);
+    case LogicalTypeId::DOUBLE:
+        return ShortestFloatString(double_);
     case LogicalTypeId::HUGEINT:
         return hugeint_.ToString();
     case LogicalTypeId::VARCHAR:

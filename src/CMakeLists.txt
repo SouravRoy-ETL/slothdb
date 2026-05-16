@@ -32,16 +32,35 @@ endif()
 add_library(slothdb_lib STATIC ${SLOTHDB_SOURCES})
 set_target_properties(slothdb_lib PROPERTIES OUTPUT_NAME "slothdb")
 
-# Enable AVX2 codegen for the analytics core (parquet + planner). AVX2 has
-# been the practical x86 baseline since 2013 (Haswell+) — every CPU the
-# benchmark suite targets supports it. Lets MSVC auto-vectorize the SUM/AVG
-# inner loops to 256-bit and unlocks _mm256_cvtepi32_pd in physical_planner.
-if(NOT EMSCRIPTEN)
-    if(MSVC)
-        target_compile_options(slothdb_lib PRIVATE /arch:AVX2)
-    else()
-        target_compile_options(slothdb_lib PRIVATE -mavx2)
+# AVX2 codegen for the analytics core (parquet + planner). AVX2 has been
+# the practical x86 baseline since 2013 (Haswell+). Every intrinsic path is
+# guarded (SLOTHDB_PP_HAS_AVX2 / SLOTHDB_HAS_SSE2), so a target built
+# without the flag falls back to scalar.
+#
+# The flag is dropped when it cannot apply: Emscripten, and any build with
+# an arm64 slice (native Apple Silicon, or the universal2 macOS wheel),
+# where the compiler rejects -mavx2 / /arch:AVX2.
+set(SLOTHDB_X86_AVX2 ON)
+if(EMSCRIPTEN)
+    set(SLOTHDB_X86_AVX2 OFF)
+elseif(CMAKE_OSX_ARCHITECTURES)
+    if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+        set(SLOTHDB_X86_AVX2 OFF)
     endif()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|aarch64|ARM64)")
+    set(SLOTHDB_X86_AVX2 OFF)
+endif()
+
+if(SLOTHDB_X86_AVX2 AND MSVC)
+    set(SLOTHDB_AVX2_FLAGS /arch:AVX2)
+elseif(SLOTHDB_X86_AVX2)
+    set(SLOTHDB_AVX2_FLAGS -mavx2)
+else()
+    set(SLOTHDB_AVX2_FLAGS "")
+endif()
+
+if(SLOTHDB_AVX2_FLAGS)
+    target_compile_options(slothdb_lib PRIVATE ${SLOTHDB_AVX2_FLAGS})
 endif()
 
 if(SLOTHDB_EDGE)
@@ -134,12 +153,14 @@ add_library(slothdb_snappy STATIC
     ${SLOTHDB_SNAPPY_DIR}/snappy-c.cc)
 target_include_directories(slothdb_snappy PUBLIC ${SLOTHDB_SNAPPY_DIR})
 # AVX2 enables BMI2 (PEXT) for the back-ref offset extraction and SSSE3 for
-# the 16-byte vector-byte-shuffle in literal copy. SlothDB targets x86-64
-# Haswell+ (same as the rest of the build).
+# the 16-byte vector-byte-shuffle in literal copy. Dropped on non-x86
+# builds; snappy's portable path covers them.
 if(MSVC)
-    target_compile_options(slothdb_snappy PRIVATE /w /arch:AVX2)
-else()
+    target_compile_options(slothdb_snappy PRIVATE /w ${SLOTHDB_AVX2_FLAGS})
+elseif(SLOTHDB_X86_AVX2)
     target_compile_options(slothdb_snappy PRIVATE -w -mavx2 -mbmi2)
+else()
+    target_compile_options(slothdb_snappy PRIVATE -w)
 endif()
 set_target_properties(slothdb_snappy PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(slothdb_lib PRIVATE slothdb_snappy)
@@ -160,11 +181,29 @@ if(SLOTHDB_BUILD_SHARED AND NOT EMSCRIPTEN)
         WINDOWS_EXPORT_ALL_SYMBOLS ON
         POSITION_INDEPENDENT_CODE ON
     )
+    # WINDOWS_EXPORT_ALL_SYMBOLS scans the .obj files to build the export
+    # table. /GL (whole-program optimization) emits anonymous objects with
+    # no readable symbol table, so the two cannot coexist. Disable /GL for
+    # this target's own sources; slothdb_lib and the CLI keep it. The DLL
+    # stays /O2-optimized, and /LTCG still links the /GL third-party libs.
+    if(MSVC)
+        target_compile_options(slothdb_shared PRIVATE $<$<CONFIG:Release>:/GL->)
+    endif()
     target_include_directories(slothdb_shared PUBLIC
         ${CMAKE_SOURCE_DIR}/include
     )
-    target_link_libraries(slothdb_shared PRIVATE slothdb_zstd)
-    target_include_directories(slothdb_shared PRIVATE ${SLOTHDB_ZSTD_DIR})
+    if(SLOTHDB_AVX2_FLAGS)
+        target_compile_options(slothdb_shared PRIVATE ${SLOTHDB_AVX2_FLAGS})
+    endif()
+    # slothdb_shared compiles the same sources as slothdb_lib, so it needs
+    # the same third-party decoders: parquet.cpp includes fastpforlib's
+    # bitpackinghelpers.h, and the snappy / zstd codecs.
+    target_link_libraries(slothdb_shared PRIVATE
+        slothdb_zstd slothdb_fastpfor slothdb_snappy)
+    target_include_directories(slothdb_shared PRIVATE
+        ${SLOTHDB_ZSTD_DIR}
+        ${CMAKE_SOURCE_DIR}/third_party/fastpforlib
+        ${SLOTHDB_SNAPPY_DIR})
     if(SLOTHDB_EDGE)
         target_compile_definitions(slothdb_shared PUBLIC SLOTHDB_EDGE=1)
     endif()
