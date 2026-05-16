@@ -31,6 +31,41 @@
 
 ---
 
+## ClickBench: 33 of 43 queries beat DuckDB
+
+A from-scratch C++ embedded database, ahead of DuckDB on the majority of
+the industry-standard analytical benchmark.
+
+<div align="center">
+<img src="docs/assets/benchmarks/clickbench_outcomes.png" alt="ClickBench-43: SlothDB vs DuckDB" width="60%">
+</div>
+
+[ClickBench](https://github.com/ClickHouse/ClickBench) is the standard
+analytical-database benchmark: 43 queries over the 100M-row, 14 GB `hits`
+Parquet dataset. SlothDB runs all 43 head to head against DuckDB and comes
+out ahead on **33 of 43** on a 6-core laptop. Of those 33, SlothDB is
+genuinely faster on 25; the other 8 are queries DuckDB rejects outright on
+a type-strictness difference and SlothDB runs. Standout margins: Q24 about
+10x, Q18 about 8x, Q7 about 5x, Q1 about 3x faster than DuckDB.
+
+<div align="center">
+<img src="docs/assets/benchmarks/clickbench_speedup.png" alt="ClickBench-43 per-query speedup vs DuckDB" width="100%">
+</div>
+
+The 8 queries SlothDB loses are shown in red, not hidden: high-cardinality
+two-column `GROUP BY` (Q31 at 0.29x, Q32 at 0.12x) is the current weak
+spot, and two more (Q29, Q33) run past 30s. The whole suite reproduces
+from `bench/clickbench/`, which holds the 43 queries verbatim from the
+ClickBench repo plus the runner. Warm-cache, min-of-3, on a Ryzen 5 5600U
+laptop. This is not an official ClickBench submission; ClickBench timings
+are hardware-specific, so run it on yours:
+
+```bash
+python bench/clickbench/verify_all.py
+```
+
+---
+
 ## Ask in any language. Get SQL.
 
 Type `.ask` at the `slothdb>` prompt. A rules parser handles catalog questions and common English shapes in under 10 ms with no model. Anything else falls through to a local Qwen2.5-Coder (0.5B for simple, 1.5B for analytic; lazy-downloaded on first use under `-DSLOTHDB_ASK_MODEL=ON`), which speaks 29 natural languages: English, Chinese, Spanish, French, German, Japanese, Korean, Russian, Arabic, Portuguese, Italian, Hindi, and more. Every generated statement is shown before it runs. Nothing leaves the machine. Set `SLOTHDB_ASK_CONFIRM=1` to add a `[Y/n]` prompt before each run.
@@ -293,7 +328,7 @@ Median speedup: 1.70×. Range: 1.04× - 5.43×.
 
 </details>
 
-Caveats worth knowing: Parquet aggregates are within ~20 % of DuckDB on most queries - both engines saturate the columnar fast path there, so don't expect 3× on Parquet. The big gaps come from SlothDB's native decoders (Avro, CSV `COUNT(*)`) and the 0.1.6 JOIN hot path. We have not submitted to ClickBench yet - on the roadmap.
+Caveats worth knowing: Parquet aggregates are within ~20 % of DuckDB on most queries - both engines saturate the columnar fast path there, so don't expect 3× on Parquet. The big gaps come from SlothDB's native decoders (Avro, CSV `COUNT(*)`) and the 0.1.6 JOIN hot path. Full ClickBench-43 results (33 of 43 vs DuckDB) are in the [ClickBench section](#clickbench-33-of-43-queries-beat-duckdb) near the top.
 
 The architectural decisions behind the numbers (typed columnar decode, per-worker buffer reuse, fused scan+aggregate, zero-copy VARCHAR, vectorized filter, parallel CSV aggregate, typed int64 JOIN hash path) are in [CHANGELOG.md](CHANGELOG.md) with a commit per optimization.
 
