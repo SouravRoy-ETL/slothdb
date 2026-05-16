@@ -120,6 +120,14 @@ const { columns, rows } = db.query("SELECT 1 AS n");
 
 ---
 
+## What's new in 0.2.6
+
+- **ClickBench-43.** SlothDB runs the full 43-query ClickBench suite over the 100M-row `hits` dataset and is ahead of DuckDB on 33 of 43 on a 6-core laptop (see the [ClickBench section](#clickbench-33-of-43-queries-beat-duckdb) above). The query engine gained radix-partitioned aggregators for high-cardinality `GROUP BY`, a bounded hash-table `COUNT` path, parquet decode improvements (zero-copy VARCHAR, batched RLE unpack), and `TopN` pushdown into the aggregate.
+- **Portable build.** The GCC and Clang builds compile cleanly again: the MSVC-only `getenv_s` is replaced with `std::getenv`, and the vendored snappy source is committed so CI can build it.
+- **`bench/clickbench/`.** All 43 ClickBench queries verbatim from the ClickBench repo, plus the runner and a chart generator. `python bench/clickbench/verify_all.py` reproduces the head-to-head against DuckDB.
+
+424 tests pass.
+
 ## What's new in 0.2.5
 
 - **Nested aggregates work everywhere.** `ROUND(AVG(x))`, `AVG(x) + 1`, `SUM(x) / COUNT(*)`, `CAST(SUM(y) AS DOUBLE)` and other shapes that wrap an aggregate inside a scalar function or arithmetic used to throw "Function execution for: AVG". The planner now walks the whole expression tree and hoists every aggregate it finds, no matter how deep, so you can write the SELECT list the way you'd write it in DuckDB or Postgres.

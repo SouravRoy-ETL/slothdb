@@ -82,7 +82,9 @@ jobs:
         path: slothdb_${{ steps.ver.outputs.version }}_amd64.deb
 
   build-macos:
-    runs-on: macos-latest
+    # macos-13 is the x86_64 runner. SlothDB targets x86-64 (AVX2/BMI2);
+    # macos-14+ is Apple Silicon and rejects -mavx2.
+    runs-on: macos-13
     steps:
     - uses: actions/checkout@v4
       with:
