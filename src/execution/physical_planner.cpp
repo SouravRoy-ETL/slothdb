@@ -122,6 +122,15 @@ struct SimplePredicate {
     bool like_contains = false;  // VARCHAR LIKE '%literal%' (case-sensitive,
                                  // no _, no escapes, exactly one %...%)
     bool like_negated = false;   // when like_contains: true means NOT LIKE
+    // INTEGER/BIGINT `col IN (c0, c1, ...)`. The binder lowers `IN` to a
+    // BoundFunction named "IN" (args[0] = column, args[1..] = constants),
+    // which is neither a COMPARISON nor an AND CONJUNCTION — without an
+    // explicit clause here it would not compile, and a fused FILTER+AGG
+    // path that bypasses PhysicalFilter would silently drop the predicate.
+    // When `int_in_form` is set, the row matches iff its int64 value equals
+    // any element of `in_set`. Mutually exclusive with str_form/like_contains.
+    bool int_in_form = false;
+    std::vector<int64_t> in_set;  // sorted, deduped; membership via binary search
 };
 
 static bool ParseCmpOp(const std::string &s, SimpleCmpOp &out) {
@@ -134,6 +143,36 @@ static bool ParseCmpOp(const std::string &s, SimpleCmpOp &out) {
     return false;
 }
 
+// Extract an integer literal from a value expression. Accepts a plain
+// CONSTANT and a UNARY_MINUS wrapping one — the parser turns `-1` into
+// UnaryMinus(Constant(1)), and ConstantFolding does not descend into the
+// sub-expressions of a WHERE clause, so a negative literal still arrives
+// un-folded here. Returns false for anything else (column refs, NULLs,
+// non-integer / floating constants).
+static bool ExtractIntLiteral(const BoundExpression &e, int64_t &out) {
+    if (e.GetExpressionType() == BoundExpressionType::UNARY_MINUS) {
+        int64_t inner;
+        if (!ExtractIntLiteral(
+                *static_cast<const BoundUnaryMinus &>(e).child, inner))
+            return false;
+        out = -inner;
+        return true;
+    }
+    if (e.GetExpressionType() != BoundExpressionType::CONSTANT) return false;
+    const auto &con = static_cast<const BoundConstant &>(e);
+    if (con.value.IsNull()) return false;
+    try {
+        switch (con.value.type().id()) {
+        case LogicalTypeId::BOOLEAN:  out = con.value.GetValue<bool>() ? 1 : 0; return true;
+        case LogicalTypeId::TINYINT:  out = (int64_t)con.value.GetValue<int8_t>();  return true;
+        case LogicalTypeId::SMALLINT: out = (int64_t)con.value.GetValue<int16_t>(); return true;
+        case LogicalTypeId::INTEGER:  out = (int64_t)con.value.GetValue<int32_t>(); return true;
+        case LogicalTypeId::BIGINT:   out = con.value.GetValue<int64_t>(); return true;
+        default: return false;
+        }
+    } catch (...) { return false; }
+}
+
 // Returns true iff `e` is an AND-tree of (ColumnRef OP Constant) comparisons
 // on numeric columns; fills `out`. On `false`, `out` may be partially filled -
 // caller should discard it.
@@ -144,6 +183,37 @@ static bool TryCompileSimplePredicateImpl(const BoundExpression &e,
         if (c.op != "AND") return false;
         return TryCompileSimplePredicateImpl(*c.left, out) &&
                TryCompileSimplePredicateImpl(*c.right, out);
+    }
+    // `col IN (const, const, ...)` on an INTEGER/BIGINT column. The binder
+    // lowers IN to a BoundFunction("IN", {column, val0, val1, ...}). Compile
+    // it to an int64 membership set so the fused FILTER+AGG paths keep
+    // honoring the predicate instead of falling back. `NOT IN` arrives as a
+    // BoundNegation around this and is intentionally not compiled here.
+    if (e.GetExpressionType() == BoundExpressionType::FUNCTION) {
+        auto &fn = static_cast<const BoundFunction &>(e);
+        if (fn.function_name != "IN" || fn.is_aggregate) return false;
+        if (fn.arguments.size() < 2) return false;
+        if (fn.arguments[0]->GetExpressionType() !=
+            BoundExpressionType::COLUMN_REF) return false;
+        auto &col = static_cast<const BoundColumnRef &>(*fn.arguments[0]);
+        auto ctid = col.GetReturnType().id();
+        if (ctid != LogicalTypeId::BIGINT && ctid != LogicalTypeId::INTEGER)
+            return false;
+        SimplePredicate sp;
+        sp.col_idx = col.column_index;
+        sp.op = SimpleCmpOp::EQ;  // unused for IN; satisfies field init
+        sp.int_in_form = true;
+        sp.in_set.reserve(fn.arguments.size() - 1);
+        for (size_t i = 1; i < fn.arguments.size(); i++) {
+            int64_t iv;
+            if (!ExtractIntLiteral(*fn.arguments[i], iv)) return false;
+            sp.in_set.push_back(iv);
+        }
+        std::sort(sp.in_set.begin(), sp.in_set.end());
+        sp.in_set.erase(std::unique(sp.in_set.begin(), sp.in_set.end()),
+                        sp.in_set.end());
+        out.push_back(std::move(sp));
+        return true;
     }
     if (e.GetExpressionType() != BoundExpressionType::COMPARISON) return false;
     auto &cmp = static_cast<const BoundComparison &>(e);
@@ -263,6 +333,17 @@ static inline bool EvalSimplePredicatesChunk(
     for (const auto &p : preds) {
         auto &v = chunk.GetVector(p.col_idx);
         if (!v.GetValidity().RowIsValid(r)) return false;
+        if (p.int_in_form) {
+            int64_t iv;
+            switch (v.GetType().id()) {
+            case LogicalTypeId::BIGINT:  iv = v.GetData<int64_t>()[r]; break;
+            case LogicalTypeId::INTEGER: iv = (int64_t)v.GetData<int32_t>()[r]; break;
+            default: return false;
+            }
+            if (!std::binary_search(p.in_set.begin(), p.in_set.end(), iv))
+                return false;
+            continue;
+        }
         if (p.str_form) {
             if (v.GetType().id() != LogicalTypeId::VARCHAR) return false;
             const auto &s = v.GetData<string_t>()[r];
@@ -318,6 +399,16 @@ static inline bool EvalSimplePredicates(const std::vector<SimplePredicate> &pred
         const auto &c = cols[p.col_idx];
         if (!c.decoded) return false; // can't eval if column wasn't typed-decoded
         if (!c.all_valid && !c.validity[r]) return false;
+        if (p.int_in_form) {
+            auto ctid = c.type.id();
+            int64_t v;
+            if (ctid == LogicalTypeId::BIGINT)       v = c.i64_data[r];
+            else if (ctid == LogicalTypeId::INTEGER) v = (int64_t)c.i32_data[r];
+            else return false;
+            if (!std::binary_search(p.in_set.begin(), p.in_set.end(), v))
+                return false;
+            continue;
+        }
         if (p.str_form) {
             if (c.type.id() != LogicalTypeId::VARCHAR) return false;
             // Lengths-only fast path: when the column was decoded for length
@@ -419,6 +510,11 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
         if (p.col_idx >= cols.size()) return false;
         const auto &c = cols[p.col_idx];
         if (!c.decoded || !c.all_valid) return false;
+        if (p.int_in_form) {
+            if (c.type.id() != LogicalTypeId::INTEGER &&
+                c.type.id() != LogicalTypeId::BIGINT) return false;
+            continue;
+        }
         if (p.str_form) {
             if (c.type.id() != LogicalTypeId::VARCHAR) return false;
             // Lengths-only path accepts `= ''` / `<> ''` (length-only check).
@@ -446,6 +542,27 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
     out_mask.assign(nrows, 1);
     for (auto &p : preds) {
         const auto &c = cols[p.col_idx];
+        if (p.int_in_form) {
+            // col IN (...): row keeps iff its value is in the set. The set
+            // is small (sorted); special-case the ubiquitous 2-element form
+            // and binary-search the rest.
+            auto match = [&](int64_t v) -> bool {
+                size_t n = p.in_set.size();
+                if (n == 1) return v == p.in_set[0];
+                if (n == 2) return v == p.in_set[0] || v == p.in_set[1];
+                return std::binary_search(p.in_set.begin(), p.in_set.end(), v);
+            };
+            if (c.type.id() == LogicalTypeId::INTEGER) {
+                const int32_t *arr = c.i32_data.data();
+                for (idx_t r = 0; r < nrows; r++)
+                    out_mask[r] &= (uint8_t)match((int64_t)arr[r]);
+            } else {  // BIGINT
+                const int64_t *arr = c.i64_data.data();
+                for (idx_t r = 0; r < nrows; r++)
+                    out_mask[r] &= (uint8_t)match(arr[r]);
+            }
+            continue;
+        }
         if (p.str_form) {
             // Lengths-only path: per-row length comparison, no dict needed.
             if (c.str_lengths_only && !c.str_lengths.empty() &&
@@ -10075,8 +10192,23 @@ private:
                 if (p) return true;
                 if (auto *f = dynamic_cast<PhysicalFilter *>(children[0].get())) {
                     if (!f->children.empty() &&
-                        dynamic_cast<PhysicalParquetScan *>(f->children[0].get()))
+                        dynamic_cast<PhysicalParquetScan *>(f->children[0].get())) {
+                        // The fused path bypasses PhysicalFilter and aggregates
+                        // straight off the scan, applying the WHERE clause via
+                        // compiled SimplePredicates. If the condition can't be
+                        // compiled (e.g. an IN-list, which the binder lowers to
+                        // a BoundFunction named "IN" that TryCompileSimplePredicate
+                        // does not handle, or an OR conjunction), proceeding here
+                        // would silently drop the filter and over-count. Bail to
+                        // the generic chunk-loop path, which pulls rows through
+                        // PhysicalFilter and honors the predicate. Mirrors the
+                        // COUNT(DISTINCT) fast-path guard above.
+                        if (!f->GetCondition()) return false;
+                        std::vector<SimplePredicate> tmp;
+                        if (!TryCompileSimplePredicate(*f->GetCondition(), tmp))
+                            return false;
                         return true;
+                    }
                 }
                 return false;
             }()) {
