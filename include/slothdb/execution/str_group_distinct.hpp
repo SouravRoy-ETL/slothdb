@@ -1,9 +1,10 @@
 #pragma once
 
-// Q11 / Q12 helper: 1-col VARCHAR GROUP BY + COUNT(DISTINCT INT) hot
-// loop. Lives in a side TU per feedback_text_icache_shift.md so the
-// inline 50-LOC version doesn't shift physical_planner.cpp .text and
-// regress unrelated hot queries (Q21/Q28 demonstrated).
+// Helper for a 1-col VARCHAR GROUP BY + COUNT(DISTINCT INT) hot loop.
+// Lives in a side TU per feedback_text_icache_shift.md so the inline
+// 50-LOC version doesn't shift physical_planner.cpp .text and regress
+// unrelated hot queries (substring-LIKE counts were demonstrated to
+// regress this way).
 
 #include <cstdint>
 #include <string>
@@ -16,8 +17,8 @@
 
 namespace slothdb {
 
-// gstr × int distinct hot loop, dict_fast variant (Q11 path).
-// Per row: keep_row check, validity check, dict_idx fetch, cached
+// gstr × int distinct hot loop, dict_fast variant (dict-encoded group
+// column). Per row: keep_row check, validity check, dict_idx fetch, cached
 // SimpleI64Set* lookup (di_to_set), agg-int insert. PFD=8 software
 // prefetch hides L3 round-trip on per-thread set probes.
 void IngestRGGstrIntDistinctDict(
@@ -54,10 +55,10 @@ void IngestRGGstrIntDistinctDictSkipDi(
 
 // Skew-aware parallel merge of the per-thread (VARCHAR-group -> distinct-
 // int set) maps. Returns one (group, distinct_count) pair per group.
-// Heavy groups (Q11 "iPad", ~1M distinct UserIDs) have their cross-thread
-// union split across all workers by uid hash, so one dominant group is
-// not the merge long pole — the per-group round-robin merge it replaces
-// was single-worker-bound on that group.
+// Heavy groups (a dominant group can hold ~1M distinct values) have their
+// cross-thread union split across all workers by value hash, so one
+// dominant group is not the merge long pole — the per-group round-robin
+// merge it replaces was single-worker-bound on that group.
 std::vector<std::pair<std::string, std::int64_t>>
 MergeStrGroupIntDistinct(
     const std::vector<std::unordered_map<std::string, SimpleI64Set>*>&

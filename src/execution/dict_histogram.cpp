@@ -1,4 +1,4 @@
-#include "slothdb/execution/q4_dict_histogram.hpp"
+#include "slothdb/execution/dict_histogram.hpp"
 #include "slothdb/storage/parquet.hpp"
 
 #include <atomic>
@@ -7,8 +7,8 @@
 
 namespace slothdb {
 
-bool TryQ4DictHistogram(ParquetReader &reader, idx_t col_idx,
-                        int64_t &out_count, double &out_sum) {
+bool TryDictHistogramAgg(ParquetReader &reader, idx_t col_idx,
+                         int64_t &out_count, double &out_sum) {
     const auto &meta = reader.GetMeta();
     const idx_t num_rgs = static_cast<idx_t>(meta.row_groups.size());
     if (num_rgs == 0) {

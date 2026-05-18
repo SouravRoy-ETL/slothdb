@@ -120,7 +120,7 @@ struct StrArenaChunk {
 };
 
 // Per-thread state: NSHARDS maps from string_view → count, plus a
-// bump arena for stable string storage. Mirrors q6_string_dedup.
+// bump arena for stable string storage. Mirrors string_dedup.
 struct StrPerThread {
     std::array<ankerl::unordered_dense::map<std::string_view, int64_t>,
                STR_NSHARDS> shards;

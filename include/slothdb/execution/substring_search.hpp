@@ -1,6 +1,6 @@
 #pragma once
 
-// Q21 helper: COUNT(*) WHERE <varchar> LIKE '%needle%' on a dict-encoded
+// Helper for COUNT(*) WHERE <varchar> LIKE '%needle%' on a dict-encoded
 // VARCHAR column. Fuses the dict-match build + count into a single pass,
 // skipping the out_mask materialization (3 passes -> 1 pass) used by the
 // generic BuildTypedKeepMask path. Lives in a side TU per
@@ -30,8 +30,9 @@ std::int64_t CountDictLikeContains(
 // PLAIN-encoded fast path. Walks str_data with a needle-size-specialized
 // substring search (uint32 prefix compare for 4-7 byte needles, mirroring
 // DuckDB's FindStrInStr). Avoids the generic memcmp tail loop that runs
-// on every match-candidate in the legacy row-loop. Used by Q21 PLAIN RGs
-// (~205/226 of URL RGs on hits.parquet).
+// on every match-candidate in the legacy row-loop. Used for PLAIN-encoded
+// row groups, which are the common case for high-cardinality string
+// columns.
 std::int64_t CountPlainLikeContains(
     const string_t* str_data, std::size_t nrows,
     const char* needle, std::size_t nlen,

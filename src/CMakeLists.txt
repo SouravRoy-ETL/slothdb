@@ -1,5 +1,5 @@
 # Sources are globbed recursively; a fresh checkout or a newly added .cpp
-# (e.g. execution/q10_agg.cpp) is picked up on the next CMake reconfigure.
+# (e.g. execution/int_group_agg.cpp) is picked up on the next CMake reconfigure.
 file(GLOB_RECURSE SLOTHDB_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/common/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/catalog/*.cpp"

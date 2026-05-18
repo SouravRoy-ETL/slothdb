@@ -1,8 +1,8 @@
 #include "slothdb/execution/physical_planner.hpp"
 #include "slothdb/execution/expression_executor.hpp"
 #include "slothdb/execution/agg_emit_helpers.hpp"
-#include "slothdb/execution/q4_dict_histogram.hpp"
-#include "slothdb/execution/q6_string_dedup.hpp"
+#include "slothdb/execution/dict_histogram.hpp"
+#include "slothdb/execution/string_dedup.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/parallel.hpp"
 #include "slothdb/common/string_util.hpp"
@@ -20,10 +20,10 @@
 #include "slothdb/execution/radix_count_agg.hpp"
 #include "slothdb/execution/inline_row_agg.hpp"
 #include "slothdb/execution/literal_emit_filter.hpp"
-#include "slothdb/execution/q10_agg.hpp"
-#include "slothdb/execution/q11_helper.hpp"
-#include "slothdb/execution/q21_helper.hpp"
-#include "slothdb/execution/q26_helper.hpp"
+#include "slothdb/execution/int_group_agg.hpp"
+#include "slothdb/execution/str_group_distinct.hpp"
+#include "slothdb/execution/substring_search.hpp"
+#include "slothdb/execution/topk_varchar.hpp"
 #include "slothdb/execution/radix_multi_agg.hpp"
 #include <algorithm>
 #include <cmath>
@@ -2067,7 +2067,7 @@ private:
         // VARCHAR predicate cols benefit from SkipStrData on the predicate
         // col (preserve dict_indices for BuildTypedKeepMask). The key col
         // also stays VARCHAR — both consumer paths (Q26 fast path via
-        // q26_helper + non-fast eval_row + get_key) prefer str_dict_values
+        // topk_varchar + non-fast eval_row + get_key) prefer str_dict_values
         // when available. PLAIN-only pages back-fill str_data on demand via
         // MaterialiseStrDataLazy, so skipping is safe in both branches and
         // shaves ~24MB/RG of pointless string_t writes on SearchPhrase.
@@ -8598,7 +8598,7 @@ private:
                 // 800MB sequential write of decoded INT64 i64_data and the
                 // per-row dict-gather; replaces with per-RG histogram +
                 // sum_idx (count[idx] * dict[idx]). See
-                // include/slothdb/execution/q4_dict_histogram.hpp.
+                // include/slothdb/execution/dict_histogram.hpp.
                 if (num_aggs == 1 && !pq->HasPushdownFilters() &&
                     !nogr_has_filter) {
                     auto &info = agg_infos[0];
@@ -8617,8 +8617,8 @@ private:
                             auto *reader_q4 = pq->GetReader();
                             if (reader_q4) {
                                 int64_t hcount = 0; double hsum = 0.0;
-                                if (TryQ4DictHistogram(*reader_q4, info.col_idx,
-                                                        hcount, hsum)) {
+                                if (TryDictHistogramAgg(*reader_q4, info.col_idx,
+                                                         hcount, hsum)) {
                                     auto &state = states[0];
                                     state.count = hcount;
                                     state.sum = hsum;
@@ -9186,7 +9186,7 @@ private:
             // helper. This bypasses BuildTypedKeepMask (a 100M-row pass
             // that writes a 100MB mask read by the helper) and the per-
             // row keep_mask streaming read. See feedback memory and
-            // q11_helper.cpp::IngestRGGstrIntDistinctDictSkipDi.
+            // str_group_distinct.cpp::IngestRGGstrIntDistinctDictSkipDi.
             // Precheck above already guarantees every agg is COUNT(DISTINCT
             // same_col), so num_aggs >= 1 is safe — the planner sometimes
             // duplicates the agg when ORDER BY references its alias (Q11
@@ -9284,8 +9284,8 @@ private:
             // Q6 path B: per-thread radix-shard for ungrouped VARCHAR
             // distinct. Lives outside TLDistinct (960-byte assert pinned)
             // and is only consulted on the !has_group + agg_is_varchar
-            // branch — see q6_string_dedup.hpp.
-            Q6BuildState q6_state(MAX_THREADS);
+            // branch — see string_dedup.hpp.
+            StringDedupState q6_state(MAX_THREADS);
 
             // Q5 ingests ~6M UserIDs per thread; pre-reserve scatter mini-arrays
             // so push_back stays branchless after first growth.
@@ -9393,8 +9393,9 @@ private:
                         }
                     } else {
                         // VARCHAR distinct path B: per-thread radix-shard build.
-                        // q6_emplace hashes once, picks one of 16 shards, and
-                        // copies bytes into the per-thread arena only on miss.
+                        // string_dedup_emplace hashes once, picks one of 16
+                        // shards, and copies bytes into the per-thread arena
+                        // only on miss.
                         // Merge phase below unions disjoint shards in parallel
                         // — no rehash, no duplicate alloc.
                         const int q6tid = tid % MAX_THREADS;
@@ -9406,7 +9407,7 @@ private:
                                 uint32_t di = a_dict_idx[r];
                                 if (di >= a_dsz || seen[di]) continue;
                                 seen[di] = 1;
-                                q6_emplace(q6_state, q6tid,
+                                string_dedup_emplace(q6_state, q6tid,
                                            a_dict_val[di].GetData(),
                                            a_dict_val[di].GetSize());
                             }
@@ -9414,7 +9415,7 @@ private:
                             for (idx_t r = 0; r < nrows; r++) {
                                 if (!keep_row(r)) continue;
                                 if (!acol.all_valid && !acol.validity[r]) continue;
-                                q6_emplace(q6_state, q6tid,
+                                string_dedup_emplace(q6_state, q6tid,
                                            a_str[r].GetData(), a_str[r].GetSize());
                             }
                         }
@@ -9674,7 +9675,7 @@ private:
                     return;
                 }
                 // gstr × int distinct (Q11 path). Side-TU helpers in
-                // q11_helper.cpp keep the inline 50-LOC loop out of
+                // str_group_distinct.cpp keep the inline 50-LOC loop out of
                 // physical_planner.cpp .text per
                 // feedback_text_icache_shift.md. Slow-path filter (no
                 // typed-keep-mask) still falls through to the legacy
@@ -9824,9 +9825,9 @@ private:
                     emit_int_only(total);
                 } else {
                     // Path B: shards already disjoint by hash partition.
-                    // q6_total_distinct unions per-shard across threads
+                    // string_dedup_total unions per-shard across threads
                     // in parallel without rehashing.
-                    emit_int_only(q6_total_distinct(q6_state));
+                    emit_int_only(string_dedup_total(q6_state));
                 }
             } else if (two_col_group) {
                 // 2-col merge: composite key collected across threads, then
@@ -9996,7 +9997,7 @@ private:
                         // Skew-aware parallel merge: the old per-group
                         // round-robin merge made one dominant group
                         // (iPad, ~1M distinct UserIDs) the single-worker
-                        // long pole. See q11_helper.cpp.
+                        // long pole. See str_group_distinct.cpp.
                         std::vector<std::unordered_map<std::string,
                             slothdb::SimpleI64Set>*> per_thread;
                         per_thread.reserve(MAX_THREADS);
@@ -11161,7 +11162,7 @@ private:
             // === Q10 fast path: single INT32-column GROUP BY (no filter)
             //     + aggs in {COUNT(*), SUM/AVG of an int col, COUNT(DISTINCT
             //     int col)}. The generic per-row per-agg dispatch loop below
-            //     costs ~90 ns/row on this shape; Q10Agg (side TU) hardcodes
+            //     costs ~90 ns/row on this shape; IntGroupAgg (side TU) hardcodes
             //     the agg kinds and skew-balances the distinct-set merge.
             //     ClickBench Q10 (RegionID, SUM(AdvEngineID), COUNT(*),
             //     AVG(ResolutionWidth), COUNT(DISTINCT UserID)) lands here. ==
@@ -11170,13 +11171,13 @@ private:
                 pq->GetTypes()[group_col_indices[0]].id() ==
                     LogicalTypeId::INTEGER) {
                 bool q10_ok = true;
-                std::vector<slothdb::Q10Kind> q10kinds((size_t)num_aggs);
+                std::vector<slothdb::IntGroupAggKind> q10kinds((size_t)num_aggs);
                 std::vector<bool> q10_big((size_t)num_aggs, false);
                 std::vector<idx_t> q10_col((size_t)num_aggs, INVALID_INDEX);
                 for (idx_t a = 0; a < num_aggs && q10_ok; a++) {
                     auto &info = agg_infos[a];
                     if (kinds[a] == AK::CountStar) {
-                        q10kinds[a] = slothdb::Q10Kind::CountStar;
+                        q10kinds[a] = slothdb::IntGroupAggKind::CountStar;
                     } else if (kinds[a] == AK::Sum ||
                                kinds[a] == AK::CountDistinctInt) {
                         if (info.col_idx == INVALID_INDEX) {
@@ -11188,8 +11189,8 @@ private:
                             q10_ok = false; break;
                         }
                         q10kinds[a] = (kinds[a] == AK::Sum)
-                            ? slothdb::Q10Kind::Sum
-                            : slothdb::Q10Kind::CountDistinct;
+                            ? slothdb::IntGroupAggKind::Sum
+                            : slothdb::IntGroupAggKind::CountDistinct;
                         q10_big[a] = (ct == LogicalTypeId::BIGINT);
                         q10_col[a] = info.col_idx;
                     } else {
@@ -11199,7 +11200,7 @@ private:
                 if (q10_ok) {
                     constexpr int Q10_THREADS = 8;
                     idx_t q10_gci = group_col_indices[0];
-                    slothdb::Q10Agg q10agg(Q10_THREADS, q10kinds);
+                    slothdb::IntGroupAgg q10agg(Q10_THREADS, q10kinds);
                     pq->SetRGConsumer(
                         [&](const PhysicalParquetScan::RGWork &work,
                             idx_t rg_idx, int tid) {
@@ -11220,7 +11221,7 @@ private:
                             bool ok = true;
                             for (idx_t a = 0; a < num_aggs; a++) {
                                 if (q10kinds[a] ==
-                                    slothdb::Q10Kind::CountStar) continue;
+                                    slothdb::IntGroupAggKind::CountStar) continue;
                                 const auto &ac = work.cols[q10_col[a]];
                                 if (!ac.decoded) { ok = false; break; }
                                 if (q10_big[a]) ai64[a] = ac.i64_data.data();

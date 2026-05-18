@@ -1,4 +1,4 @@
-#include "slothdb/execution/q11_helper.hpp"
+#include "slothdb/execution/str_group_distinct.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -68,9 +68,10 @@ void IngestRGGstrIntDistinctDict(
 namespace {
 // Inner SkipDi loop, templated on the agg column type so the per-row
 // `a_i64 ? a_i64[r] : a_i32[r]` branch is hoisted out by the compiler.
-// Q11's UserID is BIGINT (~50M rows after skip_di) so each saved branch
-// matters. all_valid template arg also lets the compiler drop the
-// validity branch entirely on the common no-nulls path.
+// The distinct-counted column is often BIGINT (tens of millions of rows
+// after skip_di) so each saved branch matters. all_valid template arg
+// also lets the compiler drop the validity branch entirely on the common
+// no-nulls path.
 template <typename AggT, bool ALL_VALID>
 inline void SkipDiInner(
     std::unordered_map<std::string, SimpleI64Set>& str_g_int_d,
@@ -79,13 +80,14 @@ inline void SkipDiInner(
     const std::uint8_t* a_validity,
     std::uint32_t skip_di, std::size_t nrows) {
     std::vector<SimpleI64Set*> di_to_set(g_dsz, nullptr);
-    // Prefetch distance bumped from 8 → 16. Q11's SimpleI64Set grows to
-    // ~500K entries × ~100 mobile-models = many L3-miss probes per insert.
-    // PFD=16 keeps ~2 cache lines in flight per row (16 rows × 8 B/insert).
+    // Prefetch distance bumped from 8 → 16. The per-group SimpleI64Set can
+    // grow to ~500K entries across ~100 distinct groups = many L3-miss
+    // probes per insert. PFD=16 keeps ~2 cache lines in flight per row
+    // (16 rows × 8 B/insert).
     constexpr std::size_t PFD = 16;
-    // Local last-(di, val) cache: Q11 data is mildly clustered, consecutive
-    // rows often share dict_idx AND value, so skipping the set::insert
-    // open-addressing probe on a duplicate is essentially free.
+    // Local last-(di, val) cache: input data is often mildly clustered,
+    // consecutive rows often share dict_idx AND value, so skipping the
+    // set::insert open-addressing probe on a duplicate is essentially free.
     std::uint32_t prev_di = UINT32_MAX;
     std::int64_t prev_v = 0;
     for (std::size_t r = 0; r < nrows; r++) {

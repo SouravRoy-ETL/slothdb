@@ -1,4 +1,4 @@
-#include "slothdb/execution/q21_helper.hpp"
+#include "slothdb/execution/substring_search.hpp"
 
 #include <cstring>
 #include <vector>
@@ -7,7 +7,7 @@ namespace slothdb {
 
 // Local copy of physical_planner.cpp::FindSubstr — same memchr-anchored
 // memcmp loop, kept here to avoid pulling the planner header into this
-// side TU. ~6.8x faster than std::search on URL-shaped strings.
+// side TU. ~6.8x faster than std::search on long-string-shaped input.
 static inline const char* FindSubstrLocal(const char* h, std::size_t hlen,
                                           const char* n, std::size_t nlen) {
     if (nlen == 0) return h;
@@ -91,8 +91,8 @@ std::int64_t CountDictLikeContains(
     const std::uint32_t* dict_indices, std::size_t nrows,
     const char* needle, std::size_t nlen,
     bool like_negated) {
-    // Precompute match per dict entry — 1 FindSubstr per unique URL instead
-    // of per row. Dict is typically thousands; rows can be ~1M.
+    // Precompute match per dict entry — 1 FindSubstr per unique string
+    // instead of per row. Dict is typically thousands; rows can be ~1M.
     const std::uint8_t hit_v = like_negated ? 0u : 1u;
     const std::uint8_t miss_v = like_negated ? 1u : 0u;
     std::vector<std::uint8_t> dict_match(dict_size);

@@ -1,10 +1,10 @@
 #pragma once
 
-// Q26 helper: ORDER BY <varchar> ASC/DESC LIMIT N where the output is just
+// Helper for ORDER BY <varchar> ASC/DESC LIMIT N where the output is just
 // the order-by column. For a dict-encoded VARCHAR column, the K-smallest
 // (or K-largest) strings live in the per-RG dictionary — iterating dict
 // entries (~50K per RG) is O(D) instead of O(N) for 100M rows. Filter
-// shape supported: single predicate `<key_col> <> ''` (Q26 SearchPhrase).
+// shape supported: single predicate `<key_col> <> ''`.
 //
 // Lives in side TU per feedback_text_icache_shift.md so planner .text
 // stays stable.

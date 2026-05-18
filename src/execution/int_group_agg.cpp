@@ -1,4 +1,4 @@
-#include "slothdb/execution/q10_agg.hpp"
+#include "slothdb/execution/int_group_agg.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -18,14 +18,14 @@ namespace slothdb {
 namespace {
 
 // Per-worker aggregation state. The group column is low-cardinality so a
-// dense slot index keyed by region id keeps every accumulator in a flat
+// dense slot index keyed by the group key keeps every accumulator in a flat
 // SoA vector (slot-indexed). cnt/sum/dset are sized [agg][slot].
-struct Q10Thread {
-    // region id -> dense slot (UINT32_MAX = unassigned). RegionID is a
-    // small dense-ish UInt32 (Q10: 9040 distinct in [0, 131069]); a direct
-    // array beats a hash probe on the 100M-row per-row hot path.
+struct IntGroupAggThread {
+    // group key -> dense slot (UINT32_MAX = unassigned). The key is a
+    // small, dense-ish non-negative int32; a direct array beats a hash
+    // probe on the 100M-row per-row hot path.
     std::vector<uint32_t> slot_of;
-    std::vector<int32_t> regions;                       // slot -> region id
+    std::vector<int32_t> regions;                       // slot -> group key
     std::vector<std::vector<int64_t>> cnt;              // [agg][slot]
     std::vector<std::vector<double>> sum;               // [agg][slot]
     std::vector<std::vector<SimpleI64Set>> dset;        // [agg][slot]
@@ -33,30 +33,30 @@ struct Q10Thread {
 
 }  // namespace
 
-struct Q10Agg::Impl {
+struct IntGroupAgg::Impl {
     int max_threads = 1;
-    std::vector<Q10Kind> kinds;
+    std::vector<IntGroupAggKind> kinds;
     std::vector<int> cs_aggs;    // COUNT(*) agg indices
     std::vector<int> sum_aggs;   // SUM / AVG agg indices
     std::vector<int> dist_aggs;  // COUNT(DISTINCT) agg indices
-    std::vector<std::unique_ptr<Q10Thread>> threads;
+    std::vector<std::unique_ptr<IntGroupAggThread>> threads;
 };
 
-Q10Agg::Q10Agg(int max_threads, std::vector<Q10Kind> kinds)
+IntGroupAgg::IntGroupAgg(int max_threads, std::vector<IntGroupAggKind> kinds)
     : impl_(std::make_unique<Impl>()) {
     impl_->max_threads = max_threads < 1 ? 1 : max_threads;
     impl_->kinds = std::move(kinds);
     const int na = (int)impl_->kinds.size();
     for (int a = 0; a < na; a++) {
         switch (impl_->kinds[(size_t)a]) {
-        case Q10Kind::CountStar:     impl_->cs_aggs.push_back(a); break;
-        case Q10Kind::Sum:           impl_->sum_aggs.push_back(a); break;
-        case Q10Kind::CountDistinct: impl_->dist_aggs.push_back(a); break;
+        case IntGroupAggKind::CountStar:     impl_->cs_aggs.push_back(a); break;
+        case IntGroupAggKind::Sum:           impl_->sum_aggs.push_back(a); break;
+        case IntGroupAggKind::CountDistinct: impl_->dist_aggs.push_back(a); break;
         }
     }
     impl_->threads.reserve((size_t)impl_->max_threads);
     for (int t = 0; t < impl_->max_threads; t++) {
-        auto th = std::make_unique<Q10Thread>();
+        auto th = std::make_unique<IntGroupAggThread>();
         th->cnt.resize((size_t)na);
         th->sum.resize((size_t)na);
         th->dset.resize((size_t)na);
@@ -64,9 +64,9 @@ Q10Agg::Q10Agg(int max_threads, std::vector<Q10Kind> kinds)
     }
 }
 
-Q10Agg::~Q10Agg() = default;
+IntGroupAgg::~IntGroupAgg() = default;
 
-void Q10Agg::ConsumeRG(int tid, uint32_t nrows,
+void IntGroupAgg::ConsumeRG(int tid, uint32_t nrows,
                        const int32_t* group, const uint8_t* gv,
                        const std::vector<const int64_t*>& ai64,
                        const std::vector<const int32_t*>& ai32,
@@ -79,7 +79,7 @@ void Q10Agg::ConsumeRG(int tid, uint32_t nrows,
     for (uint32_t r = 0; r < nrows; r++) {
         if (gv && !gv[r]) continue;
         int32_t region = group[r];
-        if (region < 0) continue;  // RegionID is a non-negative UInt32
+        if (region < 0) continue;  // the group key is a non-negative int
         size_t ridx = (size_t)region;
         if (ridx >= th.slot_of.size())
             th.slot_of.resize(ridx + 1, UINT32_MAX);
@@ -113,7 +113,7 @@ void Q10Agg::ConsumeRG(int tid, uint32_t nrows,
     }
 }
 
-std::vector<Q10Agg::Group> Q10Agg::MergeAll() {
+std::vector<IntGroupAgg::Group> IntGroupAgg::MergeAll() {
     const bool _pf = PqProfileOn();
     const auto _t0 = _pf ? std::chrono::steady_clock::now()
                          : std::chrono::steady_clock::time_point{};
@@ -152,8 +152,8 @@ std::vector<Q10Agg::Group> Q10Agg::MergeAll() {
     }
 
     // Distinct aggs: the cross-thread union is the merge's real cost and
-    // is heavily skewed (Q10's busiest RegionID holds millions of distinct
-    // UserIDs). Each heavy region's per-thread sets are scattered by value
+    // is heavily skewed (the busiest group can hold millions of distinct
+    // values). Each heavy region's per-thread sets are scattered by value
     // hash into W buckets, then a single balanced work pool drains both the
     // light whole-region unions and the heavy per-bucket unions - so no one
     // mega-region serialises the merge behind the others.
@@ -269,7 +269,7 @@ std::vector<Q10Agg::Group> Q10Agg::MergeAll() {
         }
     }
     if (_pf) {
-        fprintf(stderr, "[SLOTH_PROFILE] Q10Agg::MergeAll %.0fms\n",
+        fprintf(stderr, "[SLOTH_PROFILE] IntGroupAgg::MergeAll %.0fms\n",
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - _t0).count() / 1e6);
     }
