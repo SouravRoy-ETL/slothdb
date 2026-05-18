@@ -36,14 +36,6 @@ std::vector<std::string> TopKVarcharFromDict(
     std::uint32_t skip_di,
     bool ascending, std::size_t k);
 
-// Dict-trust variant: skips per-row dict_indices walk (no orphan check).
-// ~10× faster than TopKVarcharFromDict for high-cardinality dicts. Safe
-// only when the parquet writer guarantees no orphan dict entries.
-std::vector<std::string> TopKVarcharFromDictTrust(
-    const string_t* dict_values, std::size_t dict_size,
-    std::uint32_t skip_di,
-    bool ascending, std::size_t k);
-
 // Used-bitmap variant: same orphan-safety as TopKVarcharFromDict but reads
 // the pre-built used[] bitmap supplied by the parquet decoder (str_dict_used).
 // Skips the O(N) dict_indices walk — that work moved into the decode batch

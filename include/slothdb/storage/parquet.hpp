@@ -169,12 +169,6 @@ struct ParquetColumnData {
     // fields (per memory feedback_struct_growth_cache_shifts.md).
     std::vector<uint32_t> str_lengths;
     bool str_lengths_only = false;
-    // Dict-only fast path: decode only the dict page; skip all data pages.
-    // Output: str_dict_values populated, str_dict_indices stays empty, no
-    // str_data. Consumers that only need to enumerate the dict (e.g. Q26
-    // ORDER BY col LIMIT N with no orphan-check) set this to skip ~hundreds
-    // of MB of RLE+snappy decode for the data pages.
-    bool str_dict_only = false;
     // Dict-used fast path: decode dict + data pages, but only mark which dict
     // entries are referenced. Skips str_dict_indices buffer materialization
     // (~25MB/RG write) AND the consumer's O(N) used[] scan. The decoder fills
@@ -198,7 +192,6 @@ struct ParquetColumnData {
         decoded = false;
         str_lengths.clear();
         str_lengths_only = false;
-        str_dict_only = false;
         str_dict_used.clear();
         str_dict_used_only = false;
     }

@@ -207,9 +207,6 @@ struct ParqColMetaFull {
     bool has_stats = false;
     std::string min_bytes, max_bytes;
     // distinct_count from Statistics field 4 (optional, -1 = not present).
-    // When >= 0 and equals dict.num_values, the dict has no orphan entries:
-    // every dict_idx is referenced by at least one row. Enables Q26-style
-    // trust-dict variants safely.
     int64_t distinct_count = -1;
 };
 
@@ -2558,24 +2555,6 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         if (cur_offset < cmeta.data_offset) cur_offset = cmeta.data_offset;
     } else {
         cur_offset = cmeta.data_offset;
-    }
-
-    // Dict-only fast path: skip all data pages once the dict is read.
-    // Q26 ORDER BY col LIMIT N consumes only str_dict_values (top-K from
-    // dict entries; assumes no orphan dict entries). This saves the RLE-
-    // dict-indices decode + snappy decompress for every data page — the
-    // dominant cost on Q26 (~600ms of ~870ms wall on SearchPhrase).
-    if (tid == LogicalTypeId::VARCHAR && out.str_dict_only &&
-        cmeta.dict_page_offset >= 0 && dict.present) {
-        out.str_dict_values.resize(dict.str_ptr.size());
-        for (size_t i = 0; i < dict.str_ptr.size(); i++) {
-            out.str_dict_values[i] = string_t(dict.str_ptr[i], dict.str_len[i]);
-        }
-        out.str_dict_encoded = true;
-        out.str_dict_indices.clear();
-        out.str_data.clear();
-        out.decoded = true;
-        return true;
     }
 
     // Dict-used fast path setup: size the presence bitmap to dict_size now

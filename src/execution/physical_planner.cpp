@@ -845,11 +845,6 @@ public:
     // the column is consumed only by STRLEN(col) and `<> ''` / `= ''` checks.
     // Mutually exclusive with normal byte materialization.
     void SetStrLengthsOnly(std::vector<bool> mask) { str_lengths_only_ = std::move(mask); }
-    // Per-column hint: dict-only mode. The decoder reads only the dict page
-    // and skips all data pages. str_dict_values is populated; str_dict_indices
-    // stays empty. Use when the consumer only needs to enumerate the dict
-    // (e.g. Q26 ORDER BY col LIMIT N with dict-trust = no orphan check).
-    void SetStrDictOnly(std::vector<bool> mask) { str_dict_only_ = std::move(mask); }
     // Per-column hint: decoder writes only str_dict_used bitmap (skip
     // str_dict_indices materialization). Used by Q26 dispatch when we need
     // an orphan-safe dict scan but want to skip the per-row indices write.
@@ -1077,10 +1072,8 @@ private:
             }
             bool skip_str = (c < skip_str_data_.size()) && skip_str_data_[c];
             bool len_only = (c < str_lengths_only_.size()) && str_lengths_only_[c];
-            bool dict_only = (c < str_dict_only_.size()) && str_dict_only_[c];
             bool used_only = (c < str_dict_used_only_.size()) && str_dict_used_only_[c];
             work.cols[c].str_lengths_only = len_only;
-            work.cols[c].str_dict_only = dict_only;
             work.cols[c].str_dict_used_only = used_only;
             if (!reader_sp_->ReadColumnInto(rg, c, work.cols[c], skip_str)) {
                 work.cols_fallback[c] = reader_sp_->ReadColumn(rg, c);
@@ -1118,10 +1111,8 @@ private:
         auto setup_and_decode = [&](idx_t c, const std::vector<uint8_t> *mask) {
             bool skip_str = (c < skip_str_data_.size()) && skip_str_data_[c];
             bool len_only = (c < str_lengths_only_.size()) && str_lengths_only_[c];
-            bool dict_only = (c < str_dict_only_.size()) && str_dict_only_[c];
             bool used_only = (c < str_dict_used_only_.size()) && str_dict_used_only_[c];
             work.cols[c].str_lengths_only = len_only;
-            work.cols[c].str_dict_only = dict_only;
             work.cols[c].str_dict_used_only = used_only;
             if (!reader_sp_->ReadColumnInto(rg, c, work.cols[c], skip_str, mask)) {
                 work.cols_fallback[c] = reader_sp_->ReadColumn(rg, c);
@@ -1309,7 +1300,6 @@ private:
     std::shared_ptr<ParquetReader> cached_reader_;
     std::vector<bool> skip_str_data_; // per-column hint
     std::vector<bool> str_lengths_only_; // per-column hint: lengths-only decode
-    std::vector<bool> str_dict_only_;   // per-column hint: skip data pages
     std::vector<bool> str_dict_used_only_;   // per-column hint: dict-presence bitmap
     std::vector<bool> projection_;
     std::vector<PushdownFilter> pushdown_filters_; // zone-map row-group skip
@@ -2125,30 +2115,14 @@ private:
             filter_q26_compat &&
             orders_.size() == 1 &&
             proj_refs_only_key();
-        // For Q26 fast path: optionally enable dict-only decode on the key
-        // col. SLOTH_Q26_TRUST_DICT=1 enables; skips ~600ms of data-page
-        // RLE decode. Unsafe when the parquet has orphan dict entries
-        // (ClickBench hits.parquet SearchPhrase has them: ASCII "!" entries
-        // in dict that are never referenced — they'd surface as false top-K
-        // wins). Off by default.
-        if (q26_fast_path) {
-            static const bool q26_trust_dict = []() {
-                return std::getenv("SLOTH_Q26_TRUST_DICT") != nullptr;
-            }();
-            if (q26_trust_dict && key_col_scan < ncols) {
-                std::vector<bool> dict_only(ncols, false);
-                dict_only[key_col_scan] = true;
-                pq_scan->SetStrDictOnly(std::move(dict_only));
-            } else if (key_col_scan < ncols) {
-                // Orphan-safe dict-used mode: decoder builds the used[]
-                // bitmap directly from the RLE batch buffer, skipping the
-                // ~25MB/RG str_dict_indices materialization and the
-                // consumer's O(N) used[]-build pass. ~50-100ms wall
-                // reduction on Q26 / 226-RG SearchPhrase scans.
-                std::vector<bool> used_only(ncols, false);
-                used_only[key_col_scan] = true;
-                pq_scan->SetStrDictUsedOnly(std::move(used_only));
-            }
+        // For the Q26 fast path, ask the decoder for orphan-safe dict-used
+        // mode on the key column: it builds the used[] bitmap directly from
+        // the RLE batch buffer, skipping the ~25MB/RG str_dict_indices
+        // materialization and the consumer's O(N) used[]-build pass.
+        if (q26_fast_path && key_col_scan < ncols) {
+            std::vector<bool> used_only(ncols, false);
+            used_only[key_col_scan] = true;
+            pq_scan->SetStrDictUsedOnly(std::move(used_only));
         }
         pq_scan->SetNeededOutputs(need);
         pq_scan->Init();
@@ -2167,10 +2141,10 @@ private:
                     // PLAIN-page (non-dict) RGs: fall back to row-loop top-K
                     // for THIS RG only. Without this Q26 misses strings that
                     // live in PLAIN-only RGs (hits.parquet has mixed pages).
-                    // When str_dict_only/str_dict_used_only is active,
-                    // str_dict_indices.empty() is intentional — proceed.
+                    // When str_dict_used_only is active,
+                    // str_dict_indices.empty() is intentional, so proceed.
                     if (!kcol.str_dict_encoded ||
-                        (!kcol.str_dict_only && !kcol.str_dict_used_only &&
+                        (!kcol.str_dict_used_only &&
                          kcol.str_dict_indices.empty()) ||
                         kcol.str_dict_values.empty()) {
                         if (kcol.str_data.empty()) return;
@@ -2221,20 +2195,13 @@ private:
                             }
                         }
                     }
-                    // Default: safe variant walks dict_indices to filter
-                    // orphan dict entries (ClickBench hits.parquet has them).
-                    // When SLOTH_Q26_TRUST_DICT=1 + parquet dict_only mode,
-                    // skip indices walk for ~50ms consumer-side savings.
-                    // The DOMINANT savings come from the parquet reader
-                    // skipping data pages entirely (~600ms wall on Q26).
+                    // Both variants filter orphan dict entries (dict strings
+                    // the table never references). The used-bitmap variant
+                    // reads the bitmap the decoder built; the fallback walks
+                    // dict_indices to build it.
                     std::vector<std::string> winners;
-                    if (kcol.str_dict_only) {
-                        winners = slothdb::TopKVarcharFromDictTrust(
-                            kcol.str_dict_values.data(),
-                            kcol.str_dict_values.size(),
-                            skip_di, ascending, (size_t)k);
-                    } else if (kcol.str_dict_used_only &&
-                               !kcol.str_dict_used.empty()) {
+                    if (kcol.str_dict_used_only &&
+                        !kcol.str_dict_used.empty()) {
                         winners = slothdb::TopKVarcharFromDictUsed(
                             kcol.str_dict_values.data(),
                             kcol.str_dict_values.size(),
