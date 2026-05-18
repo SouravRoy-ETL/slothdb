@@ -61,8 +61,9 @@ namespace slothdb {
 class PhysicalHashJoin;
 class PhysicalParquetScan;
 struct SimplePredicate;
-// Q14 2-stage COUNT(DISTINCT) helper (defined at file-end, noinline).
-static bool TryComputeQ14_2Stage(
+// 2-stage COUNT(DISTINCT) for GROUP BY <varchar> + TopN (defined at
+// file end, noinline).
+static bool TryComputeVarcharGroupDistinctTopN(
     PhysicalParquetScan *pq,
     idx_t group_col, idx_t agg_col,
     LogicalTypeId group_tid, LogicalTypeId agg_tid,
@@ -9163,14 +9164,14 @@ private:
                               : LogicalTypeId::INVALID;
             const auto agg_tid = pq->GetTypes()[agg_col].id();
 
-            // Q14: GROUP BY VARCHAR + COUNT(DISTINCT INT) + TopN with
-            // high-cardinality group col (gated on parquet column size).
-            // Helper is noinline + at file-end so its body doesn't bloat
+            // GROUP BY <varchar> + COUNT(DISTINCT <int>) + ORDER BY DESC
+            // LIMIT N: handled by a 2-stage radix dedup. The helper is
+            // noinline and at file end so its body doesn't bloat
             // ComputeAggregates' .text section.
             if (has_group && !two_col_group &&
                 num_aggs >= 1 &&
                 agg_infos[0].name == "COUNT" && agg_infos[0].is_distinct &&
-                TryComputeQ14_2Stage(pq, group_col, agg_col,
+                TryComputeVarcharGroupDistinctTopN(pq, group_col, agg_col,
                     group_tid, agg_tid,
                     topn_active_, topn_ascending_, topn_limit_,
                     (int)num_aggs, dpd_preds, dpd_has_filter,
@@ -13935,30 +13936,28 @@ PhysicalOpPtr PhysicalPlanner::PlanDummyScan(const LogicalDummyScan &op) {
 }
 
 // =====================================================================
-// Q14 2-STAGE COUNT(DISTINCT INT) GROUP BY VARCHAR + TopN.
-// Lives at file-end + noinline so its body sits far from
-// ComputeAggregates' hot text. Adding ~120 LOC inline regressed
-// Q1/Q3/Q4/Q20 by 15-60% via I-cache shift (per
-// feedback_text_icache_shift.md).
+// 2-stage COUNT(DISTINCT) for: GROUP BY <varchar> + COUNT(DISTINCT <int>)
+// + ORDER BY <agg> DESC LIMIT N.
 //
-// Single-stage path (gstr × int distinct, ~line 8351) builds N per-
-// thread per-group SimpleI64Sets and unions across threads; with 1.7M
-// SearchPhrase groups (Q14) the merge phase TIMEOUTs at 47s.
-// 2-stage rewrite (per T-103 memo): radix-partitioned dedup of
-// (UserID, SearchPhrase) pairs, then count pairs per SearchPhrase.
-// Each pair is unique by composite key, so pair-count == DISTINCT
-// count. Reuses RadixCount2ColIntStr (INT+STR shape) infra.
+// Defined at file end and marked noinline so its body sits far from
+// ComputeAggregates' hot text; inlining its ~120 LOC there shifts the
+// hot .text section and regresses unrelated scan/aggregate queries.
 //
-// Cardinality gate via parquet column metadata: total_uncompressed_size
-// proxy. SearchPhrase: 830MB. MobilePhoneModel (Q11): 9MB. >50MB
-// threshold catches Q14 only — Q11's existing low-card path stays.
+// The single-stage path builds per-thread per-group integer sets and
+// unions them across threads. When the group column is high-cardinality
+// that cross-thread merge dominates and can run for tens of seconds.
+// This 2-stage form instead radix-partitions and dedups (group, value)
+// pairs, then counts pairs per group: each pair is unique by its
+// composite key, so the pair count equals the COUNT(DISTINCT) value. It
+// is correct for any cardinality and runs whenever the query shape
+// matches; there is no data-size routing threshold.
 // =====================================================================
 #if defined(_MSC_VER)
 __declspec(noinline)
 #elif defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline, cold))
 #endif
-static bool TryComputeQ14_2Stage(
+static bool TryComputeVarcharGroupDistinctTopN(
     PhysicalParquetScan *pq,
     idx_t group_col, idx_t agg_col,
     LogicalTypeId group_tid, LogicalTypeId agg_tid,
@@ -13973,21 +13972,10 @@ static bool TryComputeQ14_2Stage(
           topn_active && !topn_ascending && topn_limit > 0)) {
         return false;
     }
-    // Cardinality gate via parquet column metadata.
-    int64_t group_total_uncompressed = 0;
+    // The 2-stage form below handles any group-column cardinality, so
+    // there is no size-based routing. `reader` is read below to pre-size
+    // the stage-1 maps.
     auto *reader = pq->GetReader();
-    if (reader) {
-        for (auto &rg : reader->GetMeta().row_groups) {
-            if (group_col < rg.columns.size()) {
-                group_total_uncompressed +=
-                    rg.columns[group_col].total_uncompressed_size;
-            }
-        }
-    }
-    // 50MB threshold: SearchPhrase 830MB qualifies, MobilePhoneModel
-    // 9MB does not (Q11's low-card path stays optimal — empirically
-    // verified: 2-stage on 9MB regressed Q11 ~530ms vs legacy ~500ms).
-    if (group_total_uncompressed <= 50 * 1024 * 1024) return false;
 
     // Project group + agg + filter cols. Skip group_col str_data
     // (dict_indices + dict_values are sufficient for grouping/emit).
@@ -14013,29 +14001,25 @@ static bool TryComputeQ14_2Stage(
     }
     pq->Init();
 
-    constexpr int Q14_THREADS = 8;
-    slothdb::RadixCount2ColIntStr stage1(Q14_THREADS);
-    // Estimate total unique (sp, uid) pairs for shard reservation.
-    // ClickBench Q14: ~13M survivor rows after SP<>'' filter; nearly all
-    // pairs are distinct (a user rarely repeats the same SearchPhrase).
-    // Use total_rows × ~0.13 as a rough upper bound for pre-reserve to
-    // avoid 14+ map grows per shard (each grow rehashes accumulated
-    // entries — ~100ms wall cumulative on Q14).
+    constexpr int STAGE_THREADS = 8;
+    slothdb::RadixCount2ColIntStr stage1(STAGE_THREADS);
+    // Pre-size the stage-1 pair maps to limit rehashing during ingest.
+    // Distinct (group, value) pairs cannot exceed the row count; with no
+    // distinct-count statistics available, pre-size to a fraction of the
+    // row count and let the maps grow if the real count is higher.
     {
         int64_t total_rows = 0;
         if (reader) {
             for (auto &rg : reader->GetMeta().row_groups) total_rows += rg.num_rows;
         }
-        // SearchPhrase non-empty ratio ~13%; bound below to handle smaller
-        // datasets where the estimate would be tiny.
-        int64_t expected = (total_rows / 8) > 1'000'000
-                              ? (total_rows / 8) : 1'000'000;
+        int64_t expected = total_rows / 8;
+        if (expected < 1024) expected = 1024;
         stage1.ReserveExpectedRows(expected);
     }
-    // Q14 skip-di detection: single pred = `<group_col> <> ''`. If
-    // the dict has the empty-string entry we can fold the filter into a
-    // dict-idx skip and bypass BuildTypedKeepMask + 100MB keep_mask read.
-    bool q14_skip_di_eligible =
+    // skip-di detection: single pred = `<group_col> <> ''`. If the dict
+    // has the empty-string entry we can fold the filter into a dict-idx
+    // skip and bypass BuildTypedKeepMask and a full per-row keep-mask.
+    bool skip_di_eligible =
         dpd_has_filter && dpd_preds.size() == 1 &&
         dpd_preds[0].str_form &&
         (idx_t)dpd_preds[0].col_idx == group_col &&
@@ -14049,7 +14033,7 @@ static bool TryComputeQ14_2Stage(
             const auto &acol = work.cols[agg_col];
             if (!gcol.decoded || !acol.decoded) return;
             // Skip-di fast path: dict-encoded group col + single pred on it.
-            if (q14_skip_di_eligible && gcol.str_dict_encoded &&
+            if (skip_di_eligible && gcol.str_dict_encoded &&
                 !gcol.str_dict_indices.empty()) {
                 uint32_t skip_di = UINT32_MAX;
                 const auto &dv = gcol.str_dict_values;
@@ -14063,7 +14047,7 @@ static bool TryComputeQ14_2Stage(
                         break;
                     }
                 }
-                stage1.IngestRGStrIntDistinctSkipDi(tid % Q14_THREADS,
+                stage1.IngestRGStrIntDistinctSkipDi(tid % STAGE_THREADS,
                     (acol.type.id() == LogicalTypeId::BIGINT)
                         ? acol.i64_data.data() : nullptr,
                     (acol.type.id() == LogicalTypeId::INTEGER)
@@ -14093,7 +14077,7 @@ static bool TryComputeQ14_2Stage(
                     tk_active = true;
                 }
             }
-            stage1.IngestRGStrIntDistinct(tid % Q14_THREADS,
+            stage1.IngestRGStrIntDistinct(tid % STAGE_THREADS,
                 (acol.type.id() == LogicalTypeId::BIGINT)
                     ? acol.i64_data.data() : nullptr,
                 (acol.type.id() == LogicalTypeId::INTEGER)
