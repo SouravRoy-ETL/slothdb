@@ -2162,7 +2162,9 @@ private:
                             if (!kcol.all_valid && !kcol.validity[r]) continue;
                             const char *sd = gs[r].GetData();
                             uint32_t sl = gs[r].GetSize();
-                            if (!sk.empty() == false && sl == sk.size() &&
+                            // Skip the row only when a `<key> <> X`
+                            // predicate is present and the row equals X.
+                            if (!tn_preds.empty() && sl == sk.size() &&
                                 (sk.empty() ||
                                  std::memcmp(sd, sk.data(), sk.size()) == 0))
                                 continue;

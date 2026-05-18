@@ -23,7 +23,7 @@ std::vector<std::string> TopKVarcharFromDictUsed(
         if (d == skip_di) continue;
         std::string_view sv(dict_values[d].GetData(),
                             dict_values[d].GetSize());
-        if (sv.empty()) continue;
+        // Empty strings are kept; a `<> ''` filter is applied via skip_di.
         if (heap.size() < k) {
             heap.push(sv);
         } else if (ascending ? (sv < heap.top()) : (sv > heap.top())) {
