@@ -156,7 +156,7 @@ RadixMultiAggI64Key::EmitTopK(int k) const {
     // per-element vector allocations. Materialise the ≤K winners only at
     // the end. The previous version called build() — allocating two
     // vector<int64_t>s — for every candidate that beat the heap min, which
-    // for high-cardinality groups (Q31 ~5.7M) was a hot allocator path.
+    // for high-cardinality groups (~5.7M) was a hot allocator path.
     struct HeapEntry {
         int64_t count_star;
         uint64_t key;

@@ -200,8 +200,8 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
 
     // Bind GROUP BY. Resolve positional ordinals (`GROUP BY 1`) and
     // select-list aliases (e.g. `extract(minute FROM EventTime) AS m ...
-    // GROUP BY m`) to their underlying SELECT-list expression. ClickBench
-    // Q13 needs the ordinal path; Q19 needs the alias path.
+    // GROUP BY m`) to their underlying SELECT-list expression. Some
+    // queries need the ordinal path; others need the alias path.
     for (auto &expr : stmt.group_by) {
         bool resolved = false;
         // Positional ordinal: GROUP BY <integer-literal>
@@ -309,8 +309,8 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         bool resolved = false;
         // Positional ordinal: ORDER BY <integer-literal> binds to
         // select_list[N-1] (1-based), mirroring the GROUP BY ordinal
-        // path above. Required for ClickBench Q13 ("ORDER BY 2 DESC"
-        // sorts by COUNT(*), not by the constant 2). Out-of-range
+        // path above. Required so `ORDER BY 2 DESC`
+        // sorts by COUNT(*), not by the constant 2. Out-of-range
         // ordinals raise BinderException.
         if (item.expression->GetExpressionType() == ExpressionType::CONSTANT) {
             auto bound_const = BindExpression(*item.expression, context);
@@ -678,9 +678,9 @@ BoundExprPtr Binder::BindComparison(const ComparisonExpression &expr, BindContex
         konst.SetReturnType(target_typed.GetReturnType());
     };
     // Coerce a strict 'YYYY-MM-DD' VARCHAR literal against an integer date
-    // column (USMALLINT/INTEGER days-since-epoch, e.g. ClickBench EventDate)
+    // column (USMALLINT/INTEGER days-since-epoch, e.g. a packed date column)
     // so the typed-compare fast path fires instead of falling to per-row
-    // string-stod. ClickBench Q41-Q47 lives here.
+    // string-stod. Date-literal filter queries land here.
     auto promote_date_literal = [](BoundExpression &target_typed, BoundExpression *literal) {
         if (literal->GetExpressionType() != BoundExpressionType::CONSTANT) return;
         auto &konst = *static_cast<BoundConstant *>(literal);

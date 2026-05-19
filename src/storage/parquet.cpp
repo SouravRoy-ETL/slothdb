@@ -570,7 +570,7 @@ struct RleDecoder {
         // remaining tail is a multiple of 32, AND enough bytes are available,
         // call duckdb_fastpforlib::fastunpack which expands 32 values from
         // `bw` * 4 bytes in a per-bit-width unrolled body. ~3-5× faster than
-        // the scalar refill+shift loop on ClickBench's VARCHAR dict_indices
+        // the scalar refill+shift loop on VARCHAR dict_indices
         // (bw=14-22 typical).
         if (bib == 0 && bw >= 1 && bw <= 32) {
             int aligned = (take / 32) * 32;
@@ -689,7 +689,7 @@ const char *CodecName(int32_t codec) {
 // thread-local context so each call skips the implicit context allocation
 // that ZSTD_decompress performs internally. Saves ~1-2us per page; on a
 // 100M-row column with hundreds of pages per RG this compounds to a few
-// percent on ZSTD-bound queries (Q3, Q4, Q6).
+// percent on ZSTD-bound queries.
 bool ZstdDecompress(const uint8_t *in, size_t in_size, size_t uncompressed_size,
                     std::vector<uint8_t> &out) {
     out.resize(uncompressed_size);
@@ -1792,8 +1792,8 @@ bool DecodePlainStringInto(const uint8_t *data, size_t size, int32_t n_values,
 // The 4-byte length read still happens (PLAIN has no random access — we
 // must advance `pos`), but we skip the string_t construction and the
 // downstream consumer never reads dst[i] for those rows (it has its own
-// keep mask combining filter_mask with later predicates). For Q22 with
-// SearchPhrase NE '' keeping ~13% of rows, this avoids ~87% × 100M × 16B
+// keep mask combining filter_mask with later predicates). For a
+// SearchPhrase NE '' filter keeping ~13% of rows, this avoids ~87% × 100M × 16B
 // of string_t writes (~1.4 GB) on PLAIN URL pages. Kept as a separate
 // function so the no-mask path (most queries) stays bit-identical to the
 // pre-pushdown code — no per-row branch on a null filter_mask pointer.
@@ -1884,8 +1884,8 @@ size_t ReadDefLevels(const uint8_t *data, size_t size, int32_t n_values,
     // Inline all-valid fast path: walk the entire def_levels stream by
     // RLE run headers (not per-row) and check that every run has value=1
     // and the total run lengths == n_values. If so, no nulls — skip the
-    // per-row decode and don't materialize def_mask at all. ClickBench
-    // hits.parquet has nullable-schema columns whose data is null-free in
+    // per-row decode and don't materialize def_mask at all. Some files
+    // have nullable-schema columns whose data is null-free in
     // practice; def_levels can span multiple RLE runs even when all-1 (e.g.
     // page-boundary splits). Without this multi-run extension, columns
     // would fall through to the per-row N-iteration loop + 1MB memset
@@ -1985,7 +1985,7 @@ size_t ReadDefLevels(const uint8_t *data, size_t size, int32_t n_values,
 // `skip_str_data`: for VARCHAR dict path, skip `dst[i] = ...` per-row writes
 // when the caller will resolve strings via str_dict_values + str_dict_indices.
 // `is_required`: when true the column is REQUIRED (max_def_level=0) and the
-// page body has no def_levels at all - critical for ClickBench-style files
+// page body has no def_levels at all - critical for files
 // where required INT64 cols would otherwise consume the dict-index data
 // stream as if it were RLE-encoded def levels (gives bit_width=garbage).
 bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t size,
@@ -1998,7 +1998,7 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
     size_t remaining = size;
     int32_t n_values = hdr.num_values;
     // thread_local def_mask: ReadDefLevels resizes to n_values (~1M for
-    // ClickBench RGs) and the destructor would free per page → ~1000
+    // large RGs) and the destructor would free per page → ~1000
     // HeapAlloc/free pairs per RG × workers. On Windows HeapAlloc serializes
     // across threads, so amortizing this saves real wall time.
     thread_local std::vector<uint8_t> def_mask_tls;
@@ -2045,7 +2045,7 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
     // value IS null. Only flip all_valid when an actual null is observed —
     // otherwise downstream BuildTypedKeepMask falls to the per-row loop on
     // columns that are nullable-by-schema but null-free in practice (e.g.
-    // URL on hits.parquet → Q21 +4s).
+    // a wide URL column → +4s).
     if (!def_mask.empty()) {
         bool any_null = false;
         for (int32_t i = 0; i < n_values; i++) {
@@ -2100,8 +2100,8 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
                                        (uint32_t)dict.str_ptr.size(), row_offset);
             if (filter_mask) {
                 // Selection-vector pushdown — only used when a prior phase
-                // built a per-row keep mask from a cheaper filter col
-                // (Q22-shape). No-mask path stays in DecodePlainStringInto
+                // built a per-row keep mask from a cheaper filter col.
+                // No-mask path stays in DecodePlainStringInto
                 // (bit-identical to pre-pushdown).
                 return DecodePlainStringIntoMasked(p, remaining, n_values, def_mask,
                                                     out.str_data.data() + row_offset,
@@ -2264,7 +2264,7 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
                                           : nullptr;
         // Dict-used mode: write into str_dict_used bitmap directly from the
         // batch buffer. Skips ~25MB/RG str_dict_indices write and the
-        // consumer's O(N) used[]-build pass. Used by Q26 dispatch.
+        // consumer's O(N) used[]-build pass. Used by the dict-used dispatch.
         const bool want_used = out.str_dict_used_only && !out.str_dict_used.empty();
         uint8_t *used_dst = want_used ? out.str_dict_used.data() : nullptr;
         uint32_t used_n = want_used ? static_cast<uint32_t>(out.str_dict_used.size()) : 0;
@@ -2278,7 +2278,7 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
             const auto *str_lens = dict.str_len.data();
             uint32_t dn = static_cast<uint32_t>(dict.str_ptr.size());
             int32_t left = n_values, off = 0;
-            // Q15/Q17 fast path: when only indices are needed (skip_str_data
+            // Indices-only fast path: when only indices are needed (skip_str_data
             // + no dict_used bitmap + no nulls), let NextBatch write directly
             // into idx_dst+off. Eliminates the buf-stage round-trip and the
             // per-element copy loop. The RLE decoder writes sequentially so
@@ -2438,7 +2438,7 @@ bool ReadDictionaryPage(const uint8_t *file_base, size_t file_size, int64_t offs
         // Single-pass length scan + size pre-compute, then bulk copy.
         // Skips ~30k vector::insert calls per dict page (each does a
         // capacity-check + size-update); also lets us reserve once and
-        // memcpy the bytes in one block. ClickBench Q15/Q22 typical
+        // memcpy the bytes in one block. A typical
         // dict is ~30k × ~20-byte strings — 600KB/RG × 95 RGs cumulative.
         size_t bytes_total = 0;
         {
@@ -2487,10 +2487,10 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     out.str_dict_indices.clear();
     out.str_dict_values.clear();
     // Reuse str_heap when this RGWork owns it uniquely. Fused-aggregation
-    // paths (Q15/Q14/Q22/etc.) never AttachHeap on a Vector, so use_count
+    // paths never AttachHeap on a Vector, so use_count
     // stays at 1 across RGs — we just clear() the buffer and keep the
     // 1 MB+ capacity. Saves ~226 mallocs/free per parquet column on
-    // hits.parquet which on Windows HeapAlloc serialise across worker
+    // large files which on Windows HeapAlloc serialise across worker
     // threads. Legacy Vector-emit paths AttachHeap which bumps use_count;
     // those allocate fresh as before.
     if (out.str_heap && out.str_heap.use_count() == 1) {
@@ -2618,7 +2618,7 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
         // first PLAIN page triggers MaterialiseStrDataLazy back-fill INSIDE
         // DecodeDataPageTyped (which clears the flag). Zero-copy is still
         // valid here: str_heap capacity covers dict+plain bytes, and str_data
-        // is sized after MaterialiseStrDataLazy returns. Q22 URL benefits.
+        // is sized after MaterialiseStrDataLazy returns. Wide URL columns benefit.
         bool body_is_stable = false;
         bool can_zero_copy_plain = (tid == LogicalTypeId::VARCHAR && !out.str_lengths_only &&
                                      hdr.encoding != 2 && hdr.encoding != 8);
@@ -2712,7 +2712,7 @@ std::vector<Value> ParquetReader::ReadColumn(idx_t rg_idx, idx_t col_idx) {
     return ReadColumnChunk(rg.columns[col_idx]);
 }
 
-// Q4 fast path: walk pages of a BIGINT dict-encoded column, accumulate
+// SUM fast path: walk pages of a BIGINT dict-encoded column, accumulate
 // histogram of dict indices, and reduce SUM = sum_idx (count[idx]*dict[idx]).
 // Skips materialization of i64_data entirely.
 //
@@ -3022,10 +3022,10 @@ static bool CoerceForCompare(const Value &v, const Value &target, Value &out) {
         else out = Value::DOUBLE(d);
         return true;
     }
-    // VARCHAR → DATE: ClickBench Q37/Q38/Q39/Q42 use 'YYYY-MM-DD' string
-    // literals against EventDate. Without this coercion, the zone-map
-    // never prunes EventDate-bound RGs (string ne date type) → 100M-row
-    // decode where DuckDB prunes to a single July-2013 RG.
+    // VARCHAR → DATE: queries often use 'YYYY-MM-DD' string
+    // literals against a DATE column. Without this coercion, the zone-map
+    // never prunes date-bound RGs (string ne date type) → full-column
+    // decode where DuckDB prunes to a single matching RG.
     if (vid == LogicalTypeId::VARCHAR && tid == LogicalTypeId::DATE) {
         const std::string &s = v.GetValue<std::string>();
         int32_t days = 0;
@@ -3072,7 +3072,7 @@ bool ParquetReader::DictSkipPossible(idx_t rg_idx, idx_t col_idx,
 
     // Linear scan of the dict page. Single lookup ("is the literal in this
     // dict?") so sort+bsearch is overkill — std::sort on 30k-130k int64s
-    // costs 0.5-8ms per RG (~750ms total wall on Q20 across 200 RGs/8
+    // costs 0.5-8ms per RG (~750ms total wall across 200 RGs/8
     // threads). The compiler vectorises this equality compare on AVX2/SSE2.
     const int64_t *raw = reinterpret_cast<const int64_t *>(body);
     bool present = false;
@@ -3089,8 +3089,8 @@ bool ParquetReader::DictSkipPossible(idx_t rg_idx, idx_t col_idx,
 // sufficient to decide whether ANY row in this RG could match.
 //
 // Mirrors DuckDB's DictionaryDecoder::InitializeDictionary + the page-level
-// encoding check before HasFilteredOutAllValues. On hits.parquet, URL has
-// 21/226 RGs fully dict-encoded and 205/226 with PLAIN pages — the latter
+// encoding check before HasFilteredOutAllValues. On real data, a URL column
+// may have only 21/226 RGs fully dict-encoded and 205/226 with PLAIN pages — the latter
 // must NOT be pre-filtered (dict is unused/stale once writer fell back).
 //
 // On false, output buffers are cleared; caller must do a full decode.
@@ -3225,7 +3225,7 @@ bool ParquetReader::RowGroupMightMatch(idx_t rg_idx, idx_t col_idx,
         return !(v < col.min_value);
     } else if (op == "<>" || op == "!=") {
         // RG can be skipped only when every row equals v — i.e. min == v
-        // AND max == v. ClickBench Q8/Q12 filter on AdvEngineID/MobilePhone
+        // AND max == v. Queries commonly filter low-cardinality columns
         // with `<> 0`, and many RGs are all-zero on these columns.
         return !(col.min_value == v && col.max_value == v);
     }

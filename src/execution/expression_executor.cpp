@@ -109,8 +109,8 @@ void ExpressionExecutor::ExecuteColumnRef(const BoundColumnRef &expr, DataChunk 
         // ptr share so the destination vector keeps the source's string
         // heap alive. Falls back to per-row SetValue only when the source
         // has no auxiliary buffer (constructed-by-Value path). Drops the
-        // per-row Value-boxing cost that dominated wall time on Q25-Q27
-        // (filtered SELECT VARCHAR ORDER BY) — 75 s -> sub-second on a
+        // per-row Value-boxing cost that dominated wall time on
+        // filtered SELECT VARCHAR ORDER BY — 75 s -> sub-second on a
         // 13 M-row scan.
         std::memcpy(result.GetData(), src.GetData(), count * sizeof(string_t));
         if (auto aux = src.GetAuxiliaryPtr()) {
@@ -604,7 +604,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     // Vectorized form: evaluate each branch's when/then over the FULL chunk
     // once, then select per-row. The earlier per-row implementation was
     // O(count^2) — it re-Executed when_vec for every row, so a 2048-row
-    // chunk paid 2048× the cost of a single Execute. ClickBench Q40 timed
+    // chunk paid 2048× the cost of a single Execute. A CASE-heavy query timed
     // out >30s entirely in that loop. Now we Execute once per branch.
     if (name == "CASE" || name == "IF" || name == "IIF") {
         const size_t nargs = expr.arguments.size();
@@ -1472,7 +1472,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         // EXTRACT(part, timestamp_expr)
         // part is a string constant. The argument's unit is inferred per row:
         //   |v| >= 1e13  -> microseconds since epoch (matches NOW/TO_TIMESTAMP)
-        //   otherwise    -> seconds since epoch (matches ClickBench EventTime)
+        //   otherwise    -> seconds since epoch (common epoch-second timestamps)
         // Time-of-day parts (HOUR/MINUTE/SECOND/DOW/EPOCH) use direct integer
         // arithmetic and avoid the gmtime round-trip; calendar parts
         // (YEAR/MONTH/DAY) still go through gmtime_s/gmtime_r.
@@ -1499,11 +1499,11 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             return q;
         };
 
-        // Vectorized fast path: ClickBench EventTime is BIGINT epoch seconds,
+        // Vectorized fast path: timestamps are commonly BIGINT epoch seconds,
         // and the arithmetic parts (HOUR/MINUTE/SECOND/EPOCH/DOW) need only
         // direct integer arithmetic. Skip Value-boxing each row — go straight
         // from int64_t input slot to int64_t output slot. Cuts per-row cost
-        // from ~hundreds of ns to a handful of cycles. Q19 minute extract
+        // from ~hundreds of ns to a handful of cycles. A minute extract
         // dropped from >30s timeout to a few seconds.
         auto ts_tid = ts_vec.GetType().id();
         if (is_arith && ts_tid == LogicalTypeId::BIGINT) {
@@ -1601,7 +1601,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             if (ts_val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             // Auto-detect input scale (matches DATE_PART/EXTRACT logic):
             //   |raw| >= 1e13  -> microseconds since epoch (NOW/TO_TIMESTAMP)
-            //   otherwise      -> seconds since epoch (ClickBench EventTime BIGINT)
+            //   otherwise      -> seconds since epoch (common BIGINT epoch-second timestamps)
             // Output preserves the input scale so downstream GROUP BY/ORDER BY
             // remain self-consistent against the original column.
             int64_t raw = 0;

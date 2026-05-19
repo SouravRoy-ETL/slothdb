@@ -31,7 +31,7 @@ bool EmitAggValue(const EmitAggDesc& desc, const EmitAggView& view,
         return true;
     case EmitAggKind::Sum: {
         // Algebraic collapse: SUM(col +/- N) = SUM(col) + N*COUNT(col).
-        // Q30's 90 SUMs over the same column reduce to ONE scan; each
+        // 90 SUMs over the same column reduce to ONE scan; each
         // agg's offset adjusts the emitted answer at this point.
         double s = view.sum;
         if (desc.sum_with_offset) s += desc.sum_offset * (double)view.count;

@@ -49,7 +49,7 @@
 
 // AVX2 baseline (Haswell+, 2013). CMake adds /arch:AVX2 (MSVC) or -mavx2
 // to slothdb_lib so we can use 256-bit SIMD directly. Used by the FUSED
-// PARQUET FAST PATH's INT32 SUM hot loop (Q3 / AVG over 100M rows).
+// PARQUET FAST PATH's INT32 SUM hot loop (SUM / AVG over 100M rows).
 // MSVC defines __AVX2__ when /arch:AVX2 is set.
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -114,8 +114,8 @@ struct SimplePredicate {
     SimpleCmpOp op;
     double dval;       // numeric form: comparison value cast to double
     int64_t ival = 0;  // numeric form: original int64 (BIGINT literals
-                       // > 2^53 cannot round-trip through double — Q20's
-                       // UserID = 435090932899640449 lost ~64 in dval).
+                       // > 2^53 cannot round-trip through double — e.g.
+                       // 435090932899640449 lost ~64 in dval).
                        // BIGINT/INTEGER paths must read ival, not (int64_t)dval.
     std::string sval;  // VARCHAR form: literal bytes (for EQ/NE: full literal;
                        // for like_contains: bare needle with %s stripped)
@@ -235,7 +235,7 @@ static bool TryCompileSimplePredicateImpl(const BoundExpression &e,
     // column. Stash the bare needle and route the row-loop through
     // memmem/std::search instead of the per-row backtracker. ILIKE keeps
     // falling through to the legacy expression executor. NOT LIKE goes
-    // through the same path with like_negated=true (Q23 needs this).
+    // through the same path with like_negated=true.
     if (!swapped && (cmp.op == "LIKE" || cmp.op == "NOT LIKE") &&
         tid == LogicalTypeId::VARCHAR) {
         if (con.value.IsNull()) return false;
@@ -268,8 +268,8 @@ static bool TryCompileSimplePredicateImpl(const BoundExpression &e,
         case SimpleCmpOp::EQ: case SimpleCmpOp::NE: break;
         }
     }
-    // VARCHAR EQ/NE against a string literal — supports the ClickBench
-    // shape `WHERE Col <> ''` (Q11/Q12/Q13/Q14/Q15/Q22) without falling
+    // VARCHAR EQ/NE against a string literal — supports the common
+    // shape `WHERE Col <> ''` without falling
     // back to the slow generic path. Other ops on VARCHAR (LIKE, range
     // comparisons) stay unsupported here.
     if (tid == LogicalTypeId::VARCHAR) {
@@ -311,8 +311,8 @@ static bool TryCompileSimplePredicateImpl(const BoundExpression &e,
 }
 
 // Top-level entry: compile then reorder so cheap+selective predicates run
-// first. LIKE '%needle%' is per-row substring search; on ClickBench Q22 the
-// URL-LIKE clause is paired with a much cheaper SearchPhrase <> '' that
+// first. LIKE '%needle%' is per-row substring search; a substring-LIKE
+// clause is often paired with a much cheaper `<> ''` predicate that
 // rejects ~98% of rows, so eval'ing NE first short-circuits LIKE on most
 // rows.
 static bool TryCompileSimplePredicate(const BoundExpression &e,
@@ -460,7 +460,7 @@ static inline bool EvalSimplePredicates(const std::vector<SimplePredicate> &pred
             continue;
         }
         // BIGINT/INTEGER paths must compare via int64 to avoid 2^53 dval
-        // rounding bug — Q20's UserID = 435090932899640449 lost precision in
+        // rounding bug — a value like 435090932899640449 lost precision in
         // both the row value and literal when both went through double.
         auto ctid = c.type.id();
         if (ctid == LogicalTypeId::BIGINT || ctid == LogicalTypeId::INTEGER) {
@@ -501,7 +501,7 @@ static inline bool EvalSimplePredicates(const std::vector<SimplePredicate> &pred
 // can't be represented in the typed-vector form (mixed-page strings
 // without a dict, NULL handling required, unsupported op, missing
 // data). Auto-vectorizes — replaces per-row dispatch through
-// EvalSimplePredicates which costs ~30 cyc/row × 100M rows on Q8/Q11.
+// EvalSimplePredicates which costs ~30 cyc/row × 100M rows.
 static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
                                        const std::vector<ParquetColumnData> &cols,
                                        idx_t nrows,
@@ -526,9 +526,9 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
             }
             if (!c.str_dict_encoded || c.str_dict_indices.empty()) {
                 // PLAIN VARCHAR LIKE: walk str_data with the running mask
-                // (only rows still keep=1). Q22 (URL LIKE %google% AND
-                // SearchPhrase <> '') lands here — SearchPhrase NE drops
-                // ~87% of rows before URL LIKE fires.
+                // (only rows still keep=1). A substring-LIKE paired with a
+                // `<> ''` predicate on another column lands here — the NE
+                // predicate drops most rows before the LIKE fires.
                 if (p.like_contains && !c.str_data.empty() &&
                     c.str_data.size() >= nrows) continue;
                 return false;
@@ -580,7 +580,7 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
             // PLAIN VARCHAR LIKE: process only rows where keep_mask is
             // still 1. The prior preds (sorted non-LIKE-first by
             // TryCompileSimplePredicate) have already pruned out_mask, so
-            // this skips ~87% of rows on Q22's URL LIKE check.
+            // this skips most rows before the LIKE check runs.
             if (!c.str_dict_encoded && p.like_contains && !c.str_data.empty()) {
                 const string_t *sdata = c.str_data.data();
                 const auto &needle = p.sval;
@@ -591,7 +591,7 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
                         for (idx_t r = 0; r < nrows; r++) out_mask[r] = 0;
                     // else: keep mask unchanged (empty needle matches all)
                 } else if (needle.size() == 6) {
-                    // Q22 "google" hot path: uint32 prefix compare avoids
+                    // 6-byte needle hot path: uint32 prefix compare avoids
                     // the generic byte-loop memcmp on every match candidate.
                     // Mirrors DuckDB FindStrInStr 6-byte specialization.
                     uint32_t n32; std::memcpy(&n32, needle.data(), 4);
@@ -619,7 +619,7 @@ static inline bool BuildTypedKeepMask(const std::vector<SimplePredicate> &preds,
                         out_mask[r] = found ? hit_v : miss_v;
                     }
                 } else if (needle.size() == 8) {
-                    // Q23 ".google." 8-byte needle: uint64 compare in one
+                    // 8-byte needle: uint64 compare in one
                     // instruction. Mirrors DuckDB FindStrInStr case 8
                     // (Contains<uint64_t, ContainsAligned>).
                     uint64_t n64; std::memcpy(&n64, needle.data(), 8);
@@ -807,8 +807,8 @@ public:
 
     // Stash the mask passed down from a parent (e.g. PhysicalProjection's
     // SetNeededOutputs walk) directly into the scan's column projection.
-    // Without this hook, simple `SELECT col WHERE col = lit` (Q20) reads
-    // ALL ~105 columns of every unpruned RG.
+    // Without this hook, a simple `SELECT col WHERE col = lit` reads
+    // ALL columns of every unpruned RG.
     void SetNeededOutputs(const std::vector<bool> &mask) override { projection_ = mask; }
 
 private:
@@ -964,19 +964,20 @@ public:
     // Mutually exclusive with normal byte materialization.
     void SetStrLengthsOnly(std::vector<bool> mask) { str_lengths_only_ = std::move(mask); }
     // Per-column hint: decoder writes only str_dict_used bitmap (skip
-    // str_dict_indices materialization). Used by Q26 dispatch when we need
-    // an orphan-safe dict scan but want to skip the per-row indices write.
+    // str_dict_indices materialization). Used by the top-N VARCHAR dispatch
+    // when we need an orphan-safe dict scan but want to skip the per-row
+    // indices write.
     void SetStrDictUsedOnly(std::vector<bool> mask) { str_dict_used_only_ = std::move(mask); }
 
     // Two-phase decode (selection-vector pushdown). When `early_cols` is
     // non-empty AND `build_mask_fn` is set:
     //   1. Worker decodes only `early_cols` (cheap filter cols, e.g.
-    //      SearchPhrase dict_indices on Q22).
+    //      a filter column's dict_indices).
     //   2. Worker calls build_mask_fn(work.cols, mask) to derive a per-row
     //      keep mask.
     //   3. Worker decodes the remaining projected cols WITH the mask:
     //      PLAIN VARCHAR decoder skips dst[i] writes for masked rows
-    //      (Q22 URL: ~87% of rows skipped → ~1.4 GB string_t writes saved).
+    //      (a selective filter skips most rows → string_t writes saved).
     // Otherwise the worker takes the original single-pass decode path
     // (DecodeRowGroupInto stays bit-identical to pre-pushdown).
     using BuildMaskFn = std::function<void(const std::vector<ParquetColumnData>&,
@@ -1062,7 +1063,7 @@ public:
 
     // Signal in-flight workers to stop picking new RGs. Workers that have
     // already started decoding the current RG finish it; remaining undecoded
-    // RGs are dropped. Used by bare-LIMIT queries (Q18) once enough groups
+    // RGs are dropped. Used by bare-LIMIT queries once enough groups
     // have been seen.
     void RequestStop() { stop_.store(true); }
 
@@ -1078,10 +1079,10 @@ public:
         if (nt > hw) nt = hw; // never oversubscribe past logical procs
         // No-hint callers keep the conservative 8-thread cap: their per-thread
         // shard state is sized 8 (tid % 8). Hinted callers opt into more by
-        // sizing shard state to match the hint. ClickBench decode-bound
-        // queries (Q13/Q15-shape) scale to all 12 logical procs on the 6C/12T
-        // chip - HT siblings hide Snappy/RLE pipeline bubbles (sweep: Q15
-        // 8t 1.01x -> 12t 1.10x; Q13 8t 0.80x -> 12t 0.93x). SLOTH_MAXTHREADS
+        // sizing shard state to match the hint. Decode-bound
+        // queries (high-card GROUP BY shapes) scale to all 12 logical procs
+        // on a 6C/12T chip - HT siblings hide Snappy/RLE pipeline bubbles
+        // (measured 8t->12t: ~1.01x->1.10x and ~0.80x->0.93x). SLOTH_MAXTHREADS
         // overrides for tuning experiments.
         if (!had_hint && nt > 8) nt = 8;
         {
@@ -1202,12 +1203,13 @@ private:
     }
 
     // Two-phase variant: decode early_cols → build mask → decode remaining
-    // cols with mask. Used by selection-vector pushdown (Q22-shape: cheap
-    // VARCHAR NE filter on dict_indices builds a ~13% keep mask, gates
+    // cols with mask. Used by selection-vector pushdown (a cheap
+    // VARCHAR NE filter on dict_indices builds a selective keep mask, gates
     // dst[i] writes in subsequent PLAIN VARCHAR decodes). Lives as a
     // separate method so the single-pass DecodeRowGroupInto above stays
     // bit-identical to pre-pushdown — prior attempt that branched inside
-    // the hot loop regressed Q31/Q32 ~2× (lambda + per-RG branch costs).
+    // the hot loop regressed the 2-col GROUP BY path ~2× (lambda + per-RG
+    // branch costs).
     void DecodeRowGroupIntoTwoPhase(idx_t rg, RGWork &work) {
         if (IsRowGroupPruned(rg)) {
             work.pruned = true;
@@ -1280,9 +1282,9 @@ private:
                 // metadata reads only, not column-chunk decoding.
                 if (IsRowGroupPruned(rg)) continue;
                 // Dispatch to two-phase decode iff configured. The branch
-                // is per-RG (~95×), not per-row — Q31/Q32 hot path stays
-                // on the single-pass DecodeRowGroupInto when two-phase
-                // isn't set.
+                // is per-RG (~95×), not per-row — the 2-col GROUP BY hot
+                // path stays on the single-pass DecodeRowGroupInto when
+                // two-phase isn't set.
                 bool _prof = slothdb::PqProfileOn();
                 auto _d0 = _prof ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
@@ -1312,10 +1314,10 @@ private:
             // produce a near-empty RGWork (just the `pruned` flag), so they
             // don't consume the memory budget that max_ahead protects.
             // Without this short-circuit, workers serialise on slot_free_cv_
-            // even though the prune check itself is the only work — Q20
-            // INT64 dict-skip on 226 RGs blocked workers ~470ms each waiting
-            // for main thread to advance next_emit_, hiding a ~7x parallel
-            // speed-up of the dict scan.
+            // even though the prune check itself is the only work — an
+            // INT64 dict-skip over hundreds of RGs blocked workers ~470ms
+            // each waiting for main thread to advance next_emit_, hiding a
+            // ~7x parallel speed-up of the dict scan.
             if (IsRowGroupPruned(rg)) {
                 auto pwork = std::make_unique<RGWork>();
                 pwork->pruned = true;
@@ -1421,7 +1423,7 @@ private:
     std::vector<bool> str_dict_used_only_;   // per-column hint: dict-presence bitmap
     std::vector<bool> projection_;
     std::vector<PushdownFilter> pushdown_filters_; // zone-map row-group skip
-    // Two-phase decode (Q22-style selection-vector pushdown). When set, the
+    // Two-phase decode (selection-vector pushdown). When set, the
     // worker decodes early_cols first, runs build_mask_fn on them, then
     // decodes the remaining projected cols WITH the resulting mask passed
     // through to ReadColumnInto. Empty by default — the single-pass
@@ -1636,8 +1638,8 @@ public:
 
     // Forward needed-output mask to child, augmented with columns the
     // filter condition itself references. Without this, a parquet scan
-    // child sees no projection mask and decodes every column. (Q20:
-    // SELECT col WHERE col = lit went from 380ms RG decode → ~30ms.)
+    // child sees no projection mask and decodes every column. (A
+    // `SELECT col WHERE col = lit` went from 380ms RG decode → ~30ms.)
     void SetNeededOutputs(const std::vector<bool> &out_mask) override {
         if (children.empty()) return;
         idx_t in_cols = children[0]->GetTypes().size();
@@ -1940,8 +1942,8 @@ public:
     // Parent-projection pushdown: when a PhysicalProjection above this OrderBy
     // only references columns {c1, c2, ...}, pass-2 of CollectTopN_Primitive
     // (which decodes the K winning rows from parquet) can skip decoding all
-    // other columns. Q25 has 105-col hits.parquet but selects only
-    // SearchPhrase → without this we decode 104 unused cols (~1.2s wasted).
+    // other columns. A query over a 105-column file that selects only one
+    // column would otherwise decode 104 unused cols (~1.2s wasted).
     void SetParentProjectionCols(std::vector<bool> mask) {
         parent_proj_mask_ = std::move(mask);
     }
@@ -1959,7 +1961,7 @@ public:
         // AND the ORDER BY is a single simple ColumnRef, tell our child "you
         // only need the top-K rows by this output column". Aggregates can
         // honor this with a bounded heap instead of materializing all groups.
-        // Q35: 9.76 M groups × ORDER BY count DESC LIMIT 10 → aggregate
+        // A high-card GROUP BY with ORDER BY count DESC LIMIT 10 → aggregate
         // produces only 10 rows after pushdown.
         if (row_limit_ > 0 && orders_.size() == 1 && !children.empty() &&
             orders_[0].expression &&
@@ -2088,8 +2090,8 @@ private:
 
     // VARCHAR specialisation of the parquet TopN fast path. Mirrors the
     // numeric primitive version but the key type is std::string. Built
-    // for ClickBench Q26 (`SELECT col FROM hits WHERE c <> '' ORDER BY
-    // col LIMIT N`) which would otherwise run for 60+ seconds in the
+    // for the `SELECT col WHERE c <> '' ORDER BY col LIMIT N` shape,
+    // which would otherwise run for 60+ seconds in the
     // generic Value-boxing path.
     //
     // Skips the stats-based RG ordering — VARCHAR min/max stats from
@@ -2113,8 +2115,8 @@ private:
             std::vector<LightEntry>, decltype(light_cmp)>;
 
         // Walk the plan: OrderBy(this) → [Projection?] → [Filter?] → ParquetScan.
-        // The projection may be non-identity (e.g. `SELECT SearchPhrase` over
-        // wide hits.parquet — Q26). When it is, every projection expression
+        // The projection may be non-identity (e.g. `SELECT col` over a
+        // wide table). When it is, every projection expression
         // must be a plain column ref; we record an output→scan column map
         // and translate `key_col` (which is the orderby's input index =
         // projection's output index) into a scan-side index.
@@ -2174,11 +2176,11 @@ private:
         idx_t ncols = pq_scan->GetTypes().size();
         // VARCHAR predicate cols benefit from SkipStrData on the predicate
         // col (preserve dict_indices for BuildTypedKeepMask). The key col
-        // also stays VARCHAR — both consumer paths (Q26 fast path via
+        // also stays VARCHAR — both consumer paths (dict-scan fast path via
         // topk_varchar + non-fast eval_row + get_key) prefer str_dict_values
         // when available. PLAIN-only pages back-fill str_data on demand via
         // MaterialiseStrDataLazy, so skipping is safe in both branches and
-        // shaves ~24MB/RG of pointless string_t writes on SearchPhrase.
+        // shaves ~24MB/RG of pointless string_t writes on the key column.
         {
             std::vector<bool> skip_pre(ncols, false);
             for (auto &p : tn_preds) {
@@ -2203,12 +2205,12 @@ private:
         // First-pass scan only needs key + predicate columns. Output
         // materialization happens in a separate pass 2 below where we decode
         // only the columns the projection actually emits.
-        // Q26 fast path: when the filter is empty or `<key_col> <> ''`,
+        // TopN-VARCHAR fast path: when the filter is empty or `<key_col> <> ''`,
         // iterate the per-RG dict (~50K entries) instead of the per-row data
         // (~1M rows per RG). We emit (ncols)-wide rows with the key string
         // placed at `key_col_scan` and NULL elsewhere — the upstream
         // projection plucks the key column out. Skips pass-2 RG materialization.
-        bool filter_q26_compat = tn_preds.empty() ||
+        bool topn_varchar_filter_compat = tn_preds.empty() ||
             (tn_preds.size() == 1 &&
              (idx_t)tn_preds[0].col_idx == key_col_scan &&
              tn_preds[0].str_form &&
@@ -2221,23 +2223,23 @@ private:
         // Projection rule: fast path emits ncols-wide rows with key value
         // at key_col_scan and NULL elsewhere, so the parent projection must
         // only reference key_col_scan (i.e. identity output OR every output
-        // expression points at the key column). Q26 SELECT SearchPhrase
-        // ORDER BY SearchPhrase is the canonical fit.
+        // expression points at the key column). `SELECT col ORDER BY col`
+        // is the canonical fit.
         auto proj_refs_only_key = [&]() {
             if (output_to_scan.empty()) return true;
             for (idx_t sc : output_to_scan)
                 if (sc != key_col_scan) return false;
             return true;
         };
-        bool q26_fast_path =
-            filter_q26_compat &&
+        bool topn_varchar_fast_path =
+            topn_varchar_filter_compat &&
             orders_.size() == 1 &&
             proj_refs_only_key();
-        // For the Q26 fast path, ask the decoder for orphan-safe dict-used
-        // mode on the key column: it builds the used[] bitmap directly from
+        // For the TopN-VARCHAR fast path, ask the decoder for orphan-safe
+        // dict-used mode on the key column: it builds the used[] bitmap from
         // the RLE batch buffer, skipping the ~25MB/RG str_dict_indices
         // materialization and the consumer's O(N) used[]-build pass.
-        if (q26_fast_path && key_col_scan < ncols) {
+        if (topn_varchar_fast_path && key_col_scan < ncols) {
             std::vector<bool> used_only(ncols, false);
             used_only[key_col_scan] = true;
             pq_scan->SetStrDictUsedOnly(std::move(used_only));
@@ -2246,7 +2248,7 @@ private:
         pq_scan->Init();
         auto *reader = pq_scan->GetReader();
 
-        if (q26_fast_path) {
+        if (topn_varchar_fast_path) {
             std::string skip_str = (tn_preds.size() == 1 ? tn_preds[0].sval : std::string());
             std::vector<std::vector<std::string>> per_rg_winners;
             std::mutex pw_mu;
@@ -2257,8 +2259,8 @@ private:
                     const auto &kcol = work.cols[key_col_scan];
                     if (!kcol.decoded) return;
                     // PLAIN-page (non-dict) RGs: fall back to row-loop top-K
-                    // for THIS RG only. Without this Q26 misses strings that
-                    // live in PLAIN-only RGs (hits.parquet has mixed pages).
+                    // for THIS RG only. Without this the top-K misses strings
+                    // that live in PLAIN-only RGs (some files have mixed pages).
                     // When str_dict_used_only is active,
                     // str_dict_indices.empty() is intentional, so proceed.
                     if (!kcol.str_dict_encoded ||
@@ -2457,8 +2459,8 @@ private:
                 // Most rows lose against heap.top() once the heap fills.
                 // Compare candidate (sd,sl,is_null) against heap.top() WITHOUT
                 // allocating an std::string for the candidate key — the copy
-                // only happens on the rare row that wins. For Q26 ORDER BY
-                // SearchPhrase ASC LIMIT 10 over ~100M rows this skips ~99%
+                // only happens on the rare row that wins. For an ORDER BY
+                // VARCHAR ASC LIMIT 10 over ~100M rows this skips ~99%
                 // of the per-row std::string allocations.
                 auto wins_against_top = [ascending](const LightEntry &top,
                                                      const char *sd, uint32_t sl,
@@ -2713,9 +2715,9 @@ private:
             }
         }
         // Filter unwrap: TopN -> [Projection ->] Filter -> [Projection ->] Scan
-        // for Q24/Q25/Q26/Q27 (`SELECT ... WHERE ... ORDER BY ... LIMIT N`).
+        // for `SELECT ... WHERE ... ORDER BY ... LIMIT N` shapes.
         // Without this, those queries fall to the sequential DataChunk-based
-        // path that boxes every row into Value (Q25 ~75s vs DuckDB 0.8s).
+        // path that boxes every row into Value (~75s vs DuckDB 0.8s).
         // With a SimplePredicate-compilable filter, the parallel pass-1
         // worker decodes predicate cols + key, builds a typed keep-mask
         // (or per-row fallback for mixed-encoding RGs), and only pushes
@@ -2786,8 +2788,8 @@ private:
             // the decoder preserves dict_indices when available.
             // Also detect lengths-only candidates: VARCHAR predicate cols whose
             // ALL predicates are `<> ''` / `= ''` (length-check only). For
-            // Q25/Q26/Q27 (`WHERE SearchPhrase <> '' ORDER BY ... LIMIT 10`),
-            // pass-1 only needs SearchPhrase lengths; pass-2 re-decodes the
+            // a `WHERE <varchar> <> '' ORDER BY ... LIMIT 10` shape,
+            // pass-1 only needs the VARCHAR lengths; pass-2 re-decodes the
             // K winning RGs with full bytes for output.
             std::vector<bool> tn_lo_pred(ncols, false);
             if (!tn_preds.empty()) {
@@ -2852,7 +2854,7 @@ private:
             // only RESTRICTS which rows enter the heap, so an RG whose
             // min-key already loses to the K-th best cannot hide a winner.
             //
-            // For Q25/Q27 (~80 RGs over 100M rows), this typically drops
+            // For a ~80-RG / 100M-row scan, this typically drops
             // the work from "scan all 80 RGs in parallel" to "scan 3-8 RGs
             // sequentially". The filter cost is amortised over the small
             // surviving RG set, so the overall path is faster despite
@@ -3060,8 +3062,8 @@ private:
                     // populated and tight before parallel workers start.
                     // Otherwise 8 workers grab RG 0..7 in parallel with an
                     // empty heap (no threshold), all decode their RG fully,
-                    // then early-exit only kicks in for RG 8+. For Q25/Q27
-                    // (ORDER BY EventTime LIMIT 10 over date-clustered data)
+                    // then early-exit only kicks in for RG 8+. For an
+                    // ORDER BY ... LIMIT 10 over date-clustered data
                     // this turns 8 wasted RG decodes into 0 wasted ones.
                     if (!rg_order.empty()) {
                         eval_one_rg(0);
@@ -3116,7 +3118,7 @@ private:
 
                         // Filter mask: try dict-amortised BuildTypedKeepMask
                         // first; on refusal (mixed PLAIN+DICT pages clear
-                        // str_dict_encoded — common on hits.parquet URL),
+                        // str_dict_encoded — common on wide VARCHAR columns),
                         // fall through to per-row eval. Mirrors the FUSED
                         // COUNT pattern at line ~5616.
                         std::vector<uint8_t> mask;
@@ -3254,9 +3256,9 @@ private:
                 std::vector<std::vector<Value>>(ncols));
 
             // Build the (rg, col) work list. Skip the key column AND any
-            // column the parent projection didn't request — Q25 only outputs
-            // SearchPhrase but hits.parquet has 105 cols; without this filter
-            // pass 2 decoded all 104 (excluding key_col) per RG, dwarfing the
+            // column the parent projection didn't request — a query may
+            // output one column while the file has 100+; without this filter
+            // pass 2 decoded every other column per RG, dwarfing the
             // pass-1 cost.
             const auto &p2_proj = pq_scan->GetProjection();
             const auto &p2_parent = parent_proj_mask_;
@@ -3413,7 +3415,7 @@ private:
         std::reverse(sorted_rows_.begin(), sorted_rows_.end());
     }
 
-    // Q27-shape inline-value fast path. When the ORDER BY is
+    // Inline-value fast path. When the ORDER BY is
     // (primitive_key [, varchar_value]) and the output is a single VARCHAR
     // column that is ALSO a predicate col, the regular two-pass primitive
     // TopN's `kk = k*4` oversample is wasteful: a composite-key heap of
@@ -3772,7 +3774,7 @@ private:
             // would be incorrect).
             return false;
         }
-        return true;  // single ORDER BY (Q25 shape) or no extra orders
+        return true;  // single ORDER BY or no extra orders
     }
 
     void CollectTopN(idx_t k) {
@@ -3784,18 +3786,18 @@ private:
         // Multi-col ORDER BY: route to primitive path on first column when
         // it's a column ref of primitive type. Oversample K' = K * 64 in
         // the primitive heap so all ties at the K-th boundary are likely
-        // captured, then resort by full multi-key and trim to K. For
-        // ClickBench Q27 (`ORDER BY EventTime, SearchPhrase LIMIT 10`)
-        // this captures the 10-30 rows that share each unique EventTime.
+        // captured, then resort by full multi-key and trim to K. For an
+        // `ORDER BY <ts>, <varchar> LIMIT 10` shape
+        // this captures the 10-30 rows that share each unique timestamp.
         if (!orders_.empty() &&
             orders_[0].expression->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
             auto &cref = static_cast<BoundColumnRef &>(*orders_[0].expression);
             auto tid = orders_[0].expression->GetReturnType().id();
             const bool multi = orders_.size() > 1;
             const idx_t kk = multi ? k * 4 : k;
-            // Try inline-value path for Q25/Q27 shape (one VARCHAR output
-            // col that's also a predicate col). Composite-key heap captures
-            // exact top-K with K=k (no oversample), skipping pass-2.
+            // Try inline-value path for the single-VARCHAR-output shape
+            // (one VARCHAR output col that's also a predicate col). Composite-key
+            // heap captures exact top-K with K=k (no oversample), skipping pass-2.
             {
                 idx_t value_col = INVALID_INDEX;
                 bool value_asc = true;
@@ -3827,8 +3829,8 @@ private:
             case LogicalTypeId::TIMESTAMP_TZ:
             case LogicalTypeId::TIME:
                 // TIMESTAMP / TIMESTAMP_TZ / TIME store int64 microseconds
-                // internally; reuse the int64 primitive heap path. Q25/Q27
-                // (`ORDER BY EventTime LIMIT 10`) dropped through to the
+                // internally; reuse the int64 primitive heap path. An
+                // `ORDER BY <timestamp> LIMIT 10` dropped through to the
                 // slow Value-based path before this case.
                 CollectTopN_Primitive<int64_t>(kk, cref.column_index, orders_[0].ascending);
                 if (multi) { ResortByFullKeys(); TrimToK(k); }
@@ -5964,7 +5966,7 @@ public:
 
     // Bare LIMIT (no ORDER BY) — no row ordering required, just emit the
     // first N. Used by emit paths that would otherwise materialize every
-    // group (Q22: 80M string copies before LIMIT 10 truncates).
+    // group (a wide-VARCHAR GROUP BY: 80M string copies before LIMIT 10 truncates).
     void SetRowLimit(idx_t n) override { row_limit_hint_ = n; }
 
     void Init() override {
@@ -6070,20 +6072,20 @@ private:
         bool is_distinct;
         // Algebraic collapse: when the agg is SUM(col +/- const), share the
         // base SUM(col) + COUNT_NON_NULL(col) scan and synthesize the per-
-        // agg result as `state.sum + offset * state.count` at emit. Q30's
-        // 90 SUM(ResolutionWidth + N) calls collapse to ONE scan instead
+        // agg result as `state.sum + offset * state.count` at emit. A query
+        // with 90 SUM(col + N) calls collapses to ONE scan instead
         // of 90× per-row Value boxing in the generic agg path.
         bool sum_with_offset = false;
         double sum_offset = 0.0;
         // Dedup: when multiple aggs target the same (col, name), only the
         // first one (primary) runs the scan; the rest set `primary_idx`
         // pointing to it and skip the inner loop. Emit reads from the
-        // primary's AggState. Drops Q30's 90 redundant column scans to 1.
+        // primary's AggState. Drops 90 redundant column scans to 1.
         idx_t primary_idx = INVALID_INDEX;
         // STRLEN/LENGTH(col_ref): when the agg arg is a scalar function
         // computing a VARCHAR's byte length, we accumulate string sizes
-        // directly inside the parquet generic GROUP BY hot loop (Q28
-        // AVG(STRLEN(URL))) without falling through to the per-row
+        // directly inside the parquet generic GROUP BY hot loop (e.g.
+        // AVG(STRLEN(col))) without falling through to the per-row
         // ExpressionExecutor path. col_idx stays INVALID_INDEX so the
         // numeric fast paths still bypass this agg correctly; the
         // strlen-aware paths use strlen_col_idx instead.
@@ -6144,7 +6146,7 @@ private:
     void ComputeAggregates() {
         // Process chunks directly - no intermediate row materialization.
         // ankerl maps are 2-3× faster than std::unordered_map for the
-        // 5M+ unique keys produced by Q35-shape multi-col GROUP BY.
+        // 5M+ unique keys produced by a high-card multi-col GROUP BY.
         ankerl::unordered_dense::map<std::string, std::vector<AggState>> group_states;
         ankerl::unordered_dense::map<std::string, std::vector<Value>> group_keys;
         std::vector<std::string> group_order;
@@ -6153,7 +6155,7 @@ private:
         // thread `pkey` is content-deterministic across threads, so the
         // std::string content_key the generic path builds is unnecessary
         // work. The 5.7 M std::string allocations + 4 std::string-keyed
-        // map insertions per pkey were ~25 s of Q35's wall on this code.
+        // map insertions per pkey were ~25 s of wall on this code.
         // When `int_only_active` is set, run_merge and the result emit
         // loop iterate the uint64-keyed map below instead of the
         // std::string-keyed maps above.
@@ -6247,8 +6249,8 @@ private:
             }
         }
         // Dedup: same (col, name, !is_distinct) → only the primary runs the
-        // scan. Q30 has 90 SUMs over the same column; without this, the
-        // FUSED PARQUET FAST PATH iterates the typed-numeric inner loop 90×
+        // scan. A query with 90 SUMs over the same column would otherwise
+        // make the FUSED PARQUET FAST PATH iterate the typed-numeric inner loop 90×
         // per row group. SUM with offsets shares one base scan because
         // emit synthesizes `sum + offset * count` per agg.
         for (idx_t a = 0; a < num_aggs; a++) {
@@ -7100,7 +7102,7 @@ private:
                                 // str_dict_values; per-row str_data bytes
                                 // unused. Skip the materialisation; PLAIN
                                 // pages trigger back-fill in parquet.cpp.
-                                // Q22 URL falls here.
+                                // a wide-VARCHAR GROUP BY falls here.
                                 std::vector<bool> skip(pq->GetTypes().size(), false);
                                 for (auto &p : single_preds) {
                                     if (p.col_idx < skip.size() && p.str_form &&
@@ -7109,7 +7111,7 @@ private:
                                         skip[p.col_idx] = true;
                                     }
                                 }
-                                // Q13/Q11/Q12-shape: when group col is VARCHAR
+                                // VARCHAR-group COUNT shape: when group col is VARCHAR
                                 // and all aggs are CountStar, the dict_fast
                                 // branch reads dict_indices+dict_values only;
                                 // str_data is dead weight (12-16 B per row of
@@ -7117,32 +7119,32 @@ private:
                                 // the rare PLAIN page back-fills str_data
                                 // automatically and falls into the non-dict
                                 // branch (str_dict_encoded toggles false).
-                                // Q13_eligible_skip widened: group_col VARCHAR
+                                // Eligible-skip widened: group_col VARCHAR
                                 // dict_fast paths read str_dict_indices+
                                 // str_dict_values, never str_data. Safe to
                                 // skip iff NO agg targets the group_col
                                 // itself (count_star never targets cols, MIN/
                                 // MAX/SUM on a different col is unaffected).
-                                // Q11_base / Q22_URL / Q26 (MIN(URL) GROUP BY
-                                // SearchPhrase) all qualify.
-                                bool q13_eligible_skip =
+                                // Plain VARCHAR-group COUNT and MIN(varchar)
+                                // GROUP BY varchar all qualify.
+                                bool group_col_skip_eligible =
                                     (pq->GetTypes()[group_col].id() ==
                                      LogicalTypeId::VARCHAR);
-                                for (idx_t a = 0; a < num_aggs && q13_eligible_skip; a++) {
+                                for (idx_t a = 0; a < num_aggs && group_col_skip_eligible; a++) {
                                     if (!agg_infos[a].is_count_star &&
                                         agg_infos[a].col_idx == group_col)
-                                        q13_eligible_skip = false;
+                                        group_col_skip_eligible = false;
                                 }
-                                if (q13_eligible_skip) skip[group_col] = true;
+                                if (group_col_skip_eligible) skip[group_col] = true;
                                 pq->SetSkipStrData(std::move(skip));
 
-                                // Selection-vector pushdown (Q22 / Q23 / Q26
-                                // shape): when the WHERE filter has a
-                                // <>'' / ='' predicate on a dict-encoded
-                                // VARCHAR col, decode that col FIRST and
-                                // build a row mask. The mask gates dst[i]
-                                // writes in subsequent PLAIN VARCHAR decodes
-                                // — e.g. on Q22 the SearchPhrase NE filter
+                                // Selection-vector pushdown (filtered
+                                // VARCHAR GROUP BY shapes): when the WHERE
+                                // filter has a <>'' / ='' predicate on a
+                                // dict-encoded VARCHAR col, decode that col
+                                // FIRST and build a row mask. The mask gates
+                                // dst[i] writes in subsequent PLAIN VARCHAR
+                                // decodes — e.g. a <varchar> NE filter that
                                 // keeps ~13% of rows; URL is then decoded
                                 // with the mask, skipping ~87% × 100M × 16B
                                 // of string_t writes (~1.4 GB).
@@ -7150,7 +7152,7 @@ private:
                                 // Routes through SetTwoPhaseDecode → the
                                 // SEPARATE DecodeRowGroupIntoTwoPhase method.
                                 // The single-pass DecodeRowGroupInto stays
-                                // bit-identical to pre-pushdown — Q31/Q32
+                                // bit-identical to pre-pushdown — the
                                 // 2-col GROUP BY hot path is untouched.
                                 idx_t filt_col_2p = INVALID_INDEX;
                                 bool filt_ne_2p = false;
@@ -7225,7 +7227,7 @@ private:
                 }
             }
             if (pq) {
-                // === Q13/Q16-shape: high-card single-col INT GROUP BY +
+                // === high-card single-col INT GROUP BY +
                 //     COUNT(*) only. Default per-thread ankerl map blows up
                 //     to 12 GB at 17M+ unique groups (each thread sees all
                 //     uniques) → cache-miss every probe → 600 ns/row.
@@ -7237,26 +7239,26 @@ private:
                 //
                 //     Accepts multiple aggs as long as ALL are COUNT(*) — the
                 //     planner duplicates the agg when ORDER BY references its
-                //     alias, so Q16 produces two identical entries.
+                //     alias, producing two identical entries.
                 {
-                    auto group_tid_q16 = pq->GetTypes()[group_col].id();
-                    bool all_count_star_q16 = (num_aggs >= 1);
-                    for (idx_t a = 0; a < num_aggs && all_count_star_q16; a++) {
-                        if (!agg_infos[a].is_count_star) all_count_star_q16 = false;
+                    auto int_grp_tid = pq->GetTypes()[group_col].id();
+                    bool all_count_star_ic = (num_aggs >= 1);
+                    for (idx_t a = 0; a < num_aggs && all_count_star_ic; a++) {
+                        if (!agg_infos[a].is_count_star) all_count_star_ic = false;
                     }
-                    bool q16_shape = (all_count_star_q16 &&
-                                      (group_tid_q16 == LogicalTypeId::BIGINT ||
-                                       group_tid_q16 == LogicalTypeId::INTEGER));
-                    bool q13_shape = (all_count_star_q16 &&
-                                      group_tid_q16 == LogicalTypeId::VARCHAR);
-                    if (q13_shape) {
-                        // Q13/Q34/Q35-shape: high-card single-col VARCHAR
+                    bool int_count_shape = (all_count_star_ic &&
+                                      (int_grp_tid == LogicalTypeId::BIGINT ||
+                                       int_grp_tid == LogicalTypeId::INTEGER));
+                    bool varchar_count_shape = (all_count_star_ic &&
+                                      int_grp_tid == LogicalTypeId::VARCHAR);
+                    if (varchar_count_shape) {
+                        // high-card single-col VARCHAR
                         // GROUP BY + only COUNT(*). 12 threads = all logical
                         // procs on the 6C/12T chip (see RunParallelRGs).
-                        constexpr int Q13_THREADS = 12;
-                        // `group_col <> ''` filter (Q13) gives a bounded
-                        // survivor count; no filter at all (Q34/Q35 GROUP BY
-                        // URL) ingests every row. Both feed the bounded-HT +
+                        constexpr int RADIX_COUNT_THREADS = 12;
+                        // a `group_col <> ''` filter gives a bounded
+                        // survivor count; no filter at all (a GROUP BY over
+                        // a wide VARCHAR) ingests every row. Both feed the bounded-HT +
                         // radix-spill aggregation: it caps every per-row probe
                         // at an L2-resident table and spills scatter-free. For
                         // a high-card VARCHAR GROUP BY the aggregation (not
@@ -7272,7 +7274,7 @@ private:
                         bool hc_take = hc_ne_empty || !single_has_filter_fused;
                         if (hc_take) {
                             const bool hc_skip_empty = hc_ne_empty;
-                            slothdb::RadixHashCountStr hagg(Q13_THREADS);
+                            slothdb::RadixHashCountStr hagg(RADIX_COUNT_THREADS);
                             pq->SetRGConsumer(
                                 [&, hc_skip_empty](const PhysicalParquetScan::RGWork &work,
                                     idx_t rg_idx, int tid) {
@@ -7280,7 +7282,7 @@ private:
                                     idx_t nrows = pq->RowGroupSize(rg_idx);
                                     const auto &gcol = work.cols[group_col];
                                     if (!gcol.decoded) return;
-                                    int t = tid % Q13_THREADS;
+                                    int t = tid % RADIX_COUNT_THREADS;
                                     const uint8_t *val = gcol.all_valid
                                         ? nullptr : gcol.validity.data();
                                     if (gcol.str_dict_encoded &&
@@ -7304,7 +7306,7 @@ private:
                                             (uint32_t)nrows, val, hc_skip_empty);
                                     }
                                 });
-                            pq->RunParallelRGs(Q13_THREADS);
+                            pq->RunParallelRGs(RADIX_COUNT_THREADS);
                             hagg.Finalize();
                             int hc_top_k = 0;
                             if (topn_active_ && topn_limit_ > 0 &&
@@ -7325,7 +7327,7 @@ private:
                             }
                             return;
                         }
-                        slothdb::RadixCountAggStr str_agg(Q13_THREADS);
+                        slothdb::RadixCountAggStr str_agg(RADIX_COUNT_THREADS);
                         pq->SetRGConsumer(
                             [&](const PhysicalParquetScan::RGWork &work,
                                 idx_t rg_idx, int tid) {
@@ -7335,13 +7337,13 @@ private:
                                 if (!gcol.decoded) return;
                                 bool dict_fast = gcol.str_dict_encoded &&
                                     !gcol.str_dict_indices.empty();
-                                // Q13/Q14-style fast skip: when the only
+                                // VARCHAR-group fast skip: when the only
                                 // filter is `<group_col> <> ''` (or any
                                 // equality on the same col), find its
                                 // dict_idx and fold the filter into a
                                 // per-row dict-idx skip. Avoids the O(N)
                                 // BuildTypedKeepMask + 100MB keep_mask read.
-                                uint32_t skip_di_q13 = UINT32_MAX;
+                                uint32_t skip_di = UINT32_MAX;
                                 bool single_pred_skip = false;
                                 if (dict_fast && single_has_filter_fused &&
                                     single_preds.size() == 1) {
@@ -7356,7 +7358,7 @@ private:
                                                  std::memcmp(dv0[d].GetData(),
                                                              p.sval.data(),
                                                              p.sval.size()) == 0)) {
-                                                skip_di_q13 = d;
+                                                skip_di = d;
                                                 break;
                                             }
                                         }
@@ -7369,7 +7371,7 @@ private:
                                     tk_active = BuildTypedKeepMask(
                                         single_preds, work.cols, nrows, tk);
                                 }
-                                int t = tid % Q13_THREADS;
+                                int t = tid % RADIX_COUNT_THREADS;
                                 if (dict_fast) {
                                     const uint32_t *di = gcol.str_dict_indices.data();
                                     const string_t *dv = gcol.str_dict_values.data();
@@ -7382,7 +7384,7 @@ private:
                                             (uint32_t)dsz,
                                             gcol.all_valid ? nullptr
                                                 : gcol.validity.data(),
-                                            skip_di_q13);
+                                            skip_di);
                                     } else if (!single_has_filter_fused || tk_active) {
                                         // Bulk dict-aware: O(D) map ops vs O(N).
                                         slothdb::g_pq_profile.c_dictrg.fetch_add(1, std::memory_order_relaxed);
@@ -7423,7 +7425,7 @@ private:
                                     }
                                 }
                             });
-                        pq->RunParallelRGs(Q13_THREADS);
+                        pq->RunParallelRGs(RADIX_COUNT_THREADS);
                         std::vector<std::thread> mts;
                         for (int s = 1; s < slothdb::RadixCountAggStr::N_RADIX; s++) {
                             mts.emplace_back([&str_agg, s]() {
@@ -7452,9 +7454,9 @@ private:
                         }
                         return;
                     }
-                    if (q16_shape) {
-                        constexpr int Q16_THREADS = 8;
-                        slothdb::RadixCountAgg radix_agg(Q16_THREADS);
+                    if (int_count_shape) {
+                        constexpr int RADIX_COUNT_INT_THREADS = 8;
+                        slothdb::RadixCountAgg radix_agg(RADIX_COUNT_INT_THREADS);
                         // Reserve based on parquet total rows. Filter cuts
                         // it down but reserve isn't tight either way.
                         idx_t total_rows = 0;
@@ -7462,8 +7464,8 @@ private:
                             total_rows += pq->RowGroupSize(rg);
                         }
                         radix_agg.ReserveExpectedRows((int64_t)total_rows);
-                        bool is_bigint_q16 =
-                            (group_tid_q16 == LogicalTypeId::BIGINT);
+                        bool is_bigint_group =
+                            (int_grp_tid == LogicalTypeId::BIGINT);
                         pq->SetRGConsumer(
                             [&](const PhysicalParquetScan::RGWork &work,
                                 idx_t rg_idx, int tid) {
@@ -7471,9 +7473,9 @@ private:
                                 idx_t nrows = pq->RowGroupSize(rg_idx);
                                 const auto &gcol = work.cols[group_col];
                                 if (!gcol.decoded) return;
-                                const int64_t *gi64 = is_bigint_q16
+                                const int64_t *gi64 = is_bigint_group
                                     ? gcol.i64_data.data() : nullptr;
-                                const int32_t *gi32 = !is_bigint_q16
+                                const int32_t *gi32 = !is_bigint_group
                                     ? gcol.i32_data.data() : nullptr;
                                 std::vector<uint8_t> tk;
                                 bool tk_active = false;
@@ -7481,7 +7483,7 @@ private:
                                     tk_active = BuildTypedKeepMask(
                                         single_preds, work.cols, nrows, tk);
                                 }
-                                int t = tid % Q16_THREADS;
+                                int t = tid % RADIX_COUNT_INT_THREADS;
                                 for (idx_t r = 0; r < nrows; r++) {
                                     if (tk_active) {
                                         if (!tk[r]) continue;
@@ -7491,7 +7493,7 @@ private:
                                         continue;
                                     if (!gcol.all_valid &&
                                         !gcol.validity[r]) continue;
-                                    int64_t k = is_bigint_q16
+                                    int64_t k = is_bigint_group
                                         ? gi64[r] : (int64_t)gi32[r];
                                     radix_agg.ScatterRow(t, k);
                                 }
@@ -7524,7 +7526,7 @@ private:
                         for (auto &res : results) {
                             std::vector<Value> row;
                             row.reserve(1 + num_aggs);
-                            if (is_bigint_q16) {
+                            if (is_bigint_group) {
                                 row.push_back(Value::BIGINT(res.key));
                             } else {
                                 row.push_back(
@@ -7543,7 +7545,7 @@ private:
                 }
                 // Do NOT skip str_data on VARCHAR group cols: PLAIN-page RGs
                 // need gstr[] populated for the fallback at the per-row branch
-                // below. (Mid-RG dict-to-PLAIN fallback in hits.parquet would
+                // below. (A mid-RG dict-to-PLAIN fallback would
                 // OOB-write through nullptr str_data otherwise.)
                 // Hoist agg kinds out of the per-row hot loop (shared r/o state).
                 enum class AK { CountStar, Count, Sum, Min, Max, Other };
@@ -7622,8 +7624,8 @@ private:
                     // Vectorized per-RG keep mask when all preds reduce to
                     // typed numeric or dict-encoded VARCHAR cmp. Drops the
                     // ~30 cyc/row EvalSimplePredicates dispatch to a single
-                    // mask load. Q8 SELECT AdvEngineID, COUNT(*) WHERE
-                    // AdvEngineID <> 0 lives here.
+                    // mask load. A `SELECT <int_col>, COUNT(*) WHERE
+                    // <int_col> <> 0` lives here.
                     std::vector<uint8_t> typed_keep_mask;
                     bool typed_keep_active = false;
                     if (single_has_filter_fused) {
@@ -7809,7 +7811,7 @@ private:
                 // hashing to its shard (cheap bit-mix + bitand filters out
                 // ~all keys from non-owned shards in ~3-5ns). The per-shard
                 // ankerl maps are independent so the workers run with zero
-                // synchronization. Q35: 9.76M unique groups across 2 threads;
+                // synchronization. With 9.76M unique groups across 2 threads,
                 // single-threaded global merge was ~7.5s wall, sharded target
                 // ~1-2s.
                 size_t _est_total = 0;
@@ -7963,9 +7965,9 @@ private:
             // Direct emit shortcut for the int-only single-col case: when
             // no string groups are present, emit straight into result_rows_
             // from the parallel-merge shards. Skips rebuilding string-keyed
-            // group_states/group_keys/group_order (which on Q35 cost ~7.7s
+            // group_states/group_keys/group_order (which cost ~7.7s
             // for std::to_string + 4 ankerl ops × 9.76 M keys) AND skips the
-            // common emit's `find()` per group (~4.6s on Q35). Each shard
+            // common emit's `find()` per group (~4.6s at that cardinality). Each shard
             // produces a slice of result_rows_; the slices are concatenated
             // at the end (insertion order across shards is meaningless since
             // ankerl iteration order is hash-bucket order anyway).
@@ -8004,7 +8006,7 @@ private:
                 // the order-key is an int64-comparable col (group col or a
                 // COUNT-style agg), keep a bounded heap of size topn_limit_
                 // and emit only the top-K rows. Skips the 9.76 M result-row
-                // materialization on Q35 when ORDER BY count DESC LIMIT 10.
+                // materialization when ORDER BY count DESC LIMIT 10.
                 bool topn_int_path = false;
                 bool topn_key_is_group = false;       // col_idx targets group col 0
                 idx_t topn_agg_idx = INVALID_INDEX;   // when targeting an agg col
@@ -8019,7 +8021,7 @@ private:
                         idx_t ai = topn_col_idx_ - 1;
                         idx_t real_ai = (agg_infos[ai].primary_idx != INVALID_INDEX)
                                             ? agg_infos[ai].primary_idx : ai;
-                        // Q35-shape: COUNT/COUNT(*) → state.count is int64.
+                        // COUNT/COUNT(*) → state.count is int64.
                         if (agg_infos[real_ai].name == "COUNT") {
                             topn_int_path = true;
                             topn_agg_idx = real_ai;
@@ -8190,7 +8192,7 @@ private:
                     fused_pq->SetNeededOutputs(need);
                     // VARCHAR predicate cols: BuildTypedKeepMask + the row-loop
                     // fallback both consult str_dict_values first. Skip the
-                    // per-row str_data write (1.6 GB / Q21 query). PLAIN-only
+                    // per-row str_data write (1.6 GB on a LIKE query). PLAIN-only
                     // RGs trigger MaterialiseStrDataLazy back-fill.
                     std::vector<bool> skip(nc, false);
                     for (auto &p : fused_count_preds) {
@@ -8214,7 +8216,7 @@ private:
                         // non-dict RGs.
                         bool any_str = false;
                         for (auto &p : fused_count_preds) if (p.str_form) { any_str = true; break; }
-                        // Q21 fused fast path: single LIKE '%needle%' pred on a
+                        // LIKE-COUNT fused fast path: single LIKE '%needle%' pred on a
                         // dict-encoded VARCHAR column. Skip BuildTypedKeepMask's
                         // out_mask materialization (3 passes -> 1 pass).
                         if (fused_count_preds.size() == 1 &&
@@ -8238,7 +8240,7 @@ private:
                                     return;
                                 }
                                 // PLAIN-encoded fast path: most URL RGs on
-                                // hits.parquet are PLAIN (205/226). Walks
+                                // the URL column's pages are PLAIN (205/226). Walks
                                 // str_data with DuckDB-style uint32 prefix
                                 // compare, skipping the generic-memcmp
                                 // tail loop used by the row-loop fallback.
@@ -8552,7 +8554,7 @@ private:
             auto &states = group_states[""];
 
             // === FUSED PARQUET FAST PATH ===
-            // Sequential aggregate (parallel decode via slot mode). Q2's agg
+            // Sequential aggregate (parallel decode via slot mode). the agg
             // work is already tiny - 80 RGs × SUM is <10ms - so paying per-
             // query thread-pool teardown+spawn to parallelize it nets negative.
             // Also accepts AGG -> FILTER -> PARQUET via TryCompileSimplePredicate;
@@ -8622,7 +8624,7 @@ private:
                 // === STATS-ONLY FAST PATH ===
                 // When every agg is COUNT(*) / MIN(col) / MAX(col) and the
                 // column has per-RG min/max in the footer, fold from stats
-                // and skip the scan entirely. Q7 SELECT MIN(EventDate),
+                // and skip the scan entirely. SELECT MIN(EventDate),
                 // MAX(EventDate) FROM hits answered in single-digit ms vs
                 // ~400 ms decode-and-scan.
                 bool stats_only = (num_aggs > 0);
@@ -8679,7 +8681,7 @@ private:
                         goto fused_parquet_stats_only_done;
                     }
                 }
-                // === Q4 DICT-HISTOGRAM FAST PATH ===
+                // === DICT-HISTOGRAM FAST PATH ===
                 // Single SUM/AVG/COUNT(c) over a BIGINT-dict-encoded column,
                 // no GROUP BY, no WHERE, no offset, no DISTINCT. Skips the
                 // 800MB sequential write of decoded INT64 i64_data and the
@@ -8701,16 +8703,16 @@ private:
                         if (info.col_idx < col_types.size() &&
                             col_types[info.col_idx].id() == LogicalTypeId::BIGINT) {
                             pq->Init();
-                            auto *reader_q4 = pq->GetReader();
-                            if (reader_q4) {
+                            auto *dict_hist_reader = pq->GetReader();
+                            if (dict_hist_reader) {
                                 int64_t hcount = 0; double hsum = 0.0;
-                                if (TryDictHistogramAgg(*reader_q4, info.col_idx,
+                                if (TryDictHistogramAgg(*dict_hist_reader, info.col_idx,
                                                          hcount, hsum)) {
                                     auto &state = states[0];
                                     state.count = hcount;
                                     state.sum = hsum;
                                     total_rows_processed +=
-                                        static_cast<idx_t>(reader_q4->GetMeta().num_rows);
+                                        static_cast<idx_t>(dict_hist_reader->GetMeta().num_rows);
                                     goto fused_parquet_stats_only_done;
                                 }
                                 // Fall through to the standard fused path.
@@ -8759,12 +8761,12 @@ private:
                         if (info.col_idx == INVALID_INDEX) continue;
                         // Skip duplicates: emit reads from the primary's
                         // state and applies any per-agg offset. Critical
-                        // for Q30: 90 SUMs over the same column → 1 scan.
+                        // for 90 SUMs over the same column → 1 scan.
                         if (info.primary_idx != INVALID_INDEX) continue;
                         // Per-RG stats fold: when this column's min == max in
                         // this RG (every row holds the same value), roll up
                         // SUM/COUNT/MIN/MAX from the metadata directly and
-                        // skip the typed inner loop. Q3 SUM(AdvEngineID)
+                        // skip the typed inner loop. SUM(AdvEngineID)
                         // hits this constantly — most RGs are all-zero.
                         // Filter-mode disables the stats fold (stats don't
                         // honor the per-row predicate).
@@ -8870,8 +8872,8 @@ private:
                                         // × 4 doubles each = 16-lane effective
                                         // pipelining; _mm256_cvtepi32_pd
                                         // promotes 4 int32 → 4 doubles per
-                                        // instruction. Q3 AVG(ResolutionWidth)
-                                        // and Q5 AVG over 100M rows live here.
+                                        // instruction. AVG(ResolutionWidth)
+                                        // and AVG over 100M rows live here.
                                         __m256d acc0 = _mm256_setzero_pd();
                                         __m256d acc1 = _mm256_setzero_pd();
                                         __m256d acc2 = _mm256_setzero_pd();
@@ -9177,7 +9179,7 @@ private:
             // every agg is COUNT(DISTINCT col) on the SAME INT/BIGINT/
             // VARCHAR column; child is parquet (or AGG -> FILTER ->
             // PARQUET). The planner duplicates the agg when ORDER BY
-            // references its alias, so queries like Q9 produce two
+            // references its alias, so some queries produce two
             // identical entries — that's why we accept >1 aggs as long
             // as they all match.
             if (group_col_indices.size() > 2) return false;
@@ -9197,7 +9199,7 @@ private:
                         if (!f->GetCondition()) return false;
                         // The filter must compile to SimplePredicate; otherwise
                         // bypassing PhysicalFilter and calling pq->RunParallelRGs
-                        // directly would silently drop the WHERE clause. Q11's
+                        // directly would silently drop the WHERE clause. The query's
                         // `MobilePhoneModel <> ''` is VARCHAR, not yet supported
                         // by TryCompileSimplePredicate at HEAD — fall through
                         // to the slow generic path which honors the filter.
@@ -9225,7 +9227,7 @@ private:
             // decode; per-key disjoint parallel merge. The slow generic
             // path Value::ToString()s every row into a std::unordered_set
             // which is 50-100× slower on 100M-row scans. This restores the
-            // sub-2s wall on Q5/Q6/Q9/Q11.
+            // sub-2s wall.
             PhysicalParquetScan *pq = dynamic_cast<PhysicalParquetScan *>(children[0].get());
             std::vector<SimplePredicate> dpd_preds;
             bool dpd_has_filter = false;
@@ -9266,7 +9268,7 @@ private:
                 return;
             }
 
-            // Q11-fast-skip: when the only WHERE predicate is
+            // fast-skip: when the only WHERE predicate is
             // `<group_col> <> ''` against a dict-encoded VARCHAR group
             // column AND the agg is COUNT(DISTINCT INT/BIGINT), we can
             // fold the filter into a per-row dict-idx skip inside the
@@ -9276,10 +9278,10 @@ private:
             // str_group_distinct.cpp::IngestRGGstrIntDistinctDictSkipDi.
             // Precheck above already guarantees every agg is COUNT(DISTINCT
             // same_col), so num_aggs >= 1 is safe — the planner sometimes
-            // duplicates the agg when ORDER BY references its alias (Q11
+            // duplicates the agg when ORDER BY references its alias (e.g.
             // produces num_aggs=2 for `COUNT(DISTINCT UserID) AS u ... ORDER
-            // BY u`). Tightening to ==1 misses Q11.
-            const bool q11_fs_eligible =
+            // BY u`). Tightening to ==1 misses it.
+            const bool dict_skip_eligible =
                 has_group && !two_col_group && num_aggs >= 1 &&
                 agg_infos[0].name == "COUNT" && agg_infos[0].is_distinct &&
                 (agg_tid == LogicalTypeId::BIGINT ||
@@ -9351,7 +9353,7 @@ private:
                     ankerl::unordered_dense::set<std::string>> str_g_str_d;
                 // 2-col grouped variant: composite key = bytewise concat of
                 // (col1 || \xFF || col2), with the original (Value, Value)
-                // pair stashed alongside for emit. Q12 lives here.
+                // pair stashed alongside for emit.
                 std::unordered_map<std::string,
                     slothdb::SimpleI64Set> g2_int_d;
                 std::unordered_map<std::string,
@@ -9365,16 +9367,16 @@ private:
             // so the pin is MSVC-only; elsewhere it would false-trip.
             static_assert(sizeof(TLDistinct) == 960,
                 "TLDistinct layout pinned: growing this struct shifts cache lines"
-                " and regresses Q7/Q8/Q30 (see memory feedback_struct_growth_cache_shifts.md)");
+                " and regresses unrelated queries");
 #endif
             std::vector<TLDistinct> tls(MAX_THREADS);
-            // Q6 path B: per-thread radix-shard for ungrouped VARCHAR
+            // Path B: per-thread radix-shard for ungrouped VARCHAR
             // distinct. Lives outside TLDistinct (960-byte assert pinned)
             // and is only consulted on the !has_group + agg_is_varchar
             // branch — see string_dedup.hpp.
-            StringDedupState q6_state(MAX_THREADS);
+            StringDedupState str_distinct_state(MAX_THREADS);
 
-            // Q5 ingests ~6M UserIDs per thread; pre-reserve scatter mini-arrays
+            // the scan ingests ~6M UserIDs per thread; pre-reserve scatter mini-arrays
             // so push_back stays branchless after first growth.
             if (!has_group && !agg_is_varchar) {
                 for (auto &tl : tls)
@@ -9404,14 +9406,14 @@ private:
                 if (!acol.decoded) return;
                 auto &tl = tls[tid % MAX_THREADS];
 
-                // Q11-fast-skip per-RG: locate empty dict_idx in this RG's
+                // fast-skip per-RG: locate empty dict_idx in this RG's
                 // group-col dict. If found, hand off to the SkipDi helper
                 // and skip BuildTypedKeepMask. Falls back to legacy if the
                 // group col isn't dict-encoded in this RG (rare on
-                // ClickBench's MobilePhoneModel/MobilePhone columns).
-                bool q11_fs_active = false;
-                uint32_t q11_fs_skip_di = 0;
-                if (q11_fs_eligible) {
+                // the grouped VARCHAR columns).
+                bool dict_skip_active = false;
+                uint32_t dict_skip_di = 0;
+                if (dict_skip_eligible) {
                     const auto &gcol_fs = work.cols[group_col];
                     if (gcol_fs.decoded && gcol_fs.str_dict_encoded &&
                         !gcol_fs.str_dict_indices.empty()) {
@@ -9419,28 +9421,28 @@ private:
                         idx_t dsz = gcol_fs.str_dict_values.size();
                         for (idx_t i = 0; i < dsz; i++) {
                             if (dv[i].GetSize() == 0) {
-                                q11_fs_skip_di = (uint32_t)i;
-                                q11_fs_active = true;
+                                dict_skip_di = (uint32_t)i;
+                                dict_skip_active = true;
                                 break;
                             }
                         }
                         // Empty entry not in dict => filter is no-op for
                         // this RG. UINT32_MAX never matches a real di so
                         // the SkipDi helper degenerates to "ingest all".
-                        if (!q11_fs_active) {
-                            q11_fs_skip_di = UINT32_MAX;
-                            q11_fs_active = true;
+                        if (!dict_skip_active) {
+                            dict_skip_di = UINT32_MAX;
+                            dict_skip_active = true;
                         }
                     }
                 }
 
                 std::vector<uint8_t> tk;
                 bool tk_active = false;
-                if (dpd_has_filter && !q11_fs_active)
+                if (dpd_has_filter && !dict_skip_active)
                     tk_active = BuildTypedKeepMask(dpd_preds, work.cols, nrows, tk);
                 auto keep_row = [&](idx_t r) -> bool {
                     if (!dpd_has_filter) return true;
-                    if (q11_fs_active) return true;  // helper handles via skip_di
+                    if (dict_skip_active) return true;  // helper handles via skip_di
                     if (tk_active) return tk[r] != 0;
                     return EvalSimplePredicates(dpd_preds, work.cols, r);
                 };
@@ -9485,7 +9487,7 @@ private:
                         // only on miss.
                         // Merge phase below unions disjoint shards in parallel
                         // — no rehash, no duplicate alloc.
-                        const int q6tid = tid % MAX_THREADS;
+                        const int str_distinct_tid = tid % MAX_THREADS;
                         if (a_dict_idx) {
                             std::vector<uint8_t> seen(a_dsz, 0);
                             for (idx_t r = 0; r < nrows; r++) {
@@ -9494,7 +9496,7 @@ private:
                                 uint32_t di = a_dict_idx[r];
                                 if (di >= a_dsz || seen[di]) continue;
                                 seen[di] = 1;
-                                string_dedup_emplace(q6_state, q6tid,
+                                string_dedup_emplace(str_distinct_state, str_distinct_tid,
                                            a_dict_val[di].GetData(),
                                            a_dict_val[di].GetSize());
                             }
@@ -9502,14 +9504,14 @@ private:
                             for (idx_t r = 0; r < nrows; r++) {
                                 if (!keep_row(r)) continue;
                                 if (!acol.all_valid && !acol.validity[r]) continue;
-                                string_dedup_emplace(q6_state, q6tid,
+                                string_dedup_emplace(str_distinct_state, str_distinct_tid,
                                            a_str[r].GetData(), a_str[r].GetSize());
                             }
                         }
                     }
                     return;
                 }
-                // 2-col GROUP BY variant. Q12 lives here: (MobilePhone INT,
+                // 2-col GROUP BY variant: (MobilePhone INT,
                 // MobilePhoneModel VARCHAR). Composite string key per row;
                 // distinct UserID set per composite key. The original
                 // (Value, Value) pair is stashed once per new key for emit.
@@ -9589,7 +9591,7 @@ private:
                     // Per-RG pair cache: when both group cols pack into 32 bits
                     // each (INTEGER or VARCHAR-with-dict), the (col1, col2)
                     // tuple has a uint64 fingerprint. Most rows in a RG repeat
-                    // the same pair (~1000x for Q12 MobilePhone, MobilePhoneModel),
+                    // the same pair (~1000x for repeated MobilePhone+MobilePhoneModel),
                     // so the cache lets us skip the per-row composite-string
                     // build and tl.g2_int_d std::unordered_map probe.
                     bool can_pack_pair =
@@ -9608,7 +9610,7 @@ private:
                         return (uint64_t)lo | ((uint64_t)hi << 32);
                     };
                     std::string k;
-                    // Q12 hot-path: consecutive rows commonly repeat the
+                    // Hot path: consecutive rows commonly repeat the
                     // exact same (pair, value) tuple (e.g. one user with
                     // many sessions, same MobilePhone/Model). Skipping the
                     // SimpleI64Set::insert open-addressing probe on a
@@ -9761,19 +9763,19 @@ private:
                     }
                     return;
                 }
-                // gstr × int distinct (Q11 path). Side-TU helpers in
+                // gstr × int distinct. Side-TU helpers in
                 // str_group_distinct.cpp keep the inline 50-LOC loop out of
                 // physical_planner.cpp .text per
                 // feedback_text_icache_shift.md. Slow-path filter (no
                 // typed-keep-mask) still falls through to the legacy
                 // EvalSimplePredicates loop below.
-                if (gstr && !agg_is_varchar && q11_fs_active && g_dict_idx) {
+                if (gstr && !agg_is_varchar && dict_skip_active && g_dict_idx) {
                     slothdb::IngestRGGstrIntDistinctDictSkipDi(
                         tl.str_g_int_d, g_dict_idx, g_dict_val, g_dsz,
                         a_i64, a_i32,
                         acol.all_valid,
                         acol.all_valid ? nullptr : acol.validity.data(),
-                        q11_fs_skip_di, nrows);
+                        dict_skip_di, nrows);
                     return;
                 }
                 if (gstr && !agg_is_varchar &&
@@ -9871,15 +9873,15 @@ private:
                     }
                 }
             });
-            // Q6 (ungrouped COUNT(DISTINCT VARCHAR)) decodes + ingests all
+            // Ungrouped COUNT(DISTINCT VARCHAR) decodes + ingests all
             // 100M rows and scales to 12 logical procs (see RunParallelRGs);
             // its RadixHashCountStr has 16 thread slots so tid%16 is safe.
             // The grouped / INT-distinct cases keep the conservative 8-cap
-            // (more threads regressed Q11/Q12 — SMT/Snappy oversubscription).
+            // (more threads regressed throughput — SMT/Snappy oversubscription).
             pq->RunParallelRGs((!has_group && agg_is_varchar) ? 12 : 0);
 
-            bool _q11pf = slothdb::PqProfileOn();
-            auto _q11_t0 = _q11pf ? std::chrono::steady_clock::now()
+            bool merge_profile_on = slothdb::PqProfileOn();
+            auto merge_profile_t0 = merge_profile_on ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};
             // Merge phase.
             auto emit_int_only = [&](int64_t cnt_total) {
@@ -9914,7 +9916,7 @@ private:
                     // Path B: shards already disjoint by hash partition.
                     // string_dedup_total unions per-shard across threads
                     // in parallel without rehashing.
-                    emit_int_only(string_dedup_total(q6_state));
+                    emit_int_only(string_dedup_total(str_distinct_state));
                 }
             } else if (two_col_group) {
                 // 2-col merge: composite key collected across threads, then
@@ -10080,7 +10082,7 @@ private:
                 } else {
                     // VARCHAR group key.
                     if (!agg_is_varchar) {
-                        // Q11: COUNT(DISTINCT <int>) GROUP BY <varchar>.
+                        // COUNT(DISTINCT <int>) GROUP BY <varchar>.
                         // Skew-aware parallel merge: the old per-group
                         // round-robin merge made one dominant group
                         // (iPad, ~1M distinct UserIDs) the single-worker
@@ -10159,10 +10161,10 @@ private:
                     }
                 }
             }
-            if (_q11pf) {
-                fprintf(stderr, "[SLOTH_PROFILE] Q11 merge %.0fms\n",
+            if (merge_profile_on) {
+                fprintf(stderr, "[SLOTH_PROFILE] varchar-group merge %.0fms\n",
                         std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now() - _q11_t0).count()
+                            std::chrono::steady_clock::now() - merge_profile_t0).count()
                         / 1e6);
             }
         } else if (
@@ -10230,17 +10232,17 @@ private:
                 }
             }
 
-            // NOTE: The Q31/Q32 (2-col GROUP BY + multi-INT-agg + VARCHAR
+            // NOTE: The (2-col GROUP BY + multi-INT-agg + VARCHAR
             // filter) shape was tested with selection-vector pushdown here.
             // The masked PLAIN INT decoder is per-row (vs the no-mask path's
             // memcpy), which is *slower* than the writes it saves — INT is
             // 4-8 bytes/row and SIMD-memcpy-bound, not write-bound. Pushdown
-            // is only enabled for VARCHAR projected cols (Q22-shape) where
+            // is only enabled for VARCHAR projected cols where
             // string_t writes (16 B + heap-append) dominate.
 
-            // === Q31-shape: 2-col GROUP BY (INTEGER + INTEGER) + simple
+            // === 2-col GROUP BY (INTEGER + INTEGER) + simple
             //     aggs (COUNT(*) / SUM / AVG / COUNT(c)) on direct INT/BIGINT
-            //     cols. ClickBench Q31 (SearchEngineID, ClientIP, COUNT(*),
+            //     cols. e.g. (SearchEngineID, ClientIP, COUNT(*),
             //     SUM(IsRefresh), AVG(ResolutionWidth)) lands here. Default
             //     TLMulti packed_groups map per-thread balloons to ~5M
             //     unique pairs × ~70 bytes = 350MB/thread → cache-thrash.
@@ -10249,43 +10251,43 @@ private:
             if (group_col_indices.size() == 2) {
                 idx_t gc0 = group_col_indices[0];
                 idx_t gc1 = group_col_indices[1];
-                auto t0_q31 = pq->GetTypes()[gc0].id();
-                auto t1_q31 = pq->GetTypes()[gc1].id();
-                bool both_int32 = (t0_q31 == LogicalTypeId::INTEGER &&
-                                   t1_q31 == LogicalTypeId::INTEGER);
+                auto t0_intpair = pq->GetTypes()[gc0].id();
+                auto t1_intpair = pq->GetTypes()[gc1].id();
+                bool both_int32 = (t0_intpair == LogicalTypeId::INTEGER &&
+                                   t1_intpair == LogicalTypeId::INTEGER);
                 if (both_int32 && num_aggs >= 1) {
                     // Classify aggs. Allowed: COUNT(*), SUM, AVG, COUNT(c)
                     // on direct INT/BIGINT cols. is_distinct disqualifies.
-                    enum class Q31AggKind { CountStar, Sum, Avg, CountC, Other };
-                    std::vector<Q31AggKind> q31_kinds(num_aggs);
+                    enum class IntPairAggKind { CountStar, Sum, Avg, CountC, Other };
+                    std::vector<IntPairAggKind> intpair_kinds(num_aggs);
                     std::vector<int> sa_col_idx;
                     std::vector<int> sa_emit_idx;  // sa-index per agg (-1 for count_star)
                     std::vector<bool> sa_is_bigint;
-                    bool q31_ok = true;
+                    bool intpair_ok = true;
                     int sa_n = 0;
                     for (idx_t a = 0; a < num_aggs; a++) {
                         auto &info = agg_infos[a];
                         if (info.is_count_star) {
-                            q31_kinds[a] = Q31AggKind::CountStar;
+                            intpair_kinds[a] = IntPairAggKind::CountStar;
                             sa_emit_idx.push_back(-1);
                             continue;
                         }
                         if (info.is_distinct ||
                             info.col_idx == INVALID_INDEX) {
-                            q31_ok = false; break;
+                            intpair_ok = false; break;
                         }
                         auto ct = pq->GetTypes()[info.col_idx].id();
                         if (ct != LogicalTypeId::INTEGER &&
                             ct != LogicalTypeId::BIGINT) {
-                            q31_ok = false; break;
+                            intpair_ok = false; break;
                         }
                         if (info.name == "COUNT")
-                            q31_kinds[a] = Q31AggKind::CountC;
+                            intpair_kinds[a] = IntPairAggKind::CountC;
                         else if (info.name == "SUM")
-                            q31_kinds[a] = Q31AggKind::Sum;
+                            intpair_kinds[a] = IntPairAggKind::Sum;
                         else if (info.name == "AVG")
-                            q31_kinds[a] = Q31AggKind::Avg;
-                        else { q31_ok = false; break; }
+                            intpair_kinds[a] = IntPairAggKind::Avg;
+                        else { intpair_ok = false; break; }
                         sa_col_idx.push_back((int)info.col_idx);
                         sa_is_bigint.push_back(ct == LogicalTypeId::BIGINT);
                         sa_emit_idx.push_back(sa_n);
@@ -10293,8 +10295,8 @@ private:
                     }
                     // Stack vals[4]/valid[4] bound; bail to GENERIC for
                     // wider agg lists.
-                    if (sa_n > 4) q31_ok = false;
-                    if (q31_ok) {
+                    if (sa_n > 4) intpair_ok = false;
+                    if (intpair_ok) {
                         // Project all needed columns.
                         {
                             std::vector<bool> need(pq->GetTypes().size(), false);
@@ -10318,7 +10320,7 @@ private:
                         }
                         pq->Init();
 
-                        const int Q31_THREADS = 8;
+                        const int INT_PAIR_AGG_THREADS = 8;
                         // Generic phase 1-3+emit. Works against any
                         // aggregator with the API:
                         //   .Update(tid, key, vals, valid)
@@ -10331,7 +10333,7 @@ private:
                         // design) both satisfy this. Toggle via env var
                         // SLOTH_USE_INLINE_AGG=1 for A/B vs the legacy
                         // ankerl::map+arena path.
-                        auto run_q31 = [&](auto& agg) {
+                        auto run_intpair_agg = [&](auto& agg) {
                         pq->SetRGConsumer(
                             [&](const PhysicalParquetScan::RGWork &work,
                                 idx_t rg_idx, int tid) {
@@ -10367,7 +10369,7 @@ private:
                                     tk_active = BuildTypedKeepMask(
                                         multi_preds, work.cols, nrows, tk);
                                 }
-                                int t = tid % Q31_THREADS;
+                                int t = tid % INT_PAIR_AGG_THREADS;
                                 // Stack arrays cap at 4 aggs (matches
                                 // detection: sa_n <= 4 enforced upstream
                                 // for cache-friendly slot size).
@@ -10432,7 +10434,7 @@ private:
                         // is the only TopN we accept.
                         int count_star_emit_idx = -1;
                         for (idx_t a = 0; a < num_aggs; a++) {
-                            if (q31_kinds[a] == Q31AggKind::CountStar) {
+                            if (intpair_kinds[a] == IntPairAggKind::CountStar) {
                                 count_star_emit_idx = (int)(2 + a); break;
                             }
                         }
@@ -10453,21 +10455,21 @@ private:
                             row.push_back(Value::INTEGER(v0));
                             row.push_back(Value::INTEGER(v1));
                             for (idx_t a = 0; a < num_aggs; a++) {
-                                switch (q31_kinds[a]) {
-                                case Q31AggKind::CountStar:
+                                switch (intpair_kinds[a]) {
+                                case IntPairAggKind::CountStar:
                                     row.push_back(Value::BIGINT(res.count_star));
                                     break;
-                                case Q31AggKind::Sum: {
+                                case IntPairAggKind::Sum: {
                                     int sa = sa_emit_idx[a];
                                     row.push_back(Value::BIGINT(res.sum[sa]));
                                     break;
                                 }
-                                case Q31AggKind::CountC: {
+                                case IntPairAggKind::CountC: {
                                     int sa = sa_emit_idx[a];
                                     row.push_back(Value::BIGINT(res.cnt[sa]));
                                     break;
                                 }
-                                case Q31AggKind::Avg: {
+                                case IntPairAggKind::Avg: {
                                     int sa = sa_emit_idx[a];
                                     if (res.cnt[sa] == 0) {
                                         row.push_back(Value::DOUBLE(0.0));
@@ -10484,11 +10486,11 @@ private:
                             }
                             result_rows_.push_back(std::move(row));
                         }
-                        };  // end run_q31 generic lambda
+                        };  // end run_intpair_agg generic lambda
 
                         // Inline-row aggregator is the default (DuckDB-style
                         // single-row layout, ~17% faster than legacy ankerl
-                        // +arena on Q31 per A/B). SLOTH_LEGACY_AGG=1 falls
+                        // +arena per A/B). SLOTH_LEGACY_AGG=1 falls
                         // back to the prior ankerl::map+arena path as a
                         // rollback escape hatch.
                         const bool legacy_override =
@@ -10496,51 +10498,51 @@ private:
                         // Estimate unique-group cardinality from parquet
                         // metadata × filter-survival ratio. Pre-sizing per-
                         // thread per-shard storage avoids the ~17 table
-                        // doublings + rows.emplace_back grows on Q31 (~10M
+                        // doublings + rows.emplace_back grows (~10M
                         // unique pairs post-SearchPhrase<>'' filter), each
                         // grow rebuilds the entire shard table. SearchPhrase
-                        // <>'' survival is ~13% on ClickBench; safe upper
+                        // <>'' survival is ~13% typically; safe upper
                         // bound 25%. Only apply when a WHERE filter is
-                        // present — unfiltered Q31-shape would request a
+                        // present — an unfiltered 2-col INT GROUP BY would request a
                         // huge reserve and force zero-fill before any work.
-                        size_t q31_reserve_estimate = 0;
+                        size_t intpair_reserve_estimate = 0;
                         if (multi_has_filter) {
-                            if (auto *q31_reader = pq->GetReader()) {
+                            if (auto *intpair_reader = pq->GetReader()) {
                                 int64_t total = 0;
-                                for (auto &rg : q31_reader->GetMeta().row_groups) total += rg.num_rows;
+                                for (auto &rg : intpair_reader->GetMeta().row_groups) total += rg.num_rows;
                                 int64_t est = (int64_t)((double)total * 0.25);
                                 if (est > 20'000'000) est = 20'000'000;
                                 if (est < 1024) est = 1024;
-                                q31_reserve_estimate = (size_t)est;
+                                intpair_reserve_estimate = (size_t)est;
                             }
                         }
                         if (!legacy_override && sa_n >= 1 && sa_n <= 4) {
                             switch (sa_n) {
-                            case 1: { slothdb::InlineRowAgg<1> a(Q31_THREADS); a.ReserveExpectedRows(q31_reserve_estimate); run_q31(a); break; }
-                            case 2: { slothdb::InlineRowAgg<2> a(Q31_THREADS); a.ReserveExpectedRows(q31_reserve_estimate); run_q31(a); break; }
-                            case 3: { slothdb::InlineRowAgg<3> a(Q31_THREADS); a.ReserveExpectedRows(q31_reserve_estimate); run_q31(a); break; }
-                            case 4: { slothdb::InlineRowAgg<4> a(Q31_THREADS); a.ReserveExpectedRows(q31_reserve_estimate); run_q31(a); break; }
+                            case 1: { slothdb::InlineRowAgg<1> a(INT_PAIR_AGG_THREADS); a.ReserveExpectedRows(intpair_reserve_estimate); run_intpair_agg(a); break; }
+                            case 2: { slothdb::InlineRowAgg<2> a(INT_PAIR_AGG_THREADS); a.ReserveExpectedRows(intpair_reserve_estimate); run_intpair_agg(a); break; }
+                            case 3: { slothdb::InlineRowAgg<3> a(INT_PAIR_AGG_THREADS); a.ReserveExpectedRows(intpair_reserve_estimate); run_intpair_agg(a); break; }
+                            case 4: { slothdb::InlineRowAgg<4> a(INT_PAIR_AGG_THREADS); a.ReserveExpectedRows(intpair_reserve_estimate); run_intpair_agg(a); break; }
                             }
                         } else {
-                            slothdb::RadixMultiAggI64Key a(Q31_THREADS, sa_n);
-                            run_q31(a);
+                            slothdb::RadixMultiAggI64Key a(INT_PAIR_AGG_THREADS, sa_n);
+                            run_intpair_agg(a);
                         }
                         return;
                     }
                 }
             }
 
-            // === Q32-shape: 2-col GROUP BY where at least one col is
+            // === 2-col GROUP BY where at least one col is
             //     BIGINT (the other can be INTEGER or BIGINT) + simple aggs.
-            //     Q32 (WatchID BIGINT, ClientIP INT, WHERE SearchPhrase <> '')
+            //     (WatchID BIGINT, ClientIP INT, WHERE SearchPhrase <> '')
             //     was TIMEOUT through TLMulti packed path because BIGINT
             //     silently truncates to 32 bits → wrong result space, then
             //     OOMs the str_groups fallback at high cardinality.
             //     RadixMultiAggBigKey uses a 128-bit (int64, int64) composite
             //     key. SAFETY GATE: requires a WHERE filter — without one
-            //     the cardinality is unbounded (Q33 has 100M near-unique
+            //     the cardinality is unbounded (the unfiltered case has 100M near-unique
             //     pairs → ~8 GB across per-thread per-shard arenas → system
-            //     thrash). Q33 falls through to existing TLMulti TIMEOUT
+            //     thrash). It falls through to existing TLMulti TIMEOUT
             //     path until a memory budget guard is added. =====
             if (group_col_indices.size() == 2 && multi_has_filter) {
                 idx_t bk_gc0 = group_col_indices[0];
@@ -10615,10 +10617,10 @@ private:
                             (bk_t0 == LogicalTypeId::BIGINT);
                         bool g1_is_bigint =
                             (bk_t1 == LogicalTypeId::BIGINT);
-                        // Generic phase 1-3+emit. Same shape as the Q31
+                        // Generic phase 1-3+emit. Same shape as the INT-pair
                         // dispatch: lifts InlineRowAggBigKey<N> over the
                         // legacy RadixMultiAggBigKey via env-var rollback.
-                        auto run_q32 = [&](auto& agg) {
+                        auto run_bigkey_agg = [&](auto& agg) {
                         pq->SetRGConsumer(
                             [&](const PhysicalParquetScan::RGWork &work,
                                 idx_t rg_idx, int tid) {
@@ -10770,15 +10772,15 @@ private:
                             }
                             result_rows_.push_back(std::move(row));
                         }
-                        };  // end run_q32 generic lambda
+                        };  // end run_bigkey_agg generic lambda
 
                         const bool bk_legacy_override =
                             std::getenv("SLOTH_LEGACY_AGG") != nullptr;
-                        // Pre-reserve estimate. Q32 requires a filter (gate
+                        // Pre-reserve estimate. This path requires a filter (gate
                         // above is multi_has_filter); BIGINT × INT pairs at
                         // 100M rows + WHERE filter typically yield ~10-20M
                         // unique. 25% of total_rows is the same heuristic
-                        // used for Q31.
+                        // used for the INT-pair path.
                         size_t bk_reserve_estimate = 0;
                         if (auto *bk_reader = pq->GetReader()) {
                             int64_t total = 0;
@@ -10790,23 +10792,23 @@ private:
                         }
                         if (!bk_legacy_override && bk_sa_n >= 1 && bk_sa_n <= 4) {
                             switch (bk_sa_n) {
-                            case 1: { slothdb::InlineRowAggBigKey<1> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_q32(a); break; }
-                            case 2: { slothdb::InlineRowAggBigKey<2> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_q32(a); break; }
-                            case 3: { slothdb::InlineRowAggBigKey<3> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_q32(a); break; }
-                            case 4: { slothdb::InlineRowAggBigKey<4> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_q32(a); break; }
+                            case 1: { slothdb::InlineRowAggBigKey<1> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_bigkey_agg(a); break; }
+                            case 2: { slothdb::InlineRowAggBigKey<2> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_bigkey_agg(a); break; }
+                            case 3: { slothdb::InlineRowAggBigKey<3> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_bigkey_agg(a); break; }
+                            case 4: { slothdb::InlineRowAggBigKey<4> a(BK_THREADS); a.ReserveExpectedRows(bk_reserve_estimate); run_bigkey_agg(a); break; }
                             }
                         } else {
                             slothdb::RadixMultiAggBigKey a(BK_THREADS, bk_sa_n);
-                            run_q32(a);
+                            run_bigkey_agg(a);
                         }
                         return;
                     }
                 }
             }
 
-            // === Q15/Q17/Q18-shape: 2-col GROUP BY (INT/BIGINT + VARCHAR) +
+            // === 2-col GROUP BY (INT/BIGINT + VARCHAR) +
             //     only COUNT(*) aggs. Default packed-uint64 path silently
-            //     truncates BIGINT to 32 bits (Q17/Q18 UserID), and the
+            //     truncates BIGINT to 32 bits (e.g. a UserID column), and the
             //     str_groups fallback OOMs at high cardinality. The radix
             //     2-col TU mirrors q16 architecture: composite key
             //     (int64, string_view) hashed once → 16 disjoint shards →
@@ -10863,11 +10865,11 @@ private:
                         }
                         pq->Init();
 
-                        // 12 decode shards: Q15 is parquet-decode-bound and
+                        // 12 decode shards: this path is parquet-decode-bound and
                         // scales to all 12 logical procs (see RunParallelRGs).
-                        constexpr int Q15_THREADS = 12;
-                        slothdb::RadixCount2ColIntStr agg2(Q15_THREADS);
-                        // Pre-reserve shard maps for Q15/Q17 (high-card
+                        constexpr int RADIX_COUNT_2COL_THREADS = 12;
+                        slothdb::RadixCount2ColIntStr agg2(RADIX_COUNT_2COL_THREADS);
+                        // Pre-reserve shard maps (high-card
                         // (int, str) pairs). Without reserve each shard
                         // grows 8 -> 16 -> ... -> 8K through ~10 rehashes
                         // during 100M-row ingest. Estimate expected
@@ -10883,14 +10885,14 @@ private:
                             if (expected < 1'000'000) expected = 1'000'000;
                             agg2.ReserveExpectedRows(expected);
                         }
-                        // Bare-LIMIT early-exit (Q18 shape). Stop picking
+                        // Bare-LIMIT early-exit. Stop picking
                         // new RGs once we've accumulated row_limit_hint_+slack
                         // distinct groups across all threads. Disabled for
-                        // TopN paths (Q15/Q17): top-K needs all groups.
-                        const bool q18_early_exit =
+                        // TopN paths: top-K needs all groups.
+                        const bool bare_limit_early_exit =
                             !topn_active_ && row_limit_hint_ > 0;
-                        const size_t q18_stop_threshold =
-                            q18_early_exit
+                        const size_t bare_limit_stop_threshold =
+                            bare_limit_early_exit
                                 ? (size_t)row_limit_hint_ + 64
                                 : 0;
                         pq->SetRGConsumer(
@@ -10907,10 +10909,10 @@ private:
                                     ? icol.i32_data.data() : nullptr;
                                 bool dict_fast = scol.str_dict_encoded &&
                                     !scol.str_dict_indices.empty();
-                                // Q15/Q17 skip-di fast path: single pred =
+                                // skip-di fast path: single pred =
                                 // `<str_gc> <> ''` collapses to a per-row
                                 // dict_idx skip. Avoids BuildTypedKeepMask.
-                                uint32_t skip_di_q15 = UINT32_MAX;
+                                uint32_t skip_di = UINT32_MAX;
                                 bool single_pred_skip_2c = false;
                                 if (dict_fast && multi_has_filter &&
                                     multi_preds.size() == 1) {
@@ -10925,7 +10927,7 @@ private:
                                                  std::memcmp(dv0[d].GetData(),
                                                              p.sval.data(),
                                                              p.sval.size()) == 0)) {
-                                                skip_di_q15 = d;
+                                                skip_di = d;
                                                 break;
                                             }
                                         }
@@ -10938,7 +10940,7 @@ private:
                                     tk_active = BuildTypedKeepMask(
                                         multi_preds, work.cols, nrows, tk);
                                 }
-                                int t = tid % Q15_THREADS;
+                                int t = tid % RADIX_COUNT_2COL_THREADS;
                                 if (dict_fast && single_pred_skip_2c) {
                                     agg2.IngestRGTwoColCountSkipDi(t,
                                         gi64, gi32, int_is_bigint,
@@ -10950,10 +10952,10 @@ private:
                                         scol.all_valid ? nullptr
                                             : scol.validity.data(),
                                         icol.all_valid, scol.all_valid,
-                                        (uint32_t)nrows, skip_di_q15);
+                                        (uint32_t)nrows, skip_di);
                                 } else if (dict_fast && (!multi_has_filter || tk_active)) {
                                     // Side-TU helper: shrinks planner .text
-                                    // ~30 LOC vs prior inline loop, keeps Q11/Q12
+                                    // ~30 LOC vs prior inline loop, keeps the other paths
                                     // I-cache stable.
                                     agg2.IngestRGTwoColCount(t,
                                         gi64, gi32, int_is_bigint,
@@ -11007,12 +11009,12 @@ private:
                                             gs[r].GetData(), gs[r].GetSize());
                                     }
                                 }
-                                if (q18_early_exit &&
-                                    agg2.LiveGroupCount() >= q18_stop_threshold) {
+                                if (bare_limit_early_exit &&
+                                    agg2.LiveGroupCount() >= bare_limit_stop_threshold) {
                                     pq->RequestStop();
                                 }
                             });
-                        pq->RunParallelRGs(Q15_THREADS);
+                        pq->RunParallelRGs(RADIX_COUNT_2COL_THREADS);
                         std::vector<std::thread> mts;
                         for (int s = 1;
                              s < slothdb::RadixCount2ColIntStr::N_RADIX; s++) {
@@ -11034,7 +11036,7 @@ private:
                                              (int)num_aggs) {
                             top_k = (int)topn_limit_;
                         }
-                        // Bare LIMIT (Q22): no ordering required, just need
+                        // Bare LIMIT: no ordering required, just need
                         // the first K rows. Avoid materializing 80M Values
                         // when the upstream PhysicalLimit will discard 99.99%.
                         std::vector<RadixCount2ColIntStrResult> results;
@@ -11083,7 +11085,7 @@ private:
                 auto &info = agg_infos[a];
                 if (info.col_idx != INVALID_INDEX) continue;
                 if (info.is_count_star) continue;
-                // Q28 fast path: STRLEN(col_ref) is fully serviced by the
+                // fast path: STRLEN(col_ref) is fully serviced by the
                 // is_strlen branch in apply_aggs (reads col->str_lengths
                 // directly). The expr_vals pre-fill at line ~10293 would
                 // duplicate that work and waste 1MB write/RG worker.
@@ -11185,7 +11187,7 @@ private:
                         skip[p.col_idx] = true;
                     }
                 }
-                // Lengths-only detection (Q28 attack).
+                // Lengths-only detection.
                 idx_t ncols_lo = pq->GetTypes().size();
                 std::vector<bool> lo(ncols_lo, false);
                 std::vector<bool> lo_blocker(ncols_lo, false);
@@ -11239,7 +11241,7 @@ private:
                 if (info.name == "COUNT" && info.is_count_star)   kinds[a] = AK::CountStar;
                 else if (info.name == "COUNT" && info.is_distinct) {
                     // Choose distinct backing store by argument type so the
-                    // hot loop is a typed insert, not Value::ToString. Q10
+                    // hot loop is a typed insert, not Value::ToString. The
                     // SELECT ... COUNT(DISTINCT UserID) GROUP BY RegionID
                     // lives here.
                     if (info.col_idx != INVALID_INDEX) {
@@ -11261,54 +11263,54 @@ private:
                 else                                                kinds[a] = AK::Other;
             }
 
-            // === Q10 fast path: single INT32-column GROUP BY (no filter)
+            // === fast path: single INT32-column GROUP BY (no filter)
             //     + aggs in {COUNT(*), SUM/AVG of an int col, COUNT(DISTINCT
             //     int col)}. The generic per-row per-agg dispatch loop below
             //     costs ~90 ns/row on this shape; IntGroupAgg (side TU) hardcodes
             //     the agg kinds and skew-balances the distinct-set merge.
-            //     ClickBench Q10 (RegionID, SUM(AdvEngineID), COUNT(*),
+            //     e.g. (RegionID, SUM(AdvEngineID), COUNT(*),
             //     AVG(ResolutionWidth), COUNT(DISTINCT UserID)) lands here. ==
             if (group_col_indices.size() == 1 && !multi_has_filter &&
                 num_aggs >= 1 &&
                 pq->GetTypes()[group_col_indices[0]].id() ==
                     LogicalTypeId::INTEGER) {
-                bool q10_ok = true;
-                std::vector<slothdb::IntGroupAggKind> q10kinds((size_t)num_aggs);
-                std::vector<bool> q10_big((size_t)num_aggs, false);
-                std::vector<idx_t> q10_col((size_t)num_aggs, INVALID_INDEX);
-                for (idx_t a = 0; a < num_aggs && q10_ok; a++) {
+                bool int_group_ok = true;
+                std::vector<slothdb::IntGroupAggKind> int_group_kinds((size_t)num_aggs);
+                std::vector<bool> int_group_big((size_t)num_aggs, false);
+                std::vector<idx_t> int_group_col((size_t)num_aggs, INVALID_INDEX);
+                for (idx_t a = 0; a < num_aggs && int_group_ok; a++) {
                     auto &info = agg_infos[a];
                     if (kinds[a] == AK::CountStar) {
-                        q10kinds[a] = slothdb::IntGroupAggKind::CountStar;
+                        int_group_kinds[a] = slothdb::IntGroupAggKind::CountStar;
                     } else if (kinds[a] == AK::Sum ||
                                kinds[a] == AK::CountDistinctInt) {
                         if (info.col_idx == INVALID_INDEX) {
-                            q10_ok = false; break;
+                            int_group_ok = false; break;
                         }
                         auto ct = pq->GetTypes()[info.col_idx].id();
                         if (ct != LogicalTypeId::INTEGER &&
                             ct != LogicalTypeId::BIGINT) {
-                            q10_ok = false; break;
+                            int_group_ok = false; break;
                         }
-                        q10kinds[a] = (kinds[a] == AK::Sum)
+                        int_group_kinds[a] = (kinds[a] == AK::Sum)
                             ? slothdb::IntGroupAggKind::Sum
                             : slothdb::IntGroupAggKind::CountDistinct;
-                        q10_big[a] = (ct == LogicalTypeId::BIGINT);
-                        q10_col[a] = info.col_idx;
+                        int_group_big[a] = (ct == LogicalTypeId::BIGINT);
+                        int_group_col[a] = info.col_idx;
                     } else {
-                        q10_ok = false;
+                        int_group_ok = false;
                     }
                 }
-                if (q10_ok) {
-                    constexpr int Q10_THREADS = 8;
-                    idx_t q10_gci = group_col_indices[0];
-                    slothdb::IntGroupAgg q10agg(Q10_THREADS, q10kinds);
+                if (int_group_ok) {
+                    constexpr int INT_GROUP_AGG_THREADS = 8;
+                    idx_t int_group_gci = group_col_indices[0];
+                    slothdb::IntGroupAgg int_group_agg(INT_GROUP_AGG_THREADS, int_group_kinds);
                     pq->SetRGConsumer(
                         [&](const PhysicalParquetScan::RGWork &work,
                             idx_t rg_idx, int tid) {
                             if (work.pruned) return;
                             idx_t nrows = pq->RowGroupSize(rg_idx);
-                            const auto &gc = work.cols[q10_gci];
+                            const auto &gc = work.cols[int_group_gci];
                             if (!gc.decoded ||
                                 gc.type.id() != LogicalTypeId::INTEGER) return;
                             const int32_t *grp = gc.i32_data.data();
@@ -11322,38 +11324,38 @@ private:
                                 (size_t)num_aggs, nullptr);
                             bool ok = true;
                             for (idx_t a = 0; a < num_aggs; a++) {
-                                if (q10kinds[a] ==
+                                if (int_group_kinds[a] ==
                                     slothdb::IntGroupAggKind::CountStar) continue;
-                                const auto &ac = work.cols[q10_col[a]];
+                                const auto &ac = work.cols[int_group_col[a]];
                                 if (!ac.decoded) { ok = false; break; }
-                                if (q10_big[a]) ai64[a] = ac.i64_data.data();
+                                if (int_group_big[a]) ai64[a] = ac.i64_data.data();
                                 else            ai32[a] = ac.i32_data.data();
                                 av[a] = ac.all_valid
                                     ? nullptr : ac.validity.data();
                             }
                             if (!ok) return;
-                            q10agg.ConsumeRG(tid % Q10_THREADS,
+                            int_group_agg.ConsumeRG(tid % INT_GROUP_AGG_THREADS,
                                              (uint32_t)nrows,
                                              grp, gv, ai64, ai32, av);
                         });
-                    pq->RunParallelRGs(Q10_THREADS);
-                    auto q10groups = q10agg.MergeAll();
+                    pq->RunParallelRGs(INT_GROUP_AGG_THREADS);
+                    auto int_group_results = int_group_agg.MergeAll();
                     // Emit through the shared EmitAggValue helper so the
                     // result Values are byte-identical to the generic path.
-                    std::vector<EmitAggDesc> q10_descs((size_t)num_aggs);
+                    std::vector<EmitAggDesc> int_group_descs((size_t)num_aggs);
                     for (idx_t a = 0; a < num_aggs; a++) {
                         auto &ae =
                             static_cast<BoundFunction &>(*aggregates_[a]);
-                        q10_descs[a].kind = ResolveEmitAggKind(
+                        int_group_descs[a].kind = ResolveEmitAggKind(
                             StringUtil::Upper(ae.function_name));
-                        q10_descs[a].return_type_id =
+                        int_group_descs[a].return_type_id =
                             ae.GetReturnType().id();
-                        q10_descs[a].sum_with_offset =
+                        int_group_descs[a].sum_with_offset =
                             agg_infos[a].sum_with_offset;
-                        q10_descs[a].sum_offset = agg_infos[a].sum_offset;
+                        int_group_descs[a].sum_offset = agg_infos[a].sum_offset;
                     }
-                    result_rows_.reserve(q10groups.size());
-                    for (auto &gr : q10groups) {
+                    result_rows_.reserve(int_group_results.size());
+                    for (auto &gr : int_group_results) {
                         std::vector<Value> row;
                         row.reserve(1 + (size_t)num_aggs);
                         row.push_back(Value::INTEGER(gr.key));
@@ -11361,7 +11363,7 @@ private:
                             EmitAggView view;
                             view.count = gr.aggs[a].count;
                             view.sum = gr.aggs[a].sum;
-                            EmitAggValue(q10_descs[a], view, row);
+                            EmitAggValue(int_group_descs[a], view, row);
                         }
                         result_rows_.push_back(std::move(row));
                     }
@@ -11508,7 +11510,7 @@ private:
                     std::vector<std::vector<bool>> agg_used(num_aggs);
                     // Fast path: STRLEN(VARCHAR direct col) is just the per-row
                     // string size — no need to box through DataChunk + Executor.
-                    // Cuts ~5s on Q28 (100M rows × per-row std::string alloc).
+                    // Cuts ~5s (100M rows × per-row std::string alloc).
                     std::vector<idx_t> strlen_col(num_aggs, INVALID_INDEX);
                     for (idx_t a = 0; a < num_aggs; a++) {
                         if (!expr_args[a]) continue;
@@ -11696,7 +11698,7 @@ private:
                         if (!acol.decoded) continue;
                         if (!acol.all_valid && !acol.col->validity[r]) continue;
                         // STRLEN/LENGTH(col): byte-length of the row's string.
-                        // Q28 AVG(STRLEN(URL)) / SUM/MIN/MAX/COUNT live here.
+                        // AVG(STRLEN(URL)) / SUM/MIN/MAX/COUNT live here.
                         if (acol.is_strlen) {
                             if (acol.tid != LogicalTypeId::VARCHAR) continue;
                             uint32_t sl;
@@ -11828,7 +11830,7 @@ private:
 
                 if (rg_packable) {
                     // === PACKED uint64 key path ===
-                    // Cache-last: ClickBench RegionID averages 16+ consecutive
+                    // Cache-last: a low-cardinality int key averages 16+ consecutive
                     // rows per group (94% cache hit on first 100K rows). Skip
                     // the outer-map probe when pkey unchanged. Pointer is
                     // stable across hits because no insertion happens between
@@ -12039,7 +12041,7 @@ private:
                 }
                 return sk;
             };
-            // Cross-thread merge dominates Q10 wall - pre-register all
+            // Cross-thread merge dominates wall time - pre-register all
             // content-keys in a sequential pass, then disjoint-partition
             // by key for parallel state union.
             // (MergeSrc is hoisted to ComputeAggregates scope since the
@@ -13857,14 +13859,14 @@ PhysicalOpPtr PhysicalPlanner::PlanFilter(const LogicalFilter &op) {
     return result;
 }
 
-// Q20 peephole detection, marked noinline + cold so it stays out of the
+// Literal-equality peephole detection, marked noinline + cold so it stays out of the
 // hot .text region. Returns true and fills `out_literal` if the shape
 // matches (SELECT col WHERE col = literal); caller builds the synthetic
 // count_op and wraps it in PhysicalLiteralEmitFilter.
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline, cold))
 #endif
-static bool MatchQ20LiteralEmit(const LogicalProjection &op, Value &out_literal) {
+static bool MatchColEqLiteralEmit(const LogicalProjection &op, Value &out_literal) {
     if (op.expressions.size() != 1 || op.children.empty()) return false;
     auto &proj_expr = op.expressions[0];
     if (!proj_expr || proj_expr->GetExpressionType() != BoundExpressionType::COLUMN_REF) return false;
@@ -13901,7 +13903,7 @@ static bool MatchQ20LiteralEmit(const LogicalProjection &op, Value &out_literal)
 PhysicalOpPtr PhysicalPlanner::PlanProjection(const LogicalProjection &op) {
     auto &mutable_op = const_cast<LogicalProjection &>(op);
     Value emit_literal;
-    if (MatchQ20LiteralEmit(op, emit_literal)) {
+    if (MatchColEqLiteralEmit(op, emit_literal)) {
         std::vector<BoundExprPtr> agg_funcs;
         agg_funcs.push_back(std::make_unique<BoundFunction>(
             "COUNT", std::vector<BoundExprPtr>{}, LogicalType::BIGINT(), true, false));
@@ -13919,7 +13921,7 @@ PhysicalOpPtr PhysicalPlanner::PlanProjection(const LogicalProjection &op) {
     }
     // Push the projection's referenced columns down into a child OrderBy.
     // CollectTopN_Primitive's pass-2 decode then skips unprojected cols.
-    // Q25 (SELECT SearchPhrase ... ORDER BY EventTime LIMIT 10) drops from
+    // (SELECT SearchPhrase ... ORDER BY EventTime LIMIT 10) drops from
     // 1.7s -> ~225ms because pass-2 stops decoding 103 unused cols.
     {
         // Walk down through identity-projection/limit wrappers to find OrderBy.

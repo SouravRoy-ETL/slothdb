@@ -420,14 +420,14 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
         original_group_ptrs.reserve(groups.size());
         for (auto &g : groups) original_group_ptrs.push_back(g.get());
 
-        // Q35-style redundant-group elimination. GROUP BY (X, X±c1, X±c2, ...)
+        // redundant-group elimination. GROUP BY (X, X±c1, X±c2, ...)
         // has the same partition as GROUP BY X — X uniquely determines X±c.
         // Drop the (col ± const) groups when col itself is also a group; the
         // SELECT-list/ORDER-BY rewrites that match against original_group_ptrs
         // still find the dropped expression, but RemapGroupColumns will rewrite
         // its inner col-ref to the surviving aggregate-output slot, so the
         // arithmetic is computed only on the (small) post-aggregate row count
-        // instead of every input row. Q35 hashes 1 col, not 4.
+        // instead of every input row. The result hashes 1 col, not 4.
         {
             std::vector<idx_t> kept_colref_idx; // source col_idx of COLUMN_REF groups
             kept_colref_idx.reserve(groups.size());
@@ -463,7 +463,7 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
                 }
             }
             // Constant group cols are redundant when ANY non-constant
-            // group col is also present. `GROUP BY 1, URL` (Q35) becomes
+            // group col is also present. `GROUP BY 1, URL` becomes
             // `GROUP BY URL` since the literal contributes no partition.
             // Without this drop the 2-col packed-path explodes to 10M+
             // (URL, 1) pairs and the FUSED GENERIC merge OOMs.

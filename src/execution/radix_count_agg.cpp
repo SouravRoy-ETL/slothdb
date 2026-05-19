@@ -985,7 +985,7 @@ size_t RadixCount2ColIntStr::LiveGroupCount() const {
     return total;
 }
 
-// Q14 Stage 1 inner loop. Per-row IncrementByHashed on (int, str) pairs.
+// Stage 1 inner loop. Per-row IncrementByHashed on (int, str) pairs.
 // Specialized for the gstr × int distinct shape: dict path with
 // precomputed per-dict-entry str hashes amortizes hashing across rows
 // that share the same dict entry.
@@ -1008,7 +1008,7 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinct(int tid,
                                 dict_values[d].GetSize());
         }
         // Cache-last (mirrors IngestRGTwoColCount): consecutive rows
-        // sharing the same (int, dict_idx) — common on Q14 SearchPhrase
+        // sharing the same (int, dict_idx) — common on SearchPhrase
         // batches — skip the per-row hash table find. Stable counter
         // pointer between hits because no insertion happens between them.
         auto& pt = *impl_->threads[tid];
@@ -1108,7 +1108,7 @@ inline void StrIntDistinctSkipDiInner(
 }
 }  // namespace
 
-// Skip-di variant: SearchPhrase<>'' folded into dict-idx skip (Q14).
+// Skip-di variant: SearchPhrase<>'' folded into dict-idx skip.
 void RadixCount2ColIntStr::IngestRGStrIntDistinctSkipDi(int tid,
     const int64_t* int_data_64, const int32_t* int_data_32,
     bool int_is_bigint,
@@ -1136,13 +1136,13 @@ void RadixCount2ColIntStr::IngestRGStrIntDistinctSkipDi(int tid,
 #undef DISPATCH
 }
 
-// Q15-shape inner loop body. Per-RG ingest of (int_key, dict_idx) → count.
+// Two-column inner loop body. Per-RG ingest of (int_key, dict_idx) → count.
 // Precomputes per-dict-entry hash once per RG (~10-30 ns saved per row),
 // then per-row IncrementByHashed. Lives here (not physical_planner.cpp)
 // to keep the planner .text shrink stable across adjacent paths.
 //
 // Note: a flat-counter dict-amortization variant was attempted (per-RG
-// pool[unique_int][dict_size] + fold at end) but didn't move Q15 — the
+// pool[unique_int][dict_size] + fold at end) but didn't help this shape — the
 // pool reallocation + ankerl<int64,u32> int_to_idx overhead masks the
 // O(N) → O(unique * touched) insert savings on this shape. Per-row
 // IncrementByHashed is the simpler win.
@@ -1164,7 +1164,7 @@ void RadixCount2ColIntStr::IngestRGTwoColCount(int tid,
     auto fetch_int = [&](uint32_t r) -> int64_t {
         return int_is_bigint ? int_data_64[r] : (int64_t)int_data_32[r];
     };
-    // Cache-last: ClickBench Q15/Q17 see consecutive rows sharing the
+    // Cache-last: some workloads see consecutive rows sharing the
     // same (engine, search_phrase) pair (sorted-ish data — same
     // SearchEngineID + SearchPhrase batched together). Skip the per-row
     // hash + map-find when the pair is unchanged from prior row. The
