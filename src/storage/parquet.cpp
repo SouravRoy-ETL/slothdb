@@ -1148,6 +1148,7 @@ void ParquetReader::ReadMetadata() {
                 meta_.num_rows = pmeta.num_rows;
                 meta_.column_names.clear();
                 meta_.column_types.clear();
+                meta_.column_display_types.clear();
                 for (auto i : leaf_indices) {
                     meta_.column_names.push_back(pmeta.schema[i].name);
                     auto t = pmeta.schema[i].type;
@@ -1162,6 +1163,22 @@ void ParquetReader::ReadMetadata() {
                     default: lt = LogicalType::VARCHAR(); break;
                     }
                     meta_.column_types.push_back(lt);
+                    // Display type: a DATE / TIMESTAMP_MICROS converted_type
+                    // annotation upgrades the rendered type while the physical
+                    // (decode) type above stays INT32 / INT64. ConvertedType
+                    // enum: DATE=6, TIMESTAMP_MICROS=10. TIMESTAMP_MILLIS (9)
+                    // is intentionally left as BIGINT — Value::TIMESTAMP
+                    // assumes microseconds, so rendering a ms column would be
+                    // 1000x off and the fix must not rescale in the decode
+                    // hot loop.
+                    LogicalType disp = lt;
+                    int32_t conv = pmeta.schema[i].converted_type;
+                    if (conv == 6 && lt.id() == LogicalTypeId::INTEGER) {
+                        disp = LogicalType::DATE();
+                    } else if (conv == 10 && lt.id() == LogicalTypeId::BIGINT) {
+                        disp = LogicalType::TIMESTAMP();
+                    }
+                    meta_.column_display_types.push_back(disp);
                     meta_.column_repetition.push_back(pmeta.schema[i].repetition_type);
                 }
                 meta_.row_groups.clear();
@@ -1287,7 +1304,11 @@ void ParquetReader::ReadMetadata() {
 
         int32_t type_id;
         std::memcpy(&type_id, &footer[pos], 4); pos += 4;
-        meta_.column_types.push_back(ParquetToLogicalType(static_cast<ParquetType>(type_id)));
+        auto lt = ParquetToLogicalType(static_cast<ParquetType>(type_id));
+        meta_.column_types.push_back(lt);
+        // Legacy custom format carries no converted_type annotation, so the
+        // display type always equals the physical type.
+        meta_.column_display_types.push_back(lt);
     }
 
     for (uint32_t r = 0; r < num_rg; r++) {

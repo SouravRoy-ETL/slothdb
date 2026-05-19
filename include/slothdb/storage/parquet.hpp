@@ -86,7 +86,16 @@ struct ParquetFileMeta {
     int64_t num_rows = 0;
     std::vector<ParquetRowGroup> row_groups;
     std::vector<std::string> column_names;
+    // Physical-storage logical types (INT32->INTEGER, INT64->BIGINT, ...).
+    // The typed-decode path and all column statistics key off these — they
+    // describe how the bytes are laid out on disk.
     std::vector<LogicalType> column_types;
+    // Display logical types: identical to column_types EXCEPT for columns
+    // whose Parquet `converted_type` annotation is DATE / TIMESTAMP_MICROS,
+    // where the entry is LogicalType::DATE() / TIMESTAMP() so query output
+    // renders ISO strings instead of the raw epoch integer. The decode path
+    // intentionally does NOT consult this — it stays a pure rendering hint.
+    std::vector<LogicalType> column_display_types;
     // Per-leaf repetition type from the schema:
     // 0=REQUIRED (max_def_level=0), 1=OPTIONAL (max_def_level=1), 2=REPEATED.
     // Only populated for files parsed via the standard-Parquet thrift path.
@@ -210,7 +219,18 @@ public:
 
     const ParquetFileMeta &GetMeta() const { return meta_; }
     const std::vector<std::string> &GetColumnNames() const { return meta_.column_names; }
+    // Physical-storage column types (INT32->INTEGER, INT64->BIGINT, ...).
+    // The catalog, binder, planner and typed-decode path all key off these.
     const std::vector<LogicalType> &GetColumnTypes() const { return meta_.column_types; }
+    // Display logical types — equal to GetColumnTypes() except DATE /
+    // TIMESTAMP_MICROS columns surface as LogicalType::DATE() / TIMESTAMP().
+    // Used purely to re-tag query-result columns so output renders ISO
+    // strings; never feeds decode or planner dispatch.
+    const std::vector<LogicalType> &GetColumnDisplayTypes() const {
+        return meta_.column_display_types.size() == meta_.column_types.size()
+                   ? meta_.column_display_types
+                   : meta_.column_types;
+    }
     int64_t NumRows() const { return meta_.num_rows; }
 
     // Read all rows.

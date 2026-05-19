@@ -51,6 +51,56 @@ static void BulkLoadRows(DataTable &storage, const std::vector<LogicalType> &typ
     }
 }
 
+// Resolve the DISPLAY logical type for one SELECT-list expression so a
+// Parquet DATE / TIMESTAMP column renders as an ISO string. The engine
+// carries DATE/TIMESTAMP columns internally as INTEGER/BIGINT (epoch
+// integers) — this re-tag happens only on the final result, downstream of
+// every planner and decode path. Returns INVALID when no re-tag applies.
+//
+//   - column-ref to a Parquet column whose converted_type is DATE /
+//     TIMESTAMP_MICROS -> that DATE / TIMESTAMP type.
+//   - MIN(col) / MAX(col) of such a column -> the column's date type
+//     (MIN/MAX of a date IS a date).
+//   - DATE_TRUNC(...) -> TIMESTAMP (its result is a timestamp).
+//
+// `table` is the single scanned table; JOIN column indices are offsets into
+// a combined space, so multi-table selects are skipped (left un-retagged).
+static LogicalType ResolveResultDisplayType(const BoundExpression &expr,
+                                            const TableCatalogEntry *table) {
+    auto parquet_col_display = [&](idx_t col_idx) -> LogicalType {
+        if (!table || !table->IsFileScan() ||
+            table->GetFileFormat() != "parquet") {
+            return LogicalType(LogicalTypeId::INVALID);
+        }
+        auto reader = table->GetCachedParquetReader();
+        if (!reader) return LogicalType(LogicalTypeId::INVALID);
+        const auto &disp = reader->GetColumnDisplayTypes();
+        if (col_idx >= disp.size()) return LogicalType(LogicalTypeId::INVALID);
+        auto id = disp[col_idx].id();
+        if (id == LogicalTypeId::DATE || id == LogicalTypeId::TIMESTAMP)
+            return disp[col_idx];
+        return LogicalType(LogicalTypeId::INVALID);
+    };
+
+    if (expr.GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+        return parquet_col_display(
+            static_cast<const BoundColumnRef &>(expr).column_index);
+    }
+    if (expr.GetExpressionType() == BoundExpressionType::FUNCTION) {
+        auto &fn = static_cast<const BoundFunction &>(expr);
+        auto name = StringUtil::Upper(fn.function_name);
+        if (name == "DATE_TRUNC") return LogicalType::TIMESTAMP();
+        if ((name == "MIN" || name == "MAX") && fn.arguments.size() == 1 &&
+            fn.arguments[0]->GetExpressionType() ==
+                BoundExpressionType::COLUMN_REF) {
+            return parquet_col_display(
+                static_cast<const BoundColumnRef &>(*fn.arguments[0])
+                    .column_index);
+        }
+    }
+    return LogicalType(LogicalTypeId::INVALID);
+}
+
 // If `path_or_url` starts with http://, https://, or s3://, fetch it to a
 // system temp file and return the temp path (with the original extension
 // preserved so format detection still works). Returns the input unchanged for
@@ -1946,6 +1996,21 @@ QueryResult Connection::Query(const std::string &sql) {
         Binder binder(db_.GetCatalog());
         auto bound = binder.Bind(*stmt);
 
+        // Capture per-result-column DISPLAY types now — Planner::Plan below
+        // moves the bound select-list out of the statement, so the date/
+        // timestamp re-tag (applied to the final result further down) must
+        // read the select-list expressions here while they still exist.
+        std::vector<LogicalType> result_display_types;
+        if (bound->GetType() == BoundStatementType::SELECT) {
+            auto &sel = static_cast<BoundSelectStatement &>(*bound);
+            result_display_types.reserve(sel.select_list.size());
+            for (auto &e : sel.select_list) {
+                result_display_types.push_back(
+                    e ? ResolveResultDisplayType(*e, sel.table)
+                      : LogicalType(LogicalTypeId::INVALID));
+            }
+        }
+
         // 3. Logical plan.
         auto logical = Planner::Plan(*bound);
 
@@ -1987,6 +2052,40 @@ QueryResult Connection::Query(const std::string &sql) {
             if (chunk.size() == 0) continue;
             final_result.chunks.push_back(std::move(chunk));
             chunk = DataChunk{};
+        }
+
+        // Re-tag DATE / TIMESTAMP result columns. The engine carries Parquet
+        // date/timestamp columns as INTEGER/BIGINT epoch integers through
+        // decode, filtering and aggregation; here — past every hot path —
+        // the matching result columns are re-tagged so QueryResult::GetValue
+        // boxes a DATE/TIMESTAMP Value and the output renders an ISO string
+        // (matching standard SQL / DuckDB) instead of the raw integer. Only
+        // the logical type changes; the INT32/INT64 buffers are untouched
+        // and layout-compatible (DATE==INT32, TIMESTAMP==INT64).
+        // `result_display_types` was captured right after binding because
+        // Planner::Plan moves the bound select-list out of the statement.
+        for (idx_t c = 0;
+             c < result_display_types.size() &&
+             c < final_result.column_types.size();
+             c++) {
+            auto did = result_display_types[c].id();
+            if (did != LogicalTypeId::DATE && did != LogicalTypeId::TIMESTAMP)
+                continue;
+            // Guard: only re-tag when the produced column's physical layout
+            // matches (DATE<-INT32, TIMESTAMP<-INT64). A defensive check — a
+            // mismatch would mean the plan emitted an unexpected type, so
+            // leave such a column alone.
+            auto cur = final_result.column_types[c].id();
+            bool ok = (did == LogicalTypeId::DATE &&
+                       cur == LogicalTypeId::INTEGER) ||
+                      (did == LogicalTypeId::TIMESTAMP &&
+                       cur == LogicalTypeId::BIGINT);
+            if (!ok) continue;
+            final_result.column_types[c] = result_display_types[c];
+            for (auto &ch : final_result.chunks) {
+                if (c < ch.ColumnCount())
+                    ch.GetVector(c).SetType(result_display_types[c]);
+            }
         }
 
         // Handle set operations (UNION, INTERSECT, EXCEPT).

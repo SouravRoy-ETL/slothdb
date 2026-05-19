@@ -87,6 +87,13 @@ public:
     const ValidityMask &GetValidity() const { return validity_; }
 
     void SetVectorType(VectorType type) { vector_type_ = type; }
+    // Re-tag the logical type WITHOUT touching the backing buffer. Only safe
+    // when the new type shares this vector's physical layout (e.g. swapping
+    // INTEGER<->DATE or BIGINT<->TIMESTAMP, all identical INT32/INT64
+    // storage). Used to surface a Parquet DATE/TIMESTAMP column on the final
+    // query result so GetValue() boxes a DATE/TIMESTAMP Value and renders an
+    // ISO string; the caller is responsible for layout compatibility.
+    void SetType(const LogicalType &type) { type_ = type; }
 
     // Typed data access.
     template <class T>
