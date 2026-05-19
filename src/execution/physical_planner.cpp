@@ -21,6 +21,7 @@
 #include "slothdb/execution/inline_row_agg.hpp"
 #include "slothdb/execution/literal_emit_filter.hpp"
 #include "slothdb/execution/int_group_agg.hpp"
+#include "slothdb/execution/count_group_agg.hpp"
 #include "slothdb/execution/str_group_distinct.hpp"
 #include "slothdb/execution/substring_search.hpp"
 #include "slothdb/execution/topk_varchar.hpp"
@@ -12149,27 +12150,67 @@ private:
             }
         } else {
 
-        // Q19 OOM guard for 3+col GROUP BY routed through the slow chunk-
-        // loop fallback (when PhysicalProjection wraps the parquet scan and
-        // breaks FUSED PARQUET dispatch). At 100M near-unique composite keys
-        // the per-row key-build + map-insert work alone exceeds 30s. Once
-        // the per-result group count reaches the cap, stop accepting new
-        // groups; existing groups keep accumulating. Output is then a
-        // capped subset rather than the full top-K, but DuckDB hits a
-        // Binder Error on Q19's `extract(minute FROM EventTime)` anyway,
-        // so any non-error completion classifies as WIN_DF.
-        constexpr size_t CHUNK_LOOP_3COL_GROUP_CAP = 250'000;
-        const bool chunk_loop_cap_enabled = group_col_indices.size() >= 3;
-        bool chunk_loop_cap_hit = false;
+        // Compact COUNT(*)-only multi-column GROUP BY. The generic chunk-
+        // loop below keeps ~400 bytes of per-group state (three string-keyed
+        // maps + a heap AggState vector + a Value vector); a GROUP BY with
+        // tens of millions of distinct groups exhausts RAM. When every
+        // aggregate is COUNT(*), only an int64 counter matters per group, so
+        // route to a binary-keyed counter that costs ~60 bytes per group.
+        if (!group_col_indices.empty() &&
+            group_col_indices.size() == groups_.size() && num_aggs >= 1) {
+            bool count_only = true;
+            for (idx_t a = 0; a < num_aggs && count_only; a++)
+                if (!agg_infos[a].is_count_star) count_only = false;
+            // Every group column must be a type the binary key encoder
+            // supports (the integral family, float/double, date/time/
+            // timestamp, varchar/blob).
+            const auto &ct = children[0]->GetTypes();
+            for (idx_t gc : group_col_indices) {
+                if (gc >= ct.size()) { count_only = false; break; }
+                switch (ct[gc].id()) {
+                case LogicalTypeId::BOOLEAN:
+                case LogicalTypeId::TINYINT:  case LogicalTypeId::UTINYINT:
+                case LogicalTypeId::SMALLINT: case LogicalTypeId::USMALLINT:
+                case LogicalTypeId::INTEGER:  case LogicalTypeId::UINTEGER:
+                case LogicalTypeId::BIGINT:   case LogicalTypeId::UBIGINT:
+                case LogicalTypeId::HUGEINT:
+                case LogicalTypeId::FLOAT:    case LogicalTypeId::DOUBLE:
+                case LogicalTypeId::DATE:     case LogicalTypeId::TIME:
+                case LogicalTypeId::TIMESTAMP:
+                case LogicalTypeId::TIMESTAMP_TZ:
+                case LogicalTypeId::VARCHAR:  case LogicalTypeId::BLOB:
+                    break;
+                default:
+                    count_only = false; break;
+                }
+                if (!count_only) break;
+            }
+            if (count_only) {
+                // An upstream ORDER BY <count column> LIMIT forwards a TopN
+                // hint whose col_idx lands in the aggregate-column range
+                // (every aggregate here is COUNT(*), so ordering by any of
+                // them is ordering by the group count). Pass it down so the
+                // helper emits only the top-K rows.
+                bool topn_count_order =
+                    topn_active_ &&
+                    topn_col_idx_ >= group_col_indices.size() &&
+                    topn_col_idx_ < group_col_indices.size() + num_aggs;
+                result_rows_ = slothdb::RunCountGroupAggregate(
+                    children[0].get(), group_col_indices, num_aggs,
+                    topn_active_, topn_count_order, topn_ascending_,
+                    topn_limit_);
+                return;
+            }
+        }
+
+        // Generic chunk-loop fallback (e.g. a PhysicalProjection wraps the
+        // parquet scan with a derived GROUP BY key and breaks FUSED PARQUET
+        // dispatch). Every input row must be aggregated — no group cap: a
+        // cap silently under-counts and, because group arrival order varies
+        // across runs, makes the result non-deterministic.
         while (children[0]->GetData(chunk)) {
-            if (chunk_loop_cap_hit) break;
             idx_t chunk_size = chunk.size();
             for (idx_t i = 0; i < chunk_size; i++) {
-                if (chunk_loop_cap_enabled &&
-                    group_states.size() >= CHUNK_LOOP_3COL_GROUP_CAP) {
-                    chunk_loop_cap_hit = true;
-                    break;
-                }
                 // Build group key directly from vectors.
                 key.clear();
                 std::vector<Value> key_vals;
