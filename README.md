@@ -31,10 +31,10 @@
 
 ---
 
-## ClickBench: 33 of 43 queries beat DuckDB
+## ClickBench-43: SlothDB vs DuckDB
 
-A from-scratch C++ embedded database, ahead of DuckDB on the majority of
-the industry-standard analytical benchmark.
+A from-scratch C++ embedded database, measured head to head against DuckDB
+on the industry-standard analytical benchmark.
 
 <div align="center">
 <picture>
@@ -44,12 +44,14 @@ the industry-standard analytical benchmark.
 </div>
 
 [ClickBench](https://github.com/ClickHouse/ClickBench) is the standard
-analytical-database benchmark: 43 queries over the 100M-row, 14 GB `hits`
-Parquet dataset. SlothDB runs all 43 head to head against DuckDB and comes
-out ahead on **33 of 43** on a 6-core laptop. Of those 33, SlothDB is
-genuinely faster on 25; the other 8 are queries DuckDB rejects outright on
-a type-strictness difference and SlothDB runs. Standout margins: Q24 about
-10x, Q18 about 8x, Q7 about 5x, Q1 about 3x faster than DuckDB.
+analytical-database benchmark: 43 queries over a 100M-row `hits` Parquet
+dataset. Both engines run the 43 official queries directly against the
+same file on the same machine, 3 trials each, fastest of 3 reported.
+
+SlothDB completes **40 of the 43** and is **faster than DuckDB on 29 of
+those 40, geomean 1.24x**. Three queries it does not finish inside the
+120-second cap: Q19 and Q33 (very high-cardinality `GROUP BY`) and Q29
+(a regex `GROUP BY`). Those are real gaps, shown here, not hidden.
 
 <div align="center">
 <picture>
@@ -58,17 +60,22 @@ a type-strictness difference and SlothDB runs. Standout margins: Q24 about
 </picture>
 </div>
 
-The 8 queries SlothDB loses are shown in red, not hidden: high-cardinality
-two-column `GROUP BY` (Q31 at 0.29x, Q32 at 0.12x) is the current weak
-spot, and two more (Q29, Q33) run past 30s. The whole suite reproduces
-from `bench/clickbench/`, which holds the 43 queries verbatim from the
-ClickBench repo plus the runner. Warm-cache, min-of-3, on a Ryzen 5 5600U
-laptop. This is not an official ClickBench submission; ClickBench timings
-are hardware-specific, so run it on yours:
+The queries SlothDB loses are drawn in red, not dropped. High-cardinality
+two-column `GROUP BY` (Q31 at 0.22x, Q32 at 0.11x) is the weak spot, and
+because of it the total wall time across the 40 comparable queries is
+close: SlothDB 71s, DuckDB 65s. SlothDB takes the per-query majority and
+the geomean; DuckDB takes the sum, since a few high-cardinality
+aggregations are slow.
+
+Measured on a 6-core laptop (Ryzen 5 5600U, 15 GB RAM, Windows 11) against
+DuckDB v1.4.3. This is a local run, not an official ClickBench submission;
+ClickBench timings are hardware-specific, so reproduce it on yours:
 
 ```bash
-python bench/clickbench/verify_all.py
+python bench/clickbench/official_bench.py
 ```
+
+Raw per-query times: [bench/clickbench/official_results.md](bench/clickbench/official_results.md).
 
 ---
 
@@ -122,9 +129,9 @@ const { columns, rows } = db.query("SELECT 1 AS n");
 
 ## What's new in 0.2.6
 
-- **ClickBench-43.** SlothDB runs the full 43-query ClickBench suite over the 100M-row `hits` dataset and is ahead of DuckDB on 33 of 43 on a 6-core laptop (see the [ClickBench section](#clickbench-33-of-43-queries-beat-duckdb) above). The query engine gained radix-partitioned aggregators for high-cardinality `GROUP BY`, a bounded hash-table `COUNT` path, parquet decode improvements (zero-copy VARCHAR, batched RLE unpack), and `TopN` pushdown into the aggregate.
+- **ClickBench-43.** SlothDB runs the full 43-query ClickBench suite over the 100M-row `hits` dataset and is faster than DuckDB on 29 of the 40 queries it completes, geomean 1.24x (see the [ClickBench section](#clickbench-43-slothdb-vs-duckdb) above). The query engine gained radix-partitioned aggregators for high-cardinality `GROUP BY`, a bounded hash-table `COUNT` path, parquet decode improvements (zero-copy VARCHAR, batched RLE unpack), and `TopN` pushdown into the aggregate.
 - **Portable build.** The GCC and Clang builds compile cleanly again: the MSVC-only `getenv_s` is replaced with `std::getenv`, and the vendored snappy source is committed so CI can build it.
-- **`bench/clickbench/`.** All 43 ClickBench queries verbatim from the ClickBench repo, plus the runner and a chart generator. `python bench/clickbench/verify_all.py` reproduces the head-to-head against DuckDB.
+- **`bench/clickbench/`.** All 43 ClickBench queries verbatim from the ClickBench repo, plus the runner and a chart generator. `python bench/clickbench/official_bench.py` reproduces the head-to-head against DuckDB.
 
 424 tests pass.
 
@@ -342,7 +349,7 @@ Median speedup: 1.70×. Range: 1.04× - 5.43×.
 
 </details>
 
-Caveats worth knowing: Parquet aggregates are within ~20 % of DuckDB on most queries - both engines saturate the columnar fast path there, so don't expect 3× on Parquet. The big gaps come from SlothDB's native decoders (Avro, CSV `COUNT(*)`) and the 0.1.6 JOIN hot path. Full ClickBench-43 results (33 of 43 vs DuckDB) are in the [ClickBench section](#clickbench-33-of-43-queries-beat-duckdb) near the top.
+Caveats worth knowing: Parquet aggregates are within ~20 % of DuckDB on most queries - both engines saturate the columnar fast path there, so don't expect 3× on Parquet. The big gaps come from SlothDB's native decoders (Avro, CSV `COUNT(*)`) and the 0.1.6 JOIN hot path. Full ClickBench-43 results are in the [ClickBench section](#clickbench-43-slothdb-vs-duckdb) near the top.
 
 The architectural decisions behind the numbers (typed columnar decode, per-worker buffer reuse, fused scan+aggregate, zero-copy VARCHAR, vectorized filter, parallel CSV aggregate, typed int64 JOIN hash path) are in [CHANGELOG.md](CHANGELOG.md) with a commit per optimization.
 
