@@ -1192,6 +1192,48 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
+    // CONCAT_WS(separator, val1, val2, ...) — concatenate with a
+    // separator. NULL separator -> NULL result for that row (PG rule).
+    // NULL values are skipped (no separator emitted for them). All-NULL
+    // values with a non-NULL separator -> empty string.
+    if (name == "CONCAT_WS") {
+        // Need at least the separator; binder enforces arity.
+        if (expr.arguments.empty()) {
+            for (idx_t i = 0; i < count; i++) {
+                result.SetValue(i, Value::VARCHAR(""));
+            }
+            return;
+        }
+        Vector sep_vec(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, sep_vec, count);
+        // Pre-evaluate value args once.
+        std::vector<Vector> val_vecs;
+        val_vecs.reserve(expr.arguments.size() - 1);
+        for (size_t a = 1; a < expr.arguments.size(); a++) {
+            val_vecs.emplace_back(expr.arguments[a]->GetReturnType(), count);
+            Execute(*expr.arguments[a], input, val_vecs.back(), count);
+        }
+        for (idx_t i = 0; i < count; i++) {
+            auto sv = sep_vec.GetValue(i);
+            if (sv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            std::string sep = sv.GetValue<std::string>();
+            std::string out;
+            bool first = true;
+            for (size_t a = 0; a < val_vecs.size(); a++) {
+                auto v = val_vecs[a].GetValue(i);
+                if (v.IsNull()) continue;
+                if (!first) out += sep;
+                out += v.ToString();
+                first = false;
+            }
+            result.SetValue(i, Value::VARCHAR(out));
+        }
+        return;
+    }
+
     if (name == "TRIM" || name == "LTRIM" || name == "RTRIM") {
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
