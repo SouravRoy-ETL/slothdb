@@ -9152,18 +9152,39 @@ private:
                                 }
                             }
                         } else if (info.name == "MIN" || info.name == "MAX") {
+                            // VARCHAR columns must compare lexicographically.
+                            // ReadDouble returns 0 for every VARCHAR cell, so
+                            // every row compared equal and the last row "won",
+                            // silently giving MIN('zebra','apple','mango') =
+                            // 'zebra'. Use Value::operator< for VARCHAR.
+                            bool is_varchar = vec.GetType().id() == LogicalTypeId::VARCHAR;
                             for (idx_t i = 0; i < chunk_size; i++) {
                                 if (all_valid || validity->RowIsValid(i)) {
-                                    double val = ReadDouble(vec, i);
-                                    if (info.name == "MIN") {
-                                        if (!state.has_min || val < state.sum_min) {
-                                            state.sum_min = val; state.has_min = true;
-                                            state.min_val() = chunk.GetValue(info.col_idx, i);
+                                    if (is_varchar) {
+                                        auto cv = chunk.GetValue(info.col_idx, i);
+                                        if (info.name == "MIN") {
+                                            if (!state.has_min || cv < state.min_val()) {
+                                                state.min_val() = cv;
+                                                state.has_min = true;
+                                            }
+                                        } else {
+                                            if (!state.has_max || state.max_val() < cv) {
+                                                state.max_val() = cv;
+                                                state.has_max = true;
+                                            }
                                         }
                                     } else {
-                                        if (!state.has_max || val > state.sum_max) {
-                                            state.sum_max = val; state.has_max = true;
-                                            state.max_val() = chunk.GetValue(info.col_idx, i);
+                                        double val = ReadDouble(vec, i);
+                                        if (info.name == "MIN") {
+                                            if (!state.has_min || val < state.sum_min) {
+                                                state.sum_min = val; state.has_min = true;
+                                                state.min_val() = chunk.GetValue(info.col_idx, i);
+                                            }
+                                        } else {
+                                            if (!state.has_max || val > state.sum_max) {
+                                                state.sum_max = val; state.has_max = true;
+                                                state.max_val() = chunk.GetValue(info.col_idx, i);
+                                            }
                                         }
                                     }
                                 }
@@ -12345,18 +12366,37 @@ private:
                     } else if (info.col_idx != INVALID_INDEX) {
                         auto &vec = chunk.GetVector(info.col_idx);
                         if (vec.GetValidity().RowIsValid(i)) {
-                            double val = ReadDouble(vec, i);
+                            // For VARCHAR columns, MIN/MAX must compare strings
+                            // lexicographically, not via ReadDouble (which
+                            // returns 0.0 for VARCHAR — all rows then compare
+                            // equal and the last row "wins", giving silently
+                            // wrong results like MIN('zebra','apple','mango')
+                            // = 'zebra'). Use Value::operator< for VARCHAR.
+                            bool is_varchar = vec.GetType().id() == LogicalTypeId::VARCHAR;
+                            double val = is_varchar ? 0.0 : ReadDouble(vec, i);
                             if (info.name == "SUM" || info.name == "AVG") {
                                 state.count++;
                                 state.sum += val;
                             } else if (info.name == "MIN") {
-                                if (!state.has_min || val < state.sum_min) {
+                                if (is_varchar) {
+                                    auto cv = chunk.GetValue(info.col_idx, i);
+                                    if (!state.has_min || cv < state.min_val()) {
+                                        state.min_val() = cv;
+                                        state.has_min = true;
+                                    }
+                                } else if (!state.has_min || val < state.sum_min) {
                                     state.sum_min = val;
                                     state.has_min = true;
                                     state.min_val() = chunk.GetValue(info.col_idx, i);
                                 }
                             } else if (info.name == "MAX") {
-                                if (!state.has_max || val > state.sum_max) {
+                                if (is_varchar) {
+                                    auto cv = chunk.GetValue(info.col_idx, i);
+                                    if (!state.has_max || state.max_val() < cv) {
+                                        state.max_val() = cv;
+                                        state.has_max = true;
+                                    }
+                                } else if (!state.has_max || val > state.sum_max) {
                                     state.sum_max = val;
                                     state.has_max = true;
                                     state.max_val() = chunk.GetValue(info.col_idx, i);

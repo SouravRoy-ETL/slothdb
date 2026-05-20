@@ -30,6 +30,15 @@ bool EmitAggValue(const EmitAggDesc& desc, const EmitAggView& view,
         out_row.push_back(Value::BIGINT(view.count));
         return true;
     case EmitAggKind::Sum: {
+        // SQL standard: SUM of an empty set (or all-NULL inputs) is NULL,
+        // not 0. The previous unconditional emit hard-coded the wrong
+        // result. view.count is incremented only when a non-NULL value
+        // is added to view.sum, so count==0 IS the "no inputs contributed"
+        // case for both empty inputs and all-NULL inputs.
+        if (view.count == 0) {
+            out_row.push_back(Value());
+            return true;
+        }
         // Algebraic collapse: SUM(col +/- N) = SUM(col) + N*COUNT(col).
         // 90 SUMs over the same column reduce to ONE scan; each
         // agg's offset adjusts the emitted answer at this point.
