@@ -1,0 +1,163 @@
+file                                       parity/total   setup_ok   timing summary
+----------------------------------------------------------------------------------------------------------------------------------
+agg_func_substitute.slt                    0/1            0/1        n=0
+aggregate.slt                              19/754         124/468    n=19 ratio(duck/sloth) median=4.49x p10=1.49x p90=6.26x sloth_total=3ms duck_total=9ms
+aggregate_repartition.slt                  0/4            0/2        n=0
+aggregate_skip_partial.slt                 4/47           4/13       n=4 ratio(duck/sloth) median=7.03x p10=5.85x p90=7.26x sloth_total=0ms duck_total=2ms
+aggregates_simplify.slt                    0/16           1/6        n=0
+aggregates_topk.slt                        0/21           0/10       n=0
+alias.slt                                  0/0            4/4        n=0
+array_agg_sliding_window.slt               0/11           0/10       n=0
+array_normalize.slt                        0/18           0/0        n=0
+array_query.slt                            0/37           0/5        n=0
+arrow_field.slt                            0/21           0/2        n=0
+arrow_files.slt                            0/34           1/4        n=0
+arrow_try_cast.slt                         0/12           0/0        n=0
+arrow_typeof.slt                           0/42           0/10       n=0
+async_udf.slt                              0/4            0/1        n=0
+avro.slt                                   0/12           0/10       n=0
+binary.slt                                 0/29           0/7        n=0
+binary_view.slt                            0/12           0/6        n=0
+case.slt                                   2/86           0/18       n=2 ratio(duck/sloth) median=5.11x p10=4.69x p90=5.11x sloth_total=0ms duck_total=1ms
+cast.slt                                   8/11           5/5        n=8 ratio(duck/sloth) median=5.85x p10=1.63x p90=7.20x sloth_total=1ms duck_total=2ms
+cast_extension_type_metadata.slt           0/2            0/0        n=0
+cast_to_type.slt                           0/42           9/16       n=0
+clickbench.slt                             0/48           0/4        n=0
+clickbench_extended.slt                    0/7            0/2        n=0
+coalesce.slt                               3/44           0/18       n=3 ratio(duck/sloth) median=3.47x p10=3.18x p90=7.89x sloth_total=0ms duck_total=1ms
+copy.slt                                   0/52           1/31       n=0
+cosine_distance.slt                        0/20           0/0        n=0
+count_star_rule.slt                        2/2            5/5        n=2 ratio(duck/sloth) median=7.16x p10=2.90x p90=7.16x sloth_total=0ms duck_total=2ms
+create_external_table.slt                  0/5            0/12       n=0
+create_function.slt                        1/2            0/1        n=1 ratio(duck/sloth) median=3.93x p10=3.93x p90=3.93x sloth_total=0ms duck_total=0ms
+cse.slt                                    0/0            1/1        n=0
+csv_files.slt                              0/29           0/33       n=0
+cte.slt                                    2/32           6/18       n=2 ratio(duck/sloth) median=3.19x p10=1.39x p90=3.19x sloth_total=0ms duck_total=1ms
+date_bin_errors.slt                        0/6            0/0        n=0
+ddl.slt                                    1/40           15/110     n=1 ratio(duck/sloth) median=3.95x p10=3.95x p90=3.95x sloth_total=0ms duck_total=0ms
+decimal.slt                                14/144         2/6        n=14 ratio(duck/sloth) median=5.20x p10=4.04x p90=6.17x sloth_total=1ms duck_total=5ms
+delete.slt                                 0/0            1/1        n=0
+describe.slt                               1/2            2/8        n=1 ratio(duck/sloth) median=2.44x p10=2.44x p90=2.44x sloth_total=0ms duck_total=0ms
+dictionary.slt                             0/18           0/16       n=0
+dictionary_struct.slt                      0/13           0/0        n=0
+distinct_on.slt                            0/9            0/4        n=0
+dml_delete.slt                             2/20           6/20       n=2 ratio(duck/sloth) median=4.17x p10=2.24x p90=4.17x sloth_total=0ms duck_total=1ms
+dml_update.slt                             4/24           15/31      n=4 ratio(duck/sloth) median=2.85x p10=2.25x p90=3.77x sloth_total=0ms duck_total=1ms
+dynamic_file.slt                           0/21           0/2        n=0
+dynamic_filter_pushdown_config.slt         0/15           0/25       n=0
+eliminate_outer_join.slt                   16/24          6/6        n=16 ratio(duck/sloth) median=5.82x p10=4.49x p90=6.86x sloth_total=2ms duck_total=13ms
+encoding.slt                               0/23           0/5        n=0
+encrypted_parquet.slt                      0/7            1/3        n=0
+errors.slt                                 0/2            1/2        n=0
+explain.slt                                0/0            4/10       n=0
+explain_analyze.slt                        0/4            0/13       n=0
+explain_tree.slt                           0/4            2/26       n=0
+expr.slt                                   29/362         2/18       n=29 ratio(duck/sloth) median=5.36x p10=3.09x p90=7.52x sloth_total=2ms duck_total=8ms
+filter_without_sort_exec.slt               0/2            0/4        n=0
+float16.slt                                0/5            0/4        n=0
+floor_preimage.slt                         0/17           0/2        n=0
+functions.slt                              55/186         8/37       n=55 ratio(duck/sloth) median=5.61x p10=4.58x p90=7.36x sloth_total=3ms duck_total=17ms
+group.slt                                  0/25           0/12       n=0
+group_by.slt                               197/414        24/113     n=197 ratio(duck/sloth) median=7.04x p10=5.62x p90=12.46x sloth_total=15ms duck_total=120ms
+grouping.slt                               0/15           0/1        n=0
+grouping_set_repartition.slt               0/3            0/6        n=0
+ident_normalization.slt                    3/5            5/13       n=3 ratio(duck/sloth) median=4.94x p10=2.73x p90=5.95x sloth_total=0ms duck_total=1ms
+identifiers.slt                            0/11           0/4        n=0
+imdb.slt                                   0/113          63/63      n=0
+information_schema.slt                     0/13           2/29       n=0
+information_schema_columns.slt             0/1            0/3        n=0
+information_schema_multiple_catalogs.slt   0/2            0/10       n=0
+information_schema_table_types.slt         0/1            0/4        n=0
+inner_product.slt                          0/23           0/0        n=0
+insert.slt                                 1/28           4/22       n=1 ratio(duck/sloth) median=3.57x p10=3.57x p90=3.57x sloth_total=0ms duck_total=0ms
+insert_to_external.slt                     0/48           0/30       n=0
+intersection.slt                           0/4            0/1        n=0
+issue_17138.slt                            0/2            2/2        n=0
+join_disable_repartition_joins.slt         0/2            0/1        n=0
+join_is_not_distinct_from.slt              2/7            15/15      n=2 ratio(duck/sloth) median=6.97x p10=4.05x p90=6.97x sloth_total=0ms duck_total=2ms
+join_limit_pushdown.slt                    0/10           0/6        n=0
+join_lists.slt                             0/2            0/4        n=0
+join_only.slt                              0/0            0/0        n=0
+joins.slt                                  4/157          35/152     n=4 ratio(duck/sloth) median=3.59x p10=1.93x p90=26.77x sloth_total=1ms duck_total=4ms
+json.slt                                   0/9            0/7        n=0
+lateral_join.slt                           0/49           0/12       n=0
+lead_lag_extreme_offsets.slt               0/7            0/1        n=0
+limit.slt                                  10/51          1/19       n=10 ratio(duck/sloth) median=4.08x p10=3.37x p90=4.70x sloth_total=1ms duck_total=4ms
+limit_pruning.slt                          0/2            0/9        n=0
+limit_single_row_batches.slt               0/1            0/2        n=0
+list_view.slt                              0/2            0/2        n=0
+listing_table_partitions.slt               0/15           0/4        n=0
+listing_table_statistics.slt               0/0            0/4        n=0
+map.slt                                    0/107          0/10       n=0
+math.slt                                   3/81           3/9        n=3 ratio(duck/sloth) median=5.04x p10=3.39x p90=6.45x sloth_total=0ms duck_total=1ms
+metadata.slt                               0/47           0/2        n=0
+misc.slt                                   3/4            0/0        n=3 ratio(duck/sloth) median=4.89x p10=3.78x p90=7.37x sloth_total=0ms duck_total=1ms
+monotonic_projection_test.slt              0/0            0/1        n=0
+named_arguments.slt                        1/21           0/2        n=1 ratio(duck/sloth) median=2.65x p10=2.65x p90=2.65x sloth_total=0ms duck_total=0ms
+nested_loop_join_spill.slt                 0/4            0/0        n=0
+null_aware_anti_join.slt                   0/20           2/32       n=0
+nullif.slt                                 7/24           0/3        n=7 ratio(duck/sloth) median=6.29x p10=3.16x p90=7.96x sloth_total=0ms duck_total=2ms
+nvl.slt                                    0/15           0/1        n=0
+nvl2.slt                                   0/8            0/1        n=0
+operator.slt                               0/13           0/2        n=0
+optimizer_group_by_constant.slt            0/0            0/1        n=0
+options.slt                                3/30           0/2        n=3 ratio(duck/sloth) median=3.34x p10=2.71x p90=5.51x sloth_total=0ms duck_total=1ms
+order.slt                                  2/68           0/35       n=2 ratio(duck/sloth) median=1.94x p10=1.35x p90=1.94x sloth_total=1ms duck_total=2ms
+parquet.slt                                1/46           3/48       n=1 ratio(duck/sloth) median=2.04x p10=2.04x p90=2.04x sloth_total=1ms duck_total=1ms
+parquet_cdc.slt                            0/17           0/9        n=0
+parquet_filter_pushdown.slt                0/32           0/31       n=0
+parquet_sorted_statistics.slt              0/3            0/10       n=0
+parquet_statistics.slt                     0/3            0/8        n=0
+pipe_operator.slt                          0/14           0/1        n=0
+predicates.slt                             0/63           0/21       n=0
+prepare.slt                                0/20           0/36       n=0
+preserve_file_partitioning.slt             0/27           0/10       n=0
+projection.slt                             4/12           0/16       n=4 ratio(duck/sloth) median=3.44x p10=2.54x p90=3.58x sloth_total=0ms duck_total=1ms
+projection_pushdown.slt                    0/74           0/19       n=0
+propagate_empty_relation_outer_join.slt    6/6            6/6        n=6 ratio(duck/sloth) median=4.85x p10=2.32x p90=5.12x sloth_total=1ms duck_total=4ms
+push_down_filter_outer_joins.slt           6/12           6/6        n=6 ratio(duck/sloth) median=8.34x p10=4.45x p90=12.53x sloth_total=1ms duck_total=5ms
+push_down_filter_parquet.slt               0/9            0/80       n=0
+push_down_filter_regression.slt            0/11           0/34       n=0
+push_down_filter_unnest.slt                0/6            0/6        n=0
+pwmj.slt                                   0/9            8/8        n=0
+qualify.slt                                0/19           0/2        n=0
+references.slt                             0/7            0/4        n=0
+repartition.slt                            0/2            3/7        n=0
+repartition_scan.slt                       0/5            0/16       n=0
+repartition_subset_satisfaction.slt        0/10           0/7        n=0
+run_end_encoded.slt                        0/4            0/1        n=0
+same_column_name_cross_join.slt            0/4            6/6        n=0
+scalar.slt                                 66/252         0/20       n=66 ratio(duck/sloth) median=5.36x p10=3.98x p90=6.32x sloth_total=4ms duck_total=21ms
+schema_evolution.slt                       0/19           0/5        n=0
+schema_evolution_nested.slt                0/4            0/6        n=0
+select.slt                                 13/132         3/47       n=13 ratio(duck/sloth) median=4.31x p10=2.78x p90=8.19x sloth_total=1ms duck_total=5ms
+set_variable.slt                           0/5            0/1        n=0
+simplify_expr.slt                          0/9            0/2        n=0
+simplify_predicates.slt                    0/0            2/2        n=0
+slt_features.slt                           7/9            0/0        n=7 ratio(duck/sloth) median=4.81x p10=2.77x p90=5.08x sloth_total=0ms duck_total=2ms
+sort_merge_join.slt                        0/66           3/18       n=0
+sort_pushdown.slt                          0/120          0/176      n=0
+statistics_registry.slt                    0/5            0/6        n=0
+string_numeric_coercion.slt                2/50           0/18       n=2 ratio(duck/sloth) median=6.61x p10=2.64x p90=6.61x sloth_total=0ms duck_total=1ms
+strings.slt                                1/13           0/2        n=1 ratio(duck/sloth) median=2.29x p10=2.29x p90=2.29x sloth_total=0ms duck_total=0ms
+struct.slt                                 0/137          0/91       n=0
+subquery.slt                               1/93           11/52      n=1 ratio(duck/sloth) median=6.94x p10=6.94x p90=6.94x sloth_total=0ms duck_total=1ms
+subquery_sort.slt                          0/4            0/3        n=0
+table_functions.slt                        4/64           0/0        n=4 ratio(duck/sloth) median=3.67x p10=1.64x p90=3.72x sloth_total=0ms duck_total=1ms
+to_timestamp_timezone.slt                  0/24           0/0        n=0
+topk.slt                                   0/11           0/5        n=0
+truncate.slt                               0/0            2/4        n=0
+type_coercion.slt                          0/9            0/3        n=0
+union.slt                                  11/36          13/29      n=11 ratio(duck/sloth) median=6.20x p10=2.46x p90=11.44x sloth_total=2ms duck_total=9ms
+union_by_name.slt                          0/30           8/8        n=0
+union_function.slt                         0/3            0/0        n=0
+unnest.slt                                 0/98           0/18       n=0
+update.slt                                 0/0            2/2        n=0
+wildcard.slt                               0/8            0/8        n=0
+window.slt                                 11/275         7/72       n=11 ratio(duck/sloth) median=4.99x p10=0.30x p90=13.05x sloth_total=26ms duck_total=16ms
+window_limits.slt                          0/30           0/1        n=0
+window_topk_pushdown.slt                   0/2            0/1        n=0
+window_topn.slt                            0/14           0/4        n=0
+----------------------------------------------------------------------------------------------------------------------------------
+OVERALL: parity 532/5806 (9.2%), disagree 175, setup_ok_both 465, setup_fail_sloth_only 316, setup_fail_duck_only 0
+SPEEDUP: n=532 ratio(duck/sloth) median=5.88x p10=3.35x p90=11.09x sloth_total=71ms duck_total=267ms
