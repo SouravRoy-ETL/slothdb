@@ -66,7 +66,7 @@ after setop  : parity 532/5806 (9.2%), disagree 175   (commit 34fa08d)
                 land outside the metric's signal floor)
 ```
 
-Six engine fixes in the session:
+Seven engine fixes in the session:
 
 1. Cast-to-narrow-int silently returning 0 — `ExecuteCast` missing
    TINYINT / SMALLINT / U\* cases.
@@ -85,15 +85,19 @@ Six engine fixes in the session:
    into INTEGER storage when LEFT was INTEGER). Now uses a Value-aware
    row hash with `Value::operator==`, plus a per-column common-type
    reduction across the chain with explicit coercion.
+7. Top-level set-op handler only processed `sel.set_right` once, so
+   `a UNION b UNION c` ran `a` vs `b` and silently dropped `c`. And
+   `ORDER BY / LIMIT / OFFSET` placed after a UNION were attached by
+   the parser to the rightmost leaf SelectStatement (because
+   ParseSelectStatement consumes them as part of the final recursive
+   call) but per SQL standard they apply to the union as a whole. The
+   rewrite walks the chain and re-applies leaf-stashed
+   ORDER BY / LIMIT / OFFSET to the combined rows via a new
+   `ApplyUnionOrderLimit` helper. Same Value-aware dedup as the
+   derived-table fix.
 
 Cumulative: 388 → 532 parity (median across 5 runs; ±2 variance band),
 +144 from baseline, +37%.
-
-Known limitation deliberately not fixed this session: `ORDER BY` placed
-after a UNION at the outer level still applies to the LEFT branch only.
-The fix spans parser hoist + executor re-sort and only affects a handful
-of corpus queries (most use `rowsort` or order-independent comparison),
-so the work-to-impact ratio is poor relative to other targets.
 
 Reading the numbers honestly:
 
