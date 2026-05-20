@@ -334,14 +334,24 @@ void ExpressionExecutor::ExecuteComparison(const BoundComparison &expr, DataChun
     // If types match, use typed comparison for speed.
     if (left_phys == right_phys) {
         switch (left_phys) {
+        case PhysicalType::BOOL:
+            CompareTyped<bool>(expr.op, left, right, result, count); break;
+        case PhysicalType::INT8:
+            CompareTyped<int8_t>(expr.op, left, right, result, count); break;
+        case PhysicalType::INT16:
+            CompareTyped<int16_t>(expr.op, left, right, result, count); break;
         case PhysicalType::INT32:
             CompareTyped<int32_t>(expr.op, left, right, result, count); break;
         case PhysicalType::INT64:
             CompareTyped<int64_t>(expr.op, left, right, result, count); break;
-        case PhysicalType::INT16:
-            CompareTyped<int16_t>(expr.op, left, right, result, count); break;
-        case PhysicalType::INT8:
-            CompareTyped<int8_t>(expr.op, left, right, result, count); break;
+        case PhysicalType::UINT8:
+            CompareTyped<uint8_t>(expr.op, left, right, result, count); break;
+        case PhysicalType::UINT16:
+            CompareTyped<uint16_t>(expr.op, left, right, result, count); break;
+        case PhysicalType::UINT32:
+            CompareTyped<uint32_t>(expr.op, left, right, result, count); break;
+        case PhysicalType::UINT64:
+            CompareTyped<uint64_t>(expr.op, left, right, result, count); break;
         case PhysicalType::FLOAT:
             CompareTyped<float>(expr.op, left, right, result, count); break;
         case PhysicalType::DOUBLE:
@@ -928,8 +938,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[0], input, str_vec, count);
         Execute(*expr.arguments[1], input, n_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto n = n_vec.GetValue(i).GetValue<int32_t>();
+            auto sv = str_vec.GetValue(i);
+            auto nv = n_vec.GetValue(i);
+            if (sv.IsNull() || nv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto n = nv.GetValue<int32_t>();
             if (n < 0) n = 0;
             auto un = static_cast<size_t>(n);
             result.SetValue(i, Value::VARCHAR(
@@ -1176,19 +1192,46 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     }
 
     if (name == "SIN" || name == "COS" || name == "TAN" ||
-        name == "ASIN" || name == "ACOS" || name == "ATAN") {
+        name == "ASIN" || name == "ACOS" || name == "ATAN" ||
+        name == "SINH" || name == "COSH" || name == "TANH" ||
+        name == "ASINH" || name == "ACOSH" || name == "ATANH") {
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
         for (idx_t i = 0; i < count; i++) {
             auto v = arg.GetValue(i);
             if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
-            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() :
+                       (v.type().id() == LogicalTypeId::BIGINT)  ? static_cast<double>(v.GetValue<int64_t>()) :
+                       (v.type().id() == LogicalTypeId::FLOAT)   ? v.GetValue<float>() :
+                                                                   v.GetValue<double>();
             if (name == "SIN") result.GetData<double>()[i] = std::sin(d);
             else if (name == "COS") result.GetData<double>()[i] = std::cos(d);
             else if (name == "TAN") result.GetData<double>()[i] = std::tan(d);
             else if (name == "ASIN") result.GetData<double>()[i] = std::asin(d);
             else if (name == "ACOS") result.GetData<double>()[i] = std::acos(d);
             else if (name == "ATAN") result.GetData<double>()[i] = std::atan(d);
+            else if (name == "SINH") result.GetData<double>()[i] = std::sinh(d);
+            else if (name == "COSH") result.GetData<double>()[i] = std::cosh(d);
+            else if (name == "TANH") result.GetData<double>()[i] = std::tanh(d);
+            else if (name == "ASINH") result.GetData<double>()[i] = std::asinh(d);
+            else if (name == "ACOSH") result.GetData<double>()[i] = std::acosh(d);
+            else if (name == "ATANH") result.GetData<double>()[i] = std::atanh(d);
+        }
+        return;
+    }
+
+    if (name == "ISNAN" || name == "ISINF" || name == "ISFINITE") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            double d = (v.type().id() == LogicalTypeId::FLOAT) ? v.GetValue<float>() : v.GetValue<double>();
+            bool r;
+            if (name == "ISNAN")    r = std::isnan(d);
+            else if (name == "ISINF") r = std::isinf(d);
+            else                      r = std::isfinite(d);
+            result.GetData<bool>()[i] = r;
         }
         return;
     }

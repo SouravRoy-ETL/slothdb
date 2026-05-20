@@ -834,8 +834,12 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     else if (name == "LOG" || name == "LN" || name == "LOG2" || name == "LOG10" ||
              name == "EXP" || name == "PI" || name == "RANDOM" || name == "RAND" ||
              name == "SIN" || name == "COS" || name == "TAN" ||
-             name == "ASIN" || name == "ACOS" || name == "ATAN") {
+             name == "ASIN" || name == "ACOS" || name == "ATAN" ||
+             name == "SINH" || name == "COSH" || name == "TANH" ||
+             name == "ASINH" || name == "ACOSH" || name == "ATANH") {
         return_type = LogicalType::DOUBLE();
+    } else if (name == "ISNAN" || name == "ISINF" || name == "ISFINITE") {
+        return_type = LogicalType::BOOLEAN();
     } else if (name == "SIGN") {
         return_type = LogicalType::INTEGER();
     } else if (name == "ATAN2" || name == "DEGREES" || name == "RADIANS" ||
