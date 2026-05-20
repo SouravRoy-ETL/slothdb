@@ -218,6 +218,28 @@ void ExpressionExecutor::ExecuteComparison(const BoundComparison &expr, DataChun
     Execute(*expr.left, input, left, count);
     Execute(*expr.right, input, right, count);
 
+    // SQLNULL-typed operand short-circuit. Any normal comparison op with
+    // a literal NULL on either side is NULL per SQL three-valued logic.
+    // Without this branch, ExecuteComparison fell through to the typed
+    // dispatch switch and threw "NotImplemented: Comparison for type NULL"
+    // because PhysicalType::INVALID isn't in the switch.
+    //
+    // Order matters: this runs BEFORE the IS DISTINCT FROM branch below
+    // would be wrong (IS DISTINCT FROM has null-safe semantics — handled
+    // there). LIKE / ILIKE with NULL pattern is handled in its own block.
+    bool left_is_sqlnull = (expr.left->GetReturnType().id() == LogicalTypeId::SQLNULL);
+    bool right_is_sqlnull = (expr.right->GetReturnType().id() == LogicalTypeId::SQLNULL);
+    if ((left_is_sqlnull || right_is_sqlnull) &&
+        expr.op != "IS DISTINCT FROM" && expr.op != "IS NOT DISTINCT FROM") {
+        auto *out = result.GetData<bool>();
+        auto &ovalid = result.GetValidity();
+        for (idx_t i = 0; i < count; i++) {
+            ovalid.SetInvalid(i);
+            out[i] = false;
+        }
+        return;
+    }
+
     // IS [NOT] DISTINCT FROM — null-safe (in)equality. Result is never NULL:
     //   NULL IS NOT DISTINCT FROM NULL -> true
     //   NULL IS DISTINCT FROM 5         -> true
@@ -398,12 +420,50 @@ void ExpressionExecutor::ExecuteConjunction(const BoundConjunction &expr, DataCh
     auto *ldata = left.GetData<bool>();
     auto *rdata = right.GetData<bool>();
     auto *out = result.GetData<bool>();
+    auto &lvalid = left.GetValidity();
+    auto &rvalid = right.GetValidity();
+    auto &ovalid = result.GetValidity();
 
+    // SQL-92 Kleene three-valued logic:
+    //   AND: FALSE wins over NULL  (FALSE AND NULL = FALSE)
+    //        TRUE AND NULL = NULL, NULL AND NULL = NULL
+    //   OR : TRUE wins over NULL   (TRUE OR NULL = TRUE)
+    //        FALSE OR NULL = NULL, NULL OR NULL = NULL
+    // The previous code read ldata/rdata without consulting validity,
+    // so `NULL AND TRUE` (left invalid, right=true) computed `0 && 1`
+    // and returned FALSE — a silent wrong-result bug in every WHERE
+    // clause that mixed NULL-producing predicates with TRUE/FALSE.
+    bool is_and = (expr.op == "AND");
     for (idx_t i = 0; i < count; i++) {
-        if (expr.op == "AND") {
-            out[i] = ldata[i] && rdata[i];
-        } else {
-            out[i] = ldata[i] || rdata[i];
+        bool l_valid = lvalid.RowIsValid(i);
+        bool r_valid = rvalid.RowIsValid(i);
+        bool l = l_valid && ldata[i];
+        bool r = r_valid && rdata[i];
+
+        if (is_and) {
+            // FALSE on either side wins regardless of the other's validity.
+            if ((l_valid && !l) || (r_valid && !r)) {
+                ovalid.SetValid(i);
+                out[i] = false;
+            } else if (!l_valid || !r_valid) {
+                ovalid.SetInvalid(i);
+                out[i] = false;
+            } else {
+                ovalid.SetValid(i);
+                out[i] = l && r;
+            }
+        } else {  // OR
+            // TRUE on either side wins regardless of the other's validity.
+            if ((l_valid && l) || (r_valid && r)) {
+                ovalid.SetValid(i);
+                out[i] = true;
+            } else if (!l_valid || !r_valid) {
+                ovalid.SetInvalid(i);
+                out[i] = false;
+            } else {
+                ovalid.SetValid(i);
+                out[i] = l || r;
+            }
         }
     }
 }
