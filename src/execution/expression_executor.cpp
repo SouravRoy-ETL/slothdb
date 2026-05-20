@@ -2287,12 +2287,58 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 // CAST execution
 // ============================================================================
 
+// Parse a complete integer from a string. Rejects trailing junk
+// ('42abc' -> error), decimal fractions ('1.5' -> error), and SQL
+// scientific notation ('1e3' -> reject as int but allow as double).
+// Accepts surrounding whitespace + optional sign. Returns false on
+// any parse failure so the caller can surface a clean error.
+static bool ParseIntStrict(const std::string &s, int64_t &out) {
+    if (s.empty()) return false;
+    size_t i = 0;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) i++;
+    if (i >= s.size()) return false;
+    size_t start = i;
+    if (s[i] == '+' || s[i] == '-') i++;
+    size_t digit_start = i;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9') i++;
+    if (i == digit_start) return false;
+    size_t digit_end = i;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) i++;
+    if (i != s.size()) return false;
+    try {
+        out = std::stoll(s.substr(start, digit_end - start));
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// Parse a complete double from a string. Rejects trailing junk and
+// empty/whitespace-only input. Accepts SQL scientific notation.
+static bool ParseDoubleStrict(const std::string &s, double &out) {
+    if (s.empty()) return false;
+    size_t first = s.find_first_not_of(" \t");
+    if (first == std::string::npos) return false;
+    try {
+        size_t consumed = 0;
+        out = std::stod(s.substr(first), &consumed);
+        size_t end = first + consumed;
+        while (end < s.size() && (s[end] == ' ' || s[end] == '\t')) end++;
+        return end == s.size();
+    } catch (...) {
+        return false;
+    }
+}
+
 void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
                                       Vector &result, idx_t count) {
     Vector child(expr.child->GetReturnType(), count);
     Execute(*expr.child, input, child, count);
 
     auto to_type = expr.GetReturnType().id();
+    auto from_type = expr.child->GetReturnType().id();
+    bool from_is_double = (from_type == LogicalTypeId::DOUBLE ||
+                           from_type == LogicalTypeId::FLOAT);
 
     for (idx_t i = 0; i < count; i++) {
         auto val = child.GetValue(i);
@@ -2300,68 +2346,151 @@ void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
             result.GetValidity().SetInvalid(i);
             continue;
         }
-
-        // Convert via string as a universal fallback.
-        auto str = val.ToString();
         try {
+            // Floating -> integer goes through the typed double, not
+            // ToString (which renders 1e10 as "1e+10" and then
+            // std::stoi truncates at 'e' producing 1).
+            if (from_is_double && (to_type == LogicalTypeId::TINYINT ||
+                                    to_type == LogicalTypeId::SMALLINT ||
+                                    to_type == LogicalTypeId::INTEGER ||
+                                    to_type == LogicalTypeId::BIGINT ||
+                                    to_type == LogicalTypeId::UTINYINT ||
+                                    to_type == LogicalTypeId::USMALLINT ||
+                                    to_type == LogicalTypeId::UINTEGER ||
+                                    to_type == LogicalTypeId::UBIGINT)) {
+                double d = val.GetValue<double>();
+                if (!std::isfinite(d) ||
+                    d > static_cast<double>(std::numeric_limits<int64_t>::max()) ||
+                    d < static_cast<double>(std::numeric_limits<int64_t>::min())) {
+                    throw ConversionException("Value " + val.ToString() +
+                        " is out of range for the destination type");
+                }
+                int64_t v = static_cast<int64_t>(std::trunc(d));
+                switch (to_type) {
+                case LogicalTypeId::TINYINT:
+                    if (v < std::numeric_limits<int8_t>::min() || v > std::numeric_limits<int8_t>::max())
+                        throw ConversionException("Value " + val.ToString() + " out of range for TINYINT");
+                    result.SetValue(i, Value::TINYINT((int8_t)v)); break;
+                case LogicalTypeId::SMALLINT:
+                    if (v < std::numeric_limits<int16_t>::min() || v > std::numeric_limits<int16_t>::max())
+                        throw ConversionException("Value " + val.ToString() + " out of range for SMALLINT");
+                    result.SetValue(i, Value::SMALLINT((int16_t)v)); break;
+                case LogicalTypeId::INTEGER:
+                    if (v < std::numeric_limits<int32_t>::min() || v > std::numeric_limits<int32_t>::max())
+                        throw ConversionException("Value " + val.ToString() + " out of range for INTEGER");
+                    result.SetValue(i, Value::INTEGER((int32_t)v)); break;
+                case LogicalTypeId::BIGINT:
+                    result.SetValue(i, Value::BIGINT(v)); break;
+                case LogicalTypeId::UTINYINT:
+                    if (v < 0 || v > std::numeric_limits<uint8_t>::max())
+                        throw ConversionException("Value " + val.ToString() + " out of range for UTINYINT");
+                    result.SetValue(i, Value::UTINYINT((uint8_t)v)); break;
+                case LogicalTypeId::USMALLINT:
+                    if (v < 0 || v > std::numeric_limits<uint16_t>::max())
+                        throw ConversionException("Value " + val.ToString() + " out of range for USMALLINT");
+                    result.SetValue(i, Value::USMALLINT((uint16_t)v)); break;
+                case LogicalTypeId::UINTEGER:
+                    if (v < 0 || v > (int64_t)std::numeric_limits<uint32_t>::max())
+                        throw ConversionException("Value " + val.ToString() + " out of range for UINTEGER");
+                    result.SetValue(i, Value::UINTEGER((uint32_t)v)); break;
+                case LogicalTypeId::UBIGINT:
+                    if (v < 0)
+                        throw ConversionException("Value " + val.ToString() + " is negative; cannot cast to UBIGINT");
+                    result.SetValue(i, Value::UBIGINT((uint64_t)v)); break;
+                default: break;
+                }
+                continue;
+            }
+            auto str = val.ToString();
             switch (to_type) {
-            case LogicalTypeId::TINYINT: {
-                auto v = std::stoll(str);
-                if (v < std::numeric_limits<int8_t>::min() || v > std::numeric_limits<int8_t>::max())
-                    throw ConversionException("Type with value " + str +
-                        " can't be cast because the value is out of range for the destination type TINYINT");
-                result.SetValue(i, Value::TINYINT(static_cast<int8_t>(v)));
-                break;
-            }
-            case LogicalTypeId::SMALLINT: {
-                auto v = std::stoll(str);
-                if (v < std::numeric_limits<int16_t>::min() || v > std::numeric_limits<int16_t>::max())
-                    throw ConversionException("Type with value " + str +
-                        " can't be cast because the value is out of range for the destination type SMALLINT");
-                result.SetValue(i, Value::SMALLINT(static_cast<int16_t>(v)));
-                break;
-            }
+            case LogicalTypeId::TINYINT:
+            case LogicalTypeId::SMALLINT:
             case LogicalTypeId::INTEGER:
-                result.SetValue(i, Value::INTEGER(std::stoi(str))); break;
             case LogicalTypeId::BIGINT:
-                result.SetValue(i, Value::BIGINT(std::stoll(str))); break;
-            case LogicalTypeId::UTINYINT: {
-                auto v = std::stoll(str);
-                if (v < 0 || v > std::numeric_limits<uint8_t>::max())
-                    throw ConversionException("Type with value " + str +
-                        " can't be cast because the value is out of range for the destination type UTINYINT");
-                result.SetValue(i, Value::UTINYINT(static_cast<uint8_t>(v)));
-                break;
-            }
-            case LogicalTypeId::USMALLINT: {
-                auto v = std::stoll(str);
-                if (v < 0 || v > std::numeric_limits<uint16_t>::max())
-                    throw ConversionException("Type with value " + str +
-                        " can't be cast because the value is out of range for the destination type USMALLINT");
-                result.SetValue(i, Value::USMALLINT(static_cast<uint16_t>(v)));
-                break;
-            }
-            case LogicalTypeId::UINTEGER: {
-                auto v = std::stoll(str);
-                if (v < 0 || v > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
-                    throw ConversionException("Type with value " + str +
-                        " can't be cast because the value is out of range for the destination type UINTEGER");
-                result.SetValue(i, Value::UINTEGER(static_cast<uint32_t>(v)));
-                break;
-            }
+            case LogicalTypeId::UTINYINT:
+            case LogicalTypeId::USMALLINT:
+            case LogicalTypeId::UINTEGER:
             case LogicalTypeId::UBIGINT: {
-                auto v = std::stoull(str);
-                result.SetValue(i, Value::UBIGINT(static_cast<uint64_t>(v)));
+                int64_t v;
+                if (!ParseIntStrict(str, v)) {
+                    throw ConversionException("Could not convert string '" +
+                        str + "' to " + expr.GetReturnType().ToString());
+                }
+                switch (to_type) {
+                case LogicalTypeId::TINYINT:
+                    if (v < std::numeric_limits<int8_t>::min() || v > std::numeric_limits<int8_t>::max())
+                        throw ConversionException("Value " + str + " out of range for TINYINT");
+                    result.SetValue(i, Value::TINYINT((int8_t)v)); break;
+                case LogicalTypeId::SMALLINT:
+                    if (v < std::numeric_limits<int16_t>::min() || v > std::numeric_limits<int16_t>::max())
+                        throw ConversionException("Value " + str + " out of range for SMALLINT");
+                    result.SetValue(i, Value::SMALLINT((int16_t)v)); break;
+                case LogicalTypeId::INTEGER:
+                    if (v < std::numeric_limits<int32_t>::min() || v > std::numeric_limits<int32_t>::max())
+                        throw ConversionException("Value " + str + " out of range for INTEGER");
+                    result.SetValue(i, Value::INTEGER((int32_t)v)); break;
+                case LogicalTypeId::BIGINT:
+                    result.SetValue(i, Value::BIGINT(v)); break;
+                case LogicalTypeId::UTINYINT:
+                    if (v < 0 || v > std::numeric_limits<uint8_t>::max())
+                        throw ConversionException("Value " + str + " out of range for UTINYINT");
+                    result.SetValue(i, Value::UTINYINT((uint8_t)v)); break;
+                case LogicalTypeId::USMALLINT:
+                    if (v < 0 || v > std::numeric_limits<uint16_t>::max())
+                        throw ConversionException("Value " + str + " out of range for USMALLINT");
+                    result.SetValue(i, Value::USMALLINT((uint16_t)v)); break;
+                case LogicalTypeId::UINTEGER:
+                    if (v < 0 || v > (int64_t)std::numeric_limits<uint32_t>::max())
+                        throw ConversionException("Value " + str + " out of range for UINTEGER");
+                    result.SetValue(i, Value::UINTEGER((uint32_t)v)); break;
+                case LogicalTypeId::UBIGINT:
+                    if (v < 0)
+                        throw ConversionException("Value " + str + " is negative; cannot cast to UBIGINT");
+                    result.SetValue(i, Value::UBIGINT((uint64_t)v)); break;
+                default: break;
+                }
                 break;
             }
-            case LogicalTypeId::DOUBLE:
-                result.SetValue(i, Value::DOUBLE(std::stod(str))); break;
-            case LogicalTypeId::FLOAT:
-                result.SetValue(i, Value::FLOAT(std::stof(str))); break;
+            case LogicalTypeId::DOUBLE: {
+                double d;
+                if (!ParseDoubleStrict(str, d)) {
+                    throw ConversionException("Could not convert string '" +
+                        str + "' to DOUBLE");
+                }
+                result.SetValue(i, Value::DOUBLE(d)); break;
+            }
+            case LogicalTypeId::FLOAT: {
+                double d;
+                if (!ParseDoubleStrict(str, d)) {
+                    throw ConversionException("Could not convert string '" +
+                        str + "' to FLOAT");
+                }
+                result.SetValue(i, Value::FLOAT((float)d)); break;
+            }
             case LogicalTypeId::VARCHAR:
                 result.SetValue(i, Value::VARCHAR(str)); break;
-            case LogicalTypeId::BOOLEAN:
-                result.SetValue(i, Value::BOOLEAN(str == "true" || str == "1")); break;
+            case LogicalTypeId::BOOLEAN: {
+                // Case-insensitive bool parse matching DuckDB/Postgres:
+                // 't', 'true', 'yes', 'y', '1' -> true
+                // 'f', 'false', 'no', 'n', '0' -> false
+                // anything else -> error (not silently false)
+                std::string lower;
+                lower.reserve(str.size());
+                for (char c : str) {
+                    lower += (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+                }
+                if (lower == "true" || lower == "t" || lower == "yes" ||
+                    lower == "y" || lower == "1") {
+                    result.SetValue(i, Value::BOOLEAN(true));
+                } else if (lower == "false" || lower == "f" || lower == "no" ||
+                           lower == "n" || lower == "0") {
+                    result.SetValue(i, Value::BOOLEAN(false));
+                } else {
+                    throw ConversionException("Could not convert string '" +
+                        str + "' to BOOLEAN");
+                }
+                break;
+            }
             default:
                 result.SetValue(i, Value::VARCHAR(str)); break;
             }
@@ -2369,7 +2498,7 @@ void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
             if (expr.is_try) {
                 result.GetValidity().SetInvalid(i); // TRY_CAST returns NULL
             } else {
-                throw ConversionException("Cannot cast '" + str + "' to " +
+                throw ConversionException("Cannot cast '" + val.ToString() + "' to " +
                                            expr.GetReturnType().ToString());
             }
         }
