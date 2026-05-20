@@ -2585,11 +2585,58 @@ QueryResult Connection::Query(const std::string &sql) {
                 ParsedExprPtr stashed_limit  = std::move(leaf->limit);
                 ParsedExprPtr stashed_offset = std::move(leaf->offset);
 
+                // Pre-bind every RIGHT branch so we know per-column types
+                // before any execution and any dedup work. Without this,
+                // INTERSECT INT vs DOUBLE returned 0 rows (the two Values
+                // hashed differently because their types differed even
+                // when values were equal). Mirror of the derived-table
+                // path at lines ~2236-2299.
+                std::vector<std::unique_ptr<BoundStatement>> right_bounds;
+                {
+                    SelectStatement *cur = &sel;
+                    while (!cur->set_op.empty() && cur->set_right) {
+                        Binder rb(db_.GetCatalog());
+                        right_bounds.push_back(rb.Bind(*cur->set_right));
+                        cur = cur->set_right.get();
+                    }
+                }
+
+                // Per-column common type: start from LEFT branch's types
+                // (already materialised in final_result.column_types) and
+                // pairwise reduce against each right branch. Cap loop at
+                // min(left.cols, right.cols).
+                auto result_types = final_result.column_types;
+                for (auto &rb_stmt : right_bounds) {
+                    auto &rb = static_cast<BoundSelectStatement &>(*rb_stmt);
+                    for (idx_t c = 0;
+                         c < result_types.size() && c < rb.result_types.size();
+                         c++) {
+                        result_types[c] = ComputeSetOpCommonType(
+                            result_types[c], rb.result_types[c]);
+                    }
+                }
+
+                // Coerce already-materialised LEFT rows to the new common
+                // types (only when the type changed).
+                std::vector<bool> col_changed(result_types.size(), false);
+                for (idx_t c = 0; c < result_types.size() &&
+                     c < final_result.column_types.size(); c++) {
+                    col_changed[c] = (result_types[c].id() !=
+                                      final_result.column_types[c].id());
+                }
+                for (auto &row : final_result.rows) {
+                    for (idx_t c = 0;
+                         c < result_types.size() && c < row.size(); c++) {
+                        if (col_changed[c]) {
+                            row[c] = CoerceValueForSetOp(row[c], result_types[c]);
+                        }
+                    }
+                }
+
                 SelectStatement *cur = &sel;
+                size_t branch_idx = 0;
                 while (!cur->set_op.empty() && cur->set_right) {
-                    Binder right_binder(db_.GetCatalog());
-                    auto right_bound  = right_binder.Bind(*cur->set_right);
-                    auto right_logical = Planner::Plan(*right_bound);
+                    auto right_logical = Planner::Plan(*right_bounds[branch_idx++]);
                     PhysicalPlanner right_pp(db_.GetCatalog());
                     auto right_physical = right_pp.Plan(*right_logical);
                     right_physical->Init();
@@ -2601,8 +2648,13 @@ QueryResult Connection::Query(const std::string &sql) {
                         for (idx_t ri = 0; ri < right_chunk.size(); ri++) {
                             std::vector<Value> row;
                             row.reserve(right_chunk.ColumnCount());
-                            for (idx_t c = 0; c < right_chunk.ColumnCount(); c++)
-                                row.push_back(right_chunk.GetValue(c, ri));
+                            for (idx_t c = 0; c < right_chunk.ColumnCount(); c++) {
+                                row.push_back(CoerceValueForSetOp(
+                                    right_chunk.GetValue(c, ri),
+                                    c < result_types.size()
+                                        ? result_types[c]
+                                        : right_chunk.GetVector(c).GetType()));
+                            }
                             right_rows.push_back(std::move(row));
                         }
                     }
@@ -2636,6 +2688,10 @@ QueryResult Connection::Query(const std::string &sql) {
                     }
                     cur = cur->set_right.get();
                 }
+
+                // Update the result schema to the unified types. Names
+                // stay as the LEFT branch's per SQL standard.
+                final_result.column_types = result_types;
 
                 if (!stashed_order_by.empty() || stashed_limit ||
                     stashed_offset) {
