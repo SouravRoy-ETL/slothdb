@@ -32,7 +32,7 @@ static const std::unordered_map<std::string, TokenType> KEYWORDS = {
     {"WHEN", TokenType::KW_WHEN}, {"THEN", TokenType::KW_THEN},
     {"ELSE", TokenType::KW_ELSE}, {"END", TokenType::KW_END},
     {"CAST", TokenType::KW_CAST}, {"TRUE", TokenType::KW_TRUE},
-    {"FALSE", TokenType::KW_FALSE},
+    {"FALSE", TokenType::KW_FALSE}, {"UNKNOWN", TokenType::KW_UNKNOWN},
     {"INTEGER", TokenType::KW_INTEGER}, {"INT", TokenType::KW_INT},
     {"BIGINT", TokenType::KW_BIGINT}, {"SMALLINT", TokenType::KW_SMALLINT},
     {"TINYINT", TokenType::KW_TINYINT}, {"FLOAT", TokenType::KW_FLOAT},

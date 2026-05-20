@@ -56,6 +56,7 @@ private:
     BoundExprPtr BindConjunction(const ConjunctionExpression &expr, BindContext &context);
     BoundExprPtr BindNegation(const NegationExpression &expr, BindContext &context);
     BoundExprPtr BindIsNull(const IsNullExpression &expr, BindContext &context);
+    BoundExprPtr BindIsBool(const IsBoolExpression &expr, BindContext &context);
     BoundExprPtr BindArithmetic(const ArithmeticExpression &expr, BindContext &context);
     BoundExprPtr BindUnaryMinus(const UnaryMinusExpression &expr, BindContext &context);
     BoundExprPtr BindFunction(const FunctionExpression &expr, BindContext &context);

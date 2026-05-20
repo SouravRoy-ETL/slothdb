@@ -576,6 +576,8 @@ BoundExprPtr Binder::BindExpression(const ParsedExpression &expr, BindContext &c
         return BindNegation(static_cast<const NegationExpression &>(expr), context);
     case ExpressionType::IS_NULL:
         return BindIsNull(static_cast<const IsNullExpression &>(expr), context);
+    case ExpressionType::IS_BOOL:
+        return BindIsBool(static_cast<const IsBoolExpression &>(expr), context);
     case ExpressionType::ARITHMETIC:
         return BindArithmetic(static_cast<const ArithmeticExpression &>(expr), context);
     case ExpressionType::UNARY_MINUS:
@@ -738,6 +740,29 @@ BoundExprPtr Binder::BindNegation(const NegationExpression &expr, BindContext &c
 BoundExprPtr Binder::BindIsNull(const IsNullExpression &expr, BindContext &context) {
     auto child = BindExpression(*expr.child, context);
     return std::make_unique<BoundIsNull>(std::move(child), expr.is_not);
+}
+
+BoundExprPtr Binder::BindIsBool(const IsBoolExpression &expr, BindContext &context) {
+    auto child = BindExpression(*expr.child, context);
+    auto child_type = child->GetReturnType().id();
+    BoundIsBool::Predicate p = BoundIsBool::Predicate::TRUE_;
+    switch (expr.pred) {
+        case IsBoolExpression::Predicate::TRUE_:    p = BoundIsBool::Predicate::TRUE_; break;
+        case IsBoolExpression::Predicate::FALSE_:   p = BoundIsBool::Predicate::FALSE_; break;
+        case IsBoolExpression::Predicate::UNKNOWN_: p = BoundIsBool::Predicate::UNKNOWN_; break;
+    }
+    // IS UNKNOWN accepts any operand (it's equivalent to IS NULL). The
+    // TRUE/FALSE forms require a BOOLEAN operand per SQL standard, but
+    // we accept SQLNULL too (NULL IS TRUE is FALSE, NULL IS FALSE is FALSE).
+    if (p != BoundIsBool::Predicate::UNKNOWN_) {
+        if (child_type != LogicalTypeId::BOOLEAN &&
+            child_type != LogicalTypeId::SQLNULL) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "IS [NOT] TRUE/FALSE requires a boolean operand, got " +
+                child->GetReturnType().ToString());
+        }
+    }
+    return std::make_unique<BoundIsBool>(std::move(child), p, expr.is_not);
 }
 
 BoundExprPtr Binder::BindArithmetic(const ArithmeticExpression &expr, BindContext &context) {

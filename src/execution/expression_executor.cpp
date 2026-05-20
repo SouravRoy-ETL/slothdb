@@ -43,6 +43,9 @@ void ExpressionExecutor::Execute(const BoundExpression &expr, DataChunk &input,
     case BoundExpressionType::IS_NULL:
         ExecuteIsNull(static_cast<const BoundIsNull &>(expr), input, result, count);
         break;
+    case BoundExpressionType::IS_BOOL:
+        ExecuteIsBool(static_cast<const BoundIsBool &>(expr), input, result, count);
+        break;
     case BoundExpressionType::UNARY_MINUS:
         ExecuteUnaryMinus(static_cast<const BoundUnaryMinus &>(expr), input, result, count);
         break;
@@ -500,30 +503,58 @@ void ExpressionExecutor::ExecuteArithmetic(const BoundArithmetic &expr, DataChun
     // Promote operands to result type so ArithmeticTyped<T> below reads the
     // right physical layout. Without this, mixing AVG (DOUBLE) with an
     // INTEGER literal turns into a reinterpret-cast on raw int bytes.
-    if (expr.op != "%" && expr.op != "||") {
+    //
+    // Modulo used to skip this coercion. That caused
+    //   SELECT null % null
+    // to dereference a SQLNULL-typed buffer as int32, segfaulting on
+    // operator.slt L268 and any user query with NULL % NULL. Including
+    // modulo in the coercion makes the operand layout consistent with
+    // +/-/*//; the existing modulo branch then reads the correct types.
+    // String concatenation (||) still skips because it converts via
+    // Value::ToString and doesn't need typed-buffer layout.
+    if (expr.op != "||") {
         left = CoerceVector(std::move(left), result.GetType(), count);
         right = CoerceVector(std::move(right), result.GetType(), count);
     }
 
-    // Handle % modulo for integers.
+    // Handle % modulo for integers. NULL propagates: if either operand
+    // is invalid (NULL), the result row is NULL. The pre-fix code wrote
+    // garbage into out[i] for those rows; now they're explicitly invalid.
     if (expr.op == "%") {
         auto physical = result.GetType().GetInternalType();
+        auto &lv = left.GetValidity();
+        auto &rv = right.GetValidity();
+        auto &ov = result.GetValidity();
+        bool lvalid_all = lv.AllValid();
+        bool rvalid_all = rv.AllValid();
         if (physical == PhysicalType::INT32) {
             auto *ld = left.GetData<int32_t>(), *rd = right.GetData<int32_t>();
             auto *out = result.GetData<int32_t>();
-            for (idx_t i = 0; i < count; i++)
-                out[i] = rd[i] != 0 ? ld[i] % rd[i] : 0;
+            for (idx_t i = 0; i < count; i++) {
+                bool li = lvalid_all || lv.RowIsValid(i);
+                bool ri = rvalid_all || rv.RowIsValid(i);
+                if (!li || !ri || rd[i] == 0) { ov.SetInvalid(i); out[i] = 0; }
+                else out[i] = ld[i] % rd[i];
+            }
         } else if (physical == PhysicalType::INT64) {
             auto *ld = left.GetData<int64_t>(), *rd = right.GetData<int64_t>();
             auto *out = result.GetData<int64_t>();
-            for (idx_t i = 0; i < count; i++)
-                out[i] = rd[i] != 0 ? ld[i] % rd[i] : 0;
+            for (idx_t i = 0; i < count; i++) {
+                bool li = lvalid_all || lv.RowIsValid(i);
+                bool ri = rvalid_all || rv.RowIsValid(i);
+                if (!li || !ri || rd[i] == 0) { ov.SetInvalid(i); out[i] = 0; }
+                else out[i] = ld[i] % rd[i];
+            }
         } else {
             // Float modulo via fmod.
             auto *ld = left.GetData<double>(), *rd = right.GetData<double>();
             auto *out = result.GetData<double>();
-            for (idx_t i = 0; i < count; i++)
-                out[i] = rd[i] != 0 ? std::fmod(ld[i], rd[i]) : 0;
+            for (idx_t i = 0; i < count; i++) {
+                bool li = lvalid_all || lv.RowIsValid(i);
+                bool ri = rvalid_all || rv.RowIsValid(i);
+                if (!li || !ri || rd[i] == 0.0) { ov.SetInvalid(i); out[i] = 0.0; }
+                else out[i] = std::fmod(ld[i], rd[i]);
+            }
         }
         return;
     }
@@ -575,6 +606,39 @@ void ExpressionExecutor::ExecuteIsNull(const BoundIsNull &expr, DataChunk &input
     for (idx_t i = 0; i < count; i++) {
         bool is_null = !child.GetValidity().RowIsValid(i);
         out[i] = expr.is_not ? !is_null : is_null;
+    }
+}
+
+// SQL-92 three-valued logic predicates: x IS [NOT] {TRUE | FALSE | UNKNOWN}.
+// Result is always BOOLEAN, never NULL. The child may be NULL — that's
+// the whole point of the predicate. UNKNOWN is the SQL spelling for
+// "the boolean expression evaluated to NULL", i.e. equivalent to IS NULL
+// applied to a boolean operand.
+void ExpressionExecutor::ExecuteIsBool(const BoundIsBool &expr, DataChunk &input,
+                                        Vector &result, idx_t count) {
+    Vector child(expr.child->GetReturnType(), count);
+    Execute(*expr.child, input, child, count);
+    auto *out = result.GetData<bool>();
+    auto &validity = child.GetValidity();
+    bool is_null_child_type = (expr.child->GetReturnType().id() == LogicalTypeId::SQLNULL);
+    auto pred = expr.pred;
+    bool negate = expr.is_not;
+
+    for (idx_t i = 0; i < count; i++) {
+        bool valid = !is_null_child_type && validity.RowIsValid(i);
+        bool match;
+        if (pred == BoundIsBool::Predicate::UNKNOWN_) {
+            match = !valid;
+        } else if (!valid) {
+            // NULL IS TRUE/FALSE — both false (NULL is neither TRUE nor FALSE).
+            match = false;
+        } else {
+            bool b = child.GetData<bool>()[i];
+            match = (pred == BoundIsBool::Predicate::TRUE_) ? b : !b;
+        }
+        out[i] = negate ? !match : match;
+        // Result is BOOLEAN, never NULL — IS-predicates close the
+        // three-valued logic to two-valued.
     }
 }
 

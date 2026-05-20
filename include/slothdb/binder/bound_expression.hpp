@@ -16,6 +16,7 @@ enum class BoundExpressionType : uint8_t {
     CONJUNCTION,
     NEGATION,
     IS_NULL,
+    IS_BOOL,
     ARITHMETIC,
     UNARY_MINUS,
     FUNCTION,
@@ -111,6 +112,22 @@ public:
           child(std::move(child)), is_not(is_not) {}
 
     BoundExprPtr child;
+    bool is_not;
+};
+
+// SQL-92 three-valued logic predicate `x IS [NOT] TRUE/FALSE/UNKNOWN`.
+// Result is always BOOLEAN, never NULL. Child must be BOOLEAN-typed
+// (the binder enforces this) or SQLNULL for the UNKNOWN-only path
+// (constant-folded by the binder).
+class BoundIsBool : public BoundExpression {
+public:
+    enum class Predicate { TRUE_, FALSE_, UNKNOWN_ };
+    BoundIsBool(BoundExprPtr child, Predicate pred, bool is_not)
+        : BoundExpression(BoundExpressionType::IS_BOOL, LogicalType::BOOLEAN()),
+          child(std::move(child)), pred(pred), is_not(is_not) {}
+
+    BoundExprPtr child;
+    Predicate pred;
     bool is_not;
 };
 

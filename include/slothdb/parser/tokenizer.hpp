@@ -94,6 +94,7 @@ enum class TokenType : uint8_t {
     KW_CAST,
     KW_TRUE,
     KW_FALSE,
+    KW_UNKNOWN,
     KW_INTEGER,
     KW_INT,
     KW_BIGINT,

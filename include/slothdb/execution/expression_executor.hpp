@@ -36,6 +36,8 @@ private:
                                 Vector &result, idx_t count);
     static void ExecuteIsNull(const BoundIsNull &expr, DataChunk &input,
                               Vector &result, idx_t count);
+    static void ExecuteIsBool(const BoundIsBool &expr, DataChunk &input,
+                              Vector &result, idx_t count);
     static void ExecuteUnaryMinus(const BoundUnaryMinus &expr, DataChunk &input,
                                   Vector &result, idx_t count);
     static void ExecuteFunction(const BoundFunction &expr, DataChunk &input,

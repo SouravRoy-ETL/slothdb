@@ -18,6 +18,7 @@ enum class ExpressionType : uint8_t {
     CONJUNCTION,      // a AND b, a OR b
     NEGATION,         // NOT x
     IS_NULL,          // x IS NULL, x IS NOT NULL
+    IS_BOOL,          // x IS [NOT] TRUE/FALSE/UNKNOWN
     BETWEEN,          // x BETWEEN a AND b
     IN_LIST,          // x IN (1, 2, 3)
     CAST,             // CAST(x AS type)
@@ -135,6 +136,23 @@ public:
           child(std::move(child)), is_not(is_not) {}
 
     ParsedExprPtr child;
+    bool is_not;
+};
+
+// SQL-92 three-valued logic predicate: `x IS [NOT] TRUE/FALSE/UNKNOWN`.
+// Result is always BOOLEAN, never NULL. `IS UNKNOWN` is equivalent to
+// `IS NULL` but accepts non-boolean operands at parse time and is
+// rejected at bind time if the child isn't boolean — keeping the two
+// nodes separate is cleaner than overloading IsNullExpression.
+class IsBoolExpression : public ParsedExpression {
+public:
+    enum class Predicate { TRUE_, FALSE_, UNKNOWN_ };
+    IsBoolExpression(ParsedExprPtr child, Predicate pred, bool is_not)
+        : ParsedExpression(ExpressionType::IS_BOOL),
+          child(std::move(child)), pred(pred), is_not(is_not) {}
+
+    ParsedExprPtr child;
+    Predicate pred;
     bool is_not;
 };
 
