@@ -722,9 +722,17 @@ ParsedExprPtr Parser::ParseNot() {
 ParsedExprPtr Parser::ParseComparison() {
     auto left = ParseAddSub();
 
-    // IS [NOT] NULL
+    // IS [NOT] NULL  /  IS [NOT] DISTINCT FROM <expr>
     if (MatchKeyword(TokenType::KW_IS)) {
         bool is_not = MatchKeyword(TokenType::KW_NOT);
+        if (MatchKeyword(TokenType::KW_DISTINCT)) {
+            Expect(TokenType::KW_FROM, "after DISTINCT in IS [NOT] DISTINCT FROM");
+            auto right = ParseAddSub();
+            // Carry the op as a string; the executor implements null-safe
+            // (in)equality. Result is never NULL.
+            const char *op = is_not ? "IS NOT DISTINCT FROM" : "IS DISTINCT FROM";
+            return std::make_unique<ComparisonExpression>(op, std::move(left), std::move(right));
+        }
         Expect(TokenType::KW_NULL, "after IS [NOT]");
         return std::make_unique<IsNullExpression>(std::move(left), is_not);
     }

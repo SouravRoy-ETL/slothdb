@@ -215,6 +215,33 @@ void ExpressionExecutor::ExecuteComparison(const BoundComparison &expr, DataChun
     Execute(*expr.left, input, left, count);
     Execute(*expr.right, input, right, count);
 
+    // IS [NOT] DISTINCT FROM — null-safe (in)equality. Result is never NULL:
+    //   NULL IS NOT DISTINCT FROM NULL -> true
+    //   NULL IS DISTINCT FROM 5         -> true
+    //   5 IS NOT DISTINCT FROM 5        -> true
+    if (expr.op == "IS DISTINCT FROM" || expr.op == "IS NOT DISTINCT FROM") {
+        bool not_distinct = (expr.op == "IS NOT DISTINCT FROM");
+        auto *out = result.GetData<bool>();
+        auto &lvalid = left.GetValidity();
+        auto &rvalid = right.GetValidity();
+        auto &ovalid = result.GetValidity();
+        for (idx_t i = 0; i < count; i++) {
+            ovalid.SetValid(i);
+            bool l_null = !lvalid.RowIsValid(i);
+            bool r_null = !rvalid.RowIsValid(i);
+            bool eq;
+            if (l_null && r_null) {
+                eq = true;
+            } else if (l_null || r_null) {
+                eq = false;
+            } else {
+                eq = (left.GetValue(i) == right.GetValue(i));
+            }
+            out[i] = not_distinct ? eq : !eq;
+        }
+        return;
+    }
+
     // Handle LIKE / ILIKE / NOT LIKE / NOT ILIKE specially.
     if (expr.op == "LIKE" || expr.op == "ILIKE" ||
         expr.op == "NOT LIKE" || expr.op == "NOT ILIKE") {
