@@ -129,6 +129,87 @@ or engine-wide gap, not a corpus-specific patch:
 
 Cumulative: **388 → 650 parity (+262, +68%)** across twelve fixes.
 
+## Continued correctness work (same day, harness number unverified)
+
+After 650 the full harness was paused — repeated full-corpus runs
+interact with the known case.slt heap corruption (still skipped) in a
+way that crashed the development machine twice. Subsequent engine work
+was verified via manual CLI probes only, so the cumulative parity
+number is not re-measured. Sixteen more general engine fixes landed:
+
+13. **SQL-92 comma-separated FROM** (`FROM a, b, c`) — parser + binder +
+    planner triple change. Comma form is equivalent to a chain of CROSS
+    JOINs; `BindTableRef` now recurses for arbitrary chain depth and
+    the planner folds a `JoinInfo` vector into a left-deep cascade.
+13. **CTAS-AS-VALUES** — `CREATE TABLE t AS VALUES (1,2),(3,4)` was
+    rejected because `ParseSelectStatement` didn't accept VALUES as a
+    `<query expression>`. Now does, also unblocking
+    `CREATE VIEW v AS VALUES ...` and subquery contexts.
+13. **`IS [NOT] {TRUE | FALSE | UNKNOWN}`** — three-valued logic
+    predicates. Result is always BOOLEAN, never NULL. Plus a hidden
+    bug surfaced by the same code path: `SELECT NULL % NULL` was
+    segfaulting because ExecuteArithmetic's `%` branch skipped
+    CoerceVector for SQLNULL operands.
+13. **NULL propagation across ExpressionExecutor** — six bugs in one
+    file: unary minus returned `-0` for `-NULL`; integer divide-by-zero
+    silently returned 0; TRIM/REPLACE/LPAD crashed on NULL operands;
+    LEFT/RIGHT with negative `n` returned empty string instead of
+    Postgres-standard `drop last/first k characters`.
+13. **SUM/MIN/MAX correctness** — `SUM` of an empty set or all-NULL
+    inputs returned 0 instead of NULL; `MIN/MAX` over VARCHAR
+    silently returned the last-seen row because the hot loop compared
+    via `ReadDouble` which yields 0.0 for every string.
+13. **Kleene three-valued logic** for AND/OR plus scalar NULL
+    comparison. `NULL AND TRUE` was returning FALSE because
+    ExecuteConjunction read operand bytes without consulting
+    validity. `5 < NULL`, `NULL = NULL` etc. crashed with
+    "Comparison for type NULL" because PhysicalType::INVALID wasn't
+    in the typed dispatch switch.
+13. **SQLNULL Vector safety** — `Vector::GetValue` / `SetValue`
+    threw "NotImplemented for type NULL" whenever a Vector took
+    SQLNULL logical type. Real consequence: `GROUP BY` on a column
+    of pure NULLs crashed. Now short-circuits to NULL.
+13. **SUM/AVG type-reject at bind** — `SUM('foo','bar')`,
+    `AVG(true, false)` silently returned 0 / false. Now raises a
+    clean BinderException for non-numeric operands.
+13. **ORDER BY NULLS FIRST/LAST** — keyword was silently ignored.
+    Plus the direction default wasn't applied (DESC should default
+    to NULLS FIRST per SQL/Postgres). Parser + binder + four
+    comparator sites in PhysicalOrderBy.
+13. **CASE / IF / IIF type unification** across THEN/ELSE branches.
+    `CASE WHEN ... THEN 1 ELSE 2.5 END` returned 0 (DOUBLE written
+    into INT slot); `CASE WHEN ... THEN 2.5 WHEN ... THEN 5` returned
+    uninitialized memory (1.2e-312 garbage). Mismatched branches now
+    get BoundCast wrappers.
+13. **COALESCE / IFNULL / NVL** — same bug pattern as CASE; fixed
+    with the same unification logic.
+13. **Top-level UNION/INTERSECT/EXCEPT** — type-unification was
+    plumbed for the derived-table path but skipped at top level.
+    `SELECT 1 INTERSECT SELECT 1.0` returned 0 rows (1::INT and
+    1.0::DOUBLE hashed differently). Now coerces each branch to the
+    per-column common type before dedup.
+13. **SUBSTRING** — out-of-range start crashed; NULL bounds crashed;
+    start=0 and negative start violated SQL standard (1-based with
+    positions clipped); negative `len` returned "rest of string"
+    via size_t underflow. Plus SQL-92 `SUBSTRING(s FROM x FOR n)`
+    syntax was rejected by the parser.
+13. **Integer arithmetic overflow** — `2147483647 + 1` silently
+    wrapped to `-2147483648`. Added portable overflow detection
+    (`__builtin_*_overflow` isn't available on MSVC). Result is
+    NULL on overflow, matching the existing divide-by-zero
+    behaviour. Plus `MOD(x, 0)` returned `nan` and `POWER(0, -1)`
+    returned `inf`; both now NULL.
+13. **LIKE backslash-escape + SQL-92 ESCAPE clause** — `'a_b' LIKE
+    'a\_b'` returned false because LikeMatch treated `\` as a
+    literal byte rather than an escape. ESCAPE clause was rejected
+    by the parser. Pattern rewritten at parse time when both
+    pattern and escape are constants; LikeMatch now handles `\%`,
+    `\_`, `\\` correctly.
+13. **NULLIF type unification** — `NULLIF(1, 1.0)` returned 1
+    instead of NULL because args[0]'s type drove the result and
+    the second arg's value was read through a wrong-typed slot.
+    Same pattern as CASE / COALESCE, same fix shape.
+
 Reading the numbers honestly:
 
 - **~4858 of the 5720 queries errored on SlothDB but ran on DuckDB.** These are unsupported SQL features (arrays / structs / lateral joins / `UNNEST` / named arguments / custom types) — the long tail.
