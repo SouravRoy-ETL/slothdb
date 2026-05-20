@@ -190,12 +190,11 @@ bool Parser::IsAtEnd() const { return Current().type == TokenType::END_OF_FILE; 
 ParsedStmtPtr Parser::ParseStatement() {
     if (CheckKeyword(TokenType::KW_WITH)) return ParseSelectStatement(); // WITH starts a CTE
     if (CheckKeyword(TokenType::KW_SELECT)) return ParseSelectStatement();
-    // VALUES (...), (...), ... at top level — equivalent to
-    //   SELECT v00, v01 UNION ALL SELECT v10, v11 ...
+    // VALUES (...), (...), ... at top level — route through
+    // ParseSelectStatement which handles VALUES symmetrically with SELECT
+    // and picks up optional ORDER BY / LIMIT / OFFSET / set-op tails.
     if (CheckKeyword(TokenType::KW_VALUES)) {
-        Advance(); // consume VALUES
-        auto sel = ParseValuesAsSelect();
-        return ParsedStmtPtr(sel.release());
+        return ParseSelectStatement();
     }
     if (CheckKeyword(TokenType::KW_CREATE)) return ParseCreateStatement();
     if (CheckKeyword(TokenType::KW_DROP)) return ParseDropStatement();
@@ -336,6 +335,54 @@ ParsedStmtPtr Parser::ParseSelectStatement() {
             Expect(TokenType::RPAREN, "after CTE query");
             stmt->ctes.push_back(std::move(cte));
         } while (Match(TokenType::COMMA));
+    }
+
+    // SQL standard allows VALUES wherever a `<query expression>` is
+    // expected — top-level, CTAS body, CREATE VIEW body, subquery,
+    // set-op branch. Without this branch, `CREATE TABLE t AS VALUES
+    // (1, 'a'), (2, 'b')` failed to parse because ParseCreateStatement
+    // calls ParseSelectStatement which then hit the SELECT keyword
+    // requirement. Same for `CREATE VIEW v AS VALUES ...`.
+    if (CheckKeyword(TokenType::KW_VALUES)) {
+        Advance(); // consume VALUES
+        auto values_sel = ParseValuesAsSelect();
+        // Preserve any CTEs the outer WITH-block already parsed onto stmt
+        // by transplanting them onto the values-chain head.
+        if (!stmt->ctes.empty()) {
+            values_sel->ctes = std::move(stmt->ctes);
+        }
+        // Tail: optional set-op + ORDER BY / LIMIT / OFFSET. Walk the
+        // chain to find the LAST SelectStatement (where these clauses
+        // attach if present) so chained `VALUES (...) UNION SELECT ...`
+        // and `VALUES (...) ORDER BY 1 LIMIT 5` both work.
+        SelectStatement *tail = values_sel.get();
+        while (tail->set_right) tail = tail->set_right.get();
+        if (MatchKeyword(TokenType::KW_ORDER)) {
+            Expect(TokenType::KW_BY, "after ORDER");
+            do {
+                OrderByItem item;
+                item.expression = ParseExpression();
+                if (MatchKeyword(TokenType::KW_DESC)) item.ascending = false;
+                else MatchKeyword(TokenType::KW_ASC);
+                tail->order_by.push_back(std::move(item));
+            } while (Match(TokenType::COMMA));
+        }
+        if (MatchKeyword(TokenType::KW_LIMIT))  tail->limit  = ParseExpression();
+        if (MatchKeyword(TokenType::KW_OFFSET)) tail->offset = ParseExpression();
+        if (CheckKeyword(TokenType::KW_UNION) || CheckKeyword(TokenType::KW_INTERSECT) ||
+            CheckKeyword(TokenType::KW_EXCEPT)) {
+            if (MatchKeyword(TokenType::KW_UNION)) {
+                tail->set_op = MatchKeyword(TokenType::KW_ALL) ? "UNION ALL" : "UNION";
+            } else if (MatchKeyword(TokenType::KW_INTERSECT)) {
+                tail->set_op = "INTERSECT";
+            } else if (MatchKeyword(TokenType::KW_EXCEPT)) {
+                tail->set_op = "EXCEPT";
+            }
+            auto right = ParseSelectStatement();
+            tail->set_right = std::unique_ptr<SelectStatement>(
+                static_cast<SelectStatement *>(right.release()));
+        }
+        return ParsedStmtPtr(values_sel.release());
     }
 
     Expect(TokenType::KW_SELECT, "");
