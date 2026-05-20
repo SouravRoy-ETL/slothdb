@@ -13,6 +13,10 @@ dist/
 docs/marketing/
 .marketing-drafts/
 
+# External correctness benchmark corpora — fetched on demand, not vendored.
+# See bench/correctness/sqllogictest/fetch_corpus.sh.
+bench/correctness/sqllogictest/test_files/
+
 # IDE files
 .vs/
 .vscode/
