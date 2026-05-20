@@ -387,25 +387,38 @@ void ExpressionExecutor::ExecuteComparison(const BoundComparison &expr, DataChun
             throw NotImplementedException("Comparison for type " + left.GetType().ToString());
         }
     } else {
-        // Mixed types: use Value-based comparison (handles coercion).
+        // Mixed types: numeric coercion via stod. Non-numeric VARCHAR
+        // operands previously leaked std::invalid_argument /
+        // std::out_of_range from stod up the stack — every WHERE clause
+        // mixing a VARCHAR column with an integer literal crashed when
+        // any row's string wasn't numeric. Now: catch and raise
+        // ConversionException with a clear message; SQL-92 says
+        // unparseable values should be a typed error, not a process
+        // crash.
         auto *out = result.GetData<bool>();
         for (idx_t i = 0; i < count; i++) {
             auto lv = left.GetValue(i), rv = right.GetValue(i);
             if (lv.IsNull() || rv.IsNull()) {
                 result.GetValidity().SetInvalid(i);
                 out[i] = false;
-            } else {
-                // Convert both to double for numeric comparison.
-                double ld = std::stod(lv.ToString());
-                double rd = std::stod(rv.ToString());
-                if (expr.op == "=") out[i] = ld == rd;
-                else if (expr.op == "!=" || expr.op == "<>") out[i] = ld != rd;
-                else if (expr.op == "<") out[i] = ld < rd;
-                else if (expr.op == ">") out[i] = ld > rd;
-                else if (expr.op == "<=") out[i] = ld <= rd;
-                else if (expr.op == ">=") out[i] = ld >= rd;
-                else out[i] = false;
+                continue;
             }
+            double ld = 0.0, rd = 0.0;
+            try {
+                ld = std::stod(lv.ToString());
+                rd = std::stod(rv.ToString());
+            } catch (const std::exception &) {
+                throw ConversionException(
+                    "Cannot compare values '" + lv.ToString() + "' and '" +
+                    rv.ToString() + "' as numeric");
+            }
+            if (expr.op == "=") out[i] = ld == rd;
+            else if (expr.op == "!=" || expr.op == "<>") out[i] = ld != rd;
+            else if (expr.op == "<") out[i] = ld < rd;
+            else if (expr.op == ">") out[i] = ld > rd;
+            else if (expr.op == "<=") out[i] = ld <= rd;
+            else if (expr.op == ">=") out[i] = ld >= rd;
+            else out[i] = false;
         }
     }
 }
