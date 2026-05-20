@@ -504,11 +504,50 @@ ParsedStmtPtr Parser::ParseInsertStatement() {
 std::unique_ptr<TableRef> Parser::ParseTableRef() {
     auto ref = std::make_unique<TableRef>();
 
+    // Shared: bareword alias detection. After the source is consumed and
+    // `AS alias` wasn't, the next token may be a bareword alias OR the
+    // start of the next clause (WHERE / GROUP / ORDER / JOIN / etc).
+    // Accepts identifiers AND non-reserved keywords (year, month, hour,
+    // and the like that tokenize as keywords but are legal aliases) — the
+    // subquery branch used the broader check, the other four branches did
+    // not, and the GENERATE_SERIES branch had no keyword guard at all so
+    // `generate_series(1,5) WHERE x>0` would silently consume WHERE as
+    // the alias. Single helper across all five table-source paths.
+    auto parse_optional_alias = [&]() {
+        if (CheckKeyword(TokenType::KW_WHERE)) return;
+        if (CheckKeyword(TokenType::KW_GROUP)) return;
+        if (CheckKeyword(TokenType::KW_ORDER)) return;
+        if (CheckKeyword(TokenType::KW_LIMIT)) return;
+        if (CheckKeyword(TokenType::KW_OFFSET)) return;
+        if (CheckKeyword(TokenType::KW_JOIN)) return;
+        if (CheckKeyword(TokenType::KW_INNER)) return;
+        if (CheckKeyword(TokenType::KW_LEFT)) return;
+        if (CheckKeyword(TokenType::KW_RIGHT)) return;
+        if (CheckKeyword(TokenType::KW_FULL)) return;
+        if (CheckKeyword(TokenType::KW_CROSS)) return;
+        if (CheckKeyword(TokenType::KW_ON)) return;
+        if (CheckKeyword(TokenType::KW_USING)) return;
+        if (CheckKeyword(TokenType::KW_HAVING)) return;
+        if (CheckKeyword(TokenType::KW_QUALIFY)) return;
+        if (CheckKeyword(TokenType::KW_UNION)) return;
+        if (CheckKeyword(TokenType::KW_INTERSECT)) return;
+        if (CheckKeyword(TokenType::KW_EXCEPT)) return;
+        if (MatchKeyword(TokenType::KW_AS)) {
+            ref->alias = ExpectIdentifier("for alias").value;
+            return;
+        }
+        if (IsIdentifierOrNonReserved(Current().type)) {
+            ref->alias = Advance().value;
+        }
+    };
+
     // Shared: after any table-ref alias position, an optional column-alias
     // list `(c1, c2, ...)` per SQL standard. Populates ref->column_aliases
-    // for the binder / materialiser layers to apply downstream. Same field
-    // serves every source (table function, file literal, generate_series,
-    // subquery, regular table) — uniform.
+    // for the binder / materialiser layers. When the ref wraps a subquery,
+    // also propagates the aliases into the inner SELECT's select_list so
+    // the binder's result_names pick them up directly — without that, an
+    // outer column-alias list on a parenthesised subquery (e.g.
+    // `((VALUES (1,'a'))) AS t(x, y)`) wouldn't rename the columns.
     auto parse_optional_col_alias_list = [&]() {
         if (!Check(TokenType::LPAREN)) return;
         Advance();
@@ -517,6 +556,12 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
                 ExpectIdentifier("for column alias").value);
         } while (Match(TokenType::COMMA));
         Expect(TokenType::RPAREN, "after column alias list");
+        if (ref->subquery && !ref->column_aliases.empty()) {
+            auto &sel_list = ref->subquery->select_list;
+            for (size_t i = 0; i < ref->column_aliases.size() && i < sel_list.size(); i++) {
+                sel_list[i]->alias = ref->column_aliases[i];
+            }
+        }
     };
 
     // Subquery in FROM: (SELECT ...) AS alias, (WITH ... SELECT ...) AS alias,
@@ -539,39 +584,23 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
         }
         ref->subquery = std::move(inner_sel);
         Expect(TokenType::RPAREN, "after subquery in FROM");
-        // Alias (required by strict SQL; we accept either AS-form or bareword
-        // and tolerate omission — the connection layer will generate one).
-        if (MatchKeyword(TokenType::KW_AS)) {
-            ref->alias = ExpectIdentifier("for subquery alias").value;
-        } else if (IsIdentifierOrNonReserved(Current().type) &&
-                   !CheckKeyword(TokenType::KW_WHERE) &&
-                   !CheckKeyword(TokenType::KW_GROUP) &&
-                   !CheckKeyword(TokenType::KW_ORDER) &&
-                   !CheckKeyword(TokenType::KW_LIMIT) &&
-                   !CheckKeyword(TokenType::KW_JOIN) &&
-                   !CheckKeyword(TokenType::KW_INNER) &&
-                   !CheckKeyword(TokenType::KW_LEFT) &&
-                   !CheckKeyword(TokenType::KW_RIGHT) &&
-                   !CheckKeyword(TokenType::KW_FULL) &&
-                   !CheckKeyword(TokenType::KW_CROSS) &&
-                   !CheckKeyword(TokenType::KW_ON) &&
-                   !CheckKeyword(TokenType::KW_HAVING) &&
-                   !CheckKeyword(TokenType::KW_QUALIFY)) {
-            ref->alias = Advance().value;
-        }
-        // Optional column-alias list: (c1, c2). Populate ref->column_aliases
-        // AND rename the inner SELECT's select_list aliases in place — the
-        // binder picks names from those, so the rename directly drives the
-        // result column names. column_aliases is still populated so layered
-        // consumers (materialiser, binder validation) see one consistent
-        // representation.
+        parse_optional_alias();
         parse_optional_col_alias_list();
-        if (ref->subquery && !ref->column_aliases.empty()) {
-            auto &sel_list = ref->subquery->select_list;
-            for (size_t i = 0; i < ref->column_aliases.size() && i < sel_list.size(); i++) {
-                sel_list[i]->alias = ref->column_aliases[i];
-            }
-        }
+        // (Rename inside the inner SELECT's select_list is handled by
+        // parse_optional_col_alias_list when ref->subquery is set.)
+        // Fall through to JOIN handling below.
+    } else if (Check(TokenType::LPAREN)) {
+        // Parenthesised FROM-source — wraps a JOIN, a table function, a
+        // file literal, a nested paren, or any other table-ref shape.
+        // Recurse to parse the inner, then attach the outer alias /
+        // column-alias list on the wrapper. The recursion handles
+        // arbitrary nesting like `((a JOIN b) AS j JOIN c) AS k`.
+        Advance(); // consume LPAREN
+        auto inner = ParseTableRef();
+        Expect(TokenType::RPAREN, "after parenthesised table reference");
+        ref = std::move(inner);
+        parse_optional_alias();
+        parse_optional_col_alias_list();
         // Fall through to JOIN handling below.
     } else if (Check(TokenType::IDENTIFIER) &&
         (StringUtil::Upper(Current().value) == "READ_CSV" ||
@@ -591,24 +620,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
         } while (Match(TokenType::COMMA));
         Expect(TokenType::RPAREN, "after table function args");
 
-        if (MatchKeyword(TokenType::KW_AS)) {
-            ref->alias = ExpectIdentifier("for alias").value;
-        } else if (Check(TokenType::IDENTIFIER) &&
-                   !CheckKeyword(TokenType::KW_WHERE) &&
-                   !CheckKeyword(TokenType::KW_GROUP) &&
-                   !CheckKeyword(TokenType::KW_ORDER) &&
-                   !CheckKeyword(TokenType::KW_LIMIT) &&
-                   !CheckKeyword(TokenType::KW_JOIN) &&
-                   !CheckKeyword(TokenType::KW_INNER) &&
-                   !CheckKeyword(TokenType::KW_LEFT) &&
-                   !CheckKeyword(TokenType::KW_RIGHT) &&
-                   !CheckKeyword(TokenType::KW_FULL) &&
-                   !CheckKeyword(TokenType::KW_CROSS) &&
-                   !CheckKeyword(TokenType::KW_ON) &&
-                   !CheckKeyword(TokenType::KW_HAVING) &&
-                   !CheckKeyword(TokenType::KW_QUALIFY)) {
-            ref->alias = Advance().value;
-        }
+        parse_optional_alias();
         parse_optional_col_alias_list();
     } else if (Check(TokenType::STRING_LITERAL)) {
         // Handle string literal in FROM: SELECT * FROM 'file.csv' (auto-detect format).
@@ -618,22 +630,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
         ref->function_args.push_back(
             std::make_unique<ConstantExpression>(file_path, TokenType::STRING_LITERAL));
 
-        if (MatchKeyword(TokenType::KW_AS)) {
-            ref->alias = ExpectIdentifier("for alias").value;
-        } else if (Check(TokenType::IDENTIFIER) &&
-                   !CheckKeyword(TokenType::KW_WHERE) &&
-                   !CheckKeyword(TokenType::KW_GROUP) &&
-                   !CheckKeyword(TokenType::KW_ORDER) &&
-                   !CheckKeyword(TokenType::KW_LIMIT) &&
-                   !CheckKeyword(TokenType::KW_JOIN) &&
-                   !CheckKeyword(TokenType::KW_INNER) &&
-                   !CheckKeyword(TokenType::KW_LEFT) &&
-                   !CheckKeyword(TokenType::KW_RIGHT) &&
-                   !CheckKeyword(TokenType::KW_FULL) &&
-                   !CheckKeyword(TokenType::KW_CROSS) &&
-                   !CheckKeyword(TokenType::KW_ON)) {
-            ref->alias = Advance().value;
-        }
+        parse_optional_alias();
         parse_optional_col_alias_list();
         // Fall through to JOIN handling.
     } else if (CheckKeyword(TokenType::KW_GENERATE_SERIES)) {
@@ -647,35 +644,13 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
         } while (Match(TokenType::COMMA));
         Expect(TokenType::RPAREN, "after GENERATE_SERIES args");
 
-        if (MatchKeyword(TokenType::KW_AS)) {
-            ref->alias = ExpectIdentifier("for alias").value;
-        } else if (Check(TokenType::IDENTIFIER)) {
-            ref->alias = Advance().value;
-        }
+        parse_optional_alias();
         parse_optional_col_alias_list();
         // Fall through to JOIN handling.
     } else {
         ref->table_name = ExpectIdentifier("for table name").value;
-
-    // Optional alias.
-    if (MatchKeyword(TokenType::KW_AS)) {
-        ref->alias = ExpectIdentifier("for table alias").value;
-    } else if (Check(TokenType::IDENTIFIER) &&
-               !CheckKeyword(TokenType::KW_WHERE) &&
-               !CheckKeyword(TokenType::KW_GROUP) &&
-               !CheckKeyword(TokenType::KW_ORDER) &&
-               !CheckKeyword(TokenType::KW_LIMIT) &&
-               !CheckKeyword(TokenType::KW_JOIN) &&
-               !CheckKeyword(TokenType::KW_INNER) &&
-               !CheckKeyword(TokenType::KW_LEFT) &&
-               !CheckKeyword(TokenType::KW_RIGHT) &&
-               !CheckKeyword(TokenType::KW_FULL) &&
-               !CheckKeyword(TokenType::KW_CROSS) &&
-               !CheckKeyword(TokenType::KW_ON) &&
-               !CheckKeyword(TokenType::KW_HAVING)) {
-        ref->alias = Advance().value;
-    }
-    parse_optional_col_alias_list();
+        parse_optional_alias();
+        parse_optional_col_alias_list();
     } // close else block from regular table name path
 
     // JOINs.
