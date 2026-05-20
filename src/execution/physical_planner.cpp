@@ -12271,6 +12271,77 @@ private:
                                 }
                             }
                         }
+                    } else if (info.col_idx == INVALID_INDEX) {
+                        // Complex argument for SUM / AVG / MIN / MAX / etc —
+                        // arg is an expression (CASE, arithmetic, function
+                        // call), not a plain column ref. Evaluate it per row
+                        // and route to the same per-aggregate branches below.
+                        // NULL result means absent — agg skips this row.
+                        // Without this branch SUM(CASE WHEN ... THEN x END) and
+                        // the FILTER-rewrite path silently returned 0.
+                        auto &agg_expr = static_cast<BoundFunction &>(*aggregates_[a]);
+                        if (agg_expr.arguments.empty()) {
+                            // nothing to evaluate — leave state untouched
+                        } else {
+                            DataChunk row_chunk;
+                            row_chunk.Initialize(children[0]->GetTypes());
+                            for (idx_t c = 0; c < chunk.ColumnCount(); c++)
+                                row_chunk.SetValue(c, 0, chunk.GetValue(c, i));
+                            row_chunk.SetCardinality(1);
+                            Vector res(agg_expr.arguments[0]->GetReturnType());
+                            ExpressionExecutor::Execute(*agg_expr.arguments[0], row_chunk, res, 1);
+                            Value arg_val = res.GetValue(0);
+                            if (!arg_val.IsNull()) {
+                                double val = 0.0;
+                                bool numeric = true;
+                                try {
+                                    switch (arg_val.type().id()) {
+                                    case LogicalTypeId::BOOLEAN:  val = arg_val.GetValue<bool>() ? 1.0 : 0.0; break;
+                                    case LogicalTypeId::TINYINT:  val = arg_val.GetValue<int8_t>(); break;
+                                    case LogicalTypeId::SMALLINT: val = arg_val.GetValue<int16_t>(); break;
+                                    case LogicalTypeId::INTEGER:  val = arg_val.GetValue<int32_t>(); break;
+                                    case LogicalTypeId::BIGINT:   val = static_cast<double>(arg_val.GetValue<int64_t>()); break;
+                                    case LogicalTypeId::FLOAT:    val = arg_val.GetValue<float>(); break;
+                                    case LogicalTypeId::DOUBLE:   val = arg_val.GetValue<double>(); break;
+                                    default: numeric = false; break;
+                                    }
+                                } catch (...) { numeric = false; }
+                                if (numeric) {
+                                    if (info.name == "SUM" || info.name == "AVG") {
+                                        state.count++;
+                                        state.sum += val;
+                                    } else if (info.name == "MIN") {
+                                        if (!state.has_min || val < state.sum_min) {
+                                            state.sum_min = val;
+                                            state.has_min = true;
+                                            state.min_val() = arg_val;
+                                        }
+                                    } else if (info.name == "MAX") {
+                                        if (!state.has_max || val > state.sum_max) {
+                                            state.sum_max = val;
+                                            state.has_max = true;
+                                            state.max_val() = arg_val;
+                                        }
+                                    } else if (info.name == "STDDEV" || info.name == "STDDEV_SAMP" ||
+                                               info.name == "STDDEV_POP" || info.name == "VARIANCE" ||
+                                               info.name == "VAR_SAMP" || info.name == "VAR_POP") {
+                                        state.count++;
+                                        state.sum += val;
+                                        state.extras().sum_sq += val * val;
+                                    } else if (info.name == "MEDIAN") {
+                                        state.extras().values.push_back(val);
+                                    } else if (info.name == "BOOL_AND") {
+                                        state.count++;
+                                        auto &x = state.extras();
+                                        x.bool_and = x.bool_and && (val != 0.0);
+                                    } else if (info.name == "BOOL_OR") {
+                                        state.count++;
+                                        auto &x = state.extras();
+                                        x.bool_or = x.bool_or || (val != 0.0);
+                                    }
+                                }
+                            }
+                        }
                     } else if (info.col_idx != INVALID_INDEX) {
                         auto &vec = chunk.GetVector(info.col_idx);
                         if (vec.GetValidity().RowIsValid(i)) {

@@ -141,15 +141,21 @@ public:
 class BoundFunction : public BoundExpression {
 public:
     BoundFunction(const std::string &name, std::vector<BoundExprPtr> args,
-                  const LogicalType &return_type, bool is_aggregate, bool is_distinct = false)
+                  const LogicalType &return_type, bool is_aggregate, bool is_distinct = false,
+                  BoundExprPtr filter_expr = nullptr)
         : BoundExpression(BoundExpressionType::FUNCTION, return_type),
           function_name(name), arguments(std::move(args)),
-          is_aggregate(is_aggregate), is_distinct(is_distinct) {}
+          is_aggregate(is_aggregate), is_distinct(is_distinct),
+          filter(std::move(filter_expr)) {}
 
     std::string function_name;
     std::vector<BoundExprPtr> arguments;
     bool is_aggregate;
     bool is_distinct;
+    // SQL:2003 FILTER (WHERE ...) on an aggregate. Per-row evaluated by
+    // the aggregator and gating each update. NULL filter result acts as
+    // false (matches SQL standard).
+    BoundExprPtr filter;
 };
 
 // Bound CAST.
@@ -197,6 +203,9 @@ public:
     std::vector<BoundExprPtr> arguments;
     std::vector<BoundExprPtr> partition_by;
     std::vector<BoundWindowOrder> order_by;
+    // SQL:2003 FILTER on window aggregates. Same per-row semantics as
+    // BoundFunction::filter — gated update, NULL acts as false.
+    BoundExprPtr filter;
 };
 
 } // namespace slothdb

@@ -1191,10 +1191,22 @@ ParsedExprPtr Parser::ParseFunctionCall(const std::string &name) {
     }
     Expect(TokenType::RPAREN, "after function arguments");
 
+    // SQL:2003 FILTER (WHERE <predicate>) — optional clause between the
+    // argument list and OVER. Applies to aggregates (regular and window).
+    // The binder rejects FILTER on non-aggregates.
+    ParsedExprPtr filter_expr;
+    if (MatchKeyword(TokenType::KW_FILTER)) {
+        Expect(TokenType::LPAREN, "after FILTER");
+        Expect(TokenType::KW_WHERE, "after FILTER (");
+        filter_expr = ParseExpression();
+        Expect(TokenType::RPAREN, "to close FILTER clause");
+    }
+
     // Check for OVER clause (window function).
     if (MatchKeyword(TokenType::KW_OVER)) {
         auto window = std::make_unique<WindowExpression>(
             StringUtil::Upper(name), std::move(args));
+        window->filter = std::move(filter_expr);
 
         Expect(TokenType::LPAREN, "after OVER");
 
@@ -1226,7 +1238,8 @@ ParsedExprPtr Parser::ParseFunctionCall(const std::string &name) {
     }
 
     return std::make_unique<FunctionExpression>(StringUtil::Upper(name),
-                                                std::move(args), distinct);
+                                                std::move(args), distinct,
+                                                std::move(filter_expr));
 }
 
 // UPDATE table SET col = val, ... [WHERE ...]

@@ -882,6 +882,50 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         is_agg = true;
     }
 
+    // SQL:2003 FILTER (WHERE ...) — bind in the same row context as the
+    // function arguments. Only valid on aggregate functions; reject on
+    // scalars.
+    //
+    // Strategy: rewrite to a CASE-lift at bind time. FUNC(arg) FILTER (WHERE c)
+    // becomes FUNC(CASE WHEN c THEN arg END). The CASE returns NULL when c is
+    // false (or NULL — matches SQL standard), and SUM / COUNT / AVG / MIN /
+    // MAX all already treat NULL as absent. For COUNT(*) which has no arg,
+    // the rewrite is COUNT(CASE WHEN c THEN 1 END). This keeps every code
+    // path that handles `col_idx == INVALID_INDEX` (the per-row expression
+    // eval branch in ComputeAggregates) on the same hot path — no separate
+    // filter plumbing needed in the aggregator.
+    if (expr.filter) {
+        if (!is_agg) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "FILTER clause is only valid on aggregate functions, not on '" + name + "'");
+        }
+        auto bound_filter = BindExpression(*expr.filter, context);
+        if (args.empty()) {
+            // COUNT(*) FILTER (WHERE c) -> COUNT(CASE WHEN c THEN 1 END).
+            std::vector<BoundExprPtr> case_args;
+            case_args.push_back(std::move(bound_filter));
+            case_args.push_back(std::make_unique<BoundConstant>(Value::INTEGER(1)));
+            args.push_back(std::make_unique<BoundFunction>(
+                "CASE", std::move(case_args), LogicalType::INTEGER(), false));
+        } else if (args.size() == 1) {
+            // FUNC(arg) FILTER (WHERE c) -> FUNC(CASE WHEN c THEN arg END).
+            auto arg_type = args[0]->GetReturnType();
+            std::vector<BoundExprPtr> case_args;
+            case_args.push_back(std::move(bound_filter));
+            case_args.push_back(std::move(args[0]));
+            args[0] = std::make_unique<BoundFunction>(
+                "CASE", std::move(case_args), arg_type, false);
+        } else {
+            // Multi-arg aggregates (STRING_AGG, etc) with FILTER need each
+            // arg wrapped in the same CASE. The filter must be cloneable
+            // for that; current BoundExpression has no clone. Reject
+            // explicitly so this surfaces at bind time rather than being
+            // silently wrong.
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "FILTER on multi-argument aggregate '" + name + "' is not yet supported");
+        }
+    }
+
     return std::make_unique<BoundFunction>(name, std::move(args), return_type,
                                             is_agg, expr.is_distinct);
 }
@@ -928,6 +972,11 @@ BoundExprPtr Binder::BindWindow(const WindowExpression &expr, BindContext &conte
         bo.expression = BindExpression(*o.expression, context);
         bo.ascending = o.ascending;
         window->order_by.push_back(std::move(bo));
+    }
+    // SQL:2003 FILTER on window aggregates — same per-row semantics as
+    // BindFunction's filter (NULL filter result acts as false).
+    if (expr.filter) {
+        window->filter = BindExpression(*expr.filter, context);
     }
 
     return window;

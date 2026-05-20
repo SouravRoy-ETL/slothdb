@@ -75,17 +75,23 @@ public:
     bool is_null = false;
 };
 
-// Function call: func_name(args...) with optional DISTINCT.
+// Function call: func_name(args...) with optional DISTINCT/ALL and
+// optional FILTER (WHERE ...) per SQL:2003. The filter is per-aggregate,
+// not per-query — multiple aggregates in one SELECT can each have their
+// own filter, and each is evaluated in the same row context as the
+// function's arguments.
 class FunctionExpression : public ParsedExpression {
 public:
     FunctionExpression(const std::string &name, std::vector<ParsedExprPtr> args,
-                       bool distinct = false)
+                       bool distinct = false, ParsedExprPtr filter_expr = nullptr)
         : ParsedExpression(ExpressionType::FUNCTION),
-          function_name(name), arguments(std::move(args)), is_distinct(distinct) {}
+          function_name(name), arguments(std::move(args)), is_distinct(distinct),
+          filter(std::move(filter_expr)) {}
 
     std::string function_name;
     std::vector<ParsedExprPtr> arguments;
     bool is_distinct;
+    ParsedExprPtr filter;
 };
 
 // Comparison: left op right (=, <, >, <=, >=, !=, LIKE).
@@ -208,6 +214,8 @@ public:
     std::vector<ParsedExprPtr> arguments;
     std::vector<ParsedExprPtr> partition_by;
     std::vector<WindowOrderItem> order_by;
+    // Per SQL:2003, FILTER (WHERE ...) is allowed on window aggregates too.
+    ParsedExprPtr filter;
 };
 
 } // namespace slothdb
