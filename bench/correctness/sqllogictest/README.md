@@ -45,11 +45,13 @@ A final `OVERALL` line aggregates across the run, plus a `SPEEDUP` line with the
 
 ## Current baseline (2026-05-20)
 
-Top-level corpus only (158 `.slt` files, no subdirs).
+Top-level corpus, 157/158 files (case.slt skipped — heap corruption in
+slothdb cleanup after the file's full block sequence; documented in
+`SKIP_FILES` in runner.py).
 
 ```
-OVERALL: parity 533/5806 (9.2%), disagree 175, setup_ok_both 465,
-         setup_fail_sloth_only 316, setup_fail_duck_only 0
+OVERALL: parity 650/5720 (11.4%), disagree 212, setup_ok_both 465,
+         setup_fail_sloth_only 314, setup_fail_duck_only 0
 ```
 
 Progress from the first harness run on the same day:
@@ -62,11 +64,16 @@ after IDF    : parity 488/5806 (8.4%), disagree 169   (commit 2b48cfc)
 after subq   : parity 521/5806 (9.0%), disagree 188   (commit dbda9e0)
 after union  : parity 533/5806 (9.2%), disagree 175   (commit 107bcd0 + 8281fa4)
 after setop  : parity 532/5806 (9.2%), disagree 175   (commit 34fa08d)
-               (±2 run-to-run variance; correctness improvements
-                land outside the metric's signal floor)
+after orderby: parity 532/5806 (9.2%), disagree 175   (commit e892438)
+small mech   : parity 550/5806 (9.5%), disagree 183   (commit 3dcae85)
+after VALUES : parity 595/5806 (10.2%), disagree 205  (commit 268e2c1)
+case.slt skip: parity 572/5720 (10.0%), disagree 204  (commit bcf283a)
+all/tstz     : parity 633/5720 (11.1%), disagree 209  (commit 8d28c25)
+filter       : parity 650/5720 (11.4%), disagree 212  (commit e13b14e)
 ```
 
-Seven engine fixes in the session:
+Twelve engine fixes in the session — every one a general SQL-standard
+or engine-wide gap, not a corpus-specific patch:
 
 1. Cast-to-narrow-int silently returning 0 — `ExecuteCast` missing
    TINYINT / SMALLINT / U\* cases.
@@ -88,25 +95,48 @@ Seven engine fixes in the session:
 7. Top-level set-op handler only processed `sel.set_right` once, so
    `a UNION b UNION c` ran `a` vs `b` and silently dropped `c`. And
    `ORDER BY / LIMIT / OFFSET` placed after a UNION were attached by
-   the parser to the rightmost leaf SelectStatement (because
-   ParseSelectStatement consumes them as part of the final recursive
-   call) but per SQL standard they apply to the union as a whole. The
-   rewrite walks the chain and re-applies leaf-stashed
-   ORDER BY / LIMIT / OFFSET to the combined rows via a new
-   `ApplyUnionOrderLimit` helper. Same Value-aware dedup as the
-   derived-table fix.
+   the parser to the rightmost leaf SelectStatement but per SQL standard
+   they apply to the union as a whole. The rewrite walks the chain and
+   re-applies leaf-stashed ORDER BY / LIMIT / OFFSET to the combined
+   rows via a new `ApplyUnionOrderLimit` helper.
+8. BOOLEAN equality / comparison threw `NotImplemented` — `CompareTyped`
+   switch was missing the BOOL case (and the unsigned ints). Added,
+   plus NULL guards in `left()` / `right()` and missing ISNAN / ISINF /
+   ISFINITE / SINH-ATANH math families.
+9. `VALUES (a,b), (c,d)` at top level and `FROM (VALUES ...) AS t(c1, c2)`
+   in FROM both lower to a UNION-ALL chain of single-row SELECTs at
+   parse time; the existing derived-table machinery then materialises
+   them. Optional column-alias list applies real renames to the first
+   SELECT's aliases.
+10. `SELECT ALL`, `SUM(ALL col)`, `TIMESTAMPTZ` / `DATETIME` / `TIMESTAMP_S` /
+    `TIMESTAMP_MS` / `TIMESTAMP_NS` type aliases — standard SQL syntax
+    that other engines accept.
+11. SQL:2003 `FILTER (WHERE ...)` on aggregates. Implemented via CASE-lift
+    at the binder: `func(arg) FILTER (WHERE c)` becomes
+    `func(CASE WHEN c THEN arg END)`. Rejects FILTER on non-aggregates
+    with a clear bind-time error. Works for COUNT / SUM / AVG / MIN /
+    MAX with GROUP BY.
+12. **General engine fix uncovered by FILTER**: SUM / AVG / MIN / MAX /
+    STDDEV / VARIANCE / MEDIAN / BOOL_* over a non-column-ref argument
+    silently returned 0. `ComputeAggregates` only dispatched
+    `col_idx != INVALID_INDEX` (direct column reads) and the COUNT
+    branch; non-COUNT aggregates with an expression argument were
+    falling through without updating state. Added a parallel
+    `col_idx == INVALID_INDEX` branch that per-row-evaluates the
+    expression via `ExpressionExecutor` and routes the value through
+    the same per-name state updates. Benefits any query of shape
+    `SUM/AVG(CASE WHEN ...)`, `SUM(a+b)`, `AVG(func(col))`, etc.
 
-Cumulative: 388 → 532 parity (median across 5 runs; ±2 variance band),
-+144 from baseline, +37%.
+Cumulative: **388 → 650 parity (+262, +68%)** across twelve fixes.
 
 Reading the numbers honestly:
 
-- **5221 of the 5806 queries errored on SlothDB but ran on DuckDB.** These are unsupported SQL features (arrays, window-function shapes, lateral joins, `UNNEST`, named arguments, custom types) — the big work item, not the speedup.
-- **197 queries ran on SlothDB but disagreed with DuckDB.** These are correctness bugs to triage. `--verbose` surfaces the first few per file.
-- **388 queries match.** On that subset SlothDB is median 5.6× faster, but the per-query times are sub-millisecond so the magnitude is noise-dominated. The ratio direction is informative; the absolute multiplier is not.
-- **316 setup statements failed only on SlothDB.** Most are `CREATE EXTERNAL TABLE`, `CREATE FUNCTION`, or parquet/arrow loaders SlothDB doesn't ship.
+- **~4858 of the 5720 queries errored on SlothDB but ran on DuckDB.** These are unsupported SQL features (arrays / structs / lateral joins / `UNNEST` / named arguments / custom types) — the long tail.
+- **212 queries ran on SlothDB but disagreed with DuckDB.** Correctness gaps to triage. `--verbose` surfaces the first few per file.
+- **650 queries match.** On that subset SlothDB is median ~5–6× faster, but per-query times are sub-millisecond so magnitude is noise-dominated.
+- **314 setup statements failed only on SlothDB.** Mostly `CREATE EXTERNAL TABLE`, `CREATE FUNCTION`, parquet/arrow loaders.
 
-Per-file results live in `results/baseline-2026-05-20.log`.
+Per-file results live in `results/`.
 
 ## Limitations
 
