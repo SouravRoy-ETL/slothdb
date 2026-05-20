@@ -470,7 +470,10 @@ ParsedStmtPtr Parser::ParseSelectStatement() {
             } else {
                 MatchKeyword(TokenType::KW_ASC); // optional
             }
-            // NULLS FIRST/LAST
+            // SQL standard / Postgres / DuckDB default: ASC -> NULLS LAST,
+            // DESC -> NULLS FIRST. Apply the direction default first, then
+            // let an explicit NULLS keyword override.
+            item.nulls_first = !item.ascending;
             if (MatchKeyword(TokenType::KW_NULLS)) {
                 if (MatchKeyword(TokenType::KW_FIRST)) {
                     item.nulls_first = true;

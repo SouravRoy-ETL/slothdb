@@ -2021,8 +2021,12 @@ private:
             auto &va = a[col_idx];
             auto &vb = b[col_idx];
             if (va.IsNull() && vb.IsNull()) continue;
-            if (va.IsNull()) return !order.ascending;
-            if (vb.IsNull()) return order.ascending;
+            // SQL standard NULL placement: nulls_first controls where NULLs
+            // go regardless of ascending/descending direction. Defaults
+            // (ASC → NULLS LAST, DESC → NULLS FIRST) are applied at parse
+            // time; explicit NULLS FIRST/LAST overrides.
+            if (va.IsNull()) return order.nulls_first;
+            if (vb.IsNull()) return !order.nulls_first;
             if (va < vb) return order.ascending;
             if (vb < va) return !order.ascending;
         }
@@ -2036,8 +2040,8 @@ private:
             auto &va = ka[k_i];
             auto &vb = kb[k_i];
             if (va.IsNull() && vb.IsNull()) continue;
-            if (va.IsNull()) return !orders_[k_i].ascending;
-            if (vb.IsNull()) return orders_[k_i].ascending;
+            if (va.IsNull()) return orders_[k_i].nulls_first;
+            if (vb.IsNull()) return !orders_[k_i].nulls_first;
             if (va < vb) return orders_[k_i].ascending;
             if (vb < va) return !orders_[k_i].ascending;
         }
@@ -2665,8 +2669,8 @@ private:
                     auto &va = a[c];
                     auto &vb = b[c];
                     if (va.IsNull() && vb.IsNull()) continue;
-                    if (va.IsNull()) return !orders_[i].ascending;
-                    if (vb.IsNull()) return orders_[i].ascending;
+                    if (va.IsNull()) return orders_[i].nulls_first;
+                    if (vb.IsNull()) return !orders_[i].nulls_first;
                     if (va < vb) return orders_[i].ascending;
                     if (vb < va) return !orders_[i].ascending;
                 }
@@ -3897,8 +3901,8 @@ private:
                 auto &va = a.values[k_i];
                 auto &vb = b.values[k_i];
                 if (va.IsNull() && vb.IsNull()) continue;
-                if (va.IsNull()) return !orders_[k_i].ascending;
-                if (vb.IsNull()) return orders_[k_i].ascending;
+                if (va.IsNull()) return orders_[k_i].nulls_first;
+                if (vb.IsNull()) return !orders_[k_i].nulls_first;
                 if (va < vb) return orders_[k_i].ascending;
                 if (vb < va) return !orders_[k_i].ascending;
             }

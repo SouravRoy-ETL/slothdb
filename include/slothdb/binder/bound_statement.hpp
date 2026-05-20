@@ -32,6 +32,12 @@ using BoundStmtPtr = std::unique_ptr<BoundStatement>;
 struct BoundOrderBy {
     BoundExprPtr expression;
     bool ascending = true;
+    // SQL standard: NULL position defaults to NULLS LAST for ASC and
+    // NULLS FIRST for DESC (Postgres/DuckDB convention). User can
+    // override with explicit NULLS FIRST/LAST. The binder sets this
+    // from the parser's OrderByItem, applying the direction default
+    // when the user didn't say.
+    bool nulls_first = false;
 };
 
 class BoundSelectStatement : public BoundStatement {

@@ -390,6 +390,7 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
             bound_item.expression = BindExpression(*item.expression, context);
         }
         bound_item.ascending = item.ascending;
+        bound_item.nulls_first = item.nulls_first;
         result->order_by.push_back(std::move(bound_item));
     }
 
