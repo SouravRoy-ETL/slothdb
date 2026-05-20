@@ -1587,27 +1587,47 @@ QueryResult Connection::Query(const std::string &sql) {
             }
             if (sel.from_table && sel.from_table->is_table_function &&
                 StringUtil::Upper(sel.from_table->table_name) == "GENERATE_SERIES") {
-                // Evaluate args as constants.
+                // Evaluate args as constants. SQL standard variants:
+                //   generate_series(stop)              — start=0, step=1
+                //   generate_series(start, stop)       — step=1
+                //   generate_series(start, stop, step)
+                // Prior code only handled the 2+ arg forms and silently
+                // left start=stop=0 for the 1-arg form, producing an
+                // empty result — fix as a general engine improvement.
                 int64_t start_val = 0, stop_val = 0, step_val = 1;
-                if (sel.from_table->function_args.size() >= 2) {
-                    auto &s = static_cast<ConstantExpression &>(*sel.from_table->function_args[0]);
+                auto &fa = sel.from_table->function_args;
+                if (fa.size() == 1) {
+                    auto &e = static_cast<ConstantExpression &>(*fa[0]);
+                    stop_val = std::stoll(e.value);
+                } else if (fa.size() >= 2) {
+                    auto &s = static_cast<ConstantExpression &>(*fa[0]);
                     start_val = std::stoll(s.value);
-                    auto &e = static_cast<ConstantExpression &>(*sel.from_table->function_args[1]);
+                    auto &e = static_cast<ConstantExpression &>(*fa[1]);
                     stop_val = std::stoll(e.value);
                 }
-                if (sel.from_table->function_args.size() >= 3) {
-                    auto &st = static_cast<ConstantExpression &>(*sel.from_table->function_args[2]);
+                if (fa.size() >= 3) {
+                    auto &st = static_cast<ConstantExpression &>(*fa[2]);
                     step_val = std::stoll(st.value);
                 }
 
                 std::string tbl_name = sel.from_table->alias.empty()
                     ? ("__generate_series_" + std::to_string(preproc_uid) + "__") : sel.from_table->alias;
+                // SQL standard column-alias list: AS t(v1) renames the
+                // single output column. Without one, the column name is
+                // the function name ("generate_series").
+                std::string col_name = sel.from_table->column_aliases.empty()
+                    ? "generate_series" : sel.from_table->column_aliases[0];
+                if (sel.from_table->column_aliases.size() > 1) {
+                    throw BinderException(ErrorCode::TYPE_MISMATCH,
+                        "GENERATE_SERIES produces one column but column-alias list has " +
+                        std::to_string(sel.from_table->column_aliases.size()));
+                }
                 sel.from_table->table_name = tbl_name;
                 sel.from_table->is_table_function = false;
 
                 if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                 auto &entry = db_.GetCatalog().CreateTable(tbl_name,
-                    {ColumnDefinition("generate_series", LogicalType::BIGINT())});
+                    {ColumnDefinition(col_name, LogicalType::BIGINT())});
                 auto storage = std::make_shared<DataTable>(
                     std::vector<LogicalType>{LogicalType::BIGINT()});
                 entry.SetStorage(storage);
@@ -1651,9 +1671,26 @@ QueryResult Connection::Query(const std::string &sql) {
                 tref.table_name = tbl_name;
                 tref.is_table_function = false;
 
+                // SQL standard column-alias list overrides detected header
+                // names positionally: read_csv('f.csv') AS t(c1, c2) renames
+                // the first two columns to c1, c2. If the alias list has a
+                // different count than the source produces, reject — that's
+                // a user error worth surfacing.
+                if (!tref.column_aliases.empty() &&
+                    tref.column_aliases.size() != types.size()) {
+                    throw BinderException(ErrorCode::TYPE_MISMATCH,
+                        "read_csv column-alias list has " +
+                        std::to_string(tref.column_aliases.size()) +
+                        " columns but the CSV has " +
+                        std::to_string(types.size()));
+                }
                 std::vector<ColumnDefinition> cols;
-                for (size_t i = 0; i < header.size() && i < types.size(); i++)
-                    cols.emplace_back(header[i], types[i]);
+                for (size_t i = 0; i < header.size() && i < types.size(); i++) {
+                    const std::string &name = (i < tref.column_aliases.size())
+                                                ? tref.column_aliases[i]
+                                                : header[i];
+                    cols.emplace_back(name, types[i]);
+                }
 
                 if (db_.GetCatalog().GetTable(tbl_name)) db_.GetCatalog().DropTable(tbl_name);
                 auto &entry = db_.GetCatalog().CreateTable(tbl_name, std::move(cols));

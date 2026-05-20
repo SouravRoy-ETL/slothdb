@@ -63,6 +63,11 @@ struct TableRef {
     // reset. Required to be aliased (alias must be non-empty after parsing
     // for the binder to resolve column refs into it).
     std::unique_ptr<SelectStatement> subquery;
+    // SQL-standard column-alias list following the table alias:
+    //   FROM source AS t(c1, c2, ...) — applies positionally to whatever
+    // columns `source` produces. Empty when not present. Cross-cuts:
+    //   read_csv / read_parquet / generate_series / subquery — same field.
+    std::vector<std::string> column_aliases;
 };
 
 // ORDER BY item.

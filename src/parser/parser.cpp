@@ -504,6 +504,21 @@ ParsedStmtPtr Parser::ParseInsertStatement() {
 std::unique_ptr<TableRef> Parser::ParseTableRef() {
     auto ref = std::make_unique<TableRef>();
 
+    // Shared: after any table-ref alias position, an optional column-alias
+    // list `(c1, c2, ...)` per SQL standard. Populates ref->column_aliases
+    // for the binder / materialiser layers to apply downstream. Same field
+    // serves every source (table function, file literal, generate_series,
+    // subquery, regular table) — uniform.
+    auto parse_optional_col_alias_list = [&]() {
+        if (!Check(TokenType::LPAREN)) return;
+        Advance();
+        do {
+            ref->column_aliases.push_back(
+                ExpectIdentifier("for column alias").value);
+        } while (Match(TokenType::COMMA));
+        Expect(TokenType::RPAREN, "after column alias list");
+    };
+
     // Subquery in FROM: (SELECT ...) AS alias, (WITH ... SELECT ...) AS alias,
     // or (VALUES (...), (...), ...) AS alias [(c1, c2, ...)]. All three lower
     // to a SelectStatement stored on ref->subquery and materialised by the
@@ -544,22 +559,17 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
                    !CheckKeyword(TokenType::KW_QUALIFY)) {
             ref->alias = Advance().value;
         }
-        // Optional column-alias list: (c1, c2). Rename the inner SELECT's
-        // select-list aliases in place — the binder picks names from those,
-        // so this directly drives the column names of the materialised
-        // table that the outer query sees.
-        if (Check(TokenType::LPAREN)) {
-            Advance();
-            std::vector<std::string> col_aliases;
-            do {
-                col_aliases.push_back(ExpectIdentifier("for subquery column alias").value);
-            } while (Match(TokenType::COMMA));
-            Expect(TokenType::RPAREN, "after subquery column alias list");
-            if (ref->subquery) {
-                auto &sel_list = ref->subquery->select_list;
-                for (size_t i = 0; i < col_aliases.size() && i < sel_list.size(); i++) {
-                    sel_list[i]->alias = col_aliases[i];
-                }
+        // Optional column-alias list: (c1, c2). Populate ref->column_aliases
+        // AND rename the inner SELECT's select_list aliases in place — the
+        // binder picks names from those, so the rename directly drives the
+        // result column names. column_aliases is still populated so layered
+        // consumers (materialiser, binder validation) see one consistent
+        // representation.
+        parse_optional_col_alias_list();
+        if (ref->subquery && !ref->column_aliases.empty()) {
+            auto &sel_list = ref->subquery->select_list;
+            for (size_t i = 0; i < ref->column_aliases.size() && i < sel_list.size(); i++) {
+                sel_list[i]->alias = ref->column_aliases[i];
             }
         }
         // Fall through to JOIN handling below.
@@ -599,6 +609,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
                    !CheckKeyword(TokenType::KW_QUALIFY)) {
             ref->alias = Advance().value;
         }
+        parse_optional_col_alias_list();
     } else if (Check(TokenType::STRING_LITERAL)) {
         // Handle string literal in FROM: SELECT * FROM 'file.csv' (auto-detect format).
         auto file_path = Advance().value;
@@ -623,6 +634,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
                    !CheckKeyword(TokenType::KW_ON)) {
             ref->alias = Advance().value;
         }
+        parse_optional_col_alias_list();
         // Fall through to JOIN handling.
     } else if (CheckKeyword(TokenType::KW_GENERATE_SERIES)) {
         // Handle GENERATE_SERIES(start, stop[, step]) as a table function.
@@ -640,6 +652,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
         } else if (Check(TokenType::IDENTIFIER)) {
             ref->alias = Advance().value;
         }
+        parse_optional_col_alias_list();
         // Fall through to JOIN handling.
     } else {
         ref->table_name = ExpectIdentifier("for table name").value;
@@ -662,6 +675,7 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
                !CheckKeyword(TokenType::KW_HAVING)) {
         ref->alias = Advance().value;
     }
+    parse_optional_col_alias_list();
     } // close else block from regular table name path
 
     // JOINs.
