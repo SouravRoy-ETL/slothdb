@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 #include <ctime>
+#include <limits>
 #include <optional>
 #include <regex>
 
@@ -1845,10 +1846,55 @@ void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
         auto str = val.ToString();
         try {
             switch (to_type) {
+            case LogicalTypeId::TINYINT: {
+                auto v = std::stoll(str);
+                if (v < std::numeric_limits<int8_t>::min() || v > std::numeric_limits<int8_t>::max())
+                    throw ConversionException("Type with value " + str +
+                        " can't be cast because the value is out of range for the destination type TINYINT");
+                result.SetValue(i, Value::TINYINT(static_cast<int8_t>(v)));
+                break;
+            }
+            case LogicalTypeId::SMALLINT: {
+                auto v = std::stoll(str);
+                if (v < std::numeric_limits<int16_t>::min() || v > std::numeric_limits<int16_t>::max())
+                    throw ConversionException("Type with value " + str +
+                        " can't be cast because the value is out of range for the destination type SMALLINT");
+                result.SetValue(i, Value::SMALLINT(static_cast<int16_t>(v)));
+                break;
+            }
             case LogicalTypeId::INTEGER:
                 result.SetValue(i, Value::INTEGER(std::stoi(str))); break;
             case LogicalTypeId::BIGINT:
                 result.SetValue(i, Value::BIGINT(std::stoll(str))); break;
+            case LogicalTypeId::UTINYINT: {
+                auto v = std::stoll(str);
+                if (v < 0 || v > std::numeric_limits<uint8_t>::max())
+                    throw ConversionException("Type with value " + str +
+                        " can't be cast because the value is out of range for the destination type UTINYINT");
+                result.SetValue(i, Value::UTINYINT(static_cast<uint8_t>(v)));
+                break;
+            }
+            case LogicalTypeId::USMALLINT: {
+                auto v = std::stoll(str);
+                if (v < 0 || v > std::numeric_limits<uint16_t>::max())
+                    throw ConversionException("Type with value " + str +
+                        " can't be cast because the value is out of range for the destination type USMALLINT");
+                result.SetValue(i, Value::USMALLINT(static_cast<uint16_t>(v)));
+                break;
+            }
+            case LogicalTypeId::UINTEGER: {
+                auto v = std::stoll(str);
+                if (v < 0 || v > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+                    throw ConversionException("Type with value " + str +
+                        " can't be cast because the value is out of range for the destination type UINTEGER");
+                result.SetValue(i, Value::UINTEGER(static_cast<uint32_t>(v)));
+                break;
+            }
+            case LogicalTypeId::UBIGINT: {
+                auto v = std::stoull(str);
+                result.SetValue(i, Value::UBIGINT(static_cast<uint64_t>(v)));
+                break;
+            }
             case LogicalTypeId::DOUBLE:
                 result.SetValue(i, Value::DOUBLE(std::stod(str))); break;
             case LogicalTypeId::FLOAT:
