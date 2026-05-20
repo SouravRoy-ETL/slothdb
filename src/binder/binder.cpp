@@ -868,9 +868,77 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     } else if (name == "NULLIF") {
         return_type = args.empty() ? LogicalType::SQLNULL() : args[0]->GetReturnType();
     } else if (name == "CASE" || name == "IF" || name == "IIF") {
-        // CASE(when, then, [when, then, ...] [else]) — return = type of
-        // first THEN. IF/IIF(cond, then, else) lay out args identically.
-        return_type = args.size() >= 2 ? args[1]->GetReturnType() : LogicalType::SQLNULL();
+        // CASE(when, then, [when, then, ...] [else]) — args layout:
+        //   indices 0, 2, 4, ... = WHEN predicates
+        //   indices 1, 3, 5, ... = THEN expressions
+        //   last arg when size is odd = ELSE expression
+        // SQL standard: result type unifies all THEN + ELSE types via
+        // numeric promotion (widest wins), or falls back to VARCHAR when
+        // mixing string and non-string, or SQLNULL when every branch is
+        // NULL. Previously the return type was hardcoded to the first
+        // THEN's type, so CASE WHEN 1=2 THEN 1 ELSE 2.5 END returned 0
+        // (the DOUBLE 2.5 was written into an INTEGER-typed Value union
+        // slot and read back as garbage). Same pattern for any mixed
+        // type branch.
+        bool any_varchar = false;
+        bool any_numeric = false;
+        LogicalTypeId widest_numeric = LogicalTypeId::SQLNULL;
+        auto rank = [](LogicalTypeId x) -> int {
+            switch (x) {
+            case LogicalTypeId::DOUBLE:   return 6;
+            case LogicalTypeId::FLOAT:    return 5;
+            case LogicalTypeId::BIGINT:   return 4;
+            case LogicalTypeId::INTEGER:  return 3;
+            case LogicalTypeId::SMALLINT: return 2;
+            case LogicalTypeId::TINYINT:  return 1;
+            default:                      return 0;
+            }
+        };
+        auto consider = [&](const LogicalType &t) {
+            auto id = t.id();
+            if (id == LogicalTypeId::SQLNULL) return;
+            if (id == LogicalTypeId::VARCHAR) { any_varchar = true; return; }
+            any_numeric = true;
+            if (rank(id) > rank(widest_numeric)) widest_numeric = id;
+        };
+        for (size_t i = 1; i < args.size(); i += 2) {
+            consider(args[i]->GetReturnType());
+        }
+        if (args.size() % 2 == 1 && !args.empty()) {
+            consider(args.back()->GetReturnType());
+        }
+        if (any_varchar) {
+            return_type = LogicalType::VARCHAR();
+        } else if (any_numeric) {
+            switch (widest_numeric) {
+            case LogicalTypeId::DOUBLE:   return_type = LogicalType::DOUBLE(); break;
+            case LogicalTypeId::FLOAT:    return_type = LogicalType::DOUBLE(); break;
+            case LogicalTypeId::BIGINT:   return_type = LogicalType::BIGINT(); break;
+            case LogicalTypeId::INTEGER:  return_type = LogicalType::INTEGER(); break;
+            case LogicalTypeId::SMALLINT: return_type = LogicalType::INTEGER(); break;
+            case LogicalTypeId::TINYINT:  return_type = LogicalType::INTEGER(); break;
+            default:                      return_type = LogicalType::INTEGER(); break;
+            }
+        } else {
+            return_type = LogicalType::SQLNULL();
+        }
+        // Wrap mismatched THEN/ELSE in a BoundCast so the executor's
+        // per-row write into the unified-type result Vector reads from
+        // a compatible source. SQLNULL is preserved verbatim (NULL is
+        // type-agnostic; ExpressionExecutor handles it via validity).
+        for (size_t i = 1; i < args.size(); i += 2) {
+            if (args[i]->GetReturnType().id() != return_type.id() &&
+                args[i]->GetReturnType().id() != LogicalTypeId::SQLNULL) {
+                args[i] = std::make_unique<BoundCast>(std::move(args[i]), return_type);
+            }
+        }
+        if (args.size() % 2 == 1 && !args.empty()) {
+            auto &last = args.back();
+            if (last->GetReturnType().id() != return_type.id() &&
+                last->GetReturnType().id() != LogicalTypeId::SQLNULL) {
+                last = std::make_unique<BoundCast>(std::move(last), return_type);
+            }
+        }
     } else if (name == "IN" || name == "BETWEEN") {
         return_type = LogicalType::BOOLEAN();
     } else if (name == "NOW" || name == "CURRENT_TIMESTAMP" || name == "TO_TIMESTAMP" ||
