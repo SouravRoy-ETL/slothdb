@@ -1399,7 +1399,12 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = arg.GetValue(i).GetValue<std::string>();
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = v.GetValue<std::string>();
             std::reverse(s.begin(), s.end());
             result.SetValue(i, Value::VARCHAR(s));
         }
@@ -1412,13 +1417,43 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[0], input, str_vec, count);
         Execute(*expr.arguments[1], input, n_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto n = n_vec.GetValue(i).GetValue<int32_t>();
+            auto sv = str_vec.GetValue(i);
+            auto nv = n_vec.GetValue(i);
+            if (sv.IsNull() || nv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto n = nv.GetValue<int32_t>();
             if (n < 0) n = 0;
             if (n > 65536) throw InvalidInputException("REPEAT count too large (max: 65536)");
             std::string r;
             for (int j = 0; j < n; j++) r += s;
             result.SetValue(i, Value::VARCHAR(r));
+        }
+        return;
+    }
+
+    // INSTR(haystack, needle) — Oracle/MySQL/SQLite spelling of STRPOS.
+    // 1-based position of first occurrence, 0 if not found. NULL on
+    // either side propagates.
+    if (name == "INSTR") {
+        Vector str_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector sub_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, str_vec, count);
+        Execute(*expr.arguments[1], input, sub_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto sv = str_vec.GetValue(i);
+            auto subv = sub_vec.GetValue(i);
+            if (sv.IsNull() || subv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto sub = subv.GetValue<std::string>();
+            auto pos = s.find(sub);
+            result.SetValue(i, Value::INTEGER(pos == std::string::npos
+                                              ? 0 : static_cast<int32_t>(pos + 1)));
         }
         return;
     }

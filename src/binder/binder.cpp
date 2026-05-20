@@ -1044,7 +1044,7 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         return_type = LogicalType::DOUBLE();
     }
     // Additional string functions.
-    else if (name == "POSITION" || name == "STRPOS") {
+    else if (name == "POSITION" || name == "STRPOS" || name == "INSTR") {
         return_type = LogicalType::INTEGER();
     } else if (name == "LEFT" || name == "RIGHT" || name == "LPAD" || name == "RPAD" ||
                name == "REVERSE" || name == "REPEAT" || name == "SPLIT_PART" ||
