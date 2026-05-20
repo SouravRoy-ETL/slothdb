@@ -309,7 +309,7 @@ slothdb_result *result;
 <span class="kw">FROM</span> <span class="str">'orders.csv'</span>;</pre>
 
     <h2 id="benchmarks">Benchmarks</h2>
-    <p>The previous version of this page included a 16-query head-to-head table against DuckDB with specific multipliers. The numbers were measured on one workstation, against one DuckDB version, with a benchmark surface that the engine had per-query handlers tuned for. They're not removed because they were wrong on that hardware; they're removed because they shouldn't be the headline for an experimental project. See the homepage <a href="index.html#status">Status section</a> and the public discussion at <a href="https://github.com/ClickHouse/ClickBench/issues/930">ClickHouse/ClickBench#930</a> for context. <code>bench/</code> in the repo still has the runner if you want to measure on your own hardware.</p>
+    <p>The previous version of this page included a 16-query head-to-head table against DuckDB with specific multipliers. Removed because SlothDB is early-stage and those numbers shouldn't be the headline for an experimental project. See the homepage <a href="index.html#status">Status section</a>. <code>bench/</code> in the repo still has the runner if you want to measure on your own hardware.</p>
 
     <h2 id="architecture">Architecture</h2>
     <p>SlothDB is a vectorized, morsel-parallel columnar execution engine:</p>
@@ -361,7 +361,7 @@ cmake --build build-wasm-edge</pre>
 
     <h2 id="roadmap">Roadmap</h2>
     <ul>
-      <li>Generic execution path: remove the per-query handlers from <code>physical_planner.cpp</code> (see <a href="https://github.com/ClickHouse/ClickBench/issues/930">ClickHouse/ClickBench#930</a>) and rewrite the generic <code>ParallelScanFilter</code> to vectorised columns</li>
+      <li>Generic execution path: rewrite the planner's dispatch surface and the generic <code>ParallelScanFilter</code> to vectorised columns</li>
       <li>Extended window function coverage</li>
       <li>HTTP and S3 file readers</li>
       <li>R and Node.js bindings</li>

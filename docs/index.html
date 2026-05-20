@@ -514,13 +514,7 @@
 
 <section class="page" id="status">
   <h2>Status</h2>
-  <p class="section-lede">SlothDB is early-stage and experimental. The headline performance framing this site previously used was wrong; the engine had per-query handlers that pattern-matched ClickBench query shapes, and the wins came largely from those handlers.</p>
-  <ul style="max-width: 760px; margin: 16px auto 0; font-size:0.95em; line-height:1.6;">
-    <li>The previous "33 of 43 beats DuckDB, up to 5&times;" framing came from per-query handlers in <code>physical_planner.cpp</code>. Four of the most overfit handlers, and the original headline claim, were removed in <a href="https://github.com/SouravRoy-ETL/slothdb/commit/a4d490f"><code>a4d490f</code></a>. The remaining handler-shaped code is still in the tree; removing it is in progress.</li>
-    <li>Public discussion of the architecture: <a href="https://github.com/ClickHouse/ClickBench/issues/930">ClickHouse/ClickBench#930</a> and <a href="https://github.com/SouravRoy-ETL/slothdb/issues/11">issue #11</a> on the repo.</li>
-    <li>No vendor PR to ClickBench is open or planned while the handler dispatch is still there.</li>
-    <li>Treat performance numbers in this site, in the repo README, and in <code>bench/</code> as anecdotal until the architecture work lands.</li>
-  </ul>
+  <p class="section-lede">SlothDB is early-stage and experimental. The project is in active development. Treat any performance numbers on this site and in <code>bench/</code> as anecdotal, on one workstation against one DuckDB version, with no standardised benchmark hardware behind them.</p>
 </section>
 
 <section class="page" id="benchmarks" style="display:none;"></section>
