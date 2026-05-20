@@ -1521,13 +1521,49 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     // ---- Additional math functions ----
 
     if (name == "LOG" || name == "LN") {
-        Vector arg(expr.arguments[0]->GetReturnType(), count);
-        Execute(*expr.arguments[0], input, arg, count);
+        // 1-arg form computes the natural log (matches existing
+        // behaviour). 2-arg LOG(base, value) computes log base `base`
+        // of `value`, previously silently dropped the second arg.
+        // Domain errors (non-positive arg, base==1) return NULL.
+        bool two_arg = (name == "LOG" && expr.arguments.size() >= 2);
+        Vector arg0(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg0, count);
+        Vector arg1(two_arg ? expr.arguments[1]->GetReturnType()
+                            : LogicalType::DOUBLE(), count);
+        if (two_arg) Execute(*expr.arguments[1], input, arg1, count);
+        auto val_to_dbl = [](const Value &v) -> double {
+            return v.type().id() == LogicalTypeId::INTEGER
+                ? v.GetValue<int32_t>() : v.GetValue<double>();
+        };
         for (idx_t i = 0; i < count; i++) {
-            auto v = arg.GetValue(i);
-            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
-            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
-            result.GetData<double>()[i] = std::log(d);
+            auto v0 = arg0.GetValue(i);
+            if (v0.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            if (two_arg) {
+                auto v1 = arg1.GetValue(i);
+                if (v1.IsNull()) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
+                double base = val_to_dbl(v0);
+                double val = val_to_dbl(v1);
+                if (base <= 0.0 || base == 1.0 || val <= 0.0) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
+                double r = std::log(val) / std::log(base);
+                if (std::isnan(r) || std::isinf(r)) {
+                    result.GetValidity().SetInvalid(i);
+                } else {
+                    result.GetData<double>()[i] = r;
+                }
+            } else {
+                double d = val_to_dbl(v0);
+                if (d <= 0.0) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
+                result.GetData<double>()[i] = std::log(d);
+            }
         }
         return;
     }
@@ -1539,6 +1575,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto v = arg.GetValue(i);
             if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            if (d <= 0.0) { result.GetValidity().SetInvalid(i); continue; }
             result.GetData<double>()[i] = std::log2(d);
         }
         return;
@@ -1551,6 +1588,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto v = arg.GetValue(i);
             if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
+            if (d <= 0.0) { result.GetValidity().SetInvalid(i); continue; }
             result.GetData<double>()[i] = std::log10(d);
         }
         return;
@@ -1563,7 +1601,12 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto v = arg.GetValue(i);
             if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
-            result.GetData<double>()[i] = std::exp(d);
+            double r = std::exp(d);
+            if (std::isnan(r) || std::isinf(r)) {
+                result.GetValidity().SetInvalid(i);
+            } else {
+                result.GetData<double>()[i] = r;
+            }
         }
         return;
     }
