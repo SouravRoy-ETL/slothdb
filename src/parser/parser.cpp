@@ -1257,6 +1257,19 @@ ParsedExprPtr Parser::ParsePrimary() {
 
     // Keywords that can also be column names or function names.
     // KW_IF is here so `IF(c, t, f)` (DuckDB / MySQL ternary) is callable.
+    // SQL-92 typed literal: DATE '2024-01-15', TIMESTAMP '...', TIME '...'.
+    // Only matches when the next token after the type keyword is a string
+    // literal — otherwise we fall through to the identifier/function
+    // path so DATE(...), TIME col, etc. keep working.
+    if ((CheckKeyword(TokenType::KW_DATE) ||
+         CheckKeyword(TokenType::KW_TIMESTAMP) ||
+         CheckKeyword(TokenType::KW_TIME)) &&
+        pos_ + 1 < tokens_.size() &&
+        tokens_[pos_ + 1].type == TokenType::STRING_LITERAL) {
+        auto type_tok = Advance();
+        auto str_tok = Advance();
+        return std::make_unique<ConstantExpression>(str_tok.value, type_tok.type);
+    }
     if (CheckKeyword(TokenType::KW_GENERATE_SERIES) ||
         CheckKeyword(TokenType::KW_VIEW) || CheckKeyword(TokenType::KW_FILTER) ||
         CheckKeyword(TokenType::KW_SAMPLE) ||
