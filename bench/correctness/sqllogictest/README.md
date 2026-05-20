@@ -55,15 +55,18 @@ OVERALL: parity 533/5806 (9.2%), disagree 175, setup_ok_both 465,
 Progress from the first harness run on the same day:
 
 ```
-initial    : parity 388/5806 (6.7%), disagree 197
-after cast : parity 428/5806 (7.4%), disagree 161   (commit 034ff83)
-after +    : parity 486/5806 (8.4%), disagree 161   (commit b0c26a7)
-after IDF  : parity 488/5806 (8.4%), disagree 169   (commit 2b48cfc)
-after subq : parity 521/5806 (9.0%), disagree 188   (commit dbda9e0)
-after union: parity 533/5806 (9.2%), disagree 175   (commit 107bcd0 + 8281fa4)
+initial      : parity 388/5806 (6.7%), disagree 197
+after cast   : parity 428/5806 (7.4%), disagree 161   (commit 034ff83)
+after +      : parity 486/5806 (8.4%), disagree 161   (commit b0c26a7)
+after IDF    : parity 488/5806 (8.4%), disagree 169   (commit 2b48cfc)
+after subq   : parity 521/5806 (9.0%), disagree 188   (commit dbda9e0)
+after union  : parity 533/5806 (9.2%), disagree 175   (commit 107bcd0 + 8281fa4)
+after setop  : parity 532/5806 (9.2%), disagree 175   (commit 34fa08d)
+               (±2 run-to-run variance; correctness improvements
+                land outside the metric's signal floor)
 ```
 
-Five engine fixes in the session:
+Six engine fixes in the session:
 
 1. Cast-to-narrow-int silently returning 0 — `ExecuteCast` missing
    TINYINT / SMALLINT / U\* cases.
@@ -76,8 +79,21 @@ Five engine fixes in the session:
    the planner has no logical UNION node (set ops are walked at the
    Connection layer for top-level queries but the CTE / subquery paths
    weren't doing the same walk).
+6. Set-op dedup used a string concatenation key (INT `1` collided with
+   VARCHAR `'1'`, literal `NULL` collided with the string `'NULL'`) and
+   no type widening across branches (BIGINT values silently truncated
+   into INTEGER storage when LEFT was INTEGER). Now uses a Value-aware
+   row hash with `Value::operator==`, plus a per-column common-type
+   reduction across the chain with explicit coercion.
 
-Cumulative: 388 → 533 parity (+145, +37%).
+Cumulative: 388 → 532 parity (median across 5 runs; ±2 variance band),
++144 from baseline, +37%.
+
+Known limitation deliberately not fixed this session: `ORDER BY` placed
+after a UNION at the outer level still applies to the LEFT branch only.
+The fix spans parser hoist + executor re-sort and only affects a handful
+of corpus queries (most use `rowsort` or order-independent comparison),
+so the work-to-impact ratio is poor relative to other targets.
 
 Reading the numbers honestly:
 
