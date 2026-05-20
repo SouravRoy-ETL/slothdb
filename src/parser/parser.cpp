@@ -196,6 +196,70 @@ ParsedStmtPtr Parser::ParseStatement() {
     if (CheckKeyword(TokenType::KW_VALUES)) {
         return ParseSelectStatement();
     }
+    // SQL-standard parenthesised <query expression> at statement top:
+    //   (SELECT 1)
+    //   (SELECT 1) UNION (SELECT 2)
+    //   (SELECT 1 UNION SELECT 2) ORDER BY 1 LIMIT 5
+    // The inner expression is any SELECT/WITH/VALUES. After the closing
+    // ')' we still accept a set-op tail and ORDER BY/LIMIT/OFFSET so the
+    // outer query expression matches Postgres/DuckDB shape.
+    if (Check(TokenType::LPAREN)) {
+        Advance(); // consume '('
+        // Allow nested parens: ((SELECT ...)) by recursing.
+        ParsedStmtPtr inner_stmt;
+        if (Check(TokenType::LPAREN)) {
+            inner_stmt = ParseStatement();
+        } else {
+            inner_stmt = ParseSelectStatement();
+        }
+        Expect(TokenType::RPAREN, "after parenthesized query expression");
+        auto *inner_sel = static_cast<SelectStatement *>(inner_stmt.get());
+        SelectStatement *tail = inner_sel;
+        while (tail->set_right) tail = tail->set_right.get();
+        // Optional set-op tail.
+        if (CheckKeyword(TokenType::KW_UNION) ||
+            CheckKeyword(TokenType::KW_INTERSECT) ||
+            CheckKeyword(TokenType::KW_EXCEPT)) {
+            if (MatchKeyword(TokenType::KW_UNION)) {
+                tail->set_op = MatchKeyword(TokenType::KW_ALL) ? "UNION ALL" : "UNION";
+            } else if (MatchKeyword(TokenType::KW_INTERSECT)) {
+                tail->set_op = "INTERSECT";
+            } else if (MatchKeyword(TokenType::KW_EXCEPT)) {
+                tail->set_op = "EXCEPT";
+            }
+            // Right side may itself be a parenthesised query expression.
+            ParsedStmtPtr right_stmt;
+            if (Check(TokenType::LPAREN)) {
+                Advance();
+                right_stmt = ParseSelectStatement();
+                Expect(TokenType::RPAREN, "after parenthesized query expression");
+            } else {
+                right_stmt = ParseSelectStatement();
+            }
+            tail->set_right = std::unique_ptr<SelectStatement>(
+                static_cast<SelectStatement *>(right_stmt.release()));
+            while (tail->set_right) tail = tail->set_right.get();
+        }
+        // Optional ORDER BY / LIMIT / OFFSET on the union of branches.
+        if (MatchKeyword(TokenType::KW_ORDER)) {
+            Expect(TokenType::KW_BY, "after ORDER");
+            do {
+                OrderByItem item;
+                item.expression = ParseExpression();
+                if (MatchKeyword(TokenType::KW_DESC)) item.ascending = false;
+                else MatchKeyword(TokenType::KW_ASC);
+                item.nulls_first = !item.ascending;
+                if (MatchKeyword(TokenType::KW_NULLS)) {
+                    if (MatchKeyword(TokenType::KW_FIRST)) item.nulls_first = true;
+                    else if (MatchKeyword(TokenType::KW_LAST)) item.nulls_first = false;
+                }
+                tail->order_by.push_back(std::move(item));
+            } while (Match(TokenType::COMMA));
+        }
+        if (MatchKeyword(TokenType::KW_LIMIT))  tail->limit = ParseExpression();
+        if (MatchKeyword(TokenType::KW_OFFSET)) tail->offset = ParseExpression();
+        return inner_stmt;
+    }
     if (CheckKeyword(TokenType::KW_CREATE)) return ParseCreateStatement();
     if (CheckKeyword(TokenType::KW_DROP)) return ParseDropStatement();
     if (CheckKeyword(TokenType::KW_INSERT)) return ParseInsertStatement();
