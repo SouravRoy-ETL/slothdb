@@ -648,8 +648,12 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
         plan = std::move(distinct);
     }
 
-    // 5. LIMIT.
-    if (stmt.limit_count >= 0) {
+    // 5. LIMIT / OFFSET. Emit a LogicalLimit when either is present.
+    // The pre-fix guard only ran on `limit_count >= 0`, so a bare
+    // `OFFSET 2` with no LIMIT silently dropped the OFFSET and
+    // returned every row. PhysicalLimit already handles limit=-1 with
+    // a positive offset correctly (no upper bound, skips offset rows).
+    if (stmt.limit_count >= 0 || stmt.offset_count > 0) {
         auto limit = std::make_unique<LogicalLimit>(
             stmt.limit_count, stmt.offset_count, plan->GetTypes());
         limit->children.push_back(std::move(plan));
