@@ -51,6 +51,165 @@ static void BulkLoadRows(DataTable &storage, const std::vector<LogicalType> &typ
     }
 }
 
+// SQL-standard wider common type for two branches of a UNION / INTERSECT /
+// EXCEPT chain (per-column). The pairwise reduction over a chain produces
+// the type each branch's values must coerce to before set-op dedup or
+// storage. Falls back to VARCHAR (universal lossless string) on any
+// unknown combination; the caller is responsible for coercing values.
+static LogicalType ComputeSetOpCommonType(const LogicalType &a, const LogicalType &b) {
+    if (a.id() == b.id()) return a;
+    if (a.id() == LogicalTypeId::INVALID || a.id() == LogicalTypeId::SQLNULL) return b;
+    if (b.id() == LogicalTypeId::INVALID || b.id() == LogicalTypeId::SQLNULL) return a;
+
+    auto is_signed_int = [](LogicalTypeId id) {
+        return id == LogicalTypeId::TINYINT || id == LogicalTypeId::SMALLINT ||
+               id == LogicalTypeId::INTEGER || id == LogicalTypeId::BIGINT;
+    };
+    auto is_unsigned_int = [](LogicalTypeId id) {
+        return id == LogicalTypeId::UTINYINT || id == LogicalTypeId::USMALLINT ||
+               id == LogicalTypeId::UINTEGER || id == LogicalTypeId::UBIGINT;
+    };
+    auto is_float = [](LogicalTypeId id) {
+        return id == LogicalTypeId::FLOAT || id == LogicalTypeId::DOUBLE;
+    };
+    auto width = [&](LogicalTypeId id) -> int {
+        switch (id) {
+            case LogicalTypeId::BOOLEAN:   return 1;
+            case LogicalTypeId::TINYINT:   case LogicalTypeId::UTINYINT:   return 8;
+            case LogicalTypeId::SMALLINT:  case LogicalTypeId::USMALLINT:  return 16;
+            case LogicalTypeId::INTEGER:   case LogicalTypeId::UINTEGER:   return 32;
+            case LogicalTypeId::BIGINT:    case LogicalTypeId::UBIGINT:    return 64;
+            case LogicalTypeId::FLOAT:     return 32;
+            case LogicalTypeId::DOUBLE:    return 64;
+            case LogicalTypeId::HUGEINT:   return 128;
+            default: return 0;
+        }
+    };
+
+    // Mixed float + int → DOUBLE if either is DOUBLE or width≥32 int, else FLOAT.
+    if (is_float(a.id()) || is_float(b.id())) {
+        if (a.id() == LogicalTypeId::DOUBLE || b.id() == LogicalTypeId::DOUBLE ||
+            width(a.id()) >= 32 || width(b.id()) >= 32) {
+            return LogicalType::DOUBLE();
+        }
+        return LogicalType(LogicalTypeId::FLOAT);
+    }
+
+    // Mixed signed + unsigned int → next-up signed (UBIGINT vs INTEGER stays
+    // at BIGINT — a true UBIGINT span needs HUGEINT but those queries are
+    // rare and the current codebase doesn't carry HUGEINT well; clamp at
+    // BIGINT and accept the rare overflow rather than escalate to a type
+    // the rest of the engine can't handle).
+    if ((is_signed_int(a.id()) && is_unsigned_int(b.id())) ||
+        (is_unsigned_int(a.id()) && is_signed_int(b.id()))) {
+        int w = std::max(width(a.id()), width(b.id()));
+        if (w <= 8)  return LogicalType(LogicalTypeId::SMALLINT);
+        if (w <= 16) return LogicalType(LogicalTypeId::INTEGER);
+        return LogicalType::BIGINT();
+    }
+
+    // Same family, different width.
+    if (is_signed_int(a.id()) && is_signed_int(b.id())) {
+        return (width(a.id()) >= width(b.id())) ? a : b;
+    }
+    if (is_unsigned_int(a.id()) && is_unsigned_int(b.id())) {
+        return (width(a.id()) >= width(b.id())) ? a : b;
+    }
+
+    // Anything else (DATE/TIMESTAMP/BLOB/LIST mixed with non-matching) →
+    // VARCHAR is the only universal target the engine can carry.
+    return LogicalType(LogicalTypeId::VARCHAR);
+}
+
+// Coerce a single Value to the target type. NULLs are passed through with
+// the target type tag. Falls back to VARCHAR via ToString() on any path
+// not explicitly handled — same fallback policy as ExecuteCast.
+static Value CoerceValueForSetOp(const Value &v, const LogicalType &target) {
+    if (v.IsNull()) return Value();
+    if (v.type().id() == target.id()) return v;
+
+    // Read the source as int64 / double / string in a type-dispatched way.
+    auto src_id = v.type().id();
+    auto src_as_int64 = [&]() -> int64_t {
+        switch (src_id) {
+            case LogicalTypeId::BOOLEAN:  return v.GetValue<bool>() ? 1 : 0;
+            case LogicalTypeId::TINYINT:  return v.GetValue<int8_t>();
+            case LogicalTypeId::SMALLINT: return v.GetValue<int16_t>();
+            case LogicalTypeId::INTEGER:  return v.GetValue<int32_t>();
+            case LogicalTypeId::BIGINT:   return v.GetValue<int64_t>();
+            case LogicalTypeId::UTINYINT: return v.GetValue<uint8_t>();
+            case LogicalTypeId::USMALLINT:return v.GetValue<uint16_t>();
+            case LogicalTypeId::UINTEGER: return v.GetValue<uint32_t>();
+            case LogicalTypeId::UBIGINT:  return static_cast<int64_t>(v.GetValue<uint64_t>());
+            case LogicalTypeId::FLOAT:    return static_cast<int64_t>(v.GetValue<float>());
+            case LogicalTypeId::DOUBLE:   return static_cast<int64_t>(v.GetValue<double>());
+            default: return 0;
+        }
+    };
+    auto src_as_double = [&]() -> double {
+        switch (src_id) {
+            case LogicalTypeId::BOOLEAN:  return v.GetValue<bool>() ? 1.0 : 0.0;
+            case LogicalTypeId::TINYINT:  return v.GetValue<int8_t>();
+            case LogicalTypeId::SMALLINT: return v.GetValue<int16_t>();
+            case LogicalTypeId::INTEGER:  return v.GetValue<int32_t>();
+            case LogicalTypeId::BIGINT:   return static_cast<double>(v.GetValue<int64_t>());
+            case LogicalTypeId::UTINYINT: return v.GetValue<uint8_t>();
+            case LogicalTypeId::USMALLINT:return v.GetValue<uint16_t>();
+            case LogicalTypeId::UINTEGER: return v.GetValue<uint32_t>();
+            case LogicalTypeId::UBIGINT:  return static_cast<double>(v.GetValue<uint64_t>());
+            case LogicalTypeId::FLOAT:    return v.GetValue<float>();
+            case LogicalTypeId::DOUBLE:   return v.GetValue<double>();
+            default: return 0.0;
+        }
+    };
+
+    switch (target.id()) {
+        case LogicalTypeId::TINYINT:  return Value::TINYINT(static_cast<int8_t>(src_as_int64()));
+        case LogicalTypeId::SMALLINT: return Value::SMALLINT(static_cast<int16_t>(src_as_int64()));
+        case LogicalTypeId::INTEGER:  return Value::INTEGER(static_cast<int32_t>(src_as_int64()));
+        case LogicalTypeId::BIGINT:   return Value::BIGINT(src_as_int64());
+        case LogicalTypeId::UTINYINT: return Value::UTINYINT(static_cast<uint8_t>(src_as_int64()));
+        case LogicalTypeId::USMALLINT:return Value::USMALLINT(static_cast<uint16_t>(src_as_int64()));
+        case LogicalTypeId::UINTEGER: return Value::UINTEGER(static_cast<uint32_t>(src_as_int64()));
+        case LogicalTypeId::UBIGINT:  return Value::UBIGINT(static_cast<uint64_t>(src_as_int64()));
+        case LogicalTypeId::FLOAT:    return Value::FLOAT(static_cast<float>(src_as_double()));
+        case LogicalTypeId::DOUBLE:   return Value::DOUBLE(src_as_double());
+        case LogicalTypeId::VARCHAR:  return Value::VARCHAR(v.ToString());
+        default: return v;  // unknown target — pass through
+    }
+}
+
+// Hash + equality on a row of Values, used for UNION / INTERSECT / EXCEPT
+// dedup. NULL == NULL per set-op semantics (Value::operator== already
+// handles this correctly). Type-aware: INT 1 and VARCHAR "1" don't
+// collide, unlike the prior string-concatenation key.
+struct SetOpRowHash {
+    size_t operator()(const std::vector<Value> &row) const noexcept {
+        size_t h = row.size();
+        for (auto &v : row) {
+            size_t vh;
+            if (v.IsNull()) {
+                vh = 0xDEAD9E37;
+            } else {
+                vh = std::hash<std::string>{}(v.ToString());
+                vh ^= static_cast<size_t>(v.type().id()) * 0x9e3779b9u;
+            }
+            h ^= vh + 0x9e3779b9 + (h << 6) + (h >> 2);
+        }
+        return h;
+    }
+};
+struct SetOpRowEqual {
+    bool operator()(const std::vector<Value> &a, const std::vector<Value> &b) const noexcept {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); i++) {
+            if (!(a[i] == b[i])) return false;
+        }
+        return true;
+    }
+};
+using SetOpRowSet = std::unordered_set<std::vector<Value>, SetOpRowHash, SetOpRowEqual>;
+
 // Resolve the DISPLAY logical type for one SELECT-list expression so a
 // Parquet DATE / TIMESTAMP column renders as an ISO string. The engine
 // carries DATE/TIMESTAMP columns internally as INTEGER/BIGINT (epoch
@@ -1896,34 +2055,39 @@ QueryResult Connection::Query(const std::string &sql) {
         // storage. Identical cost to the pre-bugfix CTE code.
         //
         // Slow path (UNION / UNION ALL / INTERSECT / EXCEPT chain): walks
-        // the right-leaning chain produced by the parser, materialises
-        // every segment to rows, applies set semantics, writes the
-        // combined result back to storage. The planner has no logical
-        // UNION node — the set_op chain is walked at the Connection layer,
-        // which is why the prior code's `Planner::Plan(*sub_bound)` quietly
-        // dropped everything past the LEFT side and CTEs / subqueries with
-        // UNION ALL returned only the left half.
+        // the right-leaning chain produced by the parser, binds every
+        // segment to discover its result types, computes a per-column
+        // common type across all branches (so INT + BIGINT lands in
+        // BIGINT instead of overflowing the INT storage), then drains
+        // every branch into rows, coerces each Value to the common type,
+        // applies set semantics (UNION / INTERSECT / EXCEPT use
+        // type-aware Value equality so INT 1 doesn't collide with
+        // VARCHAR "1" the way the previous string-key dedup did), and
+        // writes the combined rows to storage with the common types.
+        // The planner has no logical UNION node — set_op is walked at the
+        // Connection layer.
         auto materialize_select_into_new_table = [&](
                 SelectStatement &sel,
                 const std::string &dest_name) -> std::shared_ptr<DataTable> {
             Binder lb(db_.GetCatalog());
             auto lbound = lb.Bind(sel);
-            auto llogical = Planner::Plan(*lbound);
-            llogical = Optimizer::Optimize(std::move(llogical));
-            PhysicalPlanner lpp(db_.GetCatalog());
-            auto lphysical = lpp.Plan(*llogical);
-            lphysical->Init();
-
             auto &lsel = static_cast<BoundSelectStatement &>(*lbound);
-            std::vector<ColumnDefinition> cols;
-            for (idx_t i = 0; i < lsel.result_names.size(); i++)
-                cols.emplace_back(lsel.result_names[i], lsel.result_types[i]);
-            auto &entry = db_.GetCatalog().CreateTable(dest_name, std::move(cols));
-            auto storage = std::make_shared<DataTable>(lsel.result_types);
-            entry.SetStorage(storage);
 
+            // Fast path: no set_op chain — use LEFT types directly, drain
+            // chunks straight to storage.
             if (sel.set_op.empty()) {
-                // Fast path — direct chunk drain to storage.
+                std::vector<ColumnDefinition> cols;
+                for (idx_t i = 0; i < lsel.result_names.size(); i++)
+                    cols.emplace_back(lsel.result_names[i], lsel.result_types[i]);
+                auto &entry = db_.GetCatalog().CreateTable(dest_name, std::move(cols));
+                auto storage = std::make_shared<DataTable>(lsel.result_types);
+                entry.SetStorage(storage);
+
+                auto llogical = Planner::Plan(*lbound);
+                llogical = Optimizer::Optimize(std::move(llogical));
+                PhysicalPlanner lpp(db_.GetCatalog());
+                auto lphysical = lpp.Plan(*llogical);
+                lphysical->Init();
                 DataChunk lchunk;
                 while (true) {
                     if (!lphysical->GetData(lchunk)) break;
@@ -1932,100 +2096,108 @@ QueryResult Connection::Query(const std::string &sql) {
                 return storage;
             }
 
-            // Slow path — drain LEFT to rows.
-            std::vector<std::vector<Value>> rows;
+            // Slow path. First pass: walk the set_op chain and bind every
+            // branch so we know each branch's types before any execution.
+            std::vector<std::unique_ptr<BoundStatement>> branch_bounds;
+            branch_bounds.push_back(std::move(lbound));
             {
-                DataChunk lchunk;
-                while (true) {
-                    if (!lphysical->GetData(lchunk)) break;
-                    for (idx_t i = 0; i < lchunk.size(); i++) {
-                        std::vector<Value> row;
-                        row.reserve(lchunk.ColumnCount());
-                        for (idx_t c = 0; c < lchunk.ColumnCount(); c++)
-                            row.push_back(lchunk.GetValue(c, i));
-                        rows.push_back(std::move(row));
+                SelectStatement *cur = &sel;
+                while (!cur->set_op.empty() && cur->set_right) {
+                    Binder rb(db_.GetCatalog());
+                    branch_bounds.push_back(rb.Bind(*cur->set_right));
+                    cur = cur->set_right.get();
+                }
+            }
+
+            // Per-column common type via pairwise reduction across branches.
+            // Names come from the LEFT branch (SQL standard).
+            std::vector<LogicalType> result_types;
+            std::vector<std::string> result_names;
+            {
+                auto &first = static_cast<BoundSelectStatement &>(*branch_bounds[0]);
+                result_types = first.result_types;
+                result_names = first.result_names;
+                for (size_t b = 1; b < branch_bounds.size(); b++) {
+                    auto &bs = static_cast<BoundSelectStatement &>(*branch_bounds[b]);
+                    for (idx_t c = 0; c < result_types.size() && c < bs.result_types.size(); c++) {
+                        result_types[c] = ComputeSetOpCommonType(result_types[c], bs.result_types[c]);
                     }
                 }
             }
 
-            auto row_key = [](const std::vector<Value> &row) {
-                std::string key;
-                for (auto &v : row) { key += v.ToString(); key += '|'; }
-                return key;
+            // Drain a freshly-planned branch into row vectors, coercing
+            // each Value to the corresponding common type.
+            auto drain_branch_coerced = [&](BoundStatement &bound,
+                                             std::vector<std::vector<Value>> &out_rows) {
+                auto logical = Planner::Plan(bound);
+                logical = Optimizer::Optimize(std::move(logical));
+                PhysicalPlanner pp(db_.GetCatalog());
+                auto physical = pp.Plan(*logical);
+                physical->Init();
+                DataChunk chunk;
+                while (true) {
+                    if (!physical->GetData(chunk)) break;
+                    for (idx_t i = 0; i < chunk.size(); i++) {
+                        std::vector<Value> row;
+                        row.reserve(chunk.ColumnCount());
+                        for (idx_t c = 0; c < chunk.ColumnCount(); c++) {
+                            row.push_back(CoerceValueForSetOp(
+                                chunk.GetValue(c, i), result_types[c]));
+                        }
+                        out_rows.push_back(std::move(row));
+                    }
+                }
             };
 
-            SelectStatement *cur = &sel;
-            while (!cur->set_op.empty() && cur->set_right) {
-                Binder rb(db_.GetCatalog());
-                auto rbound = rb.Bind(*cur->set_right);
-                auto rlogical = Planner::Plan(*rbound);
-                rlogical = Optimizer::Optimize(std::move(rlogical));
-                PhysicalPlanner rpp(db_.GetCatalog());
-                auto rphysical = rpp.Plan(*rlogical);
-                rphysical->Init();
+            // LEFT branch into rows.
+            std::vector<std::vector<Value>> rows;
+            drain_branch_coerced(*branch_bounds[0], rows);
 
-                std::vector<std::vector<Value>> right_rows;
-                DataChunk rchunk;
-                while (true) {
-                    if (!rphysical->GetData(rchunk)) break;
-                    for (idx_t i = 0; i < rchunk.size(); i++) {
-                        std::vector<Value> row;
-                        row.reserve(rchunk.ColumnCount());
-                        for (idx_t c = 0; c < rchunk.ColumnCount(); c++)
-                            row.push_back(rchunk.GetValue(c, i));
-                        right_rows.push_back(std::move(row));
-                    }
-                }
+            // Walk the chain applying set semantics with the new common types.
+            {
+                SelectStatement *cur = &sel;
+                size_t branch_idx = 1;
+                while (!cur->set_op.empty() && cur->set_right) {
+                    std::vector<std::vector<Value>> right_rows;
+                    drain_branch_coerced(*branch_bounds[branch_idx++], right_rows);
 
-                const std::string &op = cur->set_op;
-                if (op == "UNION ALL") {
-                    for (auto &r : right_rows) rows.push_back(std::move(r));
-                } else if (op == "UNION") {
-                    std::unordered_set<std::string> seen;
-                    for (auto &row : rows) seen.insert(row_key(row));
-                    for (auto &row : right_rows) {
-                        if (seen.insert(row_key(row)).second)
-                            rows.push_back(std::move(row));
-                    }
-                } else if (op == "INTERSECT") {
-                    std::unordered_set<std::string> rk;
-                    for (auto &row : right_rows) rk.insert(row_key(row));
-                    std::vector<std::vector<Value>> kept;
-                    for (auto &row : rows) {
-                        if (rk.count(row_key(row))) kept.push_back(std::move(row));
-                    }
-                    rows = std::move(kept);
-                } else if (op == "EXCEPT") {
-                    std::unordered_set<std::string> rk;
-                    for (auto &row : right_rows) rk.insert(row_key(row));
-                    std::vector<std::vector<Value>> kept;
-                    for (auto &row : rows) {
-                        if (!rk.count(row_key(row))) kept.push_back(std::move(row));
-                    }
-                    rows = std::move(kept);
-                }
-                cur = cur->set_right.get();
-            }
-
-            // Write combined rows back to storage in chunks.
-            if (!rows.empty()) {
-                const idx_t BATCH = 2048;
-                DataChunk chunk;
-                chunk.Initialize(lsel.result_types, BATCH);
-                idx_t pos = 0;
-                while (pos < rows.size()) {
-                    idx_t n = std::min<idx_t>(BATCH, rows.size() - pos);
-                    chunk.Reset();
-                    for (idx_t i = 0; i < n; i++) {
-                        for (idx_t c = 0; c < lsel.result_types.size(); c++) {
-                            chunk.SetValue(c, i, rows[pos + i][c]);
+                    const std::string &op = cur->set_op;
+                    if (op == "UNION ALL") {
+                        for (auto &r : right_rows) rows.push_back(std::move(r));
+                    } else if (op == "UNION") {
+                        SetOpRowSet seen;
+                        for (auto &row : rows) seen.insert(row);
+                        for (auto &row : right_rows) {
+                            if (seen.insert(row).second)
+                                rows.push_back(std::move(row));
                         }
+                    } else if (op == "INTERSECT") {
+                        SetOpRowSet rk(right_rows.begin(), right_rows.end());
+                        std::vector<std::vector<Value>> kept;
+                        for (auto &row : rows) {
+                            if (rk.count(row)) kept.push_back(std::move(row));
+                        }
+                        rows = std::move(kept);
+                    } else if (op == "EXCEPT") {
+                        SetOpRowSet rk(right_rows.begin(), right_rows.end());
+                        std::vector<std::vector<Value>> kept;
+                        for (auto &row : rows) {
+                            if (!rk.count(row)) kept.push_back(std::move(row));
+                        }
+                        rows = std::move(kept);
                     }
-                    chunk.SetCardinality(n);
-                    storage->Append(chunk);
-                    pos += n;
+                    cur = cur->set_right.get();
                 }
             }
+
+            // Create storage with the common types and write rows.
+            std::vector<ColumnDefinition> cols;
+            for (idx_t i = 0; i < result_names.size(); i++)
+                cols.emplace_back(result_names[i], result_types[i]);
+            auto &entry = db_.GetCatalog().CreateTable(dest_name, std::move(cols));
+            auto storage = std::make_shared<DataTable>(result_types);
+            entry.SetStorage(storage);
+            BulkLoadRows(*storage, result_types, rows);
             return storage;
         };
 
