@@ -1198,8 +1198,19 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     if (name == "CEIL" || name == "CEILING" || name == "FLOOR" || name == "ROUND") {
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
+        // ROUND can take an optional second arg `precision`: positive
+        // values control fractional digits, negative round to powers
+        // of 10, zero is integer-round. Previously the second arg was
+        // silently dropped — ROUND(2.345, 2) returned 2 instead of 2.35.
+        bool has_precision = (name == "ROUND" && expr.arguments.size() >= 2);
+        Vector prec_vec(LogicalType::INTEGER(), count);
+        if (has_precision) Execute(*expr.arguments[1], input, prec_vec, count);
         for (idx_t i = 0; i < count; i++) {
             if (!arg.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            if (has_precision && !prec_vec.GetValidity().RowIsValid(i)) {
                 result.GetValidity().SetInvalid(i);
                 continue;
             }
@@ -1212,7 +1223,15 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 
             if (name == "CEIL" || name == "CEILING") val = std::ceil(val);
             else if (name == "FLOOR") val = std::floor(val);
-            else if (name == "ROUND") val = std::round(val);
+            else if (name == "ROUND") {
+                if (has_precision) {
+                    int32_t p = prec_vec.GetValue(i).GetValue<int32_t>();
+                    double factor = std::pow(10.0, static_cast<double>(p));
+                    val = std::round(val * factor) / factor;
+                } else {
+                    val = std::round(val);
+                }
+            }
 
             result.GetData<double>()[i] = val;
         }
@@ -1228,6 +1247,13 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 if (val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
                 double d = (val.type().id() == LogicalTypeId::INTEGER)
                     ? val.GetValue<int32_t>() : val.GetValue<double>();
+                // SQRT of a negative produces nan; SQL standard says
+                // this is a domain error -> NULL (matches POWER's
+                // negative-base-with-fractional-exponent guard).
+                if (d < 0.0) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
                 result.GetData<double>()[i] = std::sqrt(d);
             }
         } else {
@@ -1667,11 +1693,27 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     if (name == "TRUNC" || name == "TRUNCATE") {
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
+        // Optional second arg controls fractional digits, same shape
+        // as ROUND. Previously the second arg was silently dropped.
+        bool has_precision = expr.arguments.size() >= 2;
+        Vector prec_vec(LogicalType::INTEGER(), count);
+        if (has_precision) Execute(*expr.arguments[1], input, prec_vec, count);
         for (idx_t i = 0; i < count; i++) {
             auto v = arg.GetValue(i);
             if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            if (has_precision && !prec_vec.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
             double d = v.GetValue<double>();
-            result.GetData<double>()[i] = std::trunc(d);
+            if (has_precision) {
+                int32_t p = prec_vec.GetValue(i).GetValue<int32_t>();
+                double factor = std::pow(10.0, static_cast<double>(p));
+                d = std::trunc(d * factor) / factor;
+            } else {
+                d = std::trunc(d);
+            }
+            result.GetData<double>()[i] = d;
         }
         return;
     }
