@@ -66,6 +66,17 @@ void Vector::SetValue(idx_t index, const Value &val) {
         validity_.SetInvalid(index);
         return;
     }
+    // SQLNULL-typed Vector can only hold NULL — anything else is a
+    // non-NULL Value trying to flow into a NULL-typed slot. Either the
+    // type was inferred wrong upstream (VALUES (NULL) for example
+    // produces SQLNULL columns until widened by a set-op or cast) or
+    // the caller has a bug. Treat as a NULL write so downstream paths
+    // don't crash; the upstream type-inference is the proper long-term
+    // fix and an unrelated piece of work.
+    if (type_.id() == LogicalTypeId::SQLNULL) {
+        validity_.SetInvalid(index);
+        return;
+    }
     validity_.SetValid(index);
 
     auto physical = type_.GetInternalType();
@@ -124,6 +135,16 @@ void Vector::SetValue(idx_t index, const Value &val) {
 
 Value Vector::GetValue(idx_t index) const {
     if (!validity_.RowIsValid(index)) {
+        return Value();
+    }
+    // SQLNULL-typed Vector: every row IS NULL regardless of validity bit.
+    // The underlying data buffer is undefined (or absent), so reading via
+    // typed dispatch would access garbage / unmapped memory. Return NULL
+    // unconditionally. Fixes:
+    //   SELECT x, COUNT(*) FROM (VALUES (NULL),(NULL)) t(x) GROUP BY x
+    // which previously crashed when the GROUP BY tried to extract the
+    // key value from the SQLNULL column.
+    if (type_.id() == LogicalTypeId::SQLNULL) {
         return Value();
     }
 
