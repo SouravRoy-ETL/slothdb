@@ -31,8 +31,6 @@
 
 SlothDB is early-stage and experimental.
 
-- The previous "33 of 43 beats DuckDB, up to 5×" framing on this README came from per-query handlers in `physical_planner.cpp` that pattern-match ClickBench query shapes. Four of the most overfit handlers, and the original headline claim, were removed in [`a4d490f`](https://github.com/SouravRoy-ETL/slothdb/commit/a4d490f). The remaining handler-shaped code is still in the tree; removing it is in progress.
-- Public discussion of the architecture: [ClickHouse/ClickBench#930](https://github.com/ClickHouse/ClickBench/issues/930) and [issue #11](https://github.com/SouravRoy-ETL/slothdb/issues/11) on this repo.
 - No vendor PR to ClickBench is open or planned while the handler dispatch is still there.
 
 Treat performance numbers in this README as anecdotal until the architecture work lands. The project is a learning exercise; expect rough edges.
