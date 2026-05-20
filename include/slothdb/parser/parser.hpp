@@ -46,6 +46,10 @@ private:
     // FROM clause.
     std::unique_ptr<TableRef> ParseTableRef();
 
+    // VALUES (...), (...), ... as a SelectStatement (one SELECT per row,
+    // chained via UNION ALL). Caller has already consumed KW_VALUES.
+    std::unique_ptr<SelectStatement> ParseValuesAsSelect();
+
     // Type name (for CREATE TABLE and CAST).
     std::string ParseTypeName();
 

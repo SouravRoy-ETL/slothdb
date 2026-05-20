@@ -190,6 +190,13 @@ bool Parser::IsAtEnd() const { return Current().type == TokenType::END_OF_FILE; 
 ParsedStmtPtr Parser::ParseStatement() {
     if (CheckKeyword(TokenType::KW_WITH)) return ParseSelectStatement(); // WITH starts a CTE
     if (CheckKeyword(TokenType::KW_SELECT)) return ParseSelectStatement();
+    // VALUES (...), (...), ... at top level — equivalent to
+    //   SELECT v00, v01 UNION ALL SELECT v10, v11 ...
+    if (CheckKeyword(TokenType::KW_VALUES)) {
+        Advance(); // consume VALUES
+        auto sel = ParseValuesAsSelect();
+        return ParsedStmtPtr(sel.release());
+    }
     if (CheckKeyword(TokenType::KW_CREATE)) return ParseCreateStatement();
     if (CheckKeyword(TokenType::KW_DROP)) return ParseDropStatement();
     if (CheckKeyword(TokenType::KW_INSERT)) return ParseInsertStatement();
@@ -493,18 +500,25 @@ ParsedStmtPtr Parser::ParseInsertStatement() {
 std::unique_ptr<TableRef> Parser::ParseTableRef() {
     auto ref = std::make_unique<TableRef>();
 
-    // Subquery in FROM: (SELECT ...) [AS] alias, or (WITH ... SELECT ...) AS alias.
-    // Only enter this branch when LPAREN is immediately followed by SELECT or
-    // WITH — other LPAREN patterns (VALUES, parenthesised JOIN) aren't
-    // supported yet and fall through to the regular table-name path which
-    // will surface a clearer error.
+    // Subquery in FROM: (SELECT ...) AS alias, (WITH ... SELECT ...) AS alias,
+    // or (VALUES (...), (...), ...) AS alias [(c1, c2, ...)]. All three lower
+    // to a SelectStatement stored on ref->subquery and materialised by the
+    // connection layer.
     if (Check(TokenType::LPAREN) &&
         (Peek().type == TokenType::KW_SELECT ||
-         Peek().type == TokenType::KW_WITH)) {
+         Peek().type == TokenType::KW_WITH ||
+         Peek().type == TokenType::KW_VALUES)) {
         Advance();  // consume LPAREN
-        auto inner = ParseSelectStatement();
-        ref->subquery = std::unique_ptr<SelectStatement>(
-            static_cast<SelectStatement *>(inner.release()));
+        std::unique_ptr<SelectStatement> inner_sel;
+        if (CheckKeyword(TokenType::KW_VALUES)) {
+            Advance(); // consume VALUES
+            inner_sel = ParseValuesAsSelect();
+        } else {
+            auto inner = ParseSelectStatement();
+            inner_sel = std::unique_ptr<SelectStatement>(
+                static_cast<SelectStatement *>(inner.release()));
+        }
+        ref->subquery = std::move(inner_sel);
         Expect(TokenType::RPAREN, "after subquery in FROM");
         // Alias (required by strict SQL; we accept either AS-form or bareword
         // and tolerate omission — the connection layer will generate one).
@@ -526,12 +540,23 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
                    !CheckKeyword(TokenType::KW_QUALIFY)) {
             ref->alias = Advance().value;
         }
-        // Optional column-alias list: (c1, c2). Consume but don't apply yet
-        // (binder would need to rename the subquery output columns).
+        // Optional column-alias list: (c1, c2). Rename the inner SELECT's
+        // select-list aliases in place — the binder picks names from those,
+        // so this directly drives the column names of the materialised
+        // table that the outer query sees.
         if (Check(TokenType::LPAREN)) {
             Advance();
-            do { Advance(); } while (Match(TokenType::COMMA));
+            std::vector<std::string> col_aliases;
+            do {
+                col_aliases.push_back(ExpectIdentifier("for subquery column alias").value);
+            } while (Match(TokenType::COMMA));
             Expect(TokenType::RPAREN, "after subquery column alias list");
+            if (ref->subquery) {
+                auto &sel_list = ref->subquery->select_list;
+                for (size_t i = 0; i < col_aliases.size() && i < sel_list.size(); i++) {
+                    sel_list[i]->alias = col_aliases[i];
+                }
+            }
         }
         // Fall through to JOIN handling below.
     } else if (Check(TokenType::IDENTIFIER) &&
@@ -885,6 +910,47 @@ ParsedExprPtr Parser::ParseMulDiv() {
         left = std::make_unique<ArithmeticExpression>(op, std::move(left), std::move(right));
     }
     return left;
+}
+
+std::unique_ptr<SelectStatement> Parser::ParseValuesAsSelect() {
+    // Caller already consumed KW_VALUES. Parse one or more (...) rows.
+    std::vector<std::vector<ParsedExprPtr>> rows;
+    do {
+        Expect(TokenType::LPAREN, "for VALUES row");
+        std::vector<ParsedExprPtr> row;
+        do {
+            row.push_back(ParseExpression());
+        } while (Match(TokenType::COMMA));
+        Expect(TokenType::RPAREN, "after VALUES row");
+        rows.push_back(std::move(row));
+    } while (Match(TokenType::COMMA));
+
+    if (rows.empty()) {
+        ThrowError("VALUES requires at least one row");
+    }
+
+    // Build a SelectStatement chain via UNION ALL: each row becomes one
+    // SELECT with positional column aliases (column0, column1, ...) on the
+    // first; subsequent rows inherit positionally per SQL set-op rules.
+    auto make_select = [](std::vector<ParsedExprPtr> &row, bool name_columns) {
+        auto sel = std::make_unique<SelectStatement>();
+        for (size_t i = 0; i < row.size(); i++) {
+            if (name_columns) {
+                row[i]->alias = "column" + std::to_string(i);
+            }
+            sel->select_list.push_back(std::move(row[i]));
+        }
+        return sel;
+    };
+
+    auto outer = make_select(rows[0], true);
+    SelectStatement *cur = outer.get();
+    for (size_t i = 1; i < rows.size(); i++) {
+        cur->set_op = "UNION ALL";
+        cur->set_right = make_select(rows[i], false);
+        cur = cur->set_right.get();
+    }
+    return outer;
 }
 
 ParsedExprPtr Parser::ParseUnary() {
