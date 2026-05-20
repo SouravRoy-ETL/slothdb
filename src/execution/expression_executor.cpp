@@ -944,17 +944,52 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         if (has_len) Execute(*expr.arguments[2], input, len_vec, count);
 
         for (idx_t i = 0; i < count; i++) {
-            if (!str_vec.GetValidity().RowIsValid(i)) {
+            // NULL propagation: if string OR start OR len is NULL the
+            // result is NULL. Previously a NULL start crashed with
+            // "Cannot get value from NULL" from the typed GetValue.
+            bool null_in = !str_vec.GetValidity().RowIsValid(i) ||
+                           !start_vec.GetValidity().RowIsValid(i) ||
+                           (has_len && !len_vec.GetValidity().RowIsValid(i));
+            if (null_in) {
                 result.GetValidity().SetInvalid(i);
-            } else {
-                auto s = str_vec.GetData<string_t>()[i].GetString();
-                int32_t start = start_vec.GetValue(i).GetValue<int32_t>() - 1; // 1-based
-                if (start < 0) start = 0;
-                int32_t len = has_len
-                    ? len_vec.GetValue(i).GetValue<int32_t>()
-                    : static_cast<int32_t>(s.size()) - start;
-                result.SetValue(i, Value::VARCHAR(s.substr(start, len)));
+                continue;
             }
+            auto sv = str_vec.GetValue(i);
+            if (sv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            int32_t start_raw = start_vec.GetValue(i).GetValue<int32_t>();
+            int32_t len_raw = has_len ? len_vec.GetValue(i).GetValue<int32_t>()
+                                       : static_cast<int32_t>(s.size());
+            // SQL standard: positions are 1-based; positions <1 are
+            // clipped but the "missing" characters STILL count against
+            // len. So SUBSTRING('hello', -2, 5) covers logical
+            // positions -2,-1,0,1,2 → physical "he". A negative len
+            // produces empty. Out-of-range start produces empty.
+            if (len_raw <= 0) {
+                result.SetValue(i, Value::VARCHAR(""));
+                continue;
+            }
+            int64_t effective_start = std::max<int32_t>(1, start_raw);
+            int64_t effective_end =
+                static_cast<int64_t>(start_raw) + static_cast<int64_t>(len_raw);
+            if (effective_end <= 1) {
+                result.SetValue(i, Value::VARCHAR(""));
+                continue;
+            }
+            int64_t out_start = effective_start - 1;
+            int64_t out_len = effective_end - effective_start;
+            int64_t s_size = static_cast<int64_t>(s.size());
+            if (out_start >= s_size || out_len <= 0) {
+                result.SetValue(i, Value::VARCHAR(""));
+                continue;
+            }
+            out_len = std::min<int64_t>(out_len, s_size - out_start);
+            result.SetValue(i, Value::VARCHAR(
+                s.substr(static_cast<size_t>(out_start),
+                         static_cast<size_t>(out_len))));
         }
         return;
     }

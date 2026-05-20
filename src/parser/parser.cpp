@@ -1250,9 +1250,29 @@ ParsedExprPtr Parser::ParseFunctionCall(const std::string &name) {
                 // SUM(ALL col) — ALL is the default, consume and discard.
                 MatchKeyword(TokenType::KW_ALL);
             }
-            do {
+            // SQL-92 SUBSTRING(s FROM start [FOR length]) syntax. The
+            // first argument is parsed, then FROM and (optional) FOR
+            // become positional args 2 and 3. Comma-separated form
+            // (SUBSTRING(s, start, length)) keeps working below.
+            std::string name_upper = StringUtil::Upper(name);
+            if (name_upper == "SUBSTRING" || name_upper == "SUBSTR") {
                 args.push_back(ParseExpression());
-            } while (Match(TokenType::COMMA));
+                if (MatchKeyword(TokenType::KW_FROM)) {
+                    args.push_back(ParseExpression());
+                    if (MatchKeyword(TokenType::KW_FOR)) {
+                        args.push_back(ParseExpression());
+                    }
+                } else {
+                    // Comma form — finish parsing remaining args.
+                    while (Match(TokenType::COMMA)) {
+                        args.push_back(ParseExpression());
+                    }
+                }
+            } else {
+                do {
+                    args.push_back(ParseExpression());
+                } while (Match(TokenType::COMMA));
+            }
         }
     }
     Expect(TokenType::RPAREN, "after function arguments");

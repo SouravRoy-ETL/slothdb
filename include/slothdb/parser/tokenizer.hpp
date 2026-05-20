@@ -122,6 +122,7 @@ enum class TokenType : uint8_t {
     KW_CHECK,
     KW_REFERENCES,
     KW_FOREIGN,
+    KW_FOR,
     KW_CONSTRAINT,
     KW_INDEX,
     KW_WITH,
