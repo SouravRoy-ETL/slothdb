@@ -414,9 +414,20 @@ ParsedStmtPtr Parser::ParseSelectStatement() {
         stmt->select_list.push_back(std::move(expr));
     } while (Match(TokenType::COMMA));
 
-    // FROM
+    // FROM. SQL-92 allows a comma-separated list — `FROM a, b, c` is
+    // semantically equivalent to `FROM a CROSS JOIN b CROSS JOIN c`,
+    // with any WHERE predicates filtering the cross product. Chain
+    // every comma-separated ref onto the existing JOIN-chain tail of
+    // the first table so the binder / planner walk one structure.
     if (MatchKeyword(TokenType::KW_FROM)) {
         stmt->from_table = ParseTableRef();
+        while (Match(TokenType::COMMA)) {
+            auto next_ref = ParseTableRef();
+            TableRef *tail = stmt->from_table.get();
+            while (tail->right) tail = tail->right.get();
+            tail->right = std::move(next_ref);
+            tail->join_type = "CROSS";
+        }
     }
 
     // WHERE

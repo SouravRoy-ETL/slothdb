@@ -130,27 +130,36 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
                 result->table_alias = first->first;
             }
 
-            // Detect JOIN.
-            if (stmt.from_table->right && !stmt.from_table->join_type.empty()) {
+            // Detect JOIN chain. SQL-92 comma-FROM (`FROM a, b, c`) plus
+            // explicit JOINs both walk the right-leaning chain on the
+            // parsed TableRef. Each chain link contributes one JoinInfo;
+            // the planner folds them into a left-deep cascade. The
+            // running column-count tracks the cumulative width of the
+            // left side so each JoinInfo's left_col_count is meaningful
+            // for downstream binder/planner code that uses it.
+            idx_t running_left_count = result->table->ColumnCount();
+            const TableRef *cur = stmt.from_table.get();
+            while (cur->right && !cur->join_type.empty()) {
                 auto join_info = std::make_unique<BoundSelectStatement::JoinInfo>();
-                auto right_alias = stmt.from_table->right->alias.empty()
-                    ? stmt.from_table->right->table_name : stmt.from_table->right->alias;
+                auto right_alias = cur->right->alias.empty()
+                    ? cur->right->table_name : cur->right->alias;
                 auto right_it = context.tables.find(right_alias);
                 if (right_it != context.tables.end()) {
                     join_info->right_table = right_it->second;
                     join_info->right_alias = right_alias;
                 }
-                join_info->join_type = stmt.from_table->join_type;
-                join_info->left_col_count = result->table->ColumnCount();
+                join_info->join_type = cur->join_type;
+                join_info->left_col_count = running_left_count;
                 join_info->right_col_count = join_info->right_table
                     ? join_info->right_table->ColumnCount() : 0;
 
-                // Bind ON condition.
-                if (stmt.from_table->on_condition) {
-                    join_info->condition = BindExpression(
-                        *stmt.from_table->on_condition, context);
+                if (cur->on_condition) {
+                    join_info->condition = BindExpression(*cur->on_condition, context);
                 }
-                result->join = std::move(join_info);
+
+                running_left_count += join_info->right_col_count;
+                result->joins.push_back(std::move(join_info));
+                cur = cur->right.get();
             }
         }
     }
@@ -539,16 +548,13 @@ void Binder::BindTableRef(const TableRef &ref, BindContext &context) {
     auto alias = ref.alias.empty() ? ref.table_name : ref.alias;
     context.AddTable(alias, entry);
 
-    // Recursively bind the right side of joins.
+    // Recursively bind every joined table on the chain. Previously this
+    // only handled the immediate right side, so `FROM a, b, c` (SQL-92
+    // comma-FROM) or `a JOIN b JOIN c` only ever added a + b, and any
+    // column ref into c failed at bind. Recursion makes the chain length
+    // unbounded.
     if (ref.right) {
-        auto *right_entry = catalog_.GetTable(ref.right->table_name);
-        if (!right_entry) {
-            throw BinderException(ErrorCode::TABLE_NOT_FOUND,
-                                   "Table '" + ref.right->table_name + "' not found");
-        }
-        auto right_alias = ref.right->alias.empty()
-                             ? ref.right->table_name : ref.right->alias;
-        context.AddTable(right_alias, right_entry);
+        BindTableRef(*ref.right, context);
     }
 }
 

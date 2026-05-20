@@ -341,29 +341,35 @@ LogicalOpPtr Planner::PlanSelect(const BoundSelectStatement &stmt) {
     LogicalOpPtr plan;
     auto &mutable_stmt = const_cast<BoundSelectStatement &>(stmt);
 
-    // 1. Source: table scan, join, or dummy scan.
-    if (stmt.join && stmt.join->right_table) {
-        // JOIN: create two scans and a LogicalJoin.
-        auto left_scan = std::make_unique<LogicalGet>(stmt.table);
-        auto right_scan = std::make_unique<LogicalGet>(stmt.join->right_table);
+    // 1. Source: table scan, join chain, or dummy scan.
+    // For an N-table chain (SQL-92 comma-FROM or chained explicit JOINs),
+    // fold the bound joins vector into a left-deep cascade of LogicalJoin
+    // nodes. `plan` starts at the leftmost LogicalGet and grows leftward
+    // (each iteration wraps the current plan as the left child of a new
+    // LogicalJoin whose right child is the next table's LogicalGet).
+    if (!stmt.joins.empty() && stmt.joins.front()->right_table) {
+        plan = std::make_unique<LogicalGet>(stmt.table);
+        auto combined_types = plan->GetTypes();
+        for (auto &join_info_ptr : mutable_stmt.joins) {
+            auto &join_info = *join_info_ptr;
+            if (!join_info.right_table) break;
+            auto right_scan = std::make_unique<LogicalGet>(join_info.right_table);
+            auto right_types = right_scan->GetTypes();
+            combined_types.insert(combined_types.end(),
+                                  right_types.begin(), right_types.end());
 
-        // Determine join type.
-        JoinType jt = JoinType::INNER;
-        if (stmt.join->join_type == "LEFT") jt = JoinType::LEFT;
-        else if (stmt.join->join_type == "RIGHT") jt = JoinType::RIGHT;
-        else if (stmt.join->join_type == "FULL") jt = JoinType::FULL;
-        else if (stmt.join->join_type == "CROSS") jt = JoinType::CROSS;
+            JoinType jt = JoinType::INNER;
+            if (join_info.join_type == "LEFT") jt = JoinType::LEFT;
+            else if (join_info.join_type == "RIGHT") jt = JoinType::RIGHT;
+            else if (join_info.join_type == "FULL") jt = JoinType::FULL;
+            else if (join_info.join_type == "CROSS") jt = JoinType::CROSS;
 
-        // Combined types: left columns + right columns.
-        auto combined_types = left_scan->GetTypes();
-        auto right_types = right_scan->GetTypes();
-        combined_types.insert(combined_types.end(), right_types.begin(), right_types.end());
-
-        auto join_node = std::make_unique<LogicalJoin>(
-            jt, std::move(mutable_stmt.join->condition), combined_types);
-        join_node->children.push_back(std::move(left_scan));
-        join_node->children.push_back(std::move(right_scan));
-        plan = std::move(join_node);
+            auto join_node = std::make_unique<LogicalJoin>(
+                jt, std::move(join_info.condition), combined_types);
+            join_node->children.push_back(std::move(plan));
+            join_node->children.push_back(std::move(right_scan));
+            plan = std::move(join_node);
+        }
     } else if (stmt.table) {
         plan = std::make_unique<LogicalGet>(stmt.table);
     } else {

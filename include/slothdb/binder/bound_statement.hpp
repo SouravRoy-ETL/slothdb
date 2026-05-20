@@ -44,7 +44,10 @@ public:
     TableCatalogEntry *table = nullptr;
     std::string table_alias;
 
-    // For JOINs: additional tables.
+    // For JOINs: additional tables. Each JoinInfo is one chain link;
+    // the planner builds a left-deep cascade by folding the vector
+    // into nested LogicalJoin nodes. SQL-92 comma-separated FROM
+    // (`FROM a, b, c`) produces multiple CROSS joins via this vector.
     struct JoinInfo {
         TableCatalogEntry *right_table = nullptr;
         std::string right_alias;
@@ -53,7 +56,7 @@ public:
         idx_t left_col_count = 0;
         idx_t right_col_count = 0;
     };
-    std::unique_ptr<JoinInfo> join;
+    std::vector<std::unique_ptr<JoinInfo>> joins;
 
     // Resolved select list.
     std::vector<BoundExprPtr> select_list;
