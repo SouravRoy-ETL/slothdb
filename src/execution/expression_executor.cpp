@@ -723,8 +723,19 @@ void ExpressionExecutor::ExecuteNegation(const BoundNegation &expr, DataChunk &i
     Execute(*expr.child, input, child, count);
     auto *cdata = child.GetData<bool>();
     auto *out = result.GetData<bool>();
+    auto &cv = child.GetValidity();
+    auto &ov = result.GetValidity();
     for (idx_t i = 0; i < count; i++) {
-        out[i] = !cdata[i];
+        // SQL Kleene logic: NOT UNKNOWN = UNKNOWN. Propagate the
+        // child's invalid bit so NOT (x IN (1, 2, NULL)) returns
+        // NULL/UNKNOWN when x doesn't equal any concrete element,
+        // matching SQL three-valued logic.
+        if (!cv.RowIsValid(i)) {
+            ov.SetInvalid(i);
+            out[i] = false;
+        } else {
+            out[i] = !cdata[i];
+        }
     }
 }
 
@@ -991,21 +1002,56 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 
     // IN(value, list...)
     if (name == "IN") {
+        // SQL three-valued logic for IN:
+        //   x IN (a, b, ..., NULL)
+        //     true   if x equals any non-null element
+        //     NULL   if x is NULL, or any element is NULL and no
+        //            non-null equality matched
+        //     false  otherwise
+        // The pre-fix code returned false for NULL-in-list cases,
+        // which (when wrapped by NOT) produced wrong-result rows for
+        // any query using NOT IN with a NULL value in the list.
         auto *out = result.GetData<bool>();
+        // Pre-evaluate the LHS and list args once for the chunk; the
+        // previous code re-ran Execute inside the per-row loop, which
+        // was both slow and produced wrong validity for chained args.
+        Vector val_vec(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, val_vec, count);
+        std::vector<Vector> list_vecs;
+        list_vecs.reserve(expr.arguments.size() - 1);
+        for (size_t a = 1; a < expr.arguments.size(); a++) {
+            list_vecs.emplace_back(expr.arguments[a]->GetReturnType(), count);
+            Execute(*expr.arguments[a], input, list_vecs.back(), count);
+        }
         for (idx_t i = 0; i < count; i++) {
-            Vector val_vec(expr.arguments[0]->GetReturnType(), count);
-            Execute(*expr.arguments[0], input, val_vec, count);
             auto val = val_vec.GetValue(i);
+            if (val.IsNull()) {
+                // NULL IN anything is NULL.
+                result.GetValidity().SetInvalid(i);
+                out[i] = false;
+                continue;
+            }
             bool found = false;
-            for (size_t a = 1; a < expr.arguments.size(); a++) {
-                Vector list_vec(expr.arguments[a]->GetReturnType(), count);
-                Execute(*expr.arguments[a], input, list_vec, count);
-                if (val == list_vec.GetValue(i)) {
+            bool saw_null = false;
+            for (size_t a = 0; a < list_vecs.size(); a++) {
+                auto e = list_vecs[a].GetValue(i);
+                if (e.IsNull()) {
+                    saw_null = true;
+                    continue;
+                }
+                if (val == e) {
                     found = true;
                     break;
                 }
             }
-            out[i] = found;
+            if (found) {
+                out[i] = true;
+            } else if (saw_null) {
+                result.GetValidity().SetInvalid(i);
+                out[i] = false;
+            } else {
+                out[i] = false;
+            }
         }
         return;
     }

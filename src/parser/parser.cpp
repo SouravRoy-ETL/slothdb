@@ -994,10 +994,23 @@ ParsedExprPtr Parser::ParseComparison() {
         return std::make_unique<NegationExpression>(std::move(between));
     }
 
-    // IN (list or subquery)
-    if (MatchKeyword(TokenType::KW_IN)) {
+    // IN / NOT IN (list or subquery). NOT IN is the negation, but
+    // null-aware: 3 NOT IN (1,2,NULL) is UNKNOWN (NULL), not TRUE,
+    // because the IN evaluation already produces UNKNOWN. NegationExpression
+    // wrapped around the IN function then takes the validity bit
+    // through via the executor's Kleene path.
+    bool is_not_in = false;
+    if (CheckKeyword(TokenType::KW_NOT) && pos_ + 1 < tokens_.size() &&
+        tokens_[pos_ + 1].type == TokenType::KW_IN) {
+        Advance(); // NOT
+        Advance(); // IN
+        is_not_in = true;
+    } else if (!MatchKeyword(TokenType::KW_IN)) {
+        return left;
+    }
+    {
         Expect(TokenType::LPAREN, "after IN");
-        // Check if it's a subquery.
+        ParsedExprPtr in_node;
         if (CheckKeyword(TokenType::KW_SELECT) || CheckKeyword(TokenType::KW_WITH)) {
             auto inner = ParseSelectStatement();
             Expect(TokenType::RPAREN, "after IN subquery");
@@ -1006,19 +1019,21 @@ ParsedExprPtr Parser::ParseComparison() {
                 std::unique_ptr<SelectStatement>(
                     static_cast<SelectStatement *>(inner.release())));
             sub->child = std::move(left);
-            return sub;
+            in_node = std::move(sub);
+        } else {
+            std::vector<ParsedExprPtr> args;
+            args.push_back(std::move(left));
+            do {
+                args.push_back(ParseExpression());
+            } while (Match(TokenType::COMMA));
+            Expect(TokenType::RPAREN, "after IN list");
+            in_node = std::make_unique<FunctionExpression>("IN", std::move(args));
         }
-        // Value list.
-        std::vector<ParsedExprPtr> args;
-        args.push_back(std::move(left));
-        do {
-            args.push_back(ParseExpression());
-        } while (Match(TokenType::COMMA));
-        Expect(TokenType::RPAREN, "after IN list");
-        return std::make_unique<FunctionExpression>("IN", std::move(args));
+        if (is_not_in) {
+            return std::make_unique<NegationExpression>(std::move(in_node));
+        }
+        return in_node;
     }
-
-    return left;
 }
 
 ParsedExprPtr Parser::ParseAddSub() {
