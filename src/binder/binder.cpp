@@ -796,16 +796,48 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     LogicalType return_type = LogicalType::INTEGER(); // default
     if (name == "COUNT") {
         return_type = LogicalType::BIGINT();
-    } else if (name == "SUM") {
-        return_type = args.empty() ? LogicalType::BIGINT() : args[0]->GetReturnType();
-        // SUM of integers -> BIGINT.
-        if (return_type.id() == LogicalTypeId::INTEGER ||
-            return_type.id() == LogicalTypeId::SMALLINT ||
-            return_type.id() == LogicalTypeId::TINYINT) {
-            return_type = LogicalType::BIGINT();
+    } else if (name == "SUM" || name == "AVG") {
+        // SUM/AVG require a numeric operand. The accumulator is `double`
+        // (and casts to BIGINT for SUM's integer types at emit). Allowing
+        // VARCHAR / BOOLEAN / STRUCT / LIST inputs through has been silently
+        // wrong:
+        //   AVG('a','b','c')  -> 0
+        //   SUM('1','2','3')  -> 0    (no string-to-number coercion happens
+        //                              in the hot loop; ReadDouble returns
+        //                              0.0 for VARCHAR)
+        //   SUM(true,false)   -> false  (treated as bool aggregate; wrong)
+        // Per SQL standard these should be type errors. Reject at bind.
+        // SQLNULL is allowed (degenerate column of NULLs returns NULL/0
+        // through the existing empty-set path).
+        if (!args.empty()) {
+            auto arg_id = args[0]->GetReturnType().id();
+            bool numeric =
+                arg_id == LogicalTypeId::TINYINT  || arg_id == LogicalTypeId::SMALLINT ||
+                arg_id == LogicalTypeId::INTEGER  || arg_id == LogicalTypeId::BIGINT   ||
+                arg_id == LogicalTypeId::HUGEINT  ||
+                arg_id == LogicalTypeId::UTINYINT || arg_id == LogicalTypeId::USMALLINT ||
+                arg_id == LogicalTypeId::UINTEGER || arg_id == LogicalTypeId::UBIGINT  ||
+                arg_id == LogicalTypeId::FLOAT    || arg_id == LogicalTypeId::DOUBLE   ||
+                arg_id == LogicalTypeId::DECIMAL  || arg_id == LogicalTypeId::SQLNULL;
+            if (!numeric) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    name + " requires a numeric argument, got " +
+                    args[0]->GetReturnType().ToString());
+            }
         }
-    } else if (name == "AVG") {
-        return_type = LogicalType::DOUBLE();
+        if (name == "SUM") {
+            return_type = args.empty() ? LogicalType::BIGINT() : args[0]->GetReturnType();
+            // SUM of small integers widens to BIGINT to give more headroom
+            // before overflow (still uses double internally — full-fidelity
+            // BIGINT SUM requires an integer accumulator, deferred).
+            if (return_type.id() == LogicalTypeId::INTEGER ||
+                return_type.id() == LogicalTypeId::SMALLINT ||
+                return_type.id() == LogicalTypeId::TINYINT) {
+                return_type = LogicalType::BIGINT();
+            }
+        } else {
+            return_type = LogicalType::DOUBLE();
+        }
     } else if (name == "MIN" || name == "MAX") {
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
     }
