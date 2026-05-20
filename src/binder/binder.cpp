@@ -621,14 +621,43 @@ BoundExprPtr Binder::BindConstant(const ConstantExpression &expr) {
 
     switch (expr.literal_type) {
     case TokenType::INTEGER_LITERAL: {
-        int64_t val = std::stoll(expr.value);
+        // Out-of-range integer literals previously leaked raw
+        // std::out_of_range from std::stoll up to the shell as
+        // "Error: stoll argument out of range". Promote to a classified
+        // ParserException. INT64_MAX+1 and beyond falls here; INT64_MIN
+        // is parsed as NEG(INT64_MAX+1) by the unary-minus path which
+        // means -9223372036854775808 still hits this branch (the
+        // absolute value overflows by one) — documented limitation.
+        int64_t val;
+        try {
+            val = std::stoll(expr.value);
+        } catch (const std::out_of_range &) {
+            throw ParserException(
+                "Numeric literal '" + expr.value +
+                "' exceeds BIGINT range");
+        } catch (const std::invalid_argument &) {
+            throw ParserException(
+                "Could not parse numeric literal '" + expr.value + "'");
+        }
         if (val >= INT32_MIN && val <= INT32_MAX) {
             return std::make_unique<BoundConstant>(Value::INTEGER(static_cast<int32_t>(val)));
         }
         return std::make_unique<BoundConstant>(Value::BIGINT(val));
     }
-    case TokenType::FLOAT_LITERAL:
-        return std::make_unique<BoundConstant>(Value::DOUBLE(std::stod(expr.value)));
+    case TokenType::FLOAT_LITERAL: {
+        double d;
+        try {
+            d = std::stod(expr.value);
+        } catch (const std::out_of_range &) {
+            throw ParserException(
+                "Floating-point literal '" + expr.value +
+                "' exceeds DOUBLE range");
+        } catch (const std::invalid_argument &) {
+            throw ParserException(
+                "Could not parse floating-point literal '" + expr.value + "'");
+        }
+        return std::make_unique<BoundConstant>(Value::DOUBLE(d));
+    }
     case TokenType::STRING_LITERAL:
         return std::make_unique<BoundConstant>(Value::VARCHAR(expr.value));
     case TokenType::KW_TRUE:
