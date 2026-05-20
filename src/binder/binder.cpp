@@ -872,12 +872,12 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
     }
     // Scalar function return types.
-    else if (name == "LENGTH" || name == "STRLEN") {
+    else if (name == "LENGTH" || name == "STRLEN" || name == "ASCII") {
         return_type = LogicalType::INTEGER();
     } else if (name == "UPPER" || name == "LOWER" || name == "TRIM" ||
                name == "LTRIM" || name == "RTRIM" || name == "REPLACE" ||
                name == "SUBSTRING" || name == "SUBSTR" || name == "CONCAT" ||
-               name == "CONCAT_WS") {
+               name == "CONCAT_WS" || name == "CHR") {
         return_type = LogicalType::VARCHAR();
     } else if (name == "ABS") {
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();

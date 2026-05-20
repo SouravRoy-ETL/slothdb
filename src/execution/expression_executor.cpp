@@ -1072,6 +1072,43 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
+    // ASCII(s) — code point of first byte (1-byte semantics; multibyte
+    // returns the first byte's value, matching slothdb's byte-oriented
+    // LEFT/RIGHT/SUBSTRING). NULL -> NULL; empty -> 0.
+    if (name == "ASCII") {
+        auto *out = result.GetData<int32_t>();
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            auto s = v.GetValue<std::string>();
+            out[i] = s.empty() ? 0 : static_cast<int32_t>(static_cast<unsigned char>(s[0]));
+        }
+        return;
+    }
+
+    // CHR(n) — character with byte value n. NULL -> NULL. Out-of-range
+    // values are clamped to 0..127 (7-bit ASCII) for now — full Unicode
+    // codepoint handling deferred to a multibyte-aware string layer.
+    if (name == "CHR") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int32_t n = v.GetValue<int32_t>();
+            if (n == 0) {
+                result.SetValue(i, Value::VARCHAR(""));
+            } else {
+                // Clip to 7-bit ASCII byte until multibyte support lands.
+                unsigned char byte = static_cast<unsigned char>(n & 0xFF);
+                result.SetValue(i, Value::VARCHAR(std::string(1, static_cast<char>(byte))));
+            }
+        }
+        return;
+    }
+
     if (name == "UPPER" || name == "LOWER") {
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
