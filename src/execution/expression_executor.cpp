@@ -96,6 +96,27 @@ Value ExpressionExecutor::ExecuteScalar(const BoundExpression &expr) {
         case LogicalTypeId::BIGINT: return Value::BIGINT(std::stoll(str));
         case LogicalTypeId::DOUBLE: return Value::DOUBLE(std::stod(str));
         case LogicalTypeId::VARCHAR: return Value::VARCHAR(str);
+        case LogicalTypeId::DATE: {
+            int32_t days;
+            if (!Value::TryParseDateStringEpochDays(str.data(), str.size(), days)) {
+                throw ConversionException(
+                    "Could not convert string '" + str + "' to DATE");
+            }
+            return Value::DATE(days);
+        }
+        case LogicalTypeId::TIMESTAMP:
+        case LogicalTypeId::TIMESTAMP_TZ: {
+            int64_t micros;
+            if (!Value::TryParseTimestampMicros(str.data(), str.size(), micros)) {
+                int32_t days;
+                if (!Value::TryParseDateStringEpochDays(str.data(), str.size(), days)) {
+                    throw ConversionException(
+                        "Could not convert string '" + str + "' to TIMESTAMP");
+                }
+                micros = static_cast<int64_t>(days) * 86400LL * 1000000LL;
+            }
+            return Value::TIMESTAMP(micros);
+        }
         default: return Value::VARCHAR(str);
         }
     }
@@ -1589,8 +1610,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[0], input, str_vec, count);
         Execute(*expr.arguments[1], input, pre_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto p = pre_vec.GetValue(i).GetValue<std::string>();
+            auto sv = str_vec.GetValue(i);
+            auto pv = pre_vec.GetValue(i);
+            if (sv.IsNull() || pv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto p = pv.GetValue<std::string>();
             result.SetValue(i, Value::BOOLEAN(s.substr(0, p.size()) == p));
         }
         return;
@@ -1602,8 +1629,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[0], input, str_vec, count);
         Execute(*expr.arguments[1], input, suf_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto sf = suf_vec.GetValue(i).GetValue<std::string>();
+            auto sv = str_vec.GetValue(i);
+            auto sufv = suf_vec.GetValue(i);
+            if (sv.IsNull() || sufv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto sf = sufv.GetValue<std::string>();
             bool match = s.size() >= sf.size() && s.substr(s.size() - sf.size()) == sf;
             result.SetValue(i, Value::BOOLEAN(match));
         }
@@ -1616,8 +1649,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[0], input, str_vec, count);
         Execute(*expr.arguments[1], input, sub_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto sub = sub_vec.GetValue(i).GetValue<std::string>();
+            auto sv = str_vec.GetValue(i);
+            auto subv = sub_vec.GetValue(i);
+            if (sv.IsNull() || subv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto sub = subv.GetValue<std::string>();
             result.SetValue(i, Value::BOOLEAN(s.find(sub) != std::string::npos));
         }
         return;
@@ -2764,6 +2803,30 @@ void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
             }
             case LogicalTypeId::VARCHAR:
                 result.SetValue(i, Value::VARCHAR(str)); break;
+            case LogicalTypeId::DATE: {
+                int32_t days;
+                if (!Value::TryParseDateStringEpochDays(str.data(), str.size(), days)) {
+                    throw ConversionException(
+                        "Could not convert string '" + str + "' to DATE");
+                }
+                result.SetValue(i, Value::DATE(days));
+                break;
+            }
+            case LogicalTypeId::TIMESTAMP:
+            case LogicalTypeId::TIMESTAMP_TZ: {
+                int64_t micros;
+                if (!Value::TryParseTimestampMicros(str.data(), str.size(), micros)) {
+                    // Fall back to DATE-only string (midnight TIMESTAMP).
+                    int32_t days;
+                    if (!Value::TryParseDateStringEpochDays(str.data(), str.size(), days)) {
+                        throw ConversionException(
+                            "Could not convert string '" + str + "' to TIMESTAMP");
+                    }
+                    micros = static_cast<int64_t>(days) * 86400LL * 1000000LL;
+                }
+                result.SetValue(i, Value::TIMESTAMP(micros));
+                break;
+            }
             case LogicalTypeId::BOOLEAN: {
                 // Case-insensitive bool parse matching DuckDB/Postgres:
                 // 't', 'true', 'yes', 'y', '1' -> true

@@ -468,10 +468,26 @@ BoundStmtPtr Binder::BindInsert(const InsertStatement &stmt) {
     result->table = entry;
 
     BindContext context;
+    auto col_types = entry->GetTypes();
     for (auto &row : stmt.values) {
         std::vector<BoundExprPtr> bound_row;
-        for (auto &expr : row) {
-            bound_row.push_back(BindExpression(*expr, context));
+        for (idx_t c = 0; c < row.size(); c++) {
+            auto bound = BindExpression(*row[c], context);
+            // Wrap with BoundCast if value type doesn't match column
+            // type. Required for DATE / TIMESTAMP / TIME columns
+            // receiving VARCHAR literals — without the cast, the
+            // VARCHAR value is written directly into the INT32-typed
+            // DATE column at SetValue time and reads back as epoch
+            // (1970-01-01). Skip when source is SQLNULL (NULL is
+            // type-agnostic) or already matches target type.
+            if (c < col_types.size()) {
+                auto src_id = bound->GetReturnType().id();
+                auto dst_id = col_types[c].id();
+                if (src_id != dst_id && src_id != LogicalTypeId::SQLNULL) {
+                    bound = std::make_unique<BoundCast>(std::move(bound), col_types[c]);
+                }
+            }
+            bound_row.push_back(std::move(bound));
         }
         result->values.push_back(std::move(bound_row));
     }
