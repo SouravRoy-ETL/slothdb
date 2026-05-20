@@ -855,14 +855,61 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
                name == "ROUND" || name == "SQRT" || name == "POWER" || name == "MOD") {
         return_type = LogicalType::DOUBLE();
     } else if (name == "COALESCE" || name == "IFNULL" || name == "NVL") {
-        // Return type comes from the first non-NULL-typed argument.
-        // (NULL literals carry SQLNULL type — skip them so a query like
-        // COALESCE(NULL, NULL, 3) still resolves to INTEGER.)
-        return_type = LogicalType::SQLNULL();
+        // Result type unifies across all args via SQL numeric promotion
+        // (matches CASE/IF/IIF logic below). Previously this used the
+        // first non-NULL-typed arg, which caused the same wrong-result
+        // bugs as the pre-fix CASE branch:
+        //   COALESCE(1, 2.5)                     -> 1   (DOUBLE 2.5 cast
+        //                                                to INT slot)
+        //   COALESCE(int_col, double_col)         -> 0   (when int_col is
+        //                                                 NULL, DOUBLE
+        //                                                 reads as garbage
+        //                                                 from INT slot)
+        //   COALESCE(int_col, 'foo')              -> int_col (varchar
+        //                                                  silently dropped)
+        bool any_varchar = false;
+        bool any_numeric = false;
+        LogicalTypeId widest_numeric = LogicalTypeId::SQLNULL;
+        auto rank = [](LogicalTypeId x) -> int {
+            switch (x) {
+            case LogicalTypeId::DOUBLE:   return 6;
+            case LogicalTypeId::FLOAT:    return 5;
+            case LogicalTypeId::BIGINT:   return 4;
+            case LogicalTypeId::INTEGER:  return 3;
+            case LogicalTypeId::SMALLINT: return 2;
+            case LogicalTypeId::TINYINT:  return 1;
+            default:                      return 0;
+            }
+        };
         for (auto &a : args) {
-            if (a->GetReturnType().id() != LogicalTypeId::SQLNULL) {
-                return_type = a->GetReturnType();
-                break;
+            auto id = a->GetReturnType().id();
+            if (id == LogicalTypeId::SQLNULL) continue;
+            if (id == LogicalTypeId::VARCHAR) { any_varchar = true; continue; }
+            any_numeric = true;
+            if (rank(id) > rank(widest_numeric)) widest_numeric = id;
+        }
+        if (any_varchar) {
+            return_type = LogicalType::VARCHAR();
+        } else if (any_numeric) {
+            switch (widest_numeric) {
+            case LogicalTypeId::DOUBLE:   return_type = LogicalType::DOUBLE(); break;
+            case LogicalTypeId::FLOAT:    return_type = LogicalType::DOUBLE(); break;
+            case LogicalTypeId::BIGINT:   return_type = LogicalType::BIGINT(); break;
+            case LogicalTypeId::INTEGER:  return_type = LogicalType::INTEGER(); break;
+            case LogicalTypeId::SMALLINT: return_type = LogicalType::INTEGER(); break;
+            case LogicalTypeId::TINYINT:  return_type = LogicalType::INTEGER(); break;
+            default:                      return_type = LogicalType::INTEGER(); break;
+            }
+        } else {
+            return_type = LogicalType::SQLNULL();
+        }
+        // Wrap mismatched args in BoundCast so the executor reads each
+        // through a type-compatible buffer. SQLNULL is preserved (NULL
+        // is type-agnostic — the executor uses validity).
+        for (auto &a : args) {
+            if (a->GetReturnType().id() != return_type.id() &&
+                a->GetReturnType().id() != LogicalTypeId::SQLNULL) {
+                a = std::make_unique<BoundCast>(std::move(a), return_type);
             }
         }
     } else if (name == "NULLIF") {
