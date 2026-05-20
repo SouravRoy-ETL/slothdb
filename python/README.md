@@ -49,6 +49,14 @@ df = db.sql("SELECT region, SUM(revenue) FROM 'sales.parquet' GROUP BY region").
 
 No server. No import step. No CREATE TABLE. Point SQL at files on disk.
 
+## What's new in 0.2.7
+
+- Re-measured ClickBench honestly. SlothDB completes 40 of the 43 official queries and is faster than DuckDB on 29 of those 40, geomean 1.24x. The previous "33 of 43" framing counted 8 queries where DuckDB rejected the input as wins for SlothDB; that's gone. Raw per-query times: [official_results.md](https://github.com/SouravRoy-ETL/slothdb/blob/main/bench/clickbench/official_results.md).
+- Four benchmark-fitted shortcuts deleted from the engine. Two of them were producing wrong results on inputs outside the benchmark; that's fixed.
+- DATE and TIMESTAMP columns render as ISO strings (`2013-07-02`, `2013-07-15 12:40:00`) instead of raw epoch integers.
+- `slothdb_version()` and the shell `--version` now report the correct release number.
+- 424 doctest cases pass.
+
 ## What's new in 0.2.5
 
 - Nested aggregates work everywhere. `ROUND(AVG(x))`, `AVG(x) + 1`, `SUM(x) / COUNT(*)`, `CAST(SUM(y) AS DOUBLE)` and similar shapes that wrap an aggregate inside a scalar function or arithmetic used to throw "Function execution for: AVG". Fixed.
