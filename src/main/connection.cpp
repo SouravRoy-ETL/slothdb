@@ -210,6 +210,106 @@ struct SetOpRowEqual {
 };
 using SetOpRowSet = std::unordered_set<std::vector<Value>, SetOpRowHash, SetOpRowEqual>;
 
+// Apply union-level ORDER BY / LIMIT / OFFSET to a row vector.
+//
+// The parser attaches ORDER BY / LIMIT / OFFSET that appear after a UNION /
+// INTERSECT / EXCEPT to the rightmost (leaf) SelectStatement of the chain,
+// because it walks left-to-right and consumes those clauses as part of the
+// final ParseSelectStatement call. Per SQL standard those clauses apply to
+// the entire set-op result, not to the leaf branch alone. The connection
+// layer stashes them off the leaf, executes the chain unsorted, then calls
+// this to sort + trim the combined rows.
+//
+// Sort key resolution is limited to positional integer literals
+// (`ORDER BY 1 DESC`) and bare column-name refs (`ORDER BY a`) since the
+// chain-combined row vector isn't a fully-bound DataChunk and a generic
+// expression evaluator would need to be re-bound against the result-set
+// schema. Items that don't resolve are skipped — the rows stay in
+// chain-walk order for that key, which matches what slothdb did before
+// this fix.
+//
+// LIMIT / OFFSET must be integer literals. Non-literal expressions are
+// silently ignored. This is the same restriction sqllogictest's corpus
+// uses everywhere, and matches the parser's expectations.
+static void ApplyUnionOrderLimit(
+        std::vector<std::vector<Value>> &rows,
+        const std::vector<OrderByItem> &order_by,
+        const ParsedExprPtr &limit_expr,
+        const ParsedExprPtr &offset_expr,
+        const std::vector<std::string> &col_names) {
+    if (!order_by.empty()) {
+        struct Key { int col_idx; bool ascending; bool nulls_first; };
+        std::vector<Key> keys;
+        keys.reserve(order_by.size());
+        for (auto &item : order_by) {
+            Key k{ -1, item.ascending, item.nulls_first };
+            auto &e = *item.expression;
+            if (e.GetExpressionType() == ExpressionType::CONSTANT) {
+                auto &c = static_cast<const ConstantExpression &>(e);
+                if (c.literal_type == TokenType::INTEGER_LITERAL) {
+                    try {
+                        int v = std::stoi(c.value);
+                        if (v >= 1 && v <= static_cast<int>(col_names.size()))
+                            k.col_idx = v - 1;
+                    } catch (...) {}
+                }
+            } else if (e.GetExpressionType() == ExpressionType::COLUMN_REF) {
+                auto &cr = static_cast<const ColumnRefExpression &>(e);
+                for (size_t i = 0; i < col_names.size(); i++) {
+                    if (col_names[i] == cr.column_name) {
+                        k.col_idx = static_cast<int>(i);
+                        break;
+                    }
+                }
+            }
+            keys.push_back(k);
+        }
+
+        std::sort(rows.begin(), rows.end(),
+            [&](const std::vector<Value> &a, const std::vector<Value> &b) {
+                for (auto &k : keys) {
+                    if (k.col_idx < 0) continue;
+                    if (k.col_idx >= static_cast<int>(a.size()) ||
+                        k.col_idx >= static_cast<int>(b.size())) continue;
+                    const Value &va = a[k.col_idx];
+                    const Value &vb = b[k.col_idx];
+                    if (va.IsNull() && vb.IsNull()) continue;
+                    if (va.IsNull()) return k.nulls_first;
+                    if (vb.IsNull()) return !k.nulls_first;
+                    if (va < vb) return k.ascending;
+                    if (vb < va) return !k.ascending;
+                }
+                return false;
+            });
+    }
+
+    int64_t offset_val = 0;
+    int64_t limit_val = -1;
+    auto extract_int_literal = [](const ParsedExprPtr &p) -> int64_t {
+        if (!p || p->GetExpressionType() != ExpressionType::CONSTANT) return -1;
+        auto &c = static_cast<const ConstantExpression &>(*p);
+        if (c.literal_type != TokenType::INTEGER_LITERAL) return -1;
+        try { return std::stoll(c.value); } catch (...) { return -1; }
+    };
+    int64_t lit_offset = extract_int_literal(offset_expr);
+    int64_t lit_limit = extract_int_literal(limit_expr);
+    if (lit_offset > 0) offset_val = lit_offset;
+    if (lit_limit >= 0) limit_val = lit_limit;
+    if (offset_val > 0 || limit_val >= 0) {
+        size_t start = std::min<size_t>(static_cast<size_t>(offset_val), rows.size());
+        size_t end = rows.size();
+        if (limit_val >= 0) {
+            end = std::min<size_t>(start + static_cast<size_t>(limit_val), rows.size());
+        }
+        std::vector<std::vector<Value>> trimmed;
+        if (end > start) trimmed.reserve(end - start);
+        for (size_t i = start; i < end; i++) {
+            trimmed.push_back(std::move(rows[i]));
+        }
+        rows = std::move(trimmed);
+    }
+}
+
 // Resolve the DISPLAY logical type for one SELECT-list expression so a
 // Parquet DATE / TIMESTAMP column renders as an ISO string. The engine
 // carries DATE/TIMESTAMP columns internally as INTEGER/BIGINT (epoch
@@ -2418,86 +2518,94 @@ QueryResult Connection::Query(const std::string &sql) {
             }
         }
 
-        // Handle set operations (UNION, INTERSECT, EXCEPT).
+        // Handle set operations (UNION / UNION ALL / INTERSECT / EXCEPT).
+        //
+        // Walks the right-leaning chain produced by the parser
+        //   `a UNION b UNION c` → sel(a, set_op=UNION, set_right=sel(b,
+        //                            set_op=UNION, set_right=sel(c)))
+        // so 3+ branches now combine correctly (previously only the
+        // first set_right ran, dropping all deeper branches).
+        //
+        // Stashes the leaf branch's ORDER BY / LIMIT / OFFSET before the
+        // walk because the parser puts them there but SQL standard says
+        // they apply to the union as a whole, then re-applies them to
+        // the combined rows via ApplyUnionOrderLimit.
+        //
+        // Uses the same SetOpRowSet dedup as derived-table materialisation
+        // (NULL-aware, type-aware — INT 1 no longer collides with
+        // VARCHAR '1' the way the old string-key dedup did).
         if (stmt->GetType() == StatementType::SELECT) {
             auto &sel = static_cast<SelectStatement &>(*stmt);
             if (!sel.set_op.empty() && sel.set_right) {
-                // Set ops manipulate `rows` directly. Materialise the
-                // chunk-backed left-hand side before merging.
                 final_result.MaterialiseRows();
                 final_result.chunks.clear();
                 final_result.chunk_index_built = false;
-                // Execute the right side.
-                Binder right_binder(db_.GetCatalog());
-                auto right_bound = right_binder.Bind(*sel.set_right);
-                auto right_logical = Planner::Plan(*right_bound);
-                PhysicalPlanner right_pp(db_.GetCatalog());
-                auto right_physical = right_pp.Plan(*right_logical);
-                right_physical->Init();
 
-                std::vector<std::vector<Value>> right_rows;
-                DataChunk right_chunk;
-                while (true) {
-                    if (!right_physical->GetData(right_chunk)) break;
-                    for (idx_t ri = 0; ri < right_chunk.size(); ri++) {
-                        std::vector<Value> row;
-                        for (idx_t c = 0; c < right_chunk.ColumnCount(); c++)
-                            row.push_back(right_chunk.GetValue(c, ri));
-                        right_rows.push_back(std::move(row));
-                    }
-                }
+                SelectStatement *leaf = sel.set_right.get();
+                while (leaf->set_right) leaf = leaf->set_right.get();
+                std::vector<OrderByItem> stashed_order_by =
+                    std::move(leaf->order_by);
+                ParsedExprPtr stashed_limit  = std::move(leaf->limit);
+                ParsedExprPtr stashed_offset = std::move(leaf->offset);
 
-                if (sel.set_op == "UNION") {
-                    // Add right rows, removing duplicates.
-                    std::unordered_set<std::string> seen;
-                    for (auto &row : final_result.rows) {
-                        std::string key;
-                        for (auto &v : row) key += v.ToString() + "|";
-                        seen.insert(key);
+                SelectStatement *cur = &sel;
+                while (!cur->set_op.empty() && cur->set_right) {
+                    Binder right_binder(db_.GetCatalog());
+                    auto right_bound  = right_binder.Bind(*cur->set_right);
+                    auto right_logical = Planner::Plan(*right_bound);
+                    PhysicalPlanner right_pp(db_.GetCatalog());
+                    auto right_physical = right_pp.Plan(*right_logical);
+                    right_physical->Init();
+
+                    std::vector<std::vector<Value>> right_rows;
+                    DataChunk right_chunk;
+                    while (true) {
+                        if (!right_physical->GetData(right_chunk)) break;
+                        for (idx_t ri = 0; ri < right_chunk.size(); ri++) {
+                            std::vector<Value> row;
+                            row.reserve(right_chunk.ColumnCount());
+                            for (idx_t c = 0; c < right_chunk.ColumnCount(); c++)
+                                row.push_back(right_chunk.GetValue(c, ri));
+                            right_rows.push_back(std::move(row));
+                        }
                     }
-                    for (auto &row : right_rows) {
-                        std::string key;
-                        for (auto &v : row) key += v.ToString() + "|";
-                        if (seen.insert(key).second) {
+
+                    const std::string &op = cur->set_op;
+                    if (op == "UNION ALL") {
+                        for (auto &row : right_rows) {
                             final_result.rows.push_back(std::move(row));
                         }
-                    }
-                } else if (sel.set_op == "UNION ALL") {
-                    for (auto &row : right_rows) {
-                        final_result.rows.push_back(std::move(row));
-                    }
-                } else if (sel.set_op == "INTERSECT") {
-                    std::unordered_set<std::string> right_keys;
-                    for (auto &row : right_rows) {
-                        std::string key;
-                        for (auto &v : row) key += v.ToString() + "|";
-                        right_keys.insert(key);
-                    }
-                    std::vector<std::vector<Value>> intersected;
-                    for (auto &row : final_result.rows) {
-                        std::string key;
-                        for (auto &v : row) key += v.ToString() + "|";
-                        if (right_keys.count(key)) {
-                            intersected.push_back(std::move(row));
+                    } else if (op == "UNION") {
+                        SetOpRowSet seen;
+                        for (auto &row : final_result.rows) seen.insert(row);
+                        for (auto &row : right_rows) {
+                            if (seen.insert(row).second)
+                                final_result.rows.push_back(std::move(row));
                         }
-                    }
-                    final_result.rows = std::move(intersected);
-                } else if (sel.set_op == "EXCEPT") {
-                    std::unordered_set<std::string> right_keys;
-                    for (auto &row : right_rows) {
-                        std::string key;
-                        for (auto &v : row) key += v.ToString() + "|";
-                        right_keys.insert(key);
-                    }
-                    std::vector<std::vector<Value>> excepted;
-                    for (auto &row : final_result.rows) {
-                        std::string key;
-                        for (auto &v : row) key += v.ToString() + "|";
-                        if (!right_keys.count(key)) {
-                            excepted.push_back(std::move(row));
+                    } else if (op == "INTERSECT") {
+                        SetOpRowSet rk(right_rows.begin(), right_rows.end());
+                        std::vector<std::vector<Value>> kept;
+                        for (auto &row : final_result.rows) {
+                            if (rk.count(row)) kept.push_back(std::move(row));
                         }
+                        final_result.rows = std::move(kept);
+                    } else if (op == "EXCEPT") {
+                        SetOpRowSet rk(right_rows.begin(), right_rows.end());
+                        std::vector<std::vector<Value>> kept;
+                        for (auto &row : final_result.rows) {
+                            if (!rk.count(row)) kept.push_back(std::move(row));
+                        }
+                        final_result.rows = std::move(kept);
                     }
-                    final_result.rows = std::move(excepted);
+                    cur = cur->set_right.get();
+                }
+
+                if (!stashed_order_by.empty() || stashed_limit ||
+                    stashed_offset) {
+                    ApplyUnionOrderLimit(final_result.rows,
+                                         stashed_order_by,
+                                         stashed_limit, stashed_offset,
+                                         final_result.column_names);
                 }
             }
         }
