@@ -1888,6 +1888,66 @@ QueryResult Connection::Query(const std::string &sql) {
             return true;
         };
 
+        // Materialize FROM-clause subqueries — `FROM (SELECT ...) AS s` —
+        // into temp tables before binding. Recurses bottom-up so nested
+        // subqueries are materialized first. Subquery becomes a regular
+        // catalog table named `__subq_N__`; the TableRef keeps the
+        // user-provided alias so column refs like `s.a` resolve normally.
+        std::function<void(TableRef &)> materialize_from_subqueries =
+                [&](TableRef &tref) {
+            if (tref.subquery) {
+                if (tref.subquery->from_table)
+                    materialize_from_subqueries(*tref.subquery->from_table);
+                for (auto &cte : tref.subquery->ctes) {
+                    if (cte.query && cte.query->from_table)
+                        materialize_from_subqueries(*cte.query->from_table);
+                }
+                static int subq_unique_id = 0;
+                std::string subq_name = "__subq_" +
+                        std::to_string(++subq_unique_id) + "__";
+
+                Binder sub_binder(db_.GetCatalog());
+                auto sub_bound = sub_binder.Bind(*tref.subquery);
+                auto sub_logical = Planner::Plan(*sub_bound);
+                sub_logical = Optimizer::Optimize(std::move(sub_logical));
+                PhysicalPlanner sub_pp(db_.GetCatalog());
+                auto sub_physical = sub_pp.Plan(*sub_logical);
+                sub_physical->Init();
+
+                auto &sub_sel = static_cast<BoundSelectStatement &>(*sub_bound);
+                std::vector<ColumnDefinition> sub_cols;
+                for (idx_t i = 0; i < sub_sel.result_names.size(); i++) {
+                    sub_cols.emplace_back(sub_sel.result_names[i],
+                                          sub_sel.result_types[i]);
+                }
+
+                auto &entry = db_.GetCatalog().CreateTable(
+                    subq_name, std::move(sub_cols));
+                auto storage = std::make_shared<DataTable>(sub_sel.result_types);
+                entry.SetStorage(storage);
+
+                DataChunk sub_chunk;
+                while (true) {
+                    if (!sub_physical->GetData(sub_chunk)) break;
+                    storage->Append(sub_chunk);
+                }
+                cte_tables.push_back(subq_name);
+
+                tref.table_name = subq_name;
+                tref.subquery.reset();
+            }
+            if (tref.right) materialize_from_subqueries(*tref.right);
+        };
+
+        if (stmt->GetType() == StatementType::SELECT) {
+            auto &sel0 = static_cast<SelectStatement &>(*stmt);
+            if (sel0.from_table) materialize_from_subqueries(*sel0.from_table);
+            for (auto &cte : sel0.ctes) {
+                if (cte.query && cte.query->from_table)
+                    materialize_from_subqueries(*cte.query->from_table);
+            }
+        }
+
         if (stmt->GetType() == StatementType::SELECT) {
             auto &sel = static_cast<SelectStatement &>(*stmt);
             for (auto &cte : sel.ctes) {

@@ -493,8 +493,48 @@ ParsedStmtPtr Parser::ParseInsertStatement() {
 std::unique_ptr<TableRef> Parser::ParseTableRef() {
     auto ref = std::make_unique<TableRef>();
 
-    // Handle table functions: read_csv(), read_json(), GENERATE_SERIES().
-    if (Check(TokenType::IDENTIFIER) &&
+    // Subquery in FROM: (SELECT ...) [AS] alias, or (WITH ... SELECT ...) AS alias.
+    // Only enter this branch when LPAREN is immediately followed by SELECT or
+    // WITH — other LPAREN patterns (VALUES, parenthesised JOIN) aren't
+    // supported yet and fall through to the regular table-name path which
+    // will surface a clearer error.
+    if (Check(TokenType::LPAREN) &&
+        (Peek().type == TokenType::KW_SELECT ||
+         Peek().type == TokenType::KW_WITH)) {
+        Advance();  // consume LPAREN
+        auto inner = ParseSelectStatement();
+        ref->subquery = std::unique_ptr<SelectStatement>(
+            static_cast<SelectStatement *>(inner.release()));
+        Expect(TokenType::RPAREN, "after subquery in FROM");
+        // Alias (required by strict SQL; we accept either AS-form or bareword
+        // and tolerate omission — the connection layer will generate one).
+        if (MatchKeyword(TokenType::KW_AS)) {
+            ref->alias = ExpectIdentifier("for subquery alias").value;
+        } else if (IsIdentifierOrNonReserved(Current().type) &&
+                   !CheckKeyword(TokenType::KW_WHERE) &&
+                   !CheckKeyword(TokenType::KW_GROUP) &&
+                   !CheckKeyword(TokenType::KW_ORDER) &&
+                   !CheckKeyword(TokenType::KW_LIMIT) &&
+                   !CheckKeyword(TokenType::KW_JOIN) &&
+                   !CheckKeyword(TokenType::KW_INNER) &&
+                   !CheckKeyword(TokenType::KW_LEFT) &&
+                   !CheckKeyword(TokenType::KW_RIGHT) &&
+                   !CheckKeyword(TokenType::KW_FULL) &&
+                   !CheckKeyword(TokenType::KW_CROSS) &&
+                   !CheckKeyword(TokenType::KW_ON) &&
+                   !CheckKeyword(TokenType::KW_HAVING) &&
+                   !CheckKeyword(TokenType::KW_QUALIFY)) {
+            ref->alias = Advance().value;
+        }
+        // Optional column-alias list: (c1, c2). Consume but don't apply yet
+        // (binder would need to rename the subquery output columns).
+        if (Check(TokenType::LPAREN)) {
+            Advance();
+            do { Advance(); } while (Match(TokenType::COMMA));
+            Expect(TokenType::RPAREN, "after subquery column alias list");
+        }
+        // Fall through to JOIN handling below.
+    } else if (Check(TokenType::IDENTIFIER) &&
         (StringUtil::Upper(Current().value) == "READ_CSV" ||
          StringUtil::Upper(Current().value) == "READ_CSV_AUTO" ||
          StringUtil::Upper(Current().value) == "READ_JSON" ||

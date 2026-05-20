@@ -44,6 +44,8 @@ private:
 
 using ParsedStmtPtr = std::unique_ptr<ParsedStatement>;
 
+class SelectStatement;  // forward declaration for subquery field below
+
 // Table reference in FROM clause.
 struct TableRef {
     std::string table_name;
@@ -55,6 +57,12 @@ struct TableRef {
     std::string join_type; // "", "INNER", "LEFT", "RIGHT", "FULL", "CROSS"
     std::unique_ptr<TableRef> right;
     ParsedExprPtr on_condition;
+    // For FROM (SELECT ...) AS alias — the inner SELECT statement.
+    // Connection::Query materializes this into a temp table before binding;
+    // afterwards table_name is set to that temp table's name and this is
+    // reset. Required to be aliased (alias must be non-empty after parsing
+    // for the binder to resolve column refs into it).
+    std::unique_ptr<SelectStatement> subquery;
 };
 
 // ORDER BY item.
