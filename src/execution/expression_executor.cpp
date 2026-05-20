@@ -1506,10 +1506,35 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[1], input, delim_vec, count);
         Execute(*expr.arguments[2], input, idx_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto d = delim_vec.GetValue(i).GetValue<std::string>();
-            auto idx = idx_vec.GetValue(i).GetValue<int32_t>();
-            auto parts = StringUtil::Split(s, d.empty() ? ',' : d[0]);
+            auto sv = str_vec.GetValue(i);
+            auto dv = delim_vec.GetValue(i);
+            auto iv = idx_vec.GetValue(i);
+            if (sv.IsNull() || dv.IsNull() || iv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto d = dv.GetValue<std::string>();
+            auto idx = iv.GetValue<int32_t>();
+            // Multi-character delimiter: split via s.find(d). The
+            // previous StringUtil::Split with d[0] silently truncated
+            // multi-char delimiters to one byte, so SPLIT_PART(
+            // 'aXXbXXc', 'XX', 2) returned '' instead of 'b'.
+            std::vector<std::string> parts;
+            if (d.empty()) {
+                parts.push_back(s);
+            } else {
+                size_t pos = 0;
+                while (pos <= s.size()) {
+                    auto next = s.find(d, pos);
+                    if (next == std::string::npos) {
+                        parts.push_back(s.substr(pos));
+                        break;
+                    }
+                    parts.push_back(s.substr(pos, next - pos));
+                    pos = next + d.size();
+                }
+            }
             if (idx >= 1 && idx <= static_cast<int32_t>(parts.size()))
                 result.SetValue(i, Value::VARCHAR(parts[idx - 1]));
             else
@@ -1703,18 +1728,37 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                        (v.type().id() == LogicalTypeId::BIGINT)  ? static_cast<double>(v.GetValue<int64_t>()) :
                        (v.type().id() == LogicalTypeId::FLOAT)   ? v.GetValue<float>() :
                                                                    v.GetValue<double>();
-            if (name == "SIN") result.GetData<double>()[i] = std::sin(d);
-            else if (name == "COS") result.GetData<double>()[i] = std::cos(d);
-            else if (name == "TAN") result.GetData<double>()[i] = std::tan(d);
-            else if (name == "ASIN") result.GetData<double>()[i] = std::asin(d);
-            else if (name == "ACOS") result.GetData<double>()[i] = std::acos(d);
-            else if (name == "ATAN") result.GetData<double>()[i] = std::atan(d);
-            else if (name == "SINH") result.GetData<double>()[i] = std::sinh(d);
-            else if (name == "COSH") result.GetData<double>()[i] = std::cosh(d);
-            else if (name == "TANH") result.GetData<double>()[i] = std::tanh(d);
-            else if (name == "ASINH") result.GetData<double>()[i] = std::asinh(d);
-            else if (name == "ACOSH") result.GetData<double>()[i] = std::acosh(d);
-            else if (name == "ATANH") result.GetData<double>()[i] = std::atanh(d);
+            // Domain guards: out-of-range inputs would produce nan/inf
+            // which leak into projection results, sort keys, and hash
+            // groups. Match the LN/LOG/SQRT pattern of returning NULL
+            // on domain error.
+            if ((name == "ASIN" || name == "ACOS") && (d < -1.0 || d > 1.0)) {
+                result.GetValidity().SetInvalid(i); continue;
+            }
+            if (name == "ACOSH" && d < 1.0) {
+                result.GetValidity().SetInvalid(i); continue;
+            }
+            if (name == "ATANH" && (d <= -1.0 || d >= 1.0)) {
+                result.GetValidity().SetInvalid(i); continue;
+            }
+            double r;
+            if (name == "SIN") r = std::sin(d);
+            else if (name == "COS") r = std::cos(d);
+            else if (name == "TAN") r = std::tan(d);
+            else if (name == "ASIN") r = std::asin(d);
+            else if (name == "ACOS") r = std::acos(d);
+            else if (name == "ATAN") r = std::atan(d);
+            else if (name == "SINH") r = std::sinh(d);
+            else if (name == "COSH") r = std::cosh(d);
+            else if (name == "TANH") r = std::tanh(d);
+            else if (name == "ASINH") r = std::asinh(d);
+            else if (name == "ACOSH") r = std::acosh(d);
+            else r = std::atanh(d);  // ATANH
+            if (std::isnan(r) || std::isinf(r)) {
+                result.GetValidity().SetInvalid(i);
+            } else {
+                result.GetData<double>()[i] = r;
+            }
         }
         return;
     }
