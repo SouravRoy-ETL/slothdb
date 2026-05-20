@@ -844,6 +844,12 @@ ParsedExprPtr Parser::ParseUnary() {
         auto child = ParseUnary();
         return std::make_unique<UnaryMinusExpression>(std::move(child));
     }
+    if (Match(TokenType::PLUS)) {
+        // Unary + is a no-op on numeric and a hard error on non-numeric in
+        // strict SQL. We accept it as a pass-through; the binder will reject
+        // if the operand is not a numeric type.
+        return ParseUnary();
+    }
     auto expr = ParsePrimary();
     // Postgres-style postfix cast: expr :: TYPE  (chains: expr :: A :: B).
     while (Match(TokenType::DOUBLE_COLON)) {
