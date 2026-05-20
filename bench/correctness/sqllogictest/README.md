@@ -48,11 +48,24 @@ A final `OVERALL` line aggregates across the run, plus a `SPEEDUP` line with the
 Top-level corpus only (158 `.slt` files, no subdirs).
 
 ```
-OVERALL: parity 388/5806 (6.7%), disagree 197, setup_ok_both 465,
+OVERALL: parity 488/5806 (8.4%), disagree 169, setup_ok_both 465,
          setup_fail_sloth_only 316, setup_fail_duck_only 0
-SPEEDUP: n=388 ratio(duck/sloth) median=5.61x p10=3.66x p90=10.16x
-         sloth_total=53ms duck_total=185ms
+SPEEDUP: n=488 ratio(duck/sloth) median=5.74x p10=3.60x p90=10.42x
+         sloth_total=61ms duck_total=232ms
 ```
+
+Progress from the first harness run on the same day:
+
+```
+initial   : parity 388/5806 (6.7%), disagree 197
+after cast: parity 428/5806 (7.4%), disagree 161   (commit 034ff83)
+after +   : parity 486/5806 (8.4%), disagree 161   (commit b0c26a7)
+after IDF : parity 488/5806 (8.4%), disagree 169   (commit 2b48cfc)
+```
+
+Three commits in the session: cast-to-narrow-int silently returning 0
+(`ExecuteCast` missing TINYINT/SMALLINT/U\* cases), parser rejecting
+unary `+`, and IS [NOT] DISTINCT FROM not parsing.
 
 Reading the numbers honestly:
 
