@@ -481,21 +481,67 @@ void ExpressionExecutor::ArithmeticTyped(const std::string &op, Vector &left, Ve
             out[i] = T{};
             continue;
         }
-        if (op == "+")       out[i] = ldata[i] + rdata[i];
-        else if (op == "-")  out[i] = ldata[i] - rdata[i];
-        else if (op == "*")  out[i] = ldata[i] * rdata[i];
-        else if (op == "/") {
-            // Divide-by-zero produces NULL (SQL standard, matches DuckDB
-            // and matches the existing modulo behaviour). Previously
-            // silently returned 0 — a wrong-result bug.
-            if (rdata[i] == T{}) {
+        if constexpr (std::is_integral_v<T>) {
+            // Signed integer overflow is undefined behaviour in C++ and
+            // silently wraps on x86 — `2147483647 + 1` produced
+            // `-2147483648` even though the user got no error. SQL
+            // standard says overflow is a runtime error; we return NULL
+            // to match the divide-by-zero / modulo-by-zero behaviour
+            // already established by the +/-/* paths.
+            T a = ldata[i], b = rdata[i];
+            T r{};
+            bool overflow = false;
+            if (op == "+") {
+                if ((b > 0 && a > std::numeric_limits<T>::max() - b) ||
+                    (b < 0 && a < std::numeric_limits<T>::min() - b)) {
+                    overflow = true;
+                } else r = a + b;
+            } else if (op == "-") {
+                if ((b < 0 && a > std::numeric_limits<T>::max() + b) ||
+                    (b > 0 && a < std::numeric_limits<T>::min() + b)) {
+                    overflow = true;
+                } else r = a - b;
+            } else if (op == "*") {
+                if (a != 0 && b != 0) {
+                    T m = a * b;
+                    // Detect overflow via re-division check (portable;
+                    // MSVC has no __builtin_mul_overflow).
+                    if (m / a != b) overflow = true;
+                    else r = m;
+                } // else r = 0 (already)
+            } else if (op == "/") {
+                if (b == 0) {
+                    overflow = true;  // -> NULL
+                } else if (a == std::numeric_limits<T>::min() && b == -1) {
+                    overflow = true;  // INT_MIN / -1 overflows
+                } else {
+                    r = a / b;
+                }
+            } else {
+                r = T{};
+            }
+            if (overflow) {
                 result.GetValidity().SetInvalid(i);
                 out[i] = T{};
             } else {
-                out[i] = ldata[i] / rdata[i];
+                out[i] = r;
             }
+        } else {
+            // Float / double: IEEE-754 inf/nan is the standard behaviour
+            // for overflow; SQL queries expect that, so don't NULL it.
+            if (op == "+")       out[i] = ldata[i] + rdata[i];
+            else if (op == "-")  out[i] = ldata[i] - rdata[i];
+            else if (op == "*")  out[i] = ldata[i] * rdata[i];
+            else if (op == "/") {
+                if (rdata[i] == T{}) {
+                    result.GetValidity().SetInvalid(i);
+                    out[i] = T{};
+                } else {
+                    out[i] = ldata[i] / rdata[i];
+                }
+            }
+            else out[i] = T{};
         }
-        else out[i] = T{};
     }
 }
 
@@ -1125,11 +1171,49 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             Execute(*expr.arguments[1], input, arg2, count);
             for (idx_t i = 0; i < count; i++) {
                 auto v1 = arg1.GetValue(i), v2 = arg2.GetValue(i);
-                if (v1.IsNull() || v2.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
-                double d1 = v1.ToString().empty() ? 0 : std::stod(v1.ToString());
-                double d2 = v2.ToString().empty() ? 0 : std::stod(v2.ToString());
-                if (name == "POWER") result.GetData<double>()[i] = std::pow(d1, d2);
-                else result.GetData<double>()[i] = std::fmod(d1, d2);
+                if (v1.IsNull() || v2.IsNull()) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
+                // GetValue<double> handles all numeric input types; the
+                // prior std::stod(ToString()) round-trip burned CPU and
+                // crashed on non-numeric strings.
+                double d1, d2;
+                try {
+                    d1 = v1.type().id() == LogicalTypeId::DOUBLE
+                            ? v1.GetValue<double>()
+                            : std::stod(v1.ToString());
+                    d2 = v2.type().id() == LogicalTypeId::DOUBLE
+                            ? v2.GetValue<double>()
+                            : std::stod(v2.ToString());
+                } catch (...) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
+                if (name == "POWER") {
+                    // Domain errors -> NULL per SQL standard:
+                    //   POWER(0, -k)         -> +inf  (was)
+                    //   POWER(negative, frac) -> nan
+                    if ((d1 == 0.0 && d2 < 0.0) || (d1 < 0.0 && std::floor(d2) != d2)) {
+                        result.GetValidity().SetInvalid(i);
+                        continue;
+                    }
+                    double r = std::pow(d1, d2);
+                    if (std::isnan(r) || std::isinf(r)) {
+                        result.GetValidity().SetInvalid(i);
+                    } else {
+                        result.GetData<double>()[i] = r;
+                    }
+                } else {
+                    // MOD(x, 0) -> NULL (was nan). Integer % already
+                    // returns NULL via the ExecuteArithmetic %-branch;
+                    // function-form MOD now matches.
+                    if (d2 == 0.0) {
+                        result.GetValidity().SetInvalid(i);
+                        continue;
+                    }
+                    result.GetData<double>()[i] = std::fmod(d1, d2);
+                }
             }
         }
         return;
