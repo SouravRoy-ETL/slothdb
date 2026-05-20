@@ -418,12 +418,23 @@ void ExpressionExecutor::ArithmeticTyped(const std::string &op, Vector &left, Ve
     for (idx_t i = 0; i < count; i++) {
         if (!left.GetValidity().RowIsValid(i) || !right.GetValidity().RowIsValid(i)) {
             result.GetValidity().SetInvalid(i);
+            out[i] = T{};
             continue;
         }
         if (op == "+")       out[i] = ldata[i] + rdata[i];
         else if (op == "-")  out[i] = ldata[i] - rdata[i];
         else if (op == "*")  out[i] = ldata[i] * rdata[i];
-        else if (op == "/")  out[i] = rdata[i] != 0 ? ldata[i] / rdata[i] : T{};
+        else if (op == "/") {
+            // Divide-by-zero produces NULL (SQL standard, matches DuckDB
+            // and matches the existing modulo behaviour). Previously
+            // silently returned 0 — a wrong-result bug.
+            if (rdata[i] == T{}) {
+                result.GetValidity().SetInvalid(i);
+                out[i] = T{};
+            } else {
+                out[i] = ldata[i] / rdata[i];
+            }
+        }
         else out[i] = T{};
     }
 }
@@ -647,28 +658,63 @@ void ExpressionExecutor::ExecuteUnaryMinus(const BoundUnaryMinus &expr, DataChun
     Vector child(expr.child->GetReturnType(), count);
     Execute(*expr.child, input, child, count);
 
+    // Propagate NULL: -NULL is NULL in SQL. Previously the per-element
+    // loop unconditionally negated the underlying byte (so -CAST(NULL AS
+    // DOUBLE) printed as "-0" instead of NULL). Set the result's invalid
+    // bits up-front from the child's; the typed loop still runs but the
+    // garbage value is masked.
+    auto &cvalid = child.GetValidity();
+    auto &ovalid = result.GetValidity();
     auto physical = result.GetType().GetInternalType();
     switch (physical) {
+    case PhysicalType::INT16: {
+        auto *src = child.GetData<int16_t>();
+        auto *dst = result.GetData<int16_t>();
+        for (idx_t i = 0; i < count; i++) {
+            if (!cvalid.RowIsValid(i)) { ovalid.SetInvalid(i); dst[i] = 0; }
+            else dst[i] = static_cast<int16_t>(-src[i]);
+        }
+        break;
+    }
     case PhysicalType::INT32: {
         auto *src = child.GetData<int32_t>();
         auto *dst = result.GetData<int32_t>();
-        for (idx_t i = 0; i < count; i++) dst[i] = -src[i];
+        for (idx_t i = 0; i < count; i++) {
+            if (!cvalid.RowIsValid(i)) { ovalid.SetInvalid(i); dst[i] = 0; }
+            else dst[i] = -src[i];
+        }
         break;
     }
     case PhysicalType::INT64: {
         auto *src = child.GetData<int64_t>();
         auto *dst = result.GetData<int64_t>();
-        for (idx_t i = 0; i < count; i++) dst[i] = -src[i];
+        for (idx_t i = 0; i < count; i++) {
+            if (!cvalid.RowIsValid(i)) { ovalid.SetInvalid(i); dst[i] = 0; }
+            else dst[i] = -src[i];
+        }
+        break;
+    }
+    case PhysicalType::FLOAT: {
+        auto *src = child.GetData<float>();
+        auto *dst = result.GetData<float>();
+        for (idx_t i = 0; i < count; i++) {
+            if (!cvalid.RowIsValid(i)) { ovalid.SetInvalid(i); dst[i] = 0.0f; }
+            else dst[i] = -src[i];
+        }
         break;
     }
     case PhysicalType::DOUBLE: {
         auto *src = child.GetData<double>();
         auto *dst = result.GetData<double>();
-        for (idx_t i = 0; i < count; i++) dst[i] = -src[i];
+        for (idx_t i = 0; i < count; i++) {
+            if (!cvalid.RowIsValid(i)) { ovalid.SetInvalid(i); dst[i] = 0.0; }
+            else dst[i] = -src[i];
+        }
         break;
     }
     default:
-        throw NotImplementedException("Unary minus for type");
+        throw NotImplementedException("Unary minus for type " +
+                                       result.GetType().ToString());
     }
 }
 
@@ -861,9 +907,16 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[1], input, from_vec, count);
         Execute(*expr.arguments[2], input, to_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto from = from_vec.GetValue(i).GetValue<std::string>();
-            auto to = to_vec.GetValue(i).GetValue<std::string>();
+            auto sv = str_vec.GetValue(i);
+            auto fv = from_vec.GetValue(i);
+            auto tv = to_vec.GetValue(i);
+            if (sv.IsNull() || fv.IsNull() || tv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto from = fv.GetValue<std::string>();
+            auto to = tv.GetValue<std::string>();
             size_t pos = 0;
             while ((pos = s.find(from, pos)) != std::string::npos) {
                 s.replace(pos, from.length(), to);
@@ -892,12 +945,19 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = arg.GetValue(i).GetValue<std::string>();
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = v.GetValue<std::string>();
             if (name == "TRIM" || name == "LTRIM") {
                 s.erase(0, s.find_first_not_of(" \t\n\r"));
             }
             if (name == "TRIM" || name == "RTRIM") {
-                s.erase(s.find_last_not_of(" \t\n\r") + 1);
+                size_t last = s.find_last_not_of(" \t\n\r");
+                if (last == std::string::npos) s.clear();
+                else s.erase(last + 1);
             }
             result.SetValue(i, Value::VARCHAR(s));
         }
@@ -1010,7 +1070,22 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             }
             auto s = sv.GetValue<std::string>();
             auto n = nv.GetValue<int32_t>();
-            if (n < 0) n = 0;
+            // Postgres semantics for negative n:
+            //   LEFT(s, -k)  = s[: len(s)-k] (drop last k)
+            //   RIGHT(s, -k) = s[k :]        (drop first k)
+            // Clamps to empty when k >= len(s).
+            if (n < 0) {
+                int64_t drop = -static_cast<int64_t>(n);
+                int64_t keep = static_cast<int64_t>(s.size()) - drop;
+                if (keep <= 0) {
+                    result.SetValue(i, Value::VARCHAR(""));
+                } else {
+                    auto k = static_cast<size_t>(keep);
+                    result.SetValue(i, Value::VARCHAR(
+                        name == "LEFT" ? s.substr(0, k) : s.substr(s.size() - k)));
+                }
+                continue;
+            }
             auto un = static_cast<size_t>(n);
             result.SetValue(i, Value::VARCHAR(
                 name == "LEFT" ? s.substr(0, un) : s.substr(s.size() > un ? s.size() - un : 0)));
@@ -1026,9 +1101,16 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[1], input, len_vec, count);
         Execute(*expr.arguments[2], input, pad_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto target_len = static_cast<size_t>(len_vec.GetValue(i).GetValue<int32_t>());
-            auto pad = pad_vec.GetValue(i).GetValue<std::string>();
+            auto sv = str_vec.GetValue(i);
+            auto nv = len_vec.GetValue(i);
+            auto pv = pad_vec.GetValue(i);
+            if (sv.IsNull() || nv.IsNull() || pv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto target_len = static_cast<size_t>(nv.GetValue<int32_t>());
+            auto pad = pv.GetValue<std::string>();
             while (s.size() < target_len && !pad.empty()) {
                 if (name == "LPAD") s = pad + s; else s = s + pad;
             }
