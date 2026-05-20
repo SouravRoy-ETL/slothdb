@@ -1038,7 +1038,10 @@ LogicalType Binder::ResolveTypeName(const std::string &name) {
     if (base == "BLOB" || base == "BYTEA") return LogicalType::BLOB();
     if (base == "DATE") return LogicalType::DATE();
     if (base == "TIME") return LogicalType::TIME();
-    if (base == "TIMESTAMP") return LogicalType::TIMESTAMP();
+    if (base == "TIMESTAMP" || base == "TIMESTAMPTZ" ||
+        base == "TIMESTAMP_S" || base == "TIMESTAMP_MS" ||
+        base == "TIMESTAMP_NS" || base == "DATETIME")
+        return LogicalType::TIMESTAMP();
     if (base == "INTERVAL") return LogicalType::INTERVAL();
     if (base == "UUID") return LogicalType::UUID();
 

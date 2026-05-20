@@ -340,9 +340,13 @@ ParsedStmtPtr Parser::ParseSelectStatement() {
 
     Expect(TokenType::KW_SELECT, "");
 
-    // DISTINCT
+    // DISTINCT or ALL (ALL is the default; consume and discard for SQL
+    // compatibility, since `SELECT ALL col` is legal but slothdb's
+    // is_distinct=false is already the right state).
     if (MatchKeyword(TokenType::KW_DISTINCT)) {
         stmt->is_distinct = true;
+    } else {
+        MatchKeyword(TokenType::KW_ALL);
     }
 
     // Select list.
@@ -1176,6 +1180,9 @@ ParsedExprPtr Parser::ParseFunctionCall(const std::string &name) {
         } else {
             if (MatchKeyword(TokenType::KW_DISTINCT)) {
                 distinct = true;
+            } else {
+                // SUM(ALL col) — ALL is the default, consume and discard.
+                MatchKeyword(TokenType::KW_ALL);
             }
             do {
                 args.push_back(ParseExpression());
