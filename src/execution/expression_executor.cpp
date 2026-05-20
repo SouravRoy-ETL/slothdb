@@ -2278,9 +2278,17 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[1], input, ts_vec, count);
 
         // Bucket parts: arithmetic (no gmtime) vs calendar (gmtime).
+        // MILLISECOND / MICROSECOND need micros-of-second, derived from
+        // the raw input when the value is TIMESTAMP-typed or stored as
+        // microseconds (|raw| >= 1e13). Previously the EXTRACT branch
+        // didn't list these, so MILLI/MICROSECOND silently returned 0.
         bool is_arith = (part == "HOUR" || part == "MINUTE" || part == "SECOND" ||
-                         part == "EPOCH" || part == "DOW");
+                         part == "EPOCH" || part == "DOW" ||
+                         part == "MILLISECOND" || part == "MILLISECONDS" ||
+                         part == "MICROSECOND" || part == "MICROSECONDS");
         bool is_calendar = (part == "YEAR" || part == "MONTH" || part == "DAY");
+        bool is_sub_second = (part == "MILLISECOND" || part == "MILLISECONDS" ||
+                               part == "MICROSECOND" || part == "MICROSECONDS");
 
         auto floor_mod = [](int64_t a, int64_t m) -> int64_t {
             int64_t r = a % m;
@@ -2309,13 +2317,19 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 if (!ts_valid.RowIsValid(i)) { out_valid.SetInvalid(i); continue; }
                 int64_t raw = ts_data[i];
                 int64_t abs_raw = raw < 0 ? -raw : raw;
-                int64_t seconds = (abs_raw >= 10000000000000LL) ? raw / 1000000 : raw;
+                bool is_micros = (abs_raw >= 10000000000000LL);
+                int64_t seconds = is_micros ? raw / 1000000 : raw;
                 int64_t extracted = 0;
                 if (part == "SECOND") extracted = floor_mod(seconds, 60);
                 else if (part == "MINUTE") extracted = floor_mod(floor_div(seconds, 60), 60);
                 else if (part == "HOUR") extracted = floor_mod(floor_div(seconds, 3600), 24);
                 else if (part == "EPOCH") extracted = seconds;
                 else if (part == "DOW") extracted = floor_mod(floor_div(seconds, 86400) + 4, 7);
+                else if (part == "MICROSECOND" || part == "MICROSECONDS") {
+                    extracted = is_micros ? floor_mod(raw, 1000000) : 0;
+                } else if (part == "MILLISECOND" || part == "MILLISECONDS") {
+                    extracted = is_micros ? floor_mod(raw, 1000000) / 1000 : 0;
+                }
                 out_data[i] = extracted;
             }
             return;
@@ -2337,6 +2351,28 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             return (abs_raw >= 10000000000000LL) ? raw / 1000000 : raw;
         };
 
+        // Extract micros-of-second from the boxed value. For
+        // TIMESTAMP-typed inputs we have full precision; for BIGINT
+        // input we use the same |raw|>=1e13 heuristic as the fast path.
+        auto to_subsecond_micros = [](const Value &v) -> int64_t {
+            if (v.type().id() == LogicalTypeId::TIMESTAMP ||
+                v.type().id() == LogicalTypeId::TIMESTAMP_TZ) {
+                int64_t micros = v.GetValue<int64_t>();
+                int64_t r = micros % 1000000;
+                if (r < 0) r += 1000000;
+                return r;
+            }
+            if (v.type().id() == LogicalTypeId::BIGINT) {
+                int64_t raw = v.GetValue<int64_t>();
+                int64_t abs_raw = raw < 0 ? -raw : raw;
+                if (abs_raw < 10000000000000LL) return 0;
+                int64_t r = raw % 1000000;
+                if (r < 0) r += 1000000;
+                return r;
+            }
+            return 0;
+        };
+
         for (idx_t i = 0; i < count; i++) {
             auto ts_val = ts_vec.GetValue(i);
             if (ts_val.IsNull()) {
@@ -2346,7 +2382,11 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             int64_t seconds = to_seconds(ts_val);
 
             int64_t extracted = 0;
-            if (is_arith) {
+            if (is_sub_second) {
+                int64_t micros = to_subsecond_micros(ts_val);
+                if (part == "MICROSECOND" || part == "MICROSECONDS") extracted = micros;
+                else extracted = micros / 1000;  // MILLISECOND[S]
+            } else if (is_arith) {
                 if (part == "SECOND") extracted = floor_mod(seconds, 60);
                 else if (part == "MINUTE") extracted = floor_mod(floor_div(seconds, 60), 60);
                 else if (part == "HOUR") extracted = floor_mod(floor_div(seconds, 3600), 24);
