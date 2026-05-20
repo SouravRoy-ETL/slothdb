@@ -1327,6 +1327,24 @@ ParsedExprPtr Parser::ParseFunctionCall(const std::string &name) {
                         args.push_back(ParseExpression());
                     }
                 }
+            } else if (name_upper == "POSITION") {
+                // SQL POSITION(needle IN haystack). Parse the needle as
+                // ParseAddSub to avoid the IN-list comparison branch
+                // that ParseExpression would greedily consume. If the
+                // user wrote POSITION(a, b) comma form (some dialects),
+                // we still allow it.
+                args.push_back(ParseAddSub());
+                if (MatchKeyword(TokenType::KW_IN)) {
+                    args.push_back(ParseExpression());
+                    // Executor's POSITION expects (haystack, needle):
+                    // s.find(sub). SQL spelling is (needle IN haystack),
+                    // so swap.
+                    std::swap(args[0], args[1]);
+                } else {
+                    while (Match(TokenType::COMMA)) {
+                        args.push_back(ParseExpression());
+                    }
+                }
             } else {
                 do {
                     args.push_back(ParseExpression());

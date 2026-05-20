@@ -1317,8 +1317,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[0], input, str_vec, count);
         Execute(*expr.arguments[1], input, sub_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto sub = sub_vec.GetValue(i).GetValue<std::string>();
+            auto sv = str_vec.GetValue(i);
+            auto subv = sub_vec.GetValue(i);
+            if (sv.IsNull() || subv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto sub = subv.GetValue<std::string>();
             auto pos = s.find(sub);
             result.SetValue(i, Value::INTEGER(pos == std::string::npos ? 0 : static_cast<int32_t>(pos + 1)));
         }
