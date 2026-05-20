@@ -209,6 +209,69 @@ number is not re-measured. Sixteen more general engine fixes landed:
     instead of NULL because args[0]'s type drove the result and
     the second arg's value was read through a wrong-typed slot.
     Same pattern as CASE / COALESCE, same fix shape.
+13. **Mixed-type comparison stod crash** — `'abc' = 5` and
+    `WHERE varchar_col = 1` (with non-numeric rows) crashed via raw
+    `std::invalid_argument`. Wrapped in try/catch; now raises a
+    typed `ConversionException`.
+13. **CAST strict parsing + case-insensitive BOOL** — `CAST('1.5' AS
+    INT)` silently truncated to 1; `CAST('42abc' AS INT)` returned
+    42; `CAST(1e10 AS INT)` returned 1 (via ToString round-trip
+    losing the exponent); `CAST('TRUE' AS BOOLEAN)` returned false.
+    All fixed: strict integer parsing rejects trailing junk and
+    decimal fractions; FLOAT/DOUBLE -> INT casts bypass ToString
+    and use std::trunc on the typed double with bounds checks;
+    BOOLEAN parse is case-insensitive against {true,t,yes,y,1} /
+    {false,f,no,n,0} and errors on unknown strings.
+13. **ROUND/TRUNC precision arg + SQRT(negative)** — ROUND/TRUNC
+    silently dropped the second precision argument; SQRT(-1)
+    returned `-nan(ind)`. ROUND/TRUNC now apply the precision
+    correctly; SQRT/LN/LOG/EXP/ASIN/ACOS/ATANH all return NULL on
+    domain errors instead of leaking nan/inf.
+13. **POSITION(x IN y) + STRPOS NULL crash** — SQL-standard
+    `POSITION(needle IN haystack)` was rejected by the parser
+    (the IN got greedily consumed). Added a special branch.
+    STRPOS/POSITION crashed on NULL operands; now propagate.
+13. **REPEAT/REVERSE NULL crash + INSTR** — REPEAT/REVERSE crashed
+    on NULL; added validity guards. INSTR (Oracle/MySQL/SQLite
+    spelling of STRPOS) was NotImplemented; added.
+13. **LN/LOG/LOG2/LOG10/EXP domain errors + LOG(base, value)** —
+    LN(0), LN(-1), LOG(0), EXP(1000) all leaked nan/inf; now NULL.
+    2-arg LOG(base, value) was silently dropping the base; now
+    computes log(value)/log(base) with base/value > 0 guards.
+13. **ASIN/ACOS/ATANH/ACOSH domain errors + SPLIT_PART multichar +
+    NULL** — inverse trig domain errors leaked nan/inf; SPLIT_PART
+    crashed on NULL; SPLIT_PART truncated multi-character
+    delimiters to one byte (`'XX'` → split on `X` only). All fixed.
+13. **NOT IN parser + IN/Negation three-valued logic** — `x NOT IN
+    (...)` was rejected by the parser; `3 IN (1,2,NULL)` returned
+    false instead of NULL; `NULL IN (1,2)` returned false; `NOT
+    NULL` returned false. Now: NOT IN parses; IN propagates NULL on
+    NULL LHS and on missing-with-NULL-element; Negation copies the
+    child's validity bit. Matches SQL standard Kleene logic.
+13. **OFFSET without LIMIT was silently dropped** — planner emitted
+    LogicalLimit only when `limit_count >= 0`. A query with just
+    `OFFSET N` returned every row regardless of OFFSET. Fixed at
+    src/planner/planner.cpp:652.
+13. **Numeric literal overflow leaked stoll/stod** — integer and
+    float literals exceeding INT64/DOUBLE range threw raw
+    std::out_of_range. Now classified ParserException.
+13. **CONCAT_WS added** — SQL-standard `CONCAT_WS(sep, vals...)`
+    with NULL separator -> NULL row, NULL values skipped (no double
+    separator), all-NULL values -> empty string.
+13. **ASCII / CHR added** — basic character/codepoint functions
+    present in every major dialect, byte-oriented (multibyte
+    deferred).
+13. **VARCHAR -> DATE/TIMESTAMP cast at INSERT + executor + STARTS_WITH
+    NULL** — `INSERT INTO t (DATE col) VALUES ('2024-06-15')`
+    silently stored 1970-01-01 because the binder didn't wrap the
+    string in BoundCast; PhysicalInsert wrote VARCHAR bytes into
+    the INT32-internal DATE column. CAST string -> DATE in
+    projection had the same bug. Both fixed. STARTS_WITH /
+    ENDS_WITH / CONTAINS crashed on NULL; now propagate.
+13. **SQL-92 typed literals DATE '...' / TIMESTAMP '...'** — the
+    canonical SQL spelling for date/timestamp constants was
+    rejected by the parser. Now produces typed DATE/TIMESTAMP
+    constants via the existing parse helpers.
 
 Reading the numbers honestly:
 
