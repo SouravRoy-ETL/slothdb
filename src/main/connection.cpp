@@ -1888,18 +1888,24 @@ QueryResult Connection::Query(const std::string &sql) {
             return true;
         };
 
-        // Materialize a SelectStatement (including its full UNION /
-        // INTERSECT / EXCEPT set_op chain) into row vectors. Used by the
-        // subquery-in-FROM and non-recursive CTE paths below — both need
-        // to flatten the chain because storage::Append is chunk-based and
-        // the set-op chain is walked at the Connection layer, not in the
-        // physical planner.
-        auto materialize_select_to_rows = [&](
+        // Materialise a SelectStatement into a freshly-created catalog
+        // table, returning its storage. Used by the subquery-in-FROM and
+        // non-recursive CTE paths.
+        //
+        // Fast path (no set_op chain): drains physical chunks straight to
+        // storage. Identical cost to the pre-bugfix CTE code.
+        //
+        // Slow path (UNION / UNION ALL / INTERSECT / EXCEPT chain): walks
+        // the right-leaning chain produced by the parser, materialises
+        // every segment to rows, applies set semantics, writes the
+        // combined result back to storage. The planner has no logical
+        // UNION node — the set_op chain is walked at the Connection layer,
+        // which is why the prior code's `Planner::Plan(*sub_bound)` quietly
+        // dropped everything past the LEFT side and CTEs / subqueries with
+        // UNION ALL returned only the left half.
+        auto materialize_select_into_new_table = [&](
                 SelectStatement &sel,
-                std::vector<std::vector<Value>> &out_rows,
-                std::vector<LogicalType> &out_types,
-                std::vector<std::string> &out_names) {
-            // LEFT side: bind, plan, execute, drain into rows.
+                const std::string &dest_name) -> std::shared_ptr<DataTable> {
             Binder lb(db_.GetCatalog());
             auto lbound = lb.Bind(sel);
             auto llogical = Planner::Plan(*lbound);
@@ -1909,24 +1915,39 @@ QueryResult Connection::Query(const std::string &sql) {
             lphysical->Init();
 
             auto &lsel = static_cast<BoundSelectStatement &>(*lbound);
-            out_types = lsel.result_types;
-            out_names = lsel.result_names;
+            std::vector<ColumnDefinition> cols;
+            for (idx_t i = 0; i < lsel.result_names.size(); i++)
+                cols.emplace_back(lsel.result_names[i], lsel.result_types[i]);
+            auto &entry = db_.GetCatalog().CreateTable(dest_name, std::move(cols));
+            auto storage = std::make_shared<DataTable>(lsel.result_types);
+            entry.SetStorage(storage);
 
-            DataChunk lchunk;
-            while (true) {
-                if (!lphysical->GetData(lchunk)) break;
-                for (idx_t i = 0; i < lchunk.size(); i++) {
-                    std::vector<Value> row;
-                    row.reserve(lchunk.ColumnCount());
-                    for (idx_t c = 0; c < lchunk.ColumnCount(); c++)
-                        row.push_back(lchunk.GetValue(c, i));
-                    out_rows.push_back(std::move(row));
+            if (sel.set_op.empty()) {
+                // Fast path — direct chunk drain to storage.
+                DataChunk lchunk;
+                while (true) {
+                    if (!lphysical->GetData(lchunk)) break;
+                    storage->Append(lchunk);
+                }
+                return storage;
+            }
+
+            // Slow path — drain LEFT to rows.
+            std::vector<std::vector<Value>> rows;
+            {
+                DataChunk lchunk;
+                while (true) {
+                    if (!lphysical->GetData(lchunk)) break;
+                    for (idx_t i = 0; i < lchunk.size(); i++) {
+                        std::vector<Value> row;
+                        row.reserve(lchunk.ColumnCount());
+                        for (idx_t c = 0; c < lchunk.ColumnCount(); c++)
+                            row.push_back(lchunk.GetValue(c, i));
+                        rows.push_back(std::move(row));
+                    }
                 }
             }
 
-            // Walk the set_op chain. Parser builds right-leaning:
-            //   a UNION ALL b UNION ALL c
-            //   -> sel(a, set_op=UNION ALL, set_right=sel(b, set_op=UNION ALL, set_right=sel(c)))
             auto row_key = [](const std::vector<Value> &row) {
                 std::string key;
                 for (auto &v : row) { key += v.ToString(); key += '|'; }
@@ -1958,57 +1979,54 @@ QueryResult Connection::Query(const std::string &sql) {
 
                 const std::string &op = cur->set_op;
                 if (op == "UNION ALL") {
-                    for (auto &r : right_rows) out_rows.push_back(std::move(r));
+                    for (auto &r : right_rows) rows.push_back(std::move(r));
                 } else if (op == "UNION") {
                     std::unordered_set<std::string> seen;
-                    for (auto &row : out_rows) seen.insert(row_key(row));
+                    for (auto &row : rows) seen.insert(row_key(row));
                     for (auto &row : right_rows) {
                         if (seen.insert(row_key(row)).second)
-                            out_rows.push_back(std::move(row));
+                            rows.push_back(std::move(row));
                     }
                 } else if (op == "INTERSECT") {
                     std::unordered_set<std::string> rk;
                     for (auto &row : right_rows) rk.insert(row_key(row));
                     std::vector<std::vector<Value>> kept;
-                    for (auto &row : out_rows) {
+                    for (auto &row : rows) {
                         if (rk.count(row_key(row))) kept.push_back(std::move(row));
                     }
-                    out_rows = std::move(kept);
+                    rows = std::move(kept);
                 } else if (op == "EXCEPT") {
                     std::unordered_set<std::string> rk;
                     for (auto &row : right_rows) rk.insert(row_key(row));
                     std::vector<std::vector<Value>> kept;
-                    for (auto &row : out_rows) {
+                    for (auto &row : rows) {
                         if (!rk.count(row_key(row))) kept.push_back(std::move(row));
                     }
-                    out_rows = std::move(kept);
+                    rows = std::move(kept);
                 }
                 cur = cur->set_right.get();
             }
-        };
 
-        // Write row vectors into a DataTable storage as a sequence of chunks.
-        auto write_rows_to_storage = [&](
-                const std::vector<std::vector<Value>> &rows,
-                const std::vector<LogicalType> &types,
-                DataTable &storage) {
-            if (rows.empty()) return;
-            const idx_t BATCH = 2048;
-            DataChunk chunk;
-            chunk.Initialize(types, BATCH);
-            idx_t pos = 0;
-            while (pos < rows.size()) {
-                idx_t n = std::min<idx_t>(BATCH, rows.size() - pos);
-                chunk.Reset();
-                for (idx_t i = 0; i < n; i++) {
-                    for (idx_t c = 0; c < types.size(); c++) {
-                        chunk.SetValue(c, i, rows[pos + i][c]);
+            // Write combined rows back to storage in chunks.
+            if (!rows.empty()) {
+                const idx_t BATCH = 2048;
+                DataChunk chunk;
+                chunk.Initialize(lsel.result_types, BATCH);
+                idx_t pos = 0;
+                while (pos < rows.size()) {
+                    idx_t n = std::min<idx_t>(BATCH, rows.size() - pos);
+                    chunk.Reset();
+                    for (idx_t i = 0; i < n; i++) {
+                        for (idx_t c = 0; c < lsel.result_types.size(); c++) {
+                            chunk.SetValue(c, i, rows[pos + i][c]);
+                        }
                     }
+                    chunk.SetCardinality(n);
+                    storage->Append(chunk);
+                    pos += n;
                 }
-                chunk.SetCardinality(n);
-                storage.Append(chunk);
-                pos += n;
             }
+            return storage;
         };
 
         // Materialize FROM-clause subqueries — `FROM (SELECT ...) AS s` —
@@ -2029,20 +2047,7 @@ QueryResult Connection::Query(const std::string &sql) {
                 std::string subq_name = "__subq_" +
                         std::to_string(++subq_unique_id) + "__";
 
-                std::vector<std::vector<Value>> rows;
-                std::vector<LogicalType> result_types;
-                std::vector<std::string> result_names;
-                materialize_select_to_rows(*tref.subquery, rows, result_types, result_names);
-
-                std::vector<ColumnDefinition> sub_cols;
-                for (idx_t i = 0; i < result_names.size(); i++)
-                    sub_cols.emplace_back(result_names[i], result_types[i]);
-
-                auto &entry = db_.GetCatalog().CreateTable(
-                    subq_name, std::move(sub_cols));
-                auto storage = std::make_shared<DataTable>(result_types);
-                entry.SetStorage(storage);
-                write_rows_to_storage(rows, result_types, *storage);
+                materialize_select_into_new_table(*tref.subquery, subq_name);
                 cte_tables.push_back(subq_name);
 
                 tref.table_name = subq_name;
@@ -2137,24 +2142,9 @@ QueryResult Connection::Query(const std::string &sql) {
                         if (cte_stmt->from_table->right) cte_process_read_csv(*cte_stmt->from_table->right);
                     }
 
-                    // Drain the full set_op chain into rows. The prior
-                    // implementation only ran the LEFT side of the chain
-                    // (planner-level UNION isn't wired), so
-                    //   WITH t AS (SELECT 1 UNION ALL SELECT 2) SELECT * FROM t
-                    // returned 1 row instead of 2.
-                    std::vector<std::vector<Value>> rows;
-                    std::vector<LogicalType> result_types;
-                    std::vector<std::string> result_names;
-                    materialize_select_to_rows(*cte_stmt, rows, result_types, result_names);
-
-                    std::vector<ColumnDefinition> cte_cols;
-                    for (idx_t i = 0; i < result_names.size(); i++)
-                        cte_cols.emplace_back(result_names[i], result_types[i]);
-
-                    auto &entry = db_.GetCatalog().CreateTable(cte.name, std::move(cte_cols));
-                    auto storage = std::make_shared<DataTable>(result_types);
-                    entry.SetStorage(storage);
-                    write_rows_to_storage(rows, result_types, *storage);
+                    // Helper drains the full set_op chain when present;
+                    // otherwise takes the chunk-direct fast path.
+                    materialize_select_into_new_table(*cte_stmt, cte.name);
                     cte_tables.push_back(cte.name);
                 }
             }
