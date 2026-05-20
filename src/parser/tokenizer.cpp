@@ -83,6 +83,7 @@ static const std::unordered_map<std::string, TokenType> KEYWORDS = {
     {"TRUNCATE", TokenType::KW_TRUNCATE},
     {"VIEW", TokenType::KW_VIEW},
     {"ILIKE", TokenType::KW_ILIKE},
+    {"ESCAPE", TokenType::KW_ESCAPE},
     {"NATURAL", TokenType::KW_NATURAL},
     {"GENERATE_SERIES", TokenType::KW_GENERATE_SERIES},
     {"PIVOT", TokenType::KW_PIVOT},

@@ -169,6 +169,7 @@ enum class TokenType : uint8_t {
     KW_TRUNCATE,
     KW_VIEW,
     KW_ILIKE,
+    KW_ESCAPE,
     KW_DISTINCT_FROM,
     KW_NATURAL,
     KW_GENERATE_SERIES,

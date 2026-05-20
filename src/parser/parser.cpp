@@ -881,13 +881,70 @@ ParsedExprPtr Parser::ParseComparison() {
         return std::make_unique<ComparisonExpression>(op, std::move(left), std::move(right));
     }
 
-    // LIKE / ILIKE / NOT LIKE / NOT ILIKE
+    // LIKE / ILIKE / NOT LIKE / NOT ILIKE — with optional SQL-92
+    // ESCAPE clause. When ESCAPE is present and both pattern and
+    // escape char are constant strings, we rewrite the pattern at
+    // parse time: each occurrence of `<esc><x>` becomes `\<x>` (the
+    // standard backslash-escape that LikeMatch understands at exec
+    // time). Empty escape string means "no escape". Non-constant
+    // pattern + ESCAPE raises an error (deferred for now).
+    auto consume_escape_and_rewrite =
+        [&](ParsedExprPtr &pat) -> void {
+        if (!MatchKeyword(TokenType::KW_ESCAPE)) return;
+        auto esc_expr = ParseAddSub();
+        // Both pattern and esc must be string constants for the
+        // parse-time rewrite.
+        auto *pat_const = dynamic_cast<ConstantExpression *>(pat.get());
+        auto *esc_const = dynamic_cast<ConstantExpression *>(esc_expr.get());
+        if (!pat_const || !esc_const ||
+            pat_const->literal_type != TokenType::STRING_LITERAL ||
+            esc_const->literal_type != TokenType::STRING_LITERAL) {
+            throw ParserException(
+                "ESCAPE requires constant string for both pattern and "
+                "escape character");
+        }
+        const std::string &esc_str = esc_const->value;
+        if (esc_str.size() > 1) {
+            throw ParserException(
+                "ESCAPE character must be a single character");
+        }
+        if (esc_str.empty()) return;  // no-op
+        char esc_char = esc_str[0];
+        if (esc_char == '%' || esc_char == '_') {
+            throw ParserException(
+                "ESCAPE character may not be the same as a wildcard");
+        }
+        const std::string &pat_str = pat_const->value;
+        std::string out;
+        out.reserve(pat_str.size());
+        for (size_t i = 0; i < pat_str.size(); i++) {
+            if (pat_str[i] == esc_char && i + 1 < pat_str.size()) {
+                // Emit \ + literal next char. Existing backslashes in
+                // the original pattern remain literal too; we just
+                // add a new backslash level above what's already there.
+                out += '\\';
+                out += pat_str[i + 1];
+                i++;
+            } else if (pat_str[i] == '\\') {
+                // Pre-existing backslash needs to remain a literal
+                // byte in the post-rewrite pattern — double it so
+                // LikeMatch's escape-aware reader treats it as a
+                // literal '\'.
+                out += "\\\\";
+            } else {
+                out += pat_str[i];
+            }
+        }
+        pat = std::make_unique<ConstantExpression>(out, TokenType::STRING_LITERAL);
+    };
     if (MatchKeyword(TokenType::KW_LIKE)) {
         auto right = ParseAddSub();
+        consume_escape_and_rewrite(right);
         return std::make_unique<ComparisonExpression>("LIKE", std::move(left), std::move(right));
     }
     if (MatchKeyword(TokenType::KW_ILIKE)) {
         auto right = ParseAddSub();
+        consume_escape_and_rewrite(right);
         return std::make_unique<ComparisonExpression>("ILIKE", std::move(left), std::move(right));
     }
     if (CheckKeyword(TokenType::KW_NOT) && pos_ + 1 < tokens_.size() &&
@@ -895,6 +952,7 @@ ParsedExprPtr Parser::ParseComparison() {
         Advance(); // NOT
         Advance(); // LIKE
         auto right = ParseAddSub();
+        consume_escape_and_rewrite(right);
         return std::make_unique<ComparisonExpression>("NOT LIKE", std::move(left), std::move(right));
     }
     if (CheckKeyword(TokenType::KW_NOT) && pos_ + 1 < tokens_.size() &&
@@ -902,6 +960,7 @@ ParsedExprPtr Parser::ParseComparison() {
         Advance(); // NOT
         Advance(); // ILIKE
         auto right = ParseAddSub();
+        consume_escape_and_rewrite(right);
         return std::make_unique<ComparisonExpression>("NOT ILIKE", std::move(left), std::move(right));
     }
 

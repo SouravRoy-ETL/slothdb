@@ -829,21 +829,72 @@ void ExpressionExecutor::ExecuteUnaryMinus(const BoundUnaryMinus &expr, DataChun
 // ============================================================================
 
 static bool LikeMatch(const std::string &str, const std::string &pattern) {
-    // Simple LIKE: % = any sequence, _ = any single char.
+    // SQL LIKE pattern matching:
+    //   %       any sequence of zero or more characters
+    //   _       any single character
+    //   \%, \_  literal % or _ (backslash escape)
+    //   \\      literal backslash
+    // ESCAPE clause is desugared at parse time into backslash escapes,
+    // so the executor only needs to recognise the standard `\` form.
     size_t si = 0, pi = 0;
     size_t star_p = std::string::npos, star_s = 0;
+    auto pattern_char_at = [&](size_t i, char &out, bool &is_meta) -> size_t {
+        // Returns the number of pattern chars consumed (1 or 2). For an
+        // escape sequence `\X`, returns 2 with `is_meta=false` and the
+        // literal X. For a metachar (`%` or `_`), returns 1 with
+        // `is_meta=true`. For a plain literal, returns 1 with
+        // `is_meta=false`.
+        if (i + 1 < pattern.size() && pattern[i] == '\\') {
+            out = pattern[i + 1];
+            is_meta = false;
+            return 2;
+        }
+        out = pattern[i];
+        is_meta = (out == '%' || out == '_');
+        return 1;
+    };
     while (si < str.size()) {
-        if (pi < pattern.size() && (pattern[pi] == str[si] || pattern[pi] == '_')) {
-            si++; pi++;
-        } else if (pi < pattern.size() && pattern[pi] == '%') {
-            star_p = pi++; star_s = si;
-        } else if (star_p != std::string::npos) {
-            pi = star_p + 1; si = ++star_s;
+        if (pi < pattern.size()) {
+            char pc;
+            bool is_meta;
+            size_t step = pattern_char_at(pi, pc, is_meta);
+            if (is_meta && pc == '%') {
+                star_p = pi;
+                star_s = si;
+                pi += step;
+                continue;
+            }
+            if (is_meta && pc == '_') {
+                si++;
+                pi += step;
+                continue;
+            }
+            // Literal (possibly via escape).
+            if (pc == str[si]) {
+                si++;
+                pi += step;
+                continue;
+            }
+        }
+        if (star_p != std::string::npos) {
+            // Backtrack: advance one in str, reset pi to the char after
+            // the % (which is just star_p + 1 since `%` is always one
+            // pattern char wide — backslash-escaped `%` can't be a star
+            // anyway).
+            pi = star_p + 1;
+            si = ++star_s;
         } else {
             return false;
         }
     }
-    while (pi < pattern.size() && pattern[pi] == '%') pi++;
+    // Skip any trailing `%` in the pattern.
+    while (pi < pattern.size()) {
+        if (pattern[pi] == '%') {
+            pi++;
+        } else {
+            break;
+        }
+    }
     return pi == pattern.size();
 }
 
