@@ -48,7 +48,7 @@ A final `OVERALL` line aggregates across the run, plus a `SPEEDUP` line with the
 Top-level corpus only (158 `.slt` files, no subdirs).
 
 ```
-OVERALL: parity 521/5806 (9.0%), disagree 188, setup_ok_both 465,
+OVERALL: parity 533/5806 (9.2%), disagree 175, setup_ok_both 465,
          setup_fail_sloth_only 316, setup_fail_duck_only 0
 ```
 
@@ -60,14 +60,24 @@ after cast : parity 428/5806 (7.4%), disagree 161   (commit 034ff83)
 after +    : parity 486/5806 (8.4%), disagree 161   (commit b0c26a7)
 after IDF  : parity 488/5806 (8.4%), disagree 169   (commit 2b48cfc)
 after subq : parity 521/5806 (9.0%), disagree 188   (commit dbda9e0)
+after union: parity 533/5806 (9.2%), disagree 175   (commit 107bcd0 + 8281fa4)
 ```
 
-Four engine fixes in the session: cast-to-narrow-int silently returning 0
-(`ExecuteCast` missing TINYINT/SMALLINT/U\* cases), parser rejecting
-unary `+`, IS [NOT] DISTINCT FROM not parsing, and subquery-in-FROM
-(`SELECT * FROM (SELECT ...) AS s`) not parsing.
+Five engine fixes in the session:
 
-Cumulative: 388 → 521 parity (+133, +34%).
+1. Cast-to-narrow-int silently returning 0 — `ExecuteCast` missing
+   TINYINT / SMALLINT / U\* cases.
+2. Parser rejecting unary `+`.
+3. `IS [NOT] DISTINCT FROM` not parsing.
+4. Subquery-in-FROM (`SELECT * FROM (SELECT ...) AS s`) not parsing.
+5. UNION ALL / UNION / INTERSECT / EXCEPT inside a CTE or subquery
+   silently dropped everything past the LEFT side — derived-table
+   materialisation only ran `Planner::Plan` on the bound LEFT side and
+   the planner has no logical UNION node (set ops are walked at the
+   Connection layer for top-level queries but the CTE / subquery paths
+   weren't doing the same walk).
+
+Cumulative: 388 → 533 parity (+145, +37%).
 
 Reading the numbers honestly:
 
