@@ -112,7 +112,7 @@
   <main class="docs-content">
 
     <h1 id="overview">SlothDB Documentation</h1>
-    <p class="doc-lede">SlothDB is a fast in-process SQL database for your local data files. It runs inside your application or as a standalone shell, reads seven file formats natively, and runs a 5-query warm-cache analytical batch in 138 ms vs DuckDB's 540 ms - 3.9× faster end-to-end.</p>
+    <p class="doc-lede">SlothDB is an experimental in-process SQL database for local data files. It runs inside your application or as a standalone shell and reads seven file formats natively. See the <a href="index.html#status">Status section on the homepage</a> for current architecture caveats before reading any performance numbers in this doc.</p>
 
     <p>This page is the short reference. For long-form guides, see the <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/DOCUMENTATION.md">full documentation on GitHub</a>. For the SQL cheat sheet, see the <a href="https://github.com/SouravRoy-ETL/slothdb/blob/main/docs/SQL_REFERENCE.md">SQL reference</a>.</p>
 
@@ -309,22 +309,7 @@ slothdb_result *result;
 <span class="kw">FROM</span> <span class="str">'orders.csv'</span>;</pre>
 
     <h2 id="benchmarks">Benchmarks</h2>
-    <p>Same machine, same queries, 1M rows, 5-run median, warm cache. Across the 16-query suite SlothDB is faster on 15 queries and ties on 1 (Parquet <code>SUM(revenue)</code> at 1.04× - within noise). Median speedup is 1.70×; range 1.04× to 5.43×.</p>
-    <table class="data">
-      <thead>
-        <tr><th>Format</th><th>Query</th><th style="text-align:right">SlothDB</th><th style="text-align:right">DuckDB</th><th style="text-align:right">Speedup</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>CSV</td><td>COUNT(*)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
-        <tr><td>Parquet</td><td>COUNT(*)</td><td class="num">12 ms</td><td class="num">34 ms</td><td class="win">2.83×</td></tr>
-        <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td class="win">1.04×</td></tr>
-        <tr><td>JSON</td><td>SUM(revenue)</td><td class="num">242 ms</td><td class="num">314 ms</td><td class="win">1.30×</td></tr>
-        <tr><td>Avro</td><td>SUM(revenue)</td><td class="num">140 ms</td><td class="num">760 ms</td><td class="win">5.43×</td></tr>
-        <tr><td>Avro</td><td>GROUP BY region</td><td class="num">170 ms</td><td class="num">800 ms</td><td class="win">4.71×</td></tr>
-        <tr><td>Excel</td><td>GROUP BY region</td><td class="num">2.5 s</td><td class="num">3.56 s</td><td class="win">1.41×</td></tr>
-      </tbody>
-    </table>
-    <p>Full 16-query breakdown in the <a href="https://github.com/SouravRoy-ETL/slothdb#performance">README benchmarks section</a>.</p>
+    <p>The previous version of this page included a 16-query head-to-head table against DuckDB with specific multipliers. The numbers were measured on one workstation, against one DuckDB version, with a benchmark surface that the engine had per-query handlers tuned for. They're not removed because they were wrong on that hardware; they're removed because they shouldn't be the headline for an experimental project. See the homepage <a href="index.html#status">Status section</a> and the public discussion at <a href="https://github.com/ClickHouse/ClickBench/issues/930">ClickHouse/ClickBench#930</a> for context. <code>bench/</code> in the repo still has the runner if you want to measure on your own hardware.</p>
 
     <h2 id="architecture">Architecture</h2>
     <p>SlothDB is a vectorized, morsel-parallel columnar execution engine:</p>
@@ -376,7 +361,7 @@ cmake --build build-wasm-edge</pre>
 
     <h2 id="roadmap">Roadmap</h2>
     <ul>
-      <li>ClickBench submission (external benchmark parity)</li>
+      <li>Generic execution path: remove the per-query handlers from <code>physical_planner.cpp</code> (see <a href="https://github.com/ClickHouse/ClickBench/issues/930">ClickHouse/ClickBench#930</a>) and rewrite the generic <code>ParallelScanFilter</code> to vectorised columns</li>
       <li>Extended window function coverage</li>
       <li>HTTP and S3 file readers</li>
       <li>R and Node.js bindings</li>
@@ -386,7 +371,7 @@ cmake --build build-wasm-edge</pre>
     <h2 id="faq">FAQ</h2>
 
     <h3>How is this different from DuckDB?</h3>
-    <p>Same embedded model, different defaults. SlothDB ships Avro, Excel, and SQLite readers in the core binary (DuckDB ships them as extensions), exposes a stable C ABI for extensions with numeric error codes, and bakes <code>CREATE LIVE VIEW</code> (cached views with incremental CSV append on log-tail workloads) into the engine. DuckDB users can assemble equivalent behavior with application code; SlothDB makes it a first-class feature. On a 5-query warm JOIN batch: 138 ms vs DuckDB's 540 ms.</p>
+    <p>Same embedded model, different defaults. SlothDB ships Avro, Excel, and SQLite readers in the core binary (DuckDB ships them as extensions), exposes a stable C ABI for extensions with numeric error codes, and bakes <code>CREATE LIVE VIEW</code> (cached views with incremental CSV append on log-tail workloads) into the engine. DuckDB users can assemble equivalent behavior with application code; SlothDB makes it a first-class feature. Performance vs DuckDB is competitive on some shapes and worse on others; see the homepage <a href="index.html#status">Status section</a> for the architecture context.</p>
 
     <h3>Can I use it with pandas?</h3>
     <p>Yes. <code>db.sql("...").fetchdf()</code> returns a pandas DataFrame.</p>

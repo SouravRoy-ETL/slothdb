@@ -2,10 +2,10 @@
   <img src="https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/assets/hero.svg" alt="SlothDB" width="100%">
 </p>
 
-<h3 align="center">Run analytics faster.</h3>
+<h3 align="center">An experimental embedded SQL engine.</h3>
 
 <p align="center">
-  SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch as a DuckDB alternative. <b>Up to 5x faster</b> on real workloads (138 ms vs 540 ms on a 5-query warm JOIN batch; 5.43x peak on Avro SUM; 16-query suite median 1.70x). Built-in readers for Parquet, CSV, JSON, Avro, Arrow, Excel, and SQLite.
+  SlothDB is a from-scratch C++20 embedded SQL database in active development. Query Parquet, CSV, JSON, Avro, Arrow, Excel, and SQLite files directly with SQL, in-process. Early-stage; read the <a href="https://github.com/SouravRoy-ETL/slothdb#status">Status</a> section on GitHub before treating any performance numbers as final.
 </p>
 
 <p align="center">
@@ -22,10 +22,6 @@
   <a href="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml"><img src="https://github.com/SouravRoy-ETL/slothdb/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://peerpush.net/p/slothdb"><img src="https://peerpush.net/p/slothdb/badge.png" alt="PeerPush"></a>
-</p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/SouravRoy-ETL/slothdb/main/assets/demo.svg" alt="SlothDB 60-second demo" width="90%">
 </p>
 
 ---
@@ -51,8 +47,7 @@ No server. No import step. No CREATE TABLE. Point SQL at files on disk.
 
 ## What's new in 0.2.7
 
-- ClickBench re-measured. SlothDB completes 40 of the 43 official queries and is faster than DuckDB on 29 of those 40, geomean 1.24x. The previous "33 of 43" framing counted 8 queries where DuckDB rejected the input as wins for SlothDB. Removed. Raw per-query times: [official_results.md](https://github.com/SouravRoy-ETL/slothdb/blob/main/bench/clickbench/official_results.md).
-- Four benchmark-fitted shortcuts deleted from the engine. Two were returning wrong results on inputs outside the benchmark.
+- Four benchmark-fitted shortcuts deleted from the engine. Two were returning wrong results on inputs outside the benchmark. The previous "33 of 43 beats DuckDB, up to 5×" claim was removed alongside them. Public discussion of the engine's architecture: [ClickHouse/ClickBench#930](https://github.com/ClickHouse/ClickBench/issues/930). Treat any remaining performance numbers as anecdotal.
 - DATE and TIMESTAMP columns render as ISO strings (`2013-07-02`, `2013-07-15 12:40:00`) instead of raw epoch integers.
 - `slothdb_version()` and the shell `--version` report the release tag.
 - 424 doctest cases pass.
@@ -69,9 +64,10 @@ No server. No import step. No CREATE TABLE. Point SQL at files on disk.
 Same embedded model as DuckDB and SQLite. You link it into your process and point SQL at files. Different defaults:
 
 - **7 file formats built in** - Parquet, CSV, JSON, Avro, Arrow, SQLite, Excel. DuckDB needs extensions for Avro and SQLite.
-- **Faster than DuckDB on real workloads.** 5-query warm JOIN batch: 138 ms vs 540 ms (3.9x). Peak speedups: 5.43x on Avro SUM, 5.08x on CSV COUNT(\*), 2.83x on Parquet COUNT(\*). Median across the 16-query suite: 1.70x. [Full numbers on GitHub.](https://github.com/SouravRoy-ETL/slothdb#performance)
 - **Stable C ABI.** Numeric error codes don't shift between releases. Bindings built against 0.1.x keep working.
 - **~1-4 MB single binary**, fully self-contained.
+
+Performance vs DuckDB is competitive on some queries and worse on others. The GitHub README's [Status](https://github.com/SouravRoy-ETL/slothdb#status) section has the architecture context behind the numbers.
 
 ## Quickstart
 
@@ -106,16 +102,9 @@ df = db.sql("SELECT region, SUM(revenue) FROM 'sales.csv' GROUP BY region").fetc
 
 ## Performance
 
-| Format | Query | SlothDB | DuckDB | Speedup |
-|---|---|--:|--:|:-:|
-| Parquet | `COUNT(*)` | 12 ms | 34 ms | **2.83×** |
-| CSV | `COUNT(*)` | 33 ms | 170 ms | **5.08×** |
-| CSV | `GROUP BY region` | 100 ms | 191 ms | **1.91×** |
-| JSON | `SUM(revenue)` | 242 ms | 314 ms | **1.30×** |
-| Avro | `SUM(revenue)` | 140 ms | 760 ms | **5.43×** |
-| Avro | `GROUP BY region` | 170 ms | 800 ms | **4.71×** |
+Performance varies query-to-query: SlothDB is competitive or faster on some shapes (native Avro decode, CSV `COUNT(*)`, small joins) and slower on others (high-cardinality multi-column `GROUP BY`, the generic non-handler path). The GitHub README's [Status](https://github.com/SouravRoy-ETL/slothdb#status) section explains the architectural reason and what's being changed.
 
-1M-row dataset, warm cache, 5-run median. [Full 15-query table + methodology →](https://github.com/SouravRoy-ETL/slothdb#performance)
+`pip install slothdb && python -c "import slothdb; slothdb.demo()"` runs a 3-query side-by-side against whatever DuckDB version is installed on your machine, so you can see the comparison locally.
 
 ## Community
 

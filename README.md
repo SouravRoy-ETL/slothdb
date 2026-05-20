@@ -2,9 +2,9 @@
 
 <img src="assets/hero.svg" alt="SlothDB" width="100%">
 
-<h3>Run analytics faster.</h3>
+<h3>An experimental embedded SQL engine.</h3>
 
-<p>SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. <b>Up to 5x faster</b> where it counts.</p>
+<p>SlothDB is a from-scratch C++20 embedded SQL database in active development. Same model as DuckDB and SQLite: query Parquet, CSV, JSON, Arrow, Avro, SQLite, and Excel files directly with SQL, in-process. Early-stage; read the <a href="#status">Status</a> section below before treating any performance numbers as final.</p>
 
 <p align="center">
   <a href="https://discord.gg/XJWyGmX5G">
@@ -23,59 +23,19 @@
 
 [Website](https://slothdb.org) · [**Playground**](https://slothdb.org/playground/) · [**Discord**](https://discord.gg/XJWyGmX5G) · [Blog](https://slothdb.org/blog/compiling-a-database-to-wasm.html) · [Docs](docs/DOCUMENTATION.md) · [Benchmarks](#performance) · [Python](docs/DOCUMENTATION.md#6-python-api) · [SQL Guide](docs/DOCUMENTATION.md#4-sql-guide)
 
-<br>
-
-<img src="assets/demo.svg" alt="SlothDB 60-second demo - side-by-side timing vs DuckDB" width="90%">
-
 </div>
 
 ---
 
-## ClickBench-43: SlothDB vs DuckDB
+## Status
 
-A from-scratch C++ embedded database, measured head to head against DuckDB
-on the industry-standard analytical benchmark.
+SlothDB is early-stage and experimental.
 
-<div align="center">
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/benchmarks/clickbench_outcomes_light.png">
-  <img src="docs/assets/benchmarks/clickbench_outcomes.png" alt="ClickBench-43: SlothDB vs DuckDB" width="60%">
-</picture>
-</div>
+- The previous "33 of 43 beats DuckDB, up to 5×" framing on this README came from per-query handlers in `physical_planner.cpp` that pattern-match ClickBench query shapes. Four of the most overfit handlers, and the original headline claim, were removed in [`a4d490f`](https://github.com/SouravRoy-ETL/slothdb/commit/a4d490f). The remaining handler-shaped code is still in the tree; removing it is in progress.
+- Public discussion of the architecture: [ClickHouse/ClickBench#930](https://github.com/ClickHouse/ClickBench/issues/930) and [issue #11](https://github.com/SouravRoy-ETL/slothdb/issues/11) on this repo.
+- No vendor PR to ClickBench is open or planned while the handler dispatch is still there.
 
-[ClickBench](https://github.com/ClickHouse/ClickBench) is the standard
-analytical-database benchmark: 43 queries over a 100M-row `hits` Parquet
-dataset. Both engines run the 43 official queries directly against the
-same file on the same machine, 3 trials each, fastest of 3 reported.
-
-SlothDB completes **40 of the 43** and is **faster than DuckDB on 29 of
-those 40, geomean 1.24x**. Three queries it does not finish inside the
-120-second cap: Q19 and Q33 (very high-cardinality `GROUP BY`) and Q29
-(a regex `GROUP BY`). Those are real gaps, shown here, not hidden.
-
-<div align="center">
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/benchmarks/clickbench_speedup_light.png">
-  <img src="docs/assets/benchmarks/clickbench_speedup.png" alt="ClickBench-43 per-query speedup vs DuckDB" width="100%">
-</picture>
-</div>
-
-The queries SlothDB loses are drawn in red, not dropped. High-cardinality
-two-column `GROUP BY` (Q31 at 0.22x, Q32 at 0.11x) is the weak spot, and
-because of it the total wall time across the 40 comparable queries is
-close: SlothDB 71s, DuckDB 65s. SlothDB takes the per-query majority and
-the geomean; DuckDB takes the sum, since a few high-cardinality
-aggregations are slow.
-
-Measured on a 6-core laptop (Ryzen 5 5600U, 15 GB RAM, Windows 11) against
-DuckDB. This is a local run, not an official ClickBench submission;
-ClickBench timings are hardware-specific, so reproduce it on yours:
-
-```bash
-python bench/clickbench/official_bench.py
-```
-
-Raw per-query times: [bench/clickbench/official_results.md](bench/clickbench/official_results.md).
+Treat performance numbers in this README as anecdotal until the architecture work lands. The project is a learning exercise; expect rough edges.
 
 ---
 
@@ -129,7 +89,7 @@ const { columns, rows } = db.query("SELECT 1 AS n");
 
 ## What's new in 0.2.6
 
-- **ClickBench-43.** SlothDB runs the full 43-query ClickBench suite over the 100M-row `hits` dataset and is faster than DuckDB on 29 of the 40 queries it completes, geomean 1.24x (see the [ClickBench section](#clickbench-43-slothdb-vs-duckdb) above). The query engine gained radix-partitioned aggregators for high-cardinality `GROUP BY`, a bounded hash-table `COUNT` path, parquet decode improvements (zero-copy VARCHAR, batched RLE unpack), and `TopN` pushdown into the aggregate.
+- **Engine work for high-cardinality GROUP BY and parquet decode.** Radix-partitioned aggregators for high-cardinality `GROUP BY`, a bounded hash-table `COUNT` path, parquet decode improvements (zero-copy VARCHAR, batched RLE unpack), and `TopN` pushdown into the aggregate. See the [Status](#status) section above for the context around the previous ClickBench framing.
 - **Portable build.** The GCC and Clang builds compile cleanly again: the MSVC-only `getenv_s` is replaced with `std::getenv`, and the vendored snappy source is committed so CI can build it.
 - **`bench/clickbench/`.** All 43 ClickBench queries verbatim from the ClickBench repo, plus the runner and a chart generator. `python bench/clickbench/official_bench.py` reproduces the head-to-head against DuckDB.
 
@@ -160,7 +120,7 @@ const { columns, rows } = db.query("SELECT 1 AS n");
 - **Typed batch C API.** New `slothdb_column_int32_buffer / int64_buffer / double_buffer / varchar_buffer / validity_buffer`. The Python wrapper reads one buffer per column instead of two ctypes calls per cell. SELECT 2 columns x 10M rows: 46 s to 16 s.
 - **Direct `string_t` emit + lazy `QueryResult`.** Result chunks stay alive until the user pulls them; `fetchnumpy()` and `fetchdf()` skip the per-cell `Value` boxing entirely.
 - **`.ask` natural-language sub-REPL.** Rules parser in every build (sub-10 ms, no model). Optional local Qwen2.5-Coder GGUF fallback under `-DSLOTHDB_ASK_MODEL=ON`: 0.5B and 1.5B tiers picked by a deterministic keyword router. 29 languages. Generated SQL is shown before it runs. [docs/ASK.md](docs/ASK.md).
-- **JOIN hot path.** 138 ms vs 540 ms on the 5-query warm batch (1M x 1K) - typed int64 hash, parallel CSV pre-parse, build-side projection pushdown, COUNT(\*)-over-JOIN fused into the aggregate.
+- **JOIN hot path.** Typed int64 hash, parallel CSV pre-parse, build-side projection pushdown, COUNT(\*)-over-JOIN fused into the aggregate.
 - **`CREATE LIVE VIEW`** with incremental CSV append. Useful when a dashboard tails a log that keeps growing.
 - **Edge build** (`-DSLOTHDB_EDGE=ON`) for sub-MB WASM bundles under Cloudflare Workers' 1 MB cap.
 
@@ -198,7 +158,6 @@ Same idea as DuckDB otherwise: embedded, columnar, vectorized, query files direc
 
 | | SlothDB | DuckDB |
 |---|---|---|
-| 5-query warm JOIN batch (1 M × 1 K) | **138 ms** | 540 ms |
 | Live-refresh view on a growing CSV | `CREATE LIVE VIEW`, incremental append | re-execute the query |
 | File-format readers in the core binary | 7 (CSV, Parquet, JSON, Avro, Excel, Arrow, SQLite) | 3 in core; Avro/Excel/SQLite via extensions |
 | Remote file read from SQL | built in (HTTP(S), public S3) | `httpfs` extension |
@@ -208,7 +167,7 @@ Same idea as DuckDB otherwise: embedded, columnar, vectorized, query files direc
 | Binary size (CLI) | ~1-2 MB (Windows MSVC Release; Linux static ~2-4 MB) | ~50 MB (latest release tarball) |
 | License | MIT | MIT |
 
-Numbers are from our machine; reproduce with the demo below. The big gaps are architectural: native Avro decoder, built-in `httpfs`-equivalent, smaller WASM.
+This table is about feature surface (built-in formats, WASM size, error-code stability), not benchmark numbers. See the [Status](#status) section above for the perf-claim context.
 
 ### If you're using ClickHouse today
 
@@ -226,7 +185,7 @@ For single-node SQL over local files, a ClickHouse server is operational overkil
 
 ### If you're using SQLite today for analytics
 
-SQLite is row-oriented and tuned for transactional workloads. Aggregate queries over wide tables read every column of every row even when you only need two. SlothDB is columnar and vectorized, so column-selective aggregates are typically several× faster - the exact speedup depends on row count and column width, so reproduce with your own data. You can keep your existing SQLite file and read from it directly with `sqlite_scan('app.db', 'users')`.
+SQLite is row-oriented and tuned for transactional workloads. Aggregate queries over wide tables read every column of every row even when you only need two. SlothDB is columnar and vectorized, so column-selective aggregates do less I/O on the same query shape; whether that translates into a meaningful speedup depends entirely on row count, column width, and which columns you touch, so measure with your own data. You can keep your existing SQLite file and read from it directly with `sqlite_scan('app.db', 'users')`.
 
 ### What SlothDB does not do (honest list)
 
@@ -249,13 +208,7 @@ pip install slothdb
 python -c "import slothdb; slothdb.demo()"
 ```
 
-```
-Query                            SlothDB     DuckDB    Speedup
---------------------------------------------------------------
-COUNT(*)                          3.1 ms    17.0 ms     5.48x
-SUM(revenue) WHERE year>=2023    10.6 ms    17.7 ms     1.67x
-GROUP BY region                  10.0 ms    19.1 ms     1.91x
-```
+The demo prints a three-row table comparing SlothDB and DuckDB timings on the synthetic data. Numbers depend on your hardware and on which DuckDB version is installed.
 
 **Query your own files** - one-shot or interactive shell:
 
@@ -292,66 +245,16 @@ df = db.sql("SELECT * FROM 'employees.csv' WHERE salary > 100000").fetchdf()
 
 ## Performance
 
-> 1 M-row datasets · warm cache · 5-run median on one workstation · DuckDB 1.1.3 · Ryzen 7 5800X, 32 GB DDR4, Windows 11, MSVC Release. Numbers will differ on other hardware - reproduce with `pip install slothdb && python -c "import slothdb; slothdb.demo()"`, which runs the 5-query batch side-by-side with whatever DuckDB version is installed.
+Any numbers you see in this README or in [`bench/`](bench/) are from one workstation against one DuckDB version. They are anecdotal, not from standardised benchmark hardware. The [Status](#status) section above explains why some of the wins are query-shape-specific rather than general, and why the engine's generic path is slower than the per-query handler path it falls into for some workloads.
 
-### 1. JOIN - CPU-bound, new in 0.1.6
+`bench/` has the runner and `bench/clickbench/` has the 43 ClickBench queries verbatim. Both run head-to-head against any DuckDB binary you point them at:
 
-```
-SELECT COUNT(*) FROM big JOIN sm ON b.k = s.k   -- 1 M × 1 K
-
-SlothDB  85 ms        DuckDB  212 ms        2.5× faster
-```
-
-Pure hash-join hot path, no I/O ambiguity. Typed int64 hash path, parallel CSV pre-parse, build-side projection pushdown, `COUNT(*)`-over-JOIN fused into the aggregate. Landed in this release.
-
-### 2. End-to-end batch - five queries in one shell invocation
-
-```
-scan + aggregate + GROUP BY + filter + JOIN
-
-SlothDB total  138 ms        DuckDB total  540 ms        3.9× faster
+```bash
+python bench/run.py --queries bench/queries.sql --table sales --data sales.csv \
+    --slothdb build/src/Release/slothdb.exe --duckdb /path/to/duckdb
 ```
 
-Mixed workload. Startup cost is part of the denominator - that's honest: it's what someone running `slothdb -c "..."` actually pays. Not a microbench.
-
-### 3. Avro - native decode beats an extension path
-
-```
-SUM(revenue) on 1 M-row .avro           SlothDB  140 ms   DuckDB  760 ms   5.43×
-GROUP BY region on 1 M-row .avro        SlothDB  170 ms   DuckDB  800 ms   4.71×
-```
-
-Native typed Avro decoder in the core binary vs. an extension-based reader. Architectural difference, not a micro-optimization.
-
-<details>
-<summary><b>Full 16-query suite across CSV / Parquet / JSON / Avro / Excel</b></summary>
-
-| Format | Query | SlothDB | DuckDB | Speedup |
-|---|---|--:|--:|:-:|
-| CSV | `COUNT(*)` (parser throughput) | 33 ms | 170 ms | 5.08× |
-| CSV | `SUM(revenue)` | 106 ms | 177 ms | 1.67× |
-| CSV | `GROUP BY region` | 100 ms | 191 ms | 1.91× |
-| CSV | `GROUP BY product, year` | 117 ms | 198 ms | 1.70× |
-| CSV | `WHERE year>=2023 AND qty>100 GROUP BY region` | 107 ms | 194 ms | 1.81× |
-| CSV | `big × small JOIN COUNT(*)` (1 M × 1 K) | 85 ms | 212 ms | 2.49× |
-| Parquet | `COUNT(*)` | 12 ms | 34 ms | 2.83× |
-| Parquet | `SUM(revenue)` | 46 ms | 48 ms | 1.04× (tie, within noise) |
-| Parquet | `GROUP BY region` | 76 ms | 88 ms | 1.16× |
-| Parquet | `GROUP BY product, year` | 146 ms | 173 ms | 1.18× |
-| Parquet | `WHERE + GROUP BY` | 157 ms | 198 ms | 1.26× |
-| JSON | `SUM(revenue)` | 242 ms | 314 ms | 1.30× |
-| JSON | `GROUP BY region` | 284 ms | 324 ms | 1.14× |
-| Avro | `SUM(revenue)` | 140 ms | 760 ms | 5.43× |
-| Avro | `GROUP BY region` | 170 ms | 800 ms | 4.71× |
-| Excel | `GROUP BY region` | 2500 ms | 3560 ms | 1.41× |
-
-Median speedup: 1.70×. Range: 1.04× - 5.43×.
-
-</details>
-
-Caveats worth knowing: Parquet aggregates are within ~20 % of DuckDB on most queries - both engines saturate the columnar fast path there, so don't expect 3× on Parquet. The big gaps come from SlothDB's native decoders (Avro, CSV `COUNT(*)`) and the 0.1.6 JOIN hot path. Full ClickBench-43 results are in the [ClickBench section](#clickbench-43-slothdb-vs-duckdb) near the top.
-
-The architectural decisions behind the numbers (typed columnar decode, per-worker buffer reuse, fused scan+aggregate, zero-copy VARCHAR, vectorized filter, parallel CSV aggregate, typed int64 JOIN hash path) are in [CHANGELOG.md](CHANGELOG.md) with a commit per optimization.
+Architectural decisions and per-commit deltas: [CHANGELOG.md](CHANGELOG.md).
 
 ## Query Any File with SQL
 

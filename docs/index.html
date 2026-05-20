@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SlothDB · Run analytics faster.</title>
-<meta name="description" content="SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch in C++. Faster than DuckDB on 29 of the 40 ClickBench queries it completes, 1.24x geomean. 138 ms vs 540 ms (3.9x) on the warm 5-query batch, 5.43x on Avro SUM. MIT.">
+<title>SlothDB · An experimental embedded SQL engine.</title>
+<meta name="description" content="SlothDB is a from-scratch C++20 embedded SQL database in active development. Query Parquet, CSV, JSON, Avro, Arrow, Excel, and SQLite files directly with SQL, in-process. Early-stage; see the Status section before treating any performance numbers as final. MIT.">
 <meta name="keywords" content="DuckDB alternative, in-process SQL database, embedded analytical database, Parquet query, CSV SQL, DuckDB replacement, SQLite OLAP, analytical database C++, fast Parquet reader, query Parquet with SQL">
 <meta name="author" content="SlothDB">
 <meta name="robots" content="index, follow">
@@ -12,8 +12,8 @@
 
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://slothdb.org/">
-<meta property="og:title" content="SlothDB - Run analytics faster.">
-<meta property="og:description" content="An embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch in C++. Faster than DuckDB on 29 of the 40 ClickBench queries it completes, 1.24x geomean. 138 ms vs DuckDB 1.1.3's 540 ms (3.9x) on the 5-query warm batch; 5.43x on Avro SUM. MIT.">
+<meta property="og:title" content="SlothDB - An experimental embedded SQL engine.">
+<meta property="og:description" content="A from-scratch C++20 embedded SQL database in active development. Query Parquet, CSV, JSON, Avro, Arrow, Excel, and SQLite files directly with SQL, in-process. Early-stage; treat any performance numbers as anecdotal. MIT.">
 <meta property="og:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 <meta property="og:image:width" content="1000">
 <meta property="og:image:height" content="520">
@@ -21,8 +21,8 @@
 
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:url" content="https://slothdb.org/">
-<meta name="twitter:title" content="SlothDB - Run analytics faster.">
-<meta name="twitter:description" content="An embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch in C++. Faster than DuckDB on 29 of the 40 ClickBench queries it completes, 1.24x geomean. 138 ms vs 540 ms on the 5-query warm batch; 5.43x on Avro SUM. MIT.">
+<meta name="twitter:title" content="SlothDB - An experimental embedded SQL engine.">
+<meta name="twitter:description" content="A from-scratch C++20 embedded SQL database in active development. Query Parquet, CSV, JSON, Avro, Arrow, Excel, and SQLite files directly with SQL, in-process. Early-stage; treat any performance numbers as anecdotal. MIT.">
 <meta name="twitter:image" content="https://slothdb.org/assets/benchmarks/speedup.png">
 
 <link rel="canonical" href="https://slothdb.org/">
@@ -77,7 +77,7 @@
       "@type": "SoftwareApplication",
       "name": "SlothDB",
       "alternateName": ["slothdb"],
-      "description": "Embedded in-process SQL OLAP database in C++20, built from scratch as an alternative to DuckDB. Faster than DuckDB on 29 of the 40 ClickBench queries it completes, 1.24x geomean. CREATE LIVE VIEW with incremental CSV append, sub-1 MB edge WASM build, seven file formats (Parquet, CSV, JSON, Avro, Excel, Arrow, SQLite) in the core binary vs DuckDB's three, stable C ABI. 5-query warm JOIN batch: 138 ms vs DuckDB 1.1.3's 540 ms (3.9x); 5.43x peak on Avro SUM; 16-query suite median 1.70x, range 1.04x-5.43x. Also ships optional .ask natural-language sub-REPL.",
+      "description": "Embedded in-process SQL OLAP database in C++20, early-stage and in active development. CREATE LIVE VIEW with incremental CSV append, sub-1 MB edge WASM build, seven file formats (Parquet, CSV, JSON, Avro, Excel, Arrow, SQLite) in the core binary vs DuckDB's three, stable C ABI. Also ships an optional .ask natural-language sub-REPL.",
       "applicationCategory": "DatabaseApplication",
       "operatingSystem": "Windows, macOS, Linux",
       "url": "https://slothdb.org/",
@@ -159,8 +159,8 @@
     </div>
   </div>
   <div class="inner">
-    <h1>Run analytics faster.</h1>
-    <p class="lede">SlothDB is an embedded SQL database that runs everywhere: on your laptop, on a server, and in the browser. Built from scratch. <b>Up to 5&times; faster</b> where it counts.</p>
+    <h1>An experimental embedded SQL engine.</h1>
+    <p class="lede">SlothDB is a from-scratch C++20 embedded SQL database in active development. Same model as DuckDB and SQLite: query Parquet, CSV, JSON, Arrow, Avro, SQLite, and Excel files directly with SQL, in-process. Early-stage; see the <a href="#status">Status</a> section below before treating any performance numbers as final.</p>
 
     <pre class="hero-code"><span class="cm">-- Query files directly. No import step.</span>
 <span class="kw">SELECT</span> region, <span class="fn">SUM</span>(revenue)
@@ -187,10 +187,10 @@
     <div class="ctas">
       <a class="btn glow" href="playground/">Try in browser</a>
       <a class="btn ghost" href="#ask">Ask in any language</a>
-      <a class="btn ghost" href="#benchmarks">Benchmarks</a>
+      <a class="btn ghost" href="#status">Status</a>
       <a class="btn ghost" href="docs.html">Docs</a>
     </div>
-    <div class="used-by">MIT &middot; 138 ms vs DuckDB 1.1.3's 540 ms (3.9&times;) &middot; 5.43&times; on Avro &middot; v0.2.0 &middot; <a href="https://github.com/SouravRoy-ETL/slothdb/releases/tag/v0.2.0">release notes</a></div>
+    <div class="used-by">MIT &middot; embedded &middot; 7 file formats in core &middot; <a href="https://github.com/SouravRoy-ETL/slothdb/releases/latest">latest release</a></div>
   </div>
 </section>
 
@@ -256,8 +256,8 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
       </div>
       <h3>Fast</h3>
-      <p>Morsel-driven parallelism, typed int64 JOIN hashes, SIMD CSV scanning, <code>COUNT(*)</code> over JOIN fused into the aggregate. 5-query warm JOIN batch: 138 ms vs DuckDB's 540 ms.</p>
-      <a class="card-link" href="#benchmarks">Read more</a>
+      <p>Morsel-driven parallelism, typed int64 JOIN hashes, SIMD CSV scanning, <code>COUNT(*)</code> over JOIN fused into the aggregate. Whether that translates into a meaningful speedup depends on the workload; see the <a href="#status">Status</a> section.</p>
+      <a class="card-link" href="#status">Read more</a>
     </div>
 
     <div class="card">
@@ -509,79 +509,21 @@
 
 <section class="page left" id="quickstart">
   <h2>Try it in 60 seconds</h2>
-  <p class="section-lede">No files to find. Demo generates a 100 000-row CSV, runs three queries, prints side-by-side timing against DuckDB on your own machine.</p>
-  <div class="demo-wrap">
-    <img src="assets/demo.svg" alt="SlothDB demo: side-by-side timing vs DuckDB">
-  </div>
+  <p class="section-lede">No files to find. The demo generates a 100 000-row CSV, runs three queries, and prints the timings; if DuckDB is on PATH it prints a side-by-side. Numbers depend on your hardware and DuckDB version.</p>
 </section>
 
-<section class="page" id="benchmarks">
-  <h2>ClickBench-43: SlothDB vs DuckDB</h2>
-  <p class="section-lede">SlothDB is a from-scratch C++ embedded database, measured head to head against DuckDB on the industry-standard analytical benchmark. Both engines run the 43 official ClickBench queries over a 100M-row <code>hits</code> Parquet dataset on the same machine, 3 trials each. SlothDB completes 40 of the 43 and is faster than DuckDB on 29 of those 40, geomean 1.24x. Three queries it does not finish inside the 120-second cap: Q19 and Q33 (very high-cardinality GROUP BY) and Q29 (a regex GROUP BY).</p>
-  <div style="margin: 26px auto 8px; max-width: 1060px; text-align:center;">
-    <img src="assets/benchmarks/clickbench_outcomes.png" alt="ClickBench-43: SlothDB vs DuckDB outcomes" style="max-width: 440px; width: 100%;">
-    <img src="assets/benchmarks/clickbench_speedup.png" alt="ClickBench-43 per-query speedup vs DuckDB" style="width: 100%; margin-top: 14px;">
-  </div>
-  <p style="max-width:760px; margin: 12px auto 56px; font-size:0.9em; opacity:0.75;">
-    The queries SlothDB loses are drawn in red, not dropped. High-cardinality two-column GROUP BY (Q31 at 0.22x, Q32 at 0.11x) is the weak spot; total wall time across the 40 comparable queries is close, SlothDB 71s to DuckDB 65s. Reproduce the whole suite with <code>python bench/clickbench/official_bench.py</code> from the repo. Ryzen 5 5600U laptop, DuckDB v1.4.3, min-of-3. Not an official ClickBench submission; ClickBench timings are hardware-specific.
-  </p>
-
-  <h2>Three proof points, not sixteen</h2>
-  <p class="section-lede">1M-row datasets · warm cache · 5-run median · <a href="https://github.com/SouravRoy-ETL/slothdb#performance--three-stories-not-sixteen">reproducible locally</a> via <code>pip install slothdb &amp;&amp; python -c "import slothdb; slothdb.demo()"</code>.</p>
-
-  <div class="grid cols-3" style="max-width: 1080px; margin: 0 auto;">
-    <div class="card">
-      <h3>JOIN - CPU-bound</h3>
-      <p style="font-size:0.9em; opacity:0.75; margin-bottom:12px;"><code>COUNT(*) FROM big JOIN sm ON b.k=s.k</code> · 1 M × 1 K rows</p>
-      <p style="font-size:1.6em; font-weight:600; margin:0;">85 ms <span style="opacity:0.5; font-weight:400; font-size:0.7em;">vs</span> 212 ms</p>
-      <p style="color:var(--accent); font-weight:600; margin-top:6px;">2.5× faster</p>
-    </div>
-    <div class="card">
-      <h3>5-query batch</h3>
-      <p style="font-size:0.9em; opacity:0.75; margin-bottom:12px;">scan + aggregate + GROUP BY + filter + JOIN · single shell invocation</p>
-      <p style="font-size:1.6em; font-weight:600; margin:0;">138 ms <span style="opacity:0.5; font-weight:400; font-size:0.7em;">vs</span> 540 ms</p>
-      <p style="color:var(--accent); font-weight:600; margin-top:6px;">3.9× faster end-to-end</p>
-    </div>
-    <div class="card">
-      <h3>Avro - native decode</h3>
-      <p style="font-size:0.9em; opacity:0.75; margin-bottom:12px;"><code>SUM(revenue)</code> on 1 M-row <code>.avro</code> · DuckDB uses an extension</p>
-      <p style="font-size:1.6em; font-weight:600; margin:0;">140 ms <span style="opacity:0.5; font-weight:400; font-size:0.7em;">vs</span> 760 ms</p>
-      <p style="color:var(--accent); font-weight:600; margin-top:6px;">5.43× faster</p>
-    </div>
-  </div>
-
-  <details style="max-width: 980px; margin: 40px auto 0;">
-    <summary style="cursor:pointer; font-weight:600;">Full 16-query suite across CSV / Parquet / JSON / Avro / Excel</summary>
-    <table class="data" style="margin-top: 20px;">
-      <thead>
-        <tr><th>Format</th><th>Query</th><th style="text-align:right">SlothDB</th><th style="text-align:right">DuckDB</th><th style="text-align:right">Speedup</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>CSV</td><td>COUNT(*) (parser throughput)</td><td class="num">33 ms</td><td class="num">170 ms</td><td class="win">5.08×</td></tr>
-        <tr><td>CSV</td><td>SUM(revenue)</td><td class="num">106 ms</td><td class="num">177 ms</td><td class="win">1.67×</td></tr>
-        <tr><td>CSV</td><td>GROUP BY region</td><td class="num">100 ms</td><td class="num">191 ms</td><td class="win">1.91×</td></tr>
-        <tr><td>CSV</td><td>GROUP BY product, year</td><td class="num">117 ms</td><td class="num">198 ms</td><td class="win">1.70×</td></tr>
-        <tr><td>CSV</td><td>WHERE + GROUP BY</td><td class="num">107 ms</td><td class="num">194 ms</td><td class="win">1.81×</td></tr>
-        <tr><td>CSV</td><td>big &times; small JOIN + COUNT(*)</td><td class="num">85 ms</td><td class="num">212 ms</td><td class="win">2.49×</td></tr>
-        <tr><td>Parquet</td><td>COUNT(*)</td><td class="num">12 ms</td><td class="num">34 ms</td><td class="win">2.83×</td></tr>
-        <tr><td>Parquet</td><td>SUM(revenue)</td><td class="num">46 ms</td><td class="num">48 ms</td><td style="opacity:0.6">1.04× (tie)</td></tr>
-        <tr><td>Parquet</td><td>GROUP BY region</td><td class="num">76 ms</td><td class="num">88 ms</td><td class="win">1.16×</td></tr>
-        <tr><td>Parquet</td><td>GROUP BY product, year</td><td class="num">146 ms</td><td class="num">173 ms</td><td class="win">1.18×</td></tr>
-        <tr><td>Parquet</td><td>WHERE + GROUP BY</td><td class="num">157 ms</td><td class="num">198 ms</td><td class="win">1.26×</td></tr>
-        <tr><td>JSON</td><td>SUM(revenue)</td><td class="num">242 ms</td><td class="num">314 ms</td><td class="win">1.30×</td></tr>
-        <tr><td>JSON</td><td>GROUP BY region</td><td class="num">284 ms</td><td class="num">324 ms</td><td class="win">1.14×</td></tr>
-        <tr><td>Avro</td><td>SUM(revenue)</td><td class="num">140 ms</td><td class="num">760 ms</td><td class="win">5.43×</td></tr>
-        <tr><td>Avro</td><td>GROUP BY region</td><td class="num">170 ms</td><td class="num">800 ms</td><td class="win">4.71×</td></tr>
-        <tr><td>Excel</td><td>GROUP BY region</td><td class="num">2.5 s</td><td class="num">3.56 s</td><td class="win">1.41×</td></tr>
-      </tbody>
-    </table>
-    <p style="font-size:0.9em; opacity:0.75; margin-top:12px;">Median speedup: 1.70×. Range: 1.04× - 5.43×.</p>
-  </details>
-
-  <p style="max-width:740px; margin:28px auto 0; font-size:0.9em; opacity:0.75;">
-    Tested on 1 M-row datasets on a single workstation. Parquet aggregates are within ~20% of DuckDB on most queries - both engines saturate the columnar fast path there. The big gaps (Avro, CSV <code>COUNT(*)</code>, the JOIN batch) come from SlothDB's native decoders and the 0.1.6 JOIN hot path. Full ClickBench-43 results are shown at the top of this section.
-  </p>
+<section class="page" id="status">
+  <h2>Status</h2>
+  <p class="section-lede">SlothDB is early-stage and experimental. The headline performance framing this site previously used was wrong; the engine had per-query handlers that pattern-matched ClickBench query shapes, and the wins came largely from those handlers.</p>
+  <ul style="max-width: 760px; margin: 16px auto 0; font-size:0.95em; line-height:1.6;">
+    <li>The previous "33 of 43 beats DuckDB, up to 5&times;" framing came from per-query handlers in <code>physical_planner.cpp</code>. Four of the most overfit handlers, and the original headline claim, were removed in <a href="https://github.com/SouravRoy-ETL/slothdb/commit/a4d490f"><code>a4d490f</code></a>. The remaining handler-shaped code is still in the tree; removing it is in progress.</li>
+    <li>Public discussion of the architecture: <a href="https://github.com/ClickHouse/ClickBench/issues/930">ClickHouse/ClickBench#930</a> and <a href="https://github.com/SouravRoy-ETL/slothdb/issues/11">issue #11</a> on the repo.</li>
+    <li>No vendor PR to ClickBench is open or planned while the handler dispatch is still there.</li>
+    <li>Treat performance numbers in this site, in the repo README, and in <code>bench/</code> as anecdotal until the architecture work lands.</li>
+  </ul>
 </section>
+
+<section class="page" id="benchmarks" style="display:none;"></section>
 
 
 <section class="page" id="install">
@@ -643,7 +585,7 @@ cmake --build build --config Release</pre>
         <li><a href="blog/compiling-a-database-to-wasm.html">Blog: compiling to WASM</a></li>
         <li><a href="docs.html#python-api">Python API</a></li>
         <li><a href="docs.html#sql">SQL reference</a></li>
-        <li><a href="docs.html#benchmarks">Benchmarks</a></li>
+        <li><a href="docs.html#status">Status</a></li>
       </ul>
     </div>
     <div>
@@ -783,7 +725,7 @@ fetch('https://api.github.com/repos/SouravRoy-ETL/slothdb')
     },
     avro: {
       label: 'Avro (native decoder)',
-      sql: "-- Avro reads natively - no extension load, 5.43x DuckDB.\n" +
+      sql: "-- Avro reads natively, no extension load required.\n" +
            "SELECT SUM(revenue) AS total\n" +
            "FROM read_avro('events.avro');",
       python: "db.sql(\"SELECT SUM(revenue) AS total FROM read_avro('events.avro')\")\n" +
