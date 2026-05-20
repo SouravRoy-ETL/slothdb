@@ -82,9 +82,12 @@ jobs:
         path: slothdb_${{ steps.ver.outputs.version }}_amd64.deb
 
   build-macos:
-    # macos-13 is the x86_64 runner. SlothDB targets x86-64 (AVX2/BMI2);
-    # macos-14+ is Apple Silicon and rejects -mavx2.
-    runs-on: macos-13
+    # macos-14 is the Apple Silicon hosted runner with reliable capacity.
+    # macos-13 (Intel-only) hosted runners queue indefinitely and routinely
+    # never get scheduled, so we cross-build universal2 on macos-14: the
+    # x86_64 slice keeps -mavx2 (CMake adds it only when the slice is x86),
+    # and the resulting binary runs natively on both arm64 and x86_64 Macs.
+    runs-on: macos-14
     steps:
     - uses: actions/checkout@v4
       with:
@@ -92,8 +95,13 @@ jobs:
         submodules: recursive
     - name: Build
       run: |
-        cmake -B build -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_ASK_MODEL=ON -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+        cmake -B build \
+          -DSLOTHDB_BUILD_SHELL=ON -DSLOTHDB_ASK_MODEL=ON \
+          -DSLOTHDB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
         cmake --build build -j$(sysctl -n hw.ncpu)
+        lipo -info build/src/slothdb
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
