@@ -68,7 +68,7 @@ the geomean; DuckDB takes the sum, since a few high-cardinality
 aggregations are slow.
 
 Measured on a 6-core laptop (Ryzen 5 5600U, 15 GB RAM, Windows 11) against
-DuckDB v1.4.3. This is a local run, not an official ClickBench submission;
+DuckDB. This is a local run, not an official ClickBench submission;
 ClickBench timings are hardware-specific, so reproduce it on yours:
 
 ```bash
