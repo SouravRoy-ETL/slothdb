@@ -885,6 +885,43 @@ BoundExprPtr Binder::BindArithmetic(const ArithmeticExpression &expr, BindContex
             "Invalid DATE arithmetic: " + left->GetReturnType().ToString() +
             " " + expr.op + " " + right->GetReturnType().ToString());
     }
+    // TIMESTAMP arithmetic: integer operand is seconds.
+    //   TIMESTAMP + N -> TIMESTAMP   (commutative)
+    //   TIMESTAMP - N -> TIMESTAMP   (TIMESTAMP on left only)
+    //   TIMESTAMP - TIMESTAMP -> BIGINT (microseconds difference)
+    // Result type only — the executor needs to scale the integer
+    // operand by 1e6 (sec->micros) before the int64 add/sub; without
+    // result-type tagging here, the integer is added to a TIMESTAMP
+    // (int64 micros) and the result is rendered as raw INTEGER bytes.
+    bool left_ts  = (left_id  == LogicalTypeId::TIMESTAMP || left_id == LogicalTypeId::TIMESTAMP_TZ);
+    bool right_ts = (right_id == LogicalTypeId::TIMESTAMP || right_id == LogicalTypeId::TIMESTAMP_TZ);
+    if (left_ts || right_ts) {
+        auto pick_ts = [&]() -> LogicalType {
+            return LogicalType::TIMESTAMP();
+        };
+        if (expr.op == "+") {
+            if (left_ts && (is_int_id(right_id) || right_id == LogicalTypeId::SQLNULL)) {
+                return std::make_unique<BoundArithmetic>(
+                    expr.op, std::move(left), std::move(right), pick_ts());
+            }
+            if (right_ts && (is_int_id(left_id) || left_id == LogicalTypeId::SQLNULL)) {
+                return std::make_unique<BoundArithmetic>(
+                    expr.op, std::move(left), std::move(right), pick_ts());
+            }
+        } else if (expr.op == "-") {
+            if (left_ts && right_ts) {
+                return std::make_unique<BoundArithmetic>(
+                    expr.op, std::move(left), std::move(right), LogicalType::BIGINT());
+            }
+            if (left_ts && (is_int_id(right_id) || right_id == LogicalTypeId::SQLNULL)) {
+                return std::make_unique<BoundArithmetic>(
+                    expr.op, std::move(left), std::move(right), pick_ts());
+            }
+        }
+        throw BinderException(ErrorCode::TYPE_MISMATCH,
+            "Invalid TIMESTAMP arithmetic: " + left->GetReturnType().ToString() +
+            " " + expr.op + " " + right->GetReturnType().ToString());
+    }
     auto result_type = ResolveArithmeticType(left->GetReturnType(), right->GetReturnType());
     return std::make_unique<BoundArithmetic>(expr.op, std::move(left), std::move(right),
                                              result_type);

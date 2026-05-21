@@ -964,6 +964,68 @@ void ExpressionExecutor::ExecuteArithmetic(const BoundArithmetic &expr, DataChun
     Execute(*expr.left, input, left, count);
     Execute(*expr.right, input, right, count);
 
+    // TIMESTAMP arithmetic per SQL standard / DuckDB convention:
+    //   TIMESTAMP + N (seconds) -> TIMESTAMP   (commutative)
+    //   TIMESTAMP - N (seconds) -> TIMESTAMP
+    //   TIMESTAMP - TIMESTAMP   -> BIGINT seconds between
+    // TIMESTAMP is internally INT64 micros; integer-seconds operand
+    // must be scaled by 1e6 before the int64 math. TIMESTAMP-TIMESTAMP
+    // produces a raw micros diff that we then truncate to seconds.
+    auto lt_id = expr.left->GetReturnType().id();
+    auto rt_id = expr.right->GetReturnType().id();
+    bool left_ts  = (lt_id == LogicalTypeId::TIMESTAMP || lt_id == LogicalTypeId::TIMESTAMP_TZ);
+    bool right_ts = (rt_id == LogicalTypeId::TIMESTAMP || rt_id == LogicalTypeId::TIMESTAMP_TZ);
+    auto is_int_id = [](LogicalTypeId t) {
+        return t == LogicalTypeId::TINYINT  || t == LogicalTypeId::SMALLINT ||
+               t == LogicalTypeId::INTEGER  || t == LogicalTypeId::BIGINT;
+    };
+    if (left_ts || right_ts) {
+        auto &ov = result.GetValidity();
+        auto *out = result.GetData<int64_t>();
+        if (expr.op == "-" && left_ts && right_ts) {
+            // TIMESTAMP - TIMESTAMP -> BIGINT seconds.
+            for (idx_t i = 0; i < count; i++) {
+                if (!left.GetValidity().RowIsValid(i) || !right.GetValidity().RowIsValid(i)) {
+                    ov.SetInvalid(i); out[i] = 0; continue;
+                }
+                int64_t lm = left.GetValue(i).GetValue<int64_t>();
+                int64_t rm = right.GetValue(i).GetValue<int64_t>();
+                out[i] = (lm - rm) / 1000000LL;
+            }
+            return;
+        }
+        // TIMESTAMP ± integer-seconds. Identify which side is the TS.
+        bool int_on_right = left_ts && (is_int_id(rt_id) || rt_id == LogicalTypeId::SQLNULL);
+        bool int_on_left  = right_ts && (is_int_id(lt_id) || lt_id == LogicalTypeId::SQLNULL);
+        for (idx_t i = 0; i < count; i++) {
+            if (!left.GetValidity().RowIsValid(i) || !right.GetValidity().RowIsValid(i)) {
+                ov.SetInvalid(i); out[i] = 0; continue;
+            }
+            int64_t ts_micros = int_on_right
+                ? left.GetValue(i).GetValue<int64_t>()
+                : (int_on_left ? right.GetValue(i).GetValue<int64_t>() : 0);
+            int64_t secs = 0;
+            if (int_on_right) {
+                auto v = right.GetValue(i);
+                secs = (v.type().id() == LogicalTypeId::INTEGER)
+                    ? v.GetValue<int32_t>() : v.GetValue<int64_t>();
+            } else if (int_on_left) {
+                auto v = left.GetValue(i);
+                secs = (v.type().id() == LogicalTypeId::INTEGER)
+                    ? v.GetValue<int32_t>() : v.GetValue<int64_t>();
+            }
+            int64_t add_micros = secs * 1000000LL;
+            if (expr.op == "+") {
+                out[i] = ts_micros + add_micros;
+            } else {  // "-"
+                // only left_ts && int-on-right reaches here in the
+                // binder; defensively still subtract.
+                out[i] = ts_micros - add_micros;
+            }
+        }
+        return;
+    }
+
     // Promote operands to result type so ArithmeticTyped<T> below reads the
     // right physical layout. Without this, mixing AVG (DOUBLE) with an
     // INTEGER literal turns into a reinterpret-cast on raw int bytes.
