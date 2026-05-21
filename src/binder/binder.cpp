@@ -234,13 +234,43 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
                 } else if (val.type().id() == LogicalTypeId::BIGINT) {
                     ord = val.GetValue<int64_t>();
                 }
-                if (ord >= 1 && ord <= static_cast<int64_t>(stmt.select_list.size())) {
+                // Reference the post-expansion select_list so that
+                // `SELECT * FROM t GROUP BY 1, 2` resolves to actual
+                // expanded columns rather than the STAR placeholder.
+                // Previously this used stmt.select_list.size() (pre-
+                // expansion = 1 for `*`) and silently fell through
+                // when ord matched a STAR, leaving trailing GROUP BY
+                // columns dangling with corrupt aggregate output.
+                if (ord >= 1 && ord <= static_cast<int64_t>(result->select_list.size())) {
                     idx_t sl_idx = static_cast<idx_t>(ord - 1);
-                    if (stmt.select_list[sl_idx]->GetExpressionType()
+                    // result->select_list[sl_idx] is already a bound
+                    // expression (column ref / arithmetic / etc) —
+                    // reuse it directly by re-binding the original
+                    // parsed expression when available, or wrap a
+                    // bound copy via the result_names index for
+                    // star-expanded columns. The simplest correct
+                    // path: peek at the source. If the ordinal points
+                    // beyond stmt.select_list (i.e., into a star-
+                    // expanded slot), look up the column by name from
+                    // the bind context using result_names[sl_idx];
+                    // otherwise re-bind from stmt.select_list when
+                    // it's a non-STAR scalar.
+                    if (sl_idx < stmt.select_list.size() &&
+                        stmt.select_list[sl_idx]->GetExpressionType()
                             != ExpressionType::STAR) {
                         result->group_by.push_back(
                             BindExpression(*stmt.select_list[sl_idx], context));
                         resolved = true;
+                    } else if (sl_idx < result->result_names.size()) {
+                        // Star-expanded column: re-resolve by name.
+                        auto col = std::make_unique<ColumnRefExpression>(
+                            result->result_names[sl_idx]);
+                        try {
+                            result->group_by.push_back(BindExpression(*col, context));
+                            resolved = true;
+                        } catch (...) {
+                            // Fall through to alias-name path.
+                        }
                     }
                 }
             }
@@ -353,21 +383,37 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
                     is_int_ordinal = true;
                 }
                 if (is_int_ordinal) {
+                    // Reference the post-expansion select_list so
+                    // `SELECT * FROM t ORDER BY 2` works (previously
+                    // raised "out of range" because stmt.select_list
+                    // size 1 (STAR) was used instead of the expanded
+                    // result_names size N).
                     if (ord >= 1 &&
-                        ord <= static_cast<int64_t>(stmt.select_list.size())) {
+                        ord <= static_cast<int64_t>(result->select_list.size())) {
                         idx_t sl_idx = static_cast<idx_t>(ord - 1);
-                        if (stmt.select_list[sl_idx]->GetExpressionType()
+                        if (sl_idx < stmt.select_list.size() &&
+                            stmt.select_list[sl_idx]->GetExpressionType()
                                 != ExpressionType::STAR) {
                             bound_item.expression = BindExpression(
                                 *stmt.select_list[sl_idx], context);
                             resolved = true;
+                        } else if (sl_idx < result->result_names.size()) {
+                            // Star-expanded column: re-resolve by name.
+                            auto col = std::make_unique<ColumnRefExpression>(
+                                result->result_names[sl_idx]);
+                            try {
+                                bound_item.expression = BindExpression(*col, context);
+                                resolved = true;
+                            } catch (...) {
+                                // Fall through to alias path.
+                            }
                         }
                     } else {
                         throw BinderException(
                             ErrorCode::OUT_OF_RANGE,
                             "ORDER BY position " + std::to_string(ord) +
                             " is out of range (select list has " +
-                            std::to_string(stmt.select_list.size()) +
+                            std::to_string(result->select_list.size()) +
                             " entries)");
                     }
                 }
