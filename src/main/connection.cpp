@@ -423,12 +423,69 @@ Connection::~Connection() = default;
 // SQL Execution Pipeline: parse -> bind -> plan -> physical plan -> execute
 // ============================================================================
 
+// Split a multi-statement SQL string into per-statement source slices,
+// respecting string literals ('...'), double-quoted identifiers ("..."),
+// `--` line comments and `/* */` block comments. Used so that CREATE
+// VIEW can capture only its own SELECT body and not silently absorb
+// trailing statements.
+static std::vector<std::string> SplitTopLevelStatements(const std::string &sql) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    size_t start = 0;
+    while (i < sql.size()) {
+        char c = sql[i];
+        if (c == '\'') {
+            i++;
+            while (i < sql.size()) {
+                if (sql[i] == '\'') {
+                    if (i + 1 < sql.size() && sql[i + 1] == '\'') { i += 2; continue; }
+                    i++; break;
+                }
+                i++;
+            }
+        } else if (c == '"') {
+            i++;
+            while (i < sql.size() && sql[i] != '"') i++;
+            if (i < sql.size()) i++;
+        } else if (c == '-' && i + 1 < sql.size() && sql[i + 1] == '-') {
+            while (i < sql.size() && sql[i] != '\n') i++;
+        } else if (c == '/' && i + 1 < sql.size() && sql[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < sql.size() && !(sql[i] == '*' && sql[i + 1] == '/')) i++;
+            if (i + 1 < sql.size()) i += 2;
+        } else if (c == ';') {
+            out.push_back(sql.substr(start, i - start));
+            i++;
+            start = i;
+        } else {
+            i++;
+        }
+    }
+    if (start < sql.size()) {
+        std::string tail = sql.substr(start);
+        bool only_ws = true;
+        for (char ch : tail) {
+            if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+                only_ws = false; break;
+            }
+        }
+        if (!only_ws) out.push_back(tail);
+    }
+    return out;
+}
+
 QueryResult Connection::Query(const std::string &sql) {
     // 1. Parse.
     auto statements = Parser::Parse(sql);
+    // Per-statement source slices — used by CREATE VIEW and any other
+    // path that needs to capture its own statement text without
+    // accidentally absorbing trailing statements (see commit 1628b3f
+    // for the same-shape bug fixed in CREATE TABLE AS).
+    auto stmt_slices = SplitTopLevelStatements(sql);
 
     QueryResult final_result;
     for (auto &stmt : statements) {
+        idx_t stmt_idx = static_cast<idx_t>(&stmt - statements.data());
         // Handle transaction control.
         if (stmt->GetType() == StatementType::BEGIN_TXN) {
             BeginTransaction();
@@ -720,17 +777,28 @@ QueryResult Connection::Query(const std::string &sql) {
         if (stmt->GetType() == StatementType::CREATE_VIEW) {
             auto &cv = static_cast<CreateViewStatement &>(*stmt);
 
-            // Extract the SELECT SQL from the original statement.
-            // Find "AS" in the SQL and take everything after it.
+            // Extract the SELECT SQL from THIS statement's slice, not
+            // the whole multi-statement input. Previously the " AS "
+            // substring search ran over the full sql string, silently
+            // absorbing every trailing statement into the view body
+            // (same shape as the CTAS bug fixed in 1628b3f).
             std::string view_sql;
             {
-                auto upper_sql = StringUtil::Upper(sql);
-                auto as_pos = upper_sql.find(" AS ");
+                const std::string &slice = (stmt_idx < stmt_slices.size())
+                    ? stmt_slices[stmt_idx] : sql;
+                auto upper_slice = StringUtil::Upper(slice);
+                auto as_pos = upper_slice.find(" AS ");
                 if (as_pos != std::string::npos) {
-                    view_sql = sql.substr(as_pos + 4);
+                    view_sql = slice.substr(as_pos + 4);
                     // Trim trailing semicolons and whitespace.
                     while (!view_sql.empty() && (view_sql.back() == ';' || view_sql.back() == ' ' || view_sql.back() == '\n' || view_sql.back() == '\r'))
                         view_sql.pop_back();
+                    // Leading whitespace too.
+                    size_t lead = 0;
+                    while (lead < view_sql.size() &&
+                           (view_sql[lead] == ' ' || view_sql[lead] == '\t' ||
+                            view_sql[lead] == '\n' || view_sql[lead] == '\r')) lead++;
+                    if (lead) view_sql.erase(0, lead);
                 }
             }
 
