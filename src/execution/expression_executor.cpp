@@ -4086,6 +4086,22 @@ void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
                 }
                 continue;
             }
+            // Typed TIMESTAMP/TIMESTAMP_TZ -> DATE: truncate micros to
+            // epoch days via floor-division. Previously the cast went
+            // through Value::ToString() ("YYYY-MM-DD HH:MM:SS") which
+            // the DATE parser rejected because it requires exactly
+            // YYYY-MM-DD; non-TRY casts threw ConversionException and
+            // TRY_CAST silently returned NULL.
+            if ((from_type == LogicalTypeId::TIMESTAMP ||
+                 from_type == LogicalTypeId::TIMESTAMP_TZ) &&
+                to_type == LogicalTypeId::DATE) {
+                int64_t micros = val.GetValue<int64_t>();
+                const int64_t MPD = 86400LL * 1000000LL;
+                int64_t days = micros / MPD;
+                if (micros < 0 && (micros % MPD) != 0) days--;
+                result.SetValue(i, Value::DATE(static_cast<int32_t>(days)));
+                continue;
+            }
             auto str = val.ToString();
             switch (to_type) {
             case LogicalTypeId::TINYINT:
