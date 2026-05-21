@@ -897,6 +897,15 @@ BoundExprPtr Binder::BindUnaryMinus(const UnaryMinusExpression &expr, BindContex
 
 BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &context) {
     auto name = StringUtil::Upper(expr.function_name);
+    // Canonical alias normalization — collapse SQL-standard synonyms
+    // onto SlothDB's primary names so the binder/executor only need to
+    // recognise one spelling. byte-length semantics (slothdb's LENGTH
+    // returns bytes today, matching the byte-oriented LEFT/RIGHT/
+    // SUBSTRING family); true UTF-8 codepoint length is a separate
+    // future change.
+    if (name == "CHAR_LENGTH" || name == "CHARACTER_LENGTH") {
+        name = "LENGTH";
+    }
     bool is_agg = IsAggregateFunction(name);
 
     std::vector<BoundExprPtr> args;
