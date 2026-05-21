@@ -3416,7 +3416,8 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 
     // ---- Regex functions ----
 
-    if (name == "REGEXP_MATCHES" || name == "REGEXP_MATCH") {
+    if (name == "REGEXP_MATCHES" || name == "REGEXP_MATCH" ||
+        name == "REGEXP" || name == "REGEXP_LIKE") {
         Vector str_vec(expr.arguments[0]->GetReturnType(), count);
         Vector pat_vec(expr.arguments[1]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, str_vec, count);

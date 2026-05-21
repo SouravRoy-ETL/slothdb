@@ -1550,7 +1550,8 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         return_type = LogicalType::DOUBLE();
     } else if (name == "INITCAP") {
         return_type = LogicalType::VARCHAR();
-    } else if (name == "EXISTS" || name == "REGEXP_MATCHES" || name == "REGEXP_MATCH") {
+    } else if (name == "EXISTS" || name == "REGEXP_MATCHES" || name == "REGEXP_MATCH" ||
+               name == "REGEXP" || name == "REGEXP_LIKE") {
         return_type = LogicalType::BOOLEAN();
     } else if (name == "REGEXP_REPLACE" || name == "REGEXP_EXTRACT") {
         return_type = LogicalType::VARCHAR();
