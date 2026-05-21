@@ -2185,22 +2185,42 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     }
 
     if (name == "TRIM" || name == "LTRIM" || name == "RTRIM") {
+        // Two-arg form: arguments[1] is the character set to trim.
+        // Previously the second argument was silently ignored, so
+        // TRIM('xxhixx','x') returned 'xxhixx' unchanged — a textbook
+        // silent-wrong-result bug.
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
+        Vector chars_vec(LogicalType::VARCHAR(), count);
+        bool has_chars = expr.arguments.size() >= 2;
+        if (has_chars) {
+            Execute(*expr.arguments[1], input, chars_vec, count);
+        }
         for (idx_t i = 0; i < count; i++) {
             auto v = arg.GetValue(i);
             if (v.IsNull()) {
                 result.GetValidity().SetInvalid(i);
                 continue;
             }
-            auto s = v.GetValue<std::string>();
-            if (name == "TRIM" || name == "LTRIM") {
-                s.erase(0, s.find_first_not_of(" \t\n\r"));
+            std::string chars = " \t\n\r";
+            if (has_chars) {
+                auto cv = chars_vec.GetValue(i);
+                if (cv.IsNull()) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
+                chars = cv.GetValue<std::string>();
             }
-            if (name == "TRIM" || name == "RTRIM") {
-                size_t last = s.find_last_not_of(" \t\n\r");
-                if (last == std::string::npos) s.clear();
-                else s.erase(last + 1);
+            auto s = v.GetValue<std::string>();
+            if (!chars.empty()) {
+                if (name == "TRIM" || name == "LTRIM") {
+                    s.erase(0, s.find_first_not_of(chars));
+                }
+                if (name == "TRIM" || name == "RTRIM") {
+                    size_t last = s.find_last_not_of(chars);
+                    if (last == std::string::npos) s.clear();
+                    else s.erase(last + 1);
+                }
             }
             result.SetValue(i, Value::VARCHAR(s));
         }

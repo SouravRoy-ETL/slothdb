@@ -1464,6 +1464,59 @@ ParsedExprPtr Parser::ParseFunctionCall(const std::string &name) {
                         args.push_back(ParseExpression());
                     }
                 }
+            } else if (name_upper == "TRIM" || name_upper == "LTRIM" ||
+                       name_upper == "RTRIM") {
+                // SQL-92: TRIM([LEADING|TRAILING|BOTH] [chars] FROM s)
+                // Map the side keyword to LTRIM / RTRIM / TRIM and
+                // emit args in canonical (string, chars) order. The
+                // executor handles two-arg trim natively after the
+                // companion fix in expression_executor.cpp.
+                std::string side_name = name_upper; // default
+                if (Check(TokenType::IDENTIFIER)) {
+                    auto t = Current().value;
+                    std::string up;
+                    up.reserve(t.size());
+                    for (char c : t) up += (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+                    if (up == "LEADING") { side_name = "LTRIM"; Advance(); }
+                    else if (up == "TRAILING") { side_name = "RTRIM"; Advance(); }
+                    else if (up == "BOTH") { side_name = "TRIM"; Advance(); }
+                }
+                // Now either we have FROM (no chars), or first expr,
+                // optionally followed by FROM, or comma form.
+                if (MatchKeyword(TokenType::KW_FROM)) {
+                    // TRIM([SIDE] FROM s) — default whitespace.
+                    args.push_back(ParseExpression());
+                } else {
+                    args.push_back(ParseExpression());
+                    if (MatchKeyword(TokenType::KW_FROM)) {
+                        // First parsed expr was actually chars.
+                        // Canonical order: (string, chars).
+                        auto chars = std::move(args.back());
+                        args.pop_back();
+                        args.push_back(ParseExpression());   // s
+                        args.push_back(std::move(chars));    // chars
+                    } else {
+                        // Comma form: TRIM(s, chars).
+                        while (Match(TokenType::COMMA)) {
+                            args.push_back(ParseExpression());
+                        }
+                    }
+                }
+                // Rewrite the function name to encode the side.
+                // Returning early after consuming RPAREN keeps the
+                // downstream FILTER / OVER paths unchanged.
+                Expect(TokenType::RPAREN, "after function arguments");
+                ParsedExprPtr filter_expr2;
+                if (MatchKeyword(TokenType::KW_FILTER)) {
+                    Expect(TokenType::LPAREN, "after FILTER");
+                    Expect(TokenType::KW_WHERE, "after FILTER (");
+                    filter_expr2 = ParseExpression();
+                    Expect(TokenType::RPAREN, "to close FILTER clause");
+                }
+                auto fn2 = std::make_unique<FunctionExpression>(
+                    side_name, std::move(args), distinct,
+                    std::move(filter_expr2));
+                return fn2;
             } else if (name_upper == "POSITION") {
                 // SQL POSITION(needle IN haystack). Parse the needle as
                 // ParseAddSub to avoid the IN-list comparison branch
