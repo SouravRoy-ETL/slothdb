@@ -1845,11 +1845,64 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     if (name == "SIGN") {
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
+        // Previously only INTEGER and DOUBLE branches existed; TINYINT,
+        // SMALLINT, BIGINT, FLOAT all fell into the `v.GetValue<double>()`
+        // path which threw / returned garbage. Result was silently wrong:
+        //   SIGN(BIGINT -5)   -> 0   (was)  -> -1
+        //   SIGN(TINYINT -5)  -> 1            -> -1
+        //   SIGN(SMALLINT -k) -> 1            -> -1
+        // Switch on PhysicalType for typed dispatch.
+        auto physical = arg.GetType().GetInternalType();
         for (idx_t i = 0; i < count; i++) {
-            auto v = arg.GetValue(i);
-            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
-            double d = (v.type().id() == LogicalTypeId::INTEGER) ? v.GetValue<int32_t>() : v.GetValue<double>();
-            result.SetValue(i, Value::INTEGER(d > 0 ? 1 : (d < 0 ? -1 : 0)));
+            if (!arg.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            int32_t sign = 0;
+            switch (physical) {
+            case PhysicalType::INT8: {
+                int8_t v = arg.GetData<int8_t>()[i];
+                sign = v > 0 ? 1 : (v < 0 ? -1 : 0);
+                break;
+            }
+            case PhysicalType::INT16: {
+                int16_t v = arg.GetData<int16_t>()[i];
+                sign = v > 0 ? 1 : (v < 0 ? -1 : 0);
+                break;
+            }
+            case PhysicalType::INT32: {
+                int32_t v = arg.GetData<int32_t>()[i];
+                sign = v > 0 ? 1 : (v < 0 ? -1 : 0);
+                break;
+            }
+            case PhysicalType::INT64: {
+                int64_t v = arg.GetData<int64_t>()[i];
+                sign = v > 0 ? 1 : (v < 0 ? -1 : 0);
+                break;
+            }
+            case PhysicalType::FLOAT: {
+                float v = arg.GetData<float>()[i];
+                if (std::isnan(v)) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
+                sign = v > 0.0f ? 1 : (v < 0.0f ? -1 : 0);
+                break;
+            }
+            case PhysicalType::DOUBLE: {
+                double v = arg.GetData<double>()[i];
+                if (std::isnan(v)) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
+                sign = v > 0.0 ? 1 : (v < 0.0 ? -1 : 0);
+                break;
+            }
+            default:
+                throw NotImplementedException(
+                    "SIGN for type " + arg.GetType().ToString());
+            }
+            result.SetValue(i, Value::INTEGER(sign));
         }
         return;
     }
