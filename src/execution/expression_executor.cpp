@@ -404,10 +404,75 @@ Value ExpressionExecutor::ExecuteScalar(const BoundExpression &expr) {
         auto child_val = ExecuteScalar(*cast.child);
         if (child_val.IsNull()) return child_val;
         auto str = child_val.ToString();
+        // Strict integer parse: trim ASCII whitespace, require leading
+        // optional sign + digits + trailing whitespace only. Rejects
+        // '1.5', '12abc', empty / whitespace-only, and overflow.
+        // Previously std::stoi accepted '1.5' (silently truncates) and
+        // leaked raw std::invalid_argument / out_of_range for non-
+        // numeric or out-of-range strings.
+        auto parse_strict_int64 = [&](const std::string &s) -> int64_t {
+            size_t i = 0;
+            while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) i++;
+            if (i >= s.size()) {
+                throw ConversionException(
+                    "Could not convert string '" + s + "' to integer");
+            }
+            size_t start = i;
+            if (s[i] == '+' || s[i] == '-') i++;
+            size_t digit_start = i;
+            while (i < s.size() && s[i] >= '0' && s[i] <= '9') i++;
+            if (i == digit_start) {
+                throw ConversionException(
+                    "Could not convert string '" + s + "' to integer");
+            }
+            size_t digit_end = i;
+            while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) i++;
+            if (i != s.size()) {
+                throw ConversionException(
+                    "Could not convert string '" + s + "' to integer");
+            }
+            try {
+                return std::stoll(s.substr(start, digit_end - start));
+            } catch (const std::out_of_range &) {
+                throw ConversionException(
+                    "Value '" + s + "' out of range for integer");
+            } catch (const std::exception &) {
+                throw ConversionException(
+                    "Could not convert string '" + s + "' to integer");
+            }
+        };
         switch (cast.GetReturnType().id()) {
-        case LogicalTypeId::INTEGER: return Value::INTEGER(std::stoi(str));
-        case LogicalTypeId::BIGINT: return Value::BIGINT(std::stoll(str));
-        case LogicalTypeId::DOUBLE: return Value::DOUBLE(std::stod(str));
+        case LogicalTypeId::INTEGER: {
+            int64_t v = parse_strict_int64(str);
+            if (v < std::numeric_limits<int32_t>::min() ||
+                v > std::numeric_limits<int32_t>::max()) {
+                throw ConversionException(
+                    "Value '" + str + "' out of range for INTEGER");
+            }
+            return Value::INTEGER(static_cast<int32_t>(v));
+        }
+        case LogicalTypeId::BIGINT:
+            return Value::BIGINT(parse_strict_int64(str));
+        case LogicalTypeId::DOUBLE: {
+            try {
+                size_t pos = 0;
+                double d = std::stod(str, &pos);
+                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t')) pos++;
+                if (pos != str.size()) {
+                    throw ConversionException(
+                        "Could not convert string '" + str + "' to DOUBLE");
+                }
+                return Value::DOUBLE(d);
+            } catch (const std::out_of_range &) {
+                throw ConversionException(
+                    "Value '" + str + "' out of range for DOUBLE");
+            } catch (const ConversionException &) {
+                throw;
+            } catch (const std::exception &) {
+                throw ConversionException(
+                    "Could not convert string '" + str + "' to DOUBLE");
+            }
+        }
         case LogicalTypeId::VARCHAR: return Value::VARCHAR(str);
         case LogicalTypeId::DATE: {
             int32_t days;
