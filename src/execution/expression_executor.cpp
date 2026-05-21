@@ -4288,27 +4288,53 @@ void ExpressionExecutor::ExecuteSubquery(const BoundSubqueryExpression &expr,
         break;
 
     case BoundSubqueryExpression::Type::IN_SUBQUERY: {
-        // Check if child value exists in subquery first column.
+        // SQL three-valued logic for IN (SELECT ...):
+        //   NULL IN (anything)              -> NULL
+        //   v   IN (..., v, ...)             -> TRUE
+        //   v   IN (...) with NULL in subq   -> NULL (when no match)
+        //   v   IN (...) with no NULL, no match -> FALSE
+        // Previously this used row[0].ToString() == val.ToString()
+        // which incorrectly matched NULLs against the string "NULL"
+        // and never propagated UNKNOWN, breaking NOT IN with a NULL
+        // subquery row (returned wrong rows).
         if (expr.child) {
             Vector child_vec(expr.child->GetReturnType(), count);
             Execute(*expr.child, input, child_vec, count);
             for (idx_t i = 0; i < count; i++) {
                 auto val = child_vec.GetValue(i);
-                bool found = false;
-                for (auto &row : sub_rows) {
-                    if (!row.empty() && row[0].ToString() == val.ToString()) {
-                        found = true;
-                        break;
-                    }
+                if (val.IsNull()) {
+                    result.GetValidity().SetInvalid(i);
+                    out[i] = false;
+                    continue;
                 }
-                out[i] = found;
+                bool found = false;
+                bool saw_null = false;
+                for (auto &row : sub_rows) {
+                    if (row.empty()) continue;
+                    if (row[0].IsNull()) { saw_null = true; continue; }
+                    if (row[0] == val) { found = true; break; }
+                }
+                if (found) {
+                    out[i] = true;
+                } else if (saw_null) {
+                    result.GetValidity().SetInvalid(i);
+                    out[i] = false;
+                } else {
+                    out[i] = false;
+                }
             }
         }
         break;
     }
 
     case BoundSubqueryExpression::Type::SCALAR:
-        // Return the first value of the first row.
+        // SQL standard: scalar subquery must produce at most one row.
+        // More than one row -> runtime cardinality error. Zero rows
+        // -> NULL.
+        if (sub_rows.size() > 1) {
+            throw InvalidInputException(
+                "Scalar subquery returned more than one row");
+        }
         for (idx_t i = 0; i < count; i++) {
             if (!sub_rows.empty() && !sub_rows[0].empty()) {
                 result.SetValue(i, sub_rows[0][0]);
