@@ -700,6 +700,8 @@ void ExpressionExecutor::ExecuteComparison(const BoundComparison &expr, DataChun
         bool r_date = (rid == LogicalTypeId::DATE);
         bool l_ts = (lid == LogicalTypeId::TIMESTAMP || lid == LogicalTypeId::TIMESTAMP_TZ);
         bool r_ts = (rid == LogicalTypeId::TIMESTAMP || rid == LogicalTypeId::TIMESTAMP_TZ);
+        bool l_varchar = (lid == LogicalTypeId::VARCHAR);
+        bool r_varchar = (rid == LogicalTypeId::VARCHAR);
         if ((l_date && r_ts) || (l_ts && r_date)) {
             // Promote the DATE side to TIMESTAMP-micros in a fresh
             // Vector so the typed int64 path below handles it.
@@ -720,7 +722,63 @@ void ExpressionExecutor::ExecuteComparison(const BoundComparison &expr, DataChun
             } else {
                 right = std::move(promoted);
             }
-            // Both sides are now INT64-physical TIMESTAMPs.
+        }
+        // DATE/TIMESTAMP vs VARCHAR: parse the VARCHAR side as DATE or
+        // TIMESTAMP so the typed compare operates on matched units.
+        // Previously the mixed-type branch ran stod(varchar) which
+        // truncated 'YYYY-MM-DD ...' to the leading year — silently
+        // wrong filtering across every WHERE clause with a date-string
+        // literal.
+        else if ((l_ts && r_varchar) || (r_ts && l_varchar)) {
+            Vector *str_vec = l_varchar ? &left : &right;
+            Vector promoted(LogicalType::TIMESTAMP(), count);
+            auto *dst = promoted.GetData<int64_t>();
+            for (idx_t i = 0; i < count; i++) {
+                if (!str_vec->GetValidity().RowIsValid(i)) {
+                    promoted.GetValidity().SetInvalid(i);
+                    dst[i] = 0;
+                    continue;
+                }
+                auto s = str_vec->GetValue(i).GetValue<std::string>();
+                int64_t micros;
+                int32_t days;
+                if (Value::TryParseTimestampMicros(s.data(), s.size(), micros)) {
+                    dst[i] = micros;
+                } else if (Value::TryParseDateStringEpochDays(s.data(), s.size(), days)) {
+                    dst[i] = static_cast<int64_t>(days) * 86400LL * 1000000LL;
+                } else {
+                    promoted.GetValidity().SetInvalid(i);
+                    dst[i] = 0;
+                }
+            }
+            if (l_varchar) left = std::move(promoted);
+            else right = std::move(promoted);
+        }
+        else if ((l_date && r_varchar) || (r_date && l_varchar)) {
+            Vector *str_vec = l_varchar ? &left : &right;
+            Vector *date_vec = l_varchar ? &right : &left;
+            // Promote DATE side to its int32 days unchanged via copy,
+            // and parse the string into DATE days. Both go via int32.
+            Vector promoted_str(LogicalType::DATE(), count);
+            auto *dst = promoted_str.GetData<int32_t>();
+            for (idx_t i = 0; i < count; i++) {
+                if (!str_vec->GetValidity().RowIsValid(i)) {
+                    promoted_str.GetValidity().SetInvalid(i);
+                    dst[i] = 0;
+                    continue;
+                }
+                auto s = str_vec->GetValue(i).GetValue<std::string>();
+                int32_t days;
+                if (Value::TryParseDateStringEpochDays(s.data(), s.size(), days)) {
+                    dst[i] = days;
+                } else {
+                    promoted_str.GetValidity().SetInvalid(i);
+                    dst[i] = 0;
+                }
+            }
+            if (l_varchar) left = std::move(promoted_str);
+            else right = std::move(promoted_str);
+            (void)date_vec;
         }
     }
 
