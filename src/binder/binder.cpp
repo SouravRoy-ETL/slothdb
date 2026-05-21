@@ -972,7 +972,8 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
                name == "CONCAT_WS" || name == "CHR" ||
                name == "HEX" || name == "TO_HEX" || name == "UNHEX" ||
                name == "MD5" || name == "SHA1" || name == "SHA_1" ||
-               name == "SHA256" || name == "SHA2_256") {
+               name == "SHA256" || name == "SHA2_256" ||
+               name == "SHA512" || name == "SHA2_512") {
         return_type = LogicalType::VARCHAR();
     } else if (name == "ABS") {
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
