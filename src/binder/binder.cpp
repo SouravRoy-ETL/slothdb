@@ -1202,7 +1202,53 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     } else if (name == "REGEXP_REPLACE" || name == "REGEXP_EXTRACT") {
         return_type = LogicalType::VARCHAR();
     } else if (name == "LEAST" || name == "GREATEST") {
-        return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
+        // Same numeric/string unification as COALESCE/NULLIF: walk all
+        // args, widen to the highest numeric type, fall back to VARCHAR
+        // when types mix, SQLNULL when every arg is NULL. Without this,
+        // GREATEST(1, 2.5) returned 1 because args[0]'s INTEGER type
+        // truncated the DOUBLE second arg at the result-Vector write.
+        bool any_varchar = false;
+        bool any_numeric = false;
+        LogicalTypeId widest_numeric = LogicalTypeId::SQLNULL;
+        auto rank = [](LogicalTypeId x) -> int {
+            switch (x) {
+            case LogicalTypeId::DOUBLE:   return 6;
+            case LogicalTypeId::FLOAT:    return 5;
+            case LogicalTypeId::BIGINT:   return 4;
+            case LogicalTypeId::INTEGER:  return 3;
+            case LogicalTypeId::SMALLINT: return 2;
+            case LogicalTypeId::TINYINT:  return 1;
+            default:                      return 0;
+            }
+        };
+        for (auto &a : args) {
+            auto id = a->GetReturnType().id();
+            if (id == LogicalTypeId::SQLNULL) continue;
+            if (id == LogicalTypeId::VARCHAR) { any_varchar = true; continue; }
+            any_numeric = true;
+            if (rank(id) > rank(widest_numeric)) widest_numeric = id;
+        }
+        if (any_varchar) {
+            return_type = LogicalType::VARCHAR();
+        } else if (any_numeric) {
+            switch (widest_numeric) {
+            case LogicalTypeId::DOUBLE:   return_type = LogicalType::DOUBLE(); break;
+            case LogicalTypeId::FLOAT:    return_type = LogicalType::DOUBLE(); break;
+            case LogicalTypeId::BIGINT:   return_type = LogicalType::BIGINT(); break;
+            case LogicalTypeId::INTEGER:  return_type = LogicalType::INTEGER(); break;
+            case LogicalTypeId::SMALLINT: return_type = LogicalType::INTEGER(); break;
+            case LogicalTypeId::TINYINT:  return_type = LogicalType::INTEGER(); break;
+            default:                      return_type = LogicalType::INTEGER(); break;
+            }
+        } else {
+            return_type = LogicalType::SQLNULL();
+        }
+        for (auto &a : args) {
+            if (a->GetReturnType().id() != return_type.id() &&
+                a->GetReturnType().id() != LogicalTypeId::SQLNULL) {
+                a = std::make_unique<BoundCast>(std::move(a), return_type);
+            }
+        }
     }
     // Additional date functions.
     else if (name == "DATE_DIFF" || name == "DATEDIFF") {
