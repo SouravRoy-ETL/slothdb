@@ -958,10 +958,73 @@ QueryResult Connection::Query(const std::string &sql) {
                 auto *entry = db_.GetCatalog().GetTable(ins.table_name);
                 if (!entry) throw CatalogException("Table '" + ins.table_name + "' not found");
 
+                auto col_types = entry->GetTypes();
+                // Resolve user column-list to table-column indices.
+                // Empty list means positional (declaration order).
+                // Mirrors the INSERT VALUES path fixed in 292527f —
+                // without this, reordered or subset INSERT...SELECT
+                // silently corrupted rows (or crashed on subset).
+                std::vector<idx_t> target_indices;
+                if (!ins.column_names.empty()) {
+                    target_indices.reserve(ins.column_names.size());
+                    std::vector<bool> seen(col_types.size(), false);
+                    for (auto &col_name : ins.column_names) {
+                        idx_t idx = entry->GetColumnIndex(col_name);
+                        if (idx == INVALID_INDEX) {
+                            throw BinderException(ErrorCode::COLUMN_NOT_FOUND,
+                                "Column '" + col_name + "' not found in table '" +
+                                ins.table_name + "'");
+                        }
+                        if (seen[idx]) {
+                            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                                "Column '" + col_name + "' specified more than once "
+                                "in INSERT column list");
+                        }
+                        seen[idx] = true;
+                        target_indices.push_back(idx);
+                    }
+                }
+
+                // Validate SELECT arity against the expected target.
+                auto &sel_select = static_cast<BoundSelectStatement &>(*sel_bound);
+                idx_t expected_cols = target_indices.empty()
+                    ? col_types.size() : target_indices.size();
+                if (sel_select.result_types.size() != expected_cols) {
+                    throw BinderException(ErrorCode::TYPE_MISMATCH,
+                        "INSERT SELECT column count (" +
+                        std::to_string(sel_select.result_types.size()) +
+                        ") does not match " +
+                        (target_indices.empty() ? "table"
+                                                : "column list") +
+                        " count (" + std::to_string(expected_cols) + ")");
+                }
+
                 DataChunk chunk;
                 while (true) {
                     if (!sel_physical->GetData(chunk)) break;
-                    entry->GetStorage().Append(chunk);
+                    if (target_indices.empty()) {
+                        entry->GetStorage().Append(chunk);
+                    } else {
+                        // Permute: SELECT column i lands at table
+                        // column target_indices[i]. Unspecified columns
+                        // get an all-NULL vector of the column's type.
+                        DataChunk permuted;
+                        permuted.Initialize(col_types);
+                        permuted.SetCardinality(chunk.size());
+                        for (idx_t c = 0; c < col_types.size(); c++) {
+                            // Default: fill with NULL.
+                            for (idx_t r = 0; r < chunk.size(); r++) {
+                                permuted.GetVector(c).GetValidity().SetInvalid(r);
+                            }
+                        }
+                        for (idx_t i = 0; i < target_indices.size(); i++) {
+                            idx_t tgt = target_indices[i];
+                            for (idx_t r = 0; r < chunk.size(); r++) {
+                                permuted.SetValue(tgt, r, chunk.GetValue(i, r));
+                            }
+                        }
+                        entry->GetStorage().Append(permuted);
+                    }
                 }
                 continue;
             }
