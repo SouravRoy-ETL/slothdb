@@ -1083,33 +1083,154 @@ QueryResult Connection::Query(const std::string &sql) {
                         }
                     }
                 };
+                // Coerce a single Value from its source type to the
+                // declared target column type. Previously the INSERT-
+                // SELECT loop wrote source-typed values directly into
+                // target-typed Vector slots via SetValue, which read
+                // the wrong union slot and produced silent garbage:
+                //   BIGINT -> INTEGER         got 0,1,2 from 1,2,3
+                //   INTEGER -> BIGINT         got 0, 8589934593
+                //   DOUBLE -> INTEGER         got 0, 1073217536
+                //   INTEGER -> VARCHAR        got empty strings
+                auto coerce = [](const Value &src, const LogicalType &target) -> Value {
+                    if (src.IsNull()) return Value();
+                    auto src_id = src.type().id();
+                    auto dst_id = target.id();
+                    if (src_id == dst_id) return src;
+                    // Numeric -> Numeric: route through int64/double.
+                    auto to_int64 = [&](int64_t &out) -> bool {
+                        switch (src_id) {
+                        case LogicalTypeId::TINYINT:  out = src.GetValue<int8_t>();  return true;
+                        case LogicalTypeId::SMALLINT: out = src.GetValue<int16_t>(); return true;
+                        case LogicalTypeId::INTEGER:  out = src.GetValue<int32_t>(); return true;
+                        case LogicalTypeId::BIGINT:   out = src.GetValue<int64_t>(); return true;
+                        case LogicalTypeId::UTINYINT: out = src.GetValue<uint8_t>(); return true;
+                        case LogicalTypeId::USMALLINT:out = src.GetValue<uint16_t>();return true;
+                        case LogicalTypeId::UINTEGER: out = src.GetValue<uint32_t>();return true;
+                        default: return false;
+                        }
+                    };
+                    auto to_double = [&](double &out) -> bool {
+                        switch (src_id) {
+                        case LogicalTypeId::FLOAT:   out = src.GetValue<float>();  return true;
+                        case LogicalTypeId::DOUBLE:  out = src.GetValue<double>(); return true;
+                        default: {
+                            int64_t v;
+                            if (to_int64(v)) { out = static_cast<double>(v); return true; }
+                            return false;
+                        }
+                        }
+                    };
+                    // Target VARCHAR: stringify.
+                    if (dst_id == LogicalTypeId::VARCHAR) {
+                        return Value::VARCHAR(src.ToString());
+                    }
+                    // Target int family: try numeric path then range-check.
+                    if (dst_id == LogicalTypeId::TINYINT ||
+                        dst_id == LogicalTypeId::SMALLINT ||
+                        dst_id == LogicalTypeId::INTEGER ||
+                        dst_id == LogicalTypeId::BIGINT) {
+                        int64_t v;
+                        if (!to_int64(v)) {
+                            double d;
+                            if (!to_double(d)) {
+                                throw ConversionException(
+                                    "Cannot coerce '" + src.ToString() + "' to integer");
+                            }
+                            v = static_cast<int64_t>(d);
+                        }
+                        auto chk = [&](int64_t lo, int64_t hi) {
+                            if (v < lo || v > hi) {
+                                throw ConversionException(
+                                    "Value " + src.ToString() + " out of range for target column");
+                            }
+                        };
+                        if (dst_id == LogicalTypeId::TINYINT) {
+                            chk(std::numeric_limits<int8_t>::min(),
+                                std::numeric_limits<int8_t>::max());
+                            return Value::TINYINT(static_cast<int8_t>(v));
+                        }
+                        if (dst_id == LogicalTypeId::SMALLINT) {
+                            chk(std::numeric_limits<int16_t>::min(),
+                                std::numeric_limits<int16_t>::max());
+                            return Value::SMALLINT(static_cast<int16_t>(v));
+                        }
+                        if (dst_id == LogicalTypeId::INTEGER) {
+                            chk(std::numeric_limits<int32_t>::min(),
+                                std::numeric_limits<int32_t>::max());
+                            return Value::INTEGER(static_cast<int32_t>(v));
+                        }
+                        return Value::BIGINT(v);
+                    }
+                    if (dst_id == LogicalTypeId::DOUBLE) {
+                        double d;
+                        if (to_double(d)) return Value::DOUBLE(d);
+                    }
+                    if (dst_id == LogicalTypeId::FLOAT) {
+                        double d;
+                        if (to_double(d)) return Value::FLOAT(static_cast<float>(d));
+                    }
+                    if (dst_id == LogicalTypeId::DATE && src_id == LogicalTypeId::VARCHAR) {
+                        auto s = src.GetValue<std::string>();
+                        int32_t days;
+                        if (Value::TryParseDateStringEpochDays(s.data(), s.size(), days)) {
+                            return Value::DATE(days);
+                        }
+                    }
+                    if ((dst_id == LogicalTypeId::TIMESTAMP ||
+                         dst_id == LogicalTypeId::TIMESTAMP_TZ) &&
+                        src_id == LogicalTypeId::VARCHAR) {
+                        auto s = src.GetValue<std::string>();
+                        int64_t micros;
+                        if (Value::TryParseTimestampMicros(s.data(), s.size(), micros)) {
+                            return Value::TIMESTAMP(micros);
+                        }
+                    }
+                    // Fallback: let SetValue do whatever it does (legacy
+                    // behavior); at least we tried the typed paths.
+                    return src;
+                };
+                auto build_coerced_chunk = [&](const DataChunk &src_chunk,
+                                                const std::vector<idx_t> *perm) -> DataChunk {
+                    DataChunk out;
+                    out.Initialize(col_types);
+                    out.SetCardinality(src_chunk.size());
+                    if (perm) {
+                        // Default missing columns to NULL of target type.
+                        for (idx_t c = 0; c < col_types.size(); c++) {
+                            for (idx_t r = 0; r < src_chunk.size(); r++) {
+                                out.GetVector(c).GetValidity().SetInvalid(r);
+                            }
+                        }
+                        for (idx_t i = 0; i < perm->size(); i++) {
+                            idx_t tgt = (*perm)[i];
+                            for (idx_t r = 0; r < src_chunk.size(); r++) {
+                                Value sv = const_cast<DataChunk &>(src_chunk).GetValue(i, r);
+                                out.SetValue(tgt, r, coerce(sv, col_types[tgt]));
+                            }
+                        }
+                    } else {
+                        for (idx_t c = 0; c < col_types.size(); c++) {
+                            for (idx_t r = 0; r < src_chunk.size(); r++) {
+                                Value sv = const_cast<DataChunk &>(src_chunk).GetValue(c, r);
+                                out.SetValue(c, r, coerce(sv, col_types[c]));
+                            }
+                        }
+                    }
+                    return out;
+                };
+
                 DataChunk chunk;
                 while (true) {
                     if (!sel_physical->GetData(chunk)) break;
                     if (target_indices.empty()) {
-                        check_not_null_chunk(chunk);
-                        entry->GetStorage().Append(chunk);
+                        auto coerced = build_coerced_chunk(chunk, nullptr);
+                        check_not_null_chunk(coerced);
+                        entry->GetStorage().Append(coerced);
                     } else {
-                        // Permute: SELECT column i lands at table
-                        // column target_indices[i]. Unspecified columns
-                        // get an all-NULL vector of the column's type.
-                        DataChunk permuted;
-                        permuted.Initialize(col_types);
-                        permuted.SetCardinality(chunk.size());
-                        for (idx_t c = 0; c < col_types.size(); c++) {
-                            // Default: fill with NULL.
-                            for (idx_t r = 0; r < chunk.size(); r++) {
-                                permuted.GetVector(c).GetValidity().SetInvalid(r);
-                            }
-                        }
-                        for (idx_t i = 0; i < target_indices.size(); i++) {
-                            idx_t tgt = target_indices[i];
-                            for (idx_t r = 0; r < chunk.size(); r++) {
-                                permuted.SetValue(tgt, r, chunk.GetValue(i, r));
-                            }
-                        }
-                        check_not_null_chunk(permuted);
-                        entry->GetStorage().Append(permuted);
+                        auto coerced = build_coerced_chunk(chunk, &target_indices);
+                        check_not_null_chunk(coerced);
+                        entry->GetStorage().Append(coerced);
                     }
                 }
                 continue;
