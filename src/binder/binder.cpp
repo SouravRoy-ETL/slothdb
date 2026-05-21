@@ -402,15 +402,20 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         result->order_by.push_back(std::move(bound_item));
     }
 
-    // Bind LIMIT/OFFSET.
+    // Bind LIMIT/OFFSET. NULL operand means "no limit" / "no offset"
+    // per PostgreSQL/SQLite — defaults stay (-1 / 0). Previously the
+    // GetValue<T> call on a NULL Value threw "Cannot get value from
+    // NULL", crashing every parameterised pagination query.
     if (stmt.limit) {
         auto bound = BindExpression(*stmt.limit, context);
         if (bound->GetExpressionType() == BoundExpressionType::CONSTANT) {
             auto &val = static_cast<BoundConstant &>(*bound).value;
-            if (val.type().id() == LogicalTypeId::INTEGER) {
-                result->limit_count = val.GetValue<int32_t>();
-            } else {
-                result->limit_count = val.GetValue<int64_t>();
+            if (!val.IsNull()) {
+                if (val.type().id() == LogicalTypeId::INTEGER) {
+                    result->limit_count = val.GetValue<int32_t>();
+                } else {
+                    result->limit_count = val.GetValue<int64_t>();
+                }
             }
         }
     }
@@ -418,10 +423,12 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         auto bound = BindExpression(*stmt.offset, context);
         if (bound->GetExpressionType() == BoundExpressionType::CONSTANT) {
             auto &val = static_cast<BoundConstant &>(*bound).value;
-            if (val.type().id() == LogicalTypeId::INTEGER) {
-                result->offset_count = val.GetValue<int32_t>();
-            } else {
-                result->offset_count = val.GetValue<int64_t>();
+            if (!val.IsNull()) {
+                if (val.type().id() == LogicalTypeId::INTEGER) {
+                    result->offset_count = val.GetValue<int32_t>();
+                } else {
+                    result->offset_count = val.GetValue<int64_t>();
+                }
             }
         }
     }
