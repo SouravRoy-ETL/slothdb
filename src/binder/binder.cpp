@@ -1779,18 +1779,14 @@ LogicalType Binder::ResolveTypeName(const std::string &name) {
     if (base == "UUID") return LogicalType::UUID();
 
     if (base == "DECIMAL" || base == "NUMERIC") {
-        // Parse DECIMAL(width, scale).
-        auto paren = upper.find('(');
-        if (paren != std::string::npos) {
-            auto inner = upper.substr(paren + 1, upper.size() - paren - 2);
-            auto comma = inner.find(',');
-            uint8_t width = static_cast<uint8_t>(std::stoi(inner.substr(0, comma)));
-            uint8_t scale = comma != std::string::npos
-                              ? static_cast<uint8_t>(std::stoi(inner.substr(comma + 1)))
-                              : 0;
-            return LogicalType::DECIMAL(width, scale);
-        }
-        return LogicalType::DECIMAL(18, 3);
+        // SlothDB has no native DECIMAL execution path: INSERT into
+        // DECIMAL columns silently stored zeros, SUM/AVG returned 0,
+        // and CAST AS DECIMAL produced 0. Until a real fixed-point
+        // codepath lands, alias DECIMAL/NUMERIC to DOUBLE so the
+        // queries work with approximate semantics instead of silent
+        // wrong results. Width/scale parameters are parsed and
+        // discarded (matches MySQL's "approximate DECIMAL" pragma).
+        return LogicalType::DOUBLE();
     }
 
     throw BinderException(ErrorCode::TYPE_MISMATCH, "Unknown type: " + name);
