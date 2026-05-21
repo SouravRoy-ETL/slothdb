@@ -1238,10 +1238,45 @@ ParsedExprPtr Parser::ParsePrimary() {
 
     // CASE WHEN ... THEN ... [ELSE ...] END
     if (MatchKeyword(TokenType::KW_CASE)) {
-        // Parse as a function for now: CASE(when1, then1, when2, then2, ..., else)
+        // Two SQL forms:
+        //   Searched form: CASE WHEN cond1 THEN r1 ... [ELSE e] END
+        //   Simple form:   CASE scrutinee WHEN val1 THEN r1 ... [ELSE e] END
+        // Internally the executor consumes the searched layout
+        // (when, then, when, then, ..., [else]). For the simple form we
+        // remember the scrutinee's token range and re-parse the same
+        // expression once per WHEN, wrapping each as `scrutinee = value`.
         std::vector<ParsedExprPtr> args;
+        bool simple_form = !CheckKeyword(TokenType::KW_WHEN);
+        size_t scrutinee_start = pos_;
+        size_t scrutinee_end = pos_;
+        if (simple_form) {
+            // Parse once to advance past the scrutinee tokens, then
+            // discard — we only need the [start, end) range so we can
+            // re-parse it for each WHEN. (Re-parsing is cheap; cloning
+            // the bound AST would require Clone() across every
+            // ParsedExpression subclass.)
+            (void)ParseExpression();
+            scrutinee_end = pos_;
+        }
+        auto reparse_scrutinee = [&]() -> ParsedExprPtr {
+            size_t saved = pos_;
+            pos_ = scrutinee_start;
+            auto result = ParseExpression();
+            // After re-parsing, pos_ should equal scrutinee_end. Restore
+            // the outer position regardless.
+            pos_ = saved;
+            return result;
+        };
         while (MatchKeyword(TokenType::KW_WHEN)) {
-            args.push_back(ParseExpression());
+            auto when_expr = ParseExpression();
+            if (simple_form) {
+                // Rewrite as scrutinee = when_value. Equality with NULL
+                // on either side already returns NULL per Kleene, which
+                // the executor treats as non-match — matches SQL.
+                when_expr = std::make_unique<ComparisonExpression>(
+                    "=", reparse_scrutinee(), std::move(when_expr));
+            }
+            args.push_back(std::move(when_expr));
             Expect(TokenType::KW_THEN, "after WHEN condition");
             args.push_back(ParseExpression());
         }
