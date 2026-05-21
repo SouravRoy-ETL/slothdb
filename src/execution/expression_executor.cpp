@@ -2496,16 +2496,27 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     // ---- Timestamp/Date functions ----
 
     if (name == "NOW" || name == "CURRENT_TIMESTAMP") {
+        // Return a typed TIMESTAMP so ToString renders as
+        // 'YYYY-MM-DD HH:MM:SS' and downstream operators (cast,
+        // comparison, EXTRACT) recognize it. Previously stored as
+        // raw BIGINT micros which leaked the 18-digit integer to
+        // every user-facing output.
         auto now = std::chrono::system_clock::now();
         auto epoch = std::chrono::duration_cast<std::chrono::microseconds>(
             now.time_since_epoch()).count();
         for (idx_t i = 0; i < count; i++) {
-            result.SetValue(i, Value::BIGINT(epoch));
+            result.SetValue(i, Value::TIMESTAMP(epoch));
         }
         return;
     }
 
     if (name == "CURRENT_DATE") {
+        // Return a typed DATE (epoch days). Previously encoded as
+        // YYYYMMDD INTEGER, which made EXTRACT(YEAR), DATE arithmetic,
+        // and CAST-to-VARCHAR all misbehave. Compute epoch days
+        // directly from the local tm components via the Hinnant
+        // days_from_civil formula to avoid relying on platform
+        // timegm/_mkgmtime.
         auto now = std::chrono::system_clock::now();
         auto time_t_now = std::chrono::system_clock::to_time_t(now);
         struct tm tm_buf;
@@ -2514,12 +2525,19 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 #else
         localtime_r(&time_t_now, &tm_buf);
 #endif
-        // Encode as YYYYMMDD integer.
-        int32_t date_val = (tm_buf.tm_year + 1900) * 10000 +
-                           (tm_buf.tm_mon + 1) * 100 +
-                           tm_buf.tm_mday;
+        int y = tm_buf.tm_year + 1900;
+        unsigned mo = static_cast<unsigned>(tm_buf.tm_mon + 1);
+        unsigned d = static_cast<unsigned>(tm_buf.tm_mday);
+        // Hinnant civil_from_days inverse.
+        int y_adj = y - (mo <= 2 ? 1 : 0);
+        int era = (y_adj >= 0 ? y_adj : y_adj - 399) / 400;
+        unsigned yoe = static_cast<unsigned>(y_adj - era * 400);
+        unsigned doy = (153 * (mo > 2 ? mo - 3 : mo + 9) + 2) / 5 + d - 1;
+        unsigned doe = yoe * 365 + yoe/4 - yoe/100 + doy;
+        int32_t days = static_cast<int32_t>(era * 146097 +
+                                             static_cast<int>(doe) - 719468);
         for (idx_t i = 0; i < count; i++) {
-            result.SetValue(i, Value::INTEGER(date_val));
+            result.SetValue(i, Value::DATE(days));
         }
         return;
     }

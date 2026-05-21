@@ -1154,11 +1154,13 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         }
     } else if (name == "IN" || name == "BETWEEN") {
         return_type = LogicalType::BOOLEAN();
-    } else if (name == "NOW" || name == "CURRENT_TIMESTAMP" || name == "TO_TIMESTAMP" ||
+    } else if (name == "NOW" || name == "CURRENT_TIMESTAMP") {
+        return_type = LogicalType::TIMESTAMP();
+    } else if (name == "TO_TIMESTAMP" ||
                name == "MAKE_TIMESTAMP" || name == "DATE_TRUNC") {
         return_type = LogicalType::BIGINT(); // microseconds since epoch
     } else if (name == "CURRENT_DATE") {
-        return_type = LogicalType::INTEGER(); // YYYYMMDD
+        return_type = LogicalType::DATE();
     } else if (name == "EXTRACT" || name == "DATE_PART") {
         return_type = LogicalType::BIGINT();
     } else if (name == "EPOCH_MS") {
