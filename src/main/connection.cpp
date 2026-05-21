@@ -1068,10 +1068,26 @@ QueryResult Connection::Query(const std::string &sql) {
                         " count (" + std::to_string(expected_cols) + ")");
                 }
 
+                auto &tgt_cols = entry->GetColumns();
+                auto check_not_null_chunk = [&](const DataChunk &c) {
+                    for (idx_t col = 0; col < tgt_cols.size(); col++) {
+                        if (!tgt_cols[col].not_null) continue;
+                        auto &vec = const_cast<DataChunk &>(c).GetVector(col);
+                        for (idx_t r = 0; r < c.size(); r++) {
+                            if (!vec.GetValidity().RowIsValid(r)) {
+                                throw BinderException(
+                                    ErrorCode::TYPE_MISMATCH,
+                                    "NOT NULL constraint violation: column '" +
+                                    tgt_cols[col].name + "'");
+                            }
+                        }
+                    }
+                };
                 DataChunk chunk;
                 while (true) {
                     if (!sel_physical->GetData(chunk)) break;
                     if (target_indices.empty()) {
+                        check_not_null_chunk(chunk);
                         entry->GetStorage().Append(chunk);
                     } else {
                         // Permute: SELECT column i lands at table
@@ -1092,6 +1108,7 @@ QueryResult Connection::Query(const std::string &sql) {
                                 permuted.SetValue(tgt, r, chunk.GetValue(i, r));
                             }
                         }
+                        check_not_null_chunk(permuted);
                         entry->GetStorage().Append(permuted);
                     }
                 }

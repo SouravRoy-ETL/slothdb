@@ -15,9 +15,12 @@ class ParquetReader;
 struct ColumnDefinition {
     std::string name;
     LogicalType type;
+    bool not_null = false;
 
     ColumnDefinition(const std::string &name, const LogicalType &type)
         : name(name), type(type) {}
+    ColumnDefinition(const std::string &name, const LogicalType &type, bool not_null_)
+        : name(name), type(type), not_null(not_null_) {}
 };
 
 // Catalog entry for a table. Owns the column definitions and

@@ -503,7 +503,7 @@ BoundStmtPtr Binder::BindCreateTable(const CreateTableStatement &stmt) {
 
     for (auto &col : stmt.columns) {
         auto type = ResolveTypeName(col.type_name);
-        result->columns.emplace_back(col.name, type);
+        result->columns.emplace_back(col.name, type, col.not_null);
     }
     return result;
 }
@@ -575,6 +575,17 @@ BoundStmtPtr Binder::BindInsert(const InsertStatement &stmt) {
             target_indices.push_back(idx);
         }
     }
+    auto &table_cols = entry->GetColumns();
+    auto check_not_null = [&](const BoundExpression &val, idx_t col) {
+        if (col >= table_cols.size() || !table_cols[col].not_null) return;
+        if (val.GetExpressionType() != BoundExpressionType::CONSTANT) return;
+        auto &bc = static_cast<const BoundConstant &>(val);
+        if (bc.value.IsNull()) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "NOT NULL constraint violation: column '" +
+                table_cols[col].name + "'");
+        }
+    };
     for (auto &row : stmt.values) {
         if (!target_indices.empty()) {
             // Permute: bound value at user position i lands at table
@@ -591,10 +602,17 @@ BoundStmtPtr Binder::BindInsert(const InsertStatement &stmt) {
                 auto bound = BindExpression(*row[i], context);
                 idx_t tgt = target_indices[i];
                 permuted[tgt] = wrap_for_target(std::move(bound), tgt);
+                check_not_null(*permuted[tgt], tgt);
             }
             // Fill missing slots with NULL constants of the column's type.
             for (idx_t c = 0; c < col_types.size(); c++) {
                 if (!permuted[c]) {
+                    if (c < table_cols.size() && table_cols[c].not_null) {
+                        throw BinderException(ErrorCode::TYPE_MISMATCH,
+                            "NOT NULL constraint violation: column '" +
+                            table_cols[c].name +
+                            "' has no value in INSERT");
+                    }
                     permuted[c] = std::make_unique<BoundConstant>(Value());
                 }
             }
@@ -612,6 +630,7 @@ BoundStmtPtr Binder::BindInsert(const InsertStatement &stmt) {
             for (idx_t c = 0; c < row.size(); c++) {
                 auto bound = BindExpression(*row[c], context);
                 bound_row.push_back(wrap_for_target(std::move(bound), c));
+                check_not_null(*bound_row.back(), c);
             }
             result->values.push_back(std::move(bound_row));
         }
@@ -661,6 +680,19 @@ BoundStmtPtr Binder::BindUpdate(const UpdateStatement &stmt) {
             if (src_id != dst_id && src_id != LogicalTypeId::SQLNULL) {
                 ba.value = std::make_unique<BoundCast>(
                     std::move(ba.value), col_types[idx]);
+            }
+        }
+        // NOT NULL constraint: reject literal NULL into a NOT NULL
+        // column at bind time. Computed NULLs evaluated at runtime
+        // are not caught here (deferred to executor-side enforcement).
+        auto &upd_cols = entry->GetColumns();
+        if (idx < upd_cols.size() && upd_cols[idx].not_null &&
+            ba.value->GetExpressionType() == BoundExpressionType::CONSTANT) {
+            auto &bc = static_cast<const BoundConstant &>(*ba.value);
+            if (bc.value.IsNull()) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    "NOT NULL constraint violation: column '" +
+                    upd_cols[idx].name + "'");
             }
         }
         result->assignments.push_back(std::move(ba));
