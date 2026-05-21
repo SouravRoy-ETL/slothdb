@@ -1,7 +1,9 @@
 #include "slothdb/binder/binder.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/string_util.hpp"
+#include "slothdb/execution/expression_executor.hpp"
 #include "slothdb/parser/expression/parsed_expression.hpp"
+#include <functional>
 
 namespace slothdb {
 
@@ -459,33 +461,105 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
     }
 
     // Bind LIMIT/OFFSET. NULL operand means "no limit" / "no offset"
-    // per PostgreSQL/SQLite — defaults stay (-1 / 0). Previously the
-    // GetValue<T> call on a NULL Value threw "Cannot get value from
-    // NULL", crashing every parameterised pagination query.
+    // per PostgreSQL/SQLite — defaults stay (-1 / 0). Previously this
+    // checked the bound expression's type was literally CONSTANT, so
+    // any computed expression (LIMIT 1+1, LIMIT 2*3, LIMIT 5-2) was
+    // silently ignored and the query returned all rows. Now we fold
+    // any constant-foldable expression via ExecuteScalar (which
+    // handles arithmetic, functions, CASE, etc).
+    auto extract_int = [](const Value &val, int64_t &out) -> bool {
+        if (val.IsNull()) return false;
+        switch (val.type().id()) {
+        case LogicalTypeId::TINYINT:  out = val.GetValue<int8_t>();  return true;
+        case LogicalTypeId::SMALLINT: out = val.GetValue<int16_t>(); return true;
+        case LogicalTypeId::INTEGER:  out = val.GetValue<int32_t>(); return true;
+        case LogicalTypeId::BIGINT:   out = val.GetValue<int64_t>(); return true;
+        default: return false;
+        }
+    };
+    // LIMIT/OFFSET must be column-free; ExpressionExecutor::ExecuteScalar
+    // with an empty input would segfault on a COLUMN_REF child.
+    std::function<bool(const BoundExpression &)> contains_col_ref =
+        [&](const BoundExpression &e) -> bool {
+        switch (e.GetExpressionType()) {
+        case BoundExpressionType::COLUMN_REF:
+            return true;
+        case BoundExpressionType::ARITHMETIC: {
+            auto &a = static_cast<const BoundArithmetic &>(e);
+            return (a.left && contains_col_ref(*a.left)) ||
+                   (a.right && contains_col_ref(*a.right));
+        }
+        case BoundExpressionType::COMPARISON: {
+            auto &c = static_cast<const BoundComparison &>(e);
+            return (c.left && contains_col_ref(*c.left)) ||
+                   (c.right && contains_col_ref(*c.right));
+        }
+        case BoundExpressionType::CONJUNCTION: {
+            auto &c = static_cast<const BoundConjunction &>(e);
+            return (c.left && contains_col_ref(*c.left)) ||
+                   (c.right && contains_col_ref(*c.right));
+        }
+        case BoundExpressionType::NEGATION:
+            return contains_col_ref(*static_cast<const BoundNegation &>(e).child);
+        case BoundExpressionType::IS_NULL:
+            return contains_col_ref(*static_cast<const BoundIsNull &>(e).child);
+        case BoundExpressionType::IS_BOOL:
+            return contains_col_ref(*static_cast<const BoundIsBool &>(e).child);
+        case BoundExpressionType::UNARY_MINUS:
+            return contains_col_ref(*static_cast<const BoundUnaryMinus &>(e).child);
+        case BoundExpressionType::CAST:
+            return contains_col_ref(*static_cast<const BoundCast &>(e).child);
+        case BoundExpressionType::FUNCTION: {
+            auto &f = static_cast<const BoundFunction &>(e);
+            for (auto &a : f.arguments) {
+                if (a && contains_col_ref(*a)) return true;
+            }
+            return false;
+        }
+        default: return false;
+        }
+    };
     if (stmt.limit) {
         auto bound = BindExpression(*stmt.limit, context);
-        if (bound->GetExpressionType() == BoundExpressionType::CONSTANT) {
-            auto &val = static_cast<BoundConstant &>(*bound).value;
-            if (!val.IsNull()) {
-                if (val.type().id() == LogicalTypeId::INTEGER) {
-                    result->limit_count = val.GetValue<int32_t>();
-                } else {
-                    result->limit_count = val.GetValue<int64_t>();
-                }
-            }
+        if (contains_col_ref(*bound)) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "LIMIT must be a constant expression (no column references)");
         }
+        Value val;
+        try {
+            val = ExpressionExecutor::ExecuteScalar(*bound);
+        } catch (const std::exception &) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "LIMIT must be a constant integer expression");
+        }
+        int64_t v = -1;
+        if (extract_int(val, v)) {
+            result->limit_count = v;
+        } else if (!val.IsNull()) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "LIMIT must be a constant integer expression");
+        }
+        // val.IsNull() => leave default -1 (no limit)
     }
     if (stmt.offset) {
         auto bound = BindExpression(*stmt.offset, context);
-        if (bound->GetExpressionType() == BoundExpressionType::CONSTANT) {
-            auto &val = static_cast<BoundConstant &>(*bound).value;
-            if (!val.IsNull()) {
-                if (val.type().id() == LogicalTypeId::INTEGER) {
-                    result->offset_count = val.GetValue<int32_t>();
-                } else {
-                    result->offset_count = val.GetValue<int64_t>();
-                }
-            }
+        if (contains_col_ref(*bound)) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "OFFSET must be a constant expression (no column references)");
+        }
+        Value val;
+        try {
+            val = ExpressionExecutor::ExecuteScalar(*bound);
+        } catch (const std::exception &) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "OFFSET must be a constant integer expression");
+        }
+        int64_t v = 0;
+        if (extract_int(val, v)) {
+            result->offset_count = v;
+        } else if (!val.IsNull()) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "OFFSET must be a constant integer expression");
         }
     }
 
