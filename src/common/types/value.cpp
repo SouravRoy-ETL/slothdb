@@ -1,8 +1,10 @@
 #include "slothdb/common/types/value.hpp"
 #include "slothdb/common/exception.hpp"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 namespace slothdb {
 
@@ -11,16 +13,70 @@ namespace slothdb {
 // floating point: GCC < 11's libstdc++ (used for the manylinux wheels)
 // rejects that call as ambiguous, and libc++ marks it unavailable below
 // macOS 13.3 (the baseline-macOS wheels).
+//
+// Previously this used %.*g at increasing precision, which prefers
+// scientific notation for small-magnitude integer-valued doubles
+// (10 -> "1e+01", 1000000 -> "1e+06"). Postgres/DuckDB output plain
+// decimal in the [1e-4, 1e16) range. Now we choose the shortest of
+// the %g form and a fixed-decimal form (with trailing zeros stripped)
+// that round-trips, preferring the fixed form for ties.
 template <typename T>
 static std::string ShortestFloatString(T value) {
     const int max_digits = sizeof(T) == 4 ? 9 : 17;
-    char buf[40];
+    char buf[64];
+    if (!std::isfinite(static_cast<double>(value))) {
+        std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(value));
+        return buf;
+    }
+    if (value == static_cast<T>(0)) {
+        // Preserve sign for -0 (matches existing %g output).
+        std::signbit(static_cast<double>(value));
+        return std::signbit(static_cast<double>(value)) ? "-0" : "0";
+    }
+
+    // (a) Shortest %g representation that round-trips.
+    std::string g_form;
     for (int prec = 1; prec <= max_digits; ++prec) {
         std::snprintf(buf, sizeof(buf), "%.*g", prec,
                       static_cast<double>(value));
-        if (static_cast<T>(std::strtod(buf, nullptr)) == value) break;
+        if (static_cast<T>(std::strtod(buf, nullptr)) == value) {
+            g_form = buf;
+            break;
+        }
     }
-    return buf;
+    if (g_form.empty()) {
+        std::snprintf(buf, sizeof(buf), "%.*g", max_digits,
+                      static_cast<double>(value));
+        g_form = buf;
+    }
+
+    // (b) Fixed-decimal form in the conventional range [1e-4, 1e16).
+    // Outside that range, %g already wins.
+    double absd = std::fabs(static_cast<double>(value));
+    if (absd >= 1e-4 && absd < 1e16) {
+        for (int dp = 0; dp <= max_digits; ++dp) {
+            std::snprintf(buf, sizeof(buf), "%.*f", dp,
+                          static_cast<double>(value));
+            if (static_cast<T>(std::strtod(buf, nullptr)) == value) {
+                std::string f_form = buf;
+                // Strip trailing zeros after the decimal point.
+                if (f_form.find('.') != std::string::npos) {
+                    size_t end = f_form.size();
+                    while (end > 0 && f_form[end - 1] == '0') end--;
+                    if (end > 0 && f_form[end - 1] == '.') end--;
+                    f_form.resize(end);
+                }
+                // Prefer the fixed form when it's no longer than %g
+                // (matches Postgres/DuckDB display).
+                if (f_form.size() <= g_form.size() ||
+                    g_form.find('e') != std::string::npos) {
+                    return f_form;
+                }
+                break;
+            }
+        }
+    }
+    return g_form;
 }
 
 // Convert days-since-1970-01-01 to (Y, M, D) using Howard Hinnant's
