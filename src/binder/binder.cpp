@@ -5,6 +5,8 @@
 
 namespace slothdb {
 
+static bool ContainsAggregate(const BoundExpression &expr);
+
 // ============================================================================
 // BindContext
 // ============================================================================
@@ -202,9 +204,17 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         }
     }
 
-    // Bind WHERE.
+    // Bind WHERE. Reject aggregates in WHERE per SQL standard — they
+    // were silently routed to the executor before, surfacing as
+    // "NotImplemented Error: Function execution for: COUNT" which
+    // misleadingly suggested COUNT itself was missing. Clean
+    // BinderException is what SQL standard requires.
     if (stmt.where_clause) {
         result->where_clause = BindExpression(*stmt.where_clause, context);
+        if (ContainsAggregate(*result->where_clause)) {
+            throw BinderException(ErrorCode::AGGREGATE_IN_WHERE,
+                "aggregate functions are not allowed in WHERE clause");
+        }
     }
 
     // Bind GROUP BY. Resolve positional ordinals (`GROUP BY 1`) and
@@ -588,11 +598,19 @@ BoundStmtPtr Binder::BindUpdate(const UpdateStatement &stmt) {
         BoundUpdateAssignment ba;
         ba.column_index = idx;
         ba.value = BindExpression(*assign.value, context);
+        if (ContainsAggregate(*ba.value)) {
+            throw BinderException(ErrorCode::AGGREGATE_IN_WHERE,
+                "aggregate functions are not allowed in UPDATE assignment");
+        }
         result->assignments.push_back(std::move(ba));
     }
 
     if (stmt.where_clause) {
         result->where_clause = BindExpression(*stmt.where_clause, context);
+        if (ContainsAggregate(*result->where_clause)) {
+            throw BinderException(ErrorCode::AGGREGATE_IN_WHERE,
+                "aggregate functions are not allowed in WHERE clause");
+        }
     }
 
     return result;
@@ -616,6 +634,10 @@ BoundStmtPtr Binder::BindDelete(const DeleteStatement &stmt) {
 
     if (stmt.where_clause) {
         result->where_clause = BindExpression(*stmt.where_clause, context);
+        if (ContainsAggregate(*result->where_clause)) {
+            throw BinderException(ErrorCode::AGGREGATE_IN_WHERE,
+                "aggregate functions are not allowed in WHERE clause");
+        }
     }
 
     return result;
@@ -1692,6 +1714,66 @@ LogicalType Binder::ResolveArithmeticType(const LogicalType &left, const Logical
     if (left.id() == LogicalTypeId::SMALLINT || right.id() == LogicalTypeId::SMALLINT)
         return LogicalType::INTEGER();
     return LogicalType::INTEGER();
+}
+
+// Recursively check whether a bound expression contains any aggregate
+// function. Used by WHERE / UPDATE-SET / DELETE-WHERE validation to
+// raise a clean BinderException instead of letting an aggregate slip
+// into row-context evaluation. Subqueries are NOT recursed into —
+// aggregates inside a correlated subquery are legal.
+static bool ContainsAggregate(const BoundExpression &expr) {
+    switch (expr.GetExpressionType()) {
+    case BoundExpressionType::FUNCTION: {
+        auto &fn = static_cast<const BoundFunction &>(expr);
+        if (fn.is_aggregate) return true;
+        for (auto &a : fn.arguments) {
+            if (a && ContainsAggregate(*a)) return true;
+        }
+        if (fn.filter && ContainsAggregate(*fn.filter)) return true;
+        return false;
+    }
+    case BoundExpressionType::COMPARISON: {
+        auto &c = static_cast<const BoundComparison &>(expr);
+        return (c.left && ContainsAggregate(*c.left)) ||
+               (c.right && ContainsAggregate(*c.right));
+    }
+    case BoundExpressionType::CONJUNCTION: {
+        auto &c = static_cast<const BoundConjunction &>(expr);
+        return (c.left && ContainsAggregate(*c.left)) ||
+               (c.right && ContainsAggregate(*c.right));
+    }
+    case BoundExpressionType::NEGATION: {
+        auto &n = static_cast<const BoundNegation &>(expr);
+        return n.child && ContainsAggregate(*n.child);
+    }
+    case BoundExpressionType::IS_NULL: {
+        auto &i = static_cast<const BoundIsNull &>(expr);
+        return i.child && ContainsAggregate(*i.child);
+    }
+    case BoundExpressionType::IS_BOOL: {
+        auto &i = static_cast<const BoundIsBool &>(expr);
+        return i.child && ContainsAggregate(*i.child);
+    }
+    case BoundExpressionType::ARITHMETIC: {
+        auto &a = static_cast<const BoundArithmetic &>(expr);
+        return (a.left && ContainsAggregate(*a.left)) ||
+               (a.right && ContainsAggregate(*a.right));
+    }
+    case BoundExpressionType::UNARY_MINUS: {
+        auto &u = static_cast<const BoundUnaryMinus &>(expr);
+        return u.child && ContainsAggregate(*u.child);
+    }
+    case BoundExpressionType::CAST: {
+        auto &c = static_cast<const BoundCast &>(expr);
+        return c.child && ContainsAggregate(*c.child);
+    }
+    case BoundExpressionType::SUBQUERY:
+        // Aggregates inside a correlated subquery are legal at SQL
+        // standard level; do not recurse.
+        return false;
+    default:
+        return false;
+    }
 }
 
 bool Binder::IsAggregateFunction(const std::string &name) const {
