@@ -1179,10 +1179,47 @@ static Vector CoerceVector(Vector &&src, const LogicalType &target_type, idx_t c
             for (idx_t i = 0; i < count; i++) o[i] = static_cast<double>(s[i]);
             copy_validity(); return out;
         }
+    } else if (dst_id == LogicalTypeId::INTEGER) {
+        // ResolveArithmeticType promotes TINYINT+TINYINT and SMALLINT+
+        // SMALLINT to INTEGER. Without these typed widenings, the
+        // fallback per-row SetValue wrote a TINYINT-typed Value into
+        // an INT32 buffer slot which read back as garbage (silent
+        // wrong-result on every TINYINT/SMALLINT arithmetic).
+        auto *o = out.GetData<int32_t>();
+        if (src_id == LogicalTypeId::TINYINT) {
+            auto *s = src.GetData<int8_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<int32_t>(s[i]);
+            copy_validity(); return out;
+        }
+        if (src_id == LogicalTypeId::SMALLINT) {
+            auto *s = src.GetData<int16_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<int32_t>(s[i]);
+            copy_validity(); return out;
+        }
+        if (src_id == LogicalTypeId::UTINYINT) {
+            auto *s = src.GetData<uint8_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<int32_t>(s[i]);
+            copy_validity(); return out;
+        }
+        if (src_id == LogicalTypeId::USMALLINT) {
+            auto *s = src.GetData<uint16_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<int32_t>(s[i]);
+            copy_validity(); return out;
+        }
     } else if (dst_id == LogicalTypeId::BIGINT) {
         auto *o = out.GetData<int64_t>();
         if (src_id == LogicalTypeId::INTEGER) {
             auto *s = src.GetData<int32_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<int64_t>(s[i]);
+            copy_validity(); return out;
+        }
+        if (src_id == LogicalTypeId::TINYINT) {
+            auto *s = src.GetData<int8_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<int64_t>(s[i]);
+            copy_validity(); return out;
+        }
+        if (src_id == LogicalTypeId::SMALLINT) {
+            auto *s = src.GetData<int16_t>();
             for (idx_t i = 0; i < count; i++) o[i] = static_cast<int64_t>(s[i]);
             copy_validity(); return out;
         }
@@ -1196,6 +1233,18 @@ static Vector CoerceVector(Vector &&src, const LogicalType &target_type, idx_t c
         if (src_id == LogicalTypeId::BIGINT) {
             auto *s = src.GetData<int64_t>();
             for (idx_t i = 0; i < count; i++) o[i] = static_cast<float>(s[i]);
+            copy_validity(); return out;
+        }
+    } else if (dst_id == LogicalTypeId::DOUBLE) {
+        auto *o = out.GetData<double>();
+        if (src_id == LogicalTypeId::TINYINT) {
+            auto *s = src.GetData<int8_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<double>(s[i]);
+            copy_validity(); return out;
+        }
+        if (src_id == LogicalTypeId::SMALLINT) {
+            auto *s = src.GetData<int16_t>();
+            for (idx_t i = 0; i < count; i++) o[i] = static_cast<double>(s[i]);
             copy_validity(); return out;
         }
     }
