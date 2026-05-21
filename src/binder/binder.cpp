@@ -1010,7 +1010,9 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
                name == "HEX" || name == "TO_HEX" || name == "UNHEX" ||
                name == "MD5" || name == "SHA1" || name == "SHA_1" ||
                name == "SHA256" || name == "SHA2_256" ||
-               name == "SHA512" || name == "SHA2_512") {
+               name == "SHA512" || name == "SHA2_512" ||
+               name == "BASE64_ENCODE" || name == "BASE64_DECODE" ||
+               name == "TO_BASE64" || name == "FROM_BASE64") {
         return_type = LogicalType::VARCHAR();
     } else if (name == "ABS") {
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();

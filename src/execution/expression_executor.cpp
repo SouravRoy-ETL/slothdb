@@ -1520,6 +1520,102 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
+    // BASE64_ENCODE / TO_BASE64 — RFC 4648 standard alphabet, '=' padded.
+    // NULL input -> NULL. Embedded NULs / arbitrary bytes pass through.
+    if (name == "BASE64_ENCODE" || name == "TO_BASE64") {
+        static const char *alphabet =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            auto s = v.GetValue<std::string>();
+            std::string out;
+            out.reserve(((s.size() + 2) / 3) * 4);
+            size_t k = 0;
+            while (k + 3 <= s.size()) {
+                uint32_t b = (static_cast<unsigned char>(s[k]) << 16) |
+                             (static_cast<unsigned char>(s[k+1]) << 8) |
+                              static_cast<unsigned char>(s[k+2]);
+                out.push_back(alphabet[(b >> 18) & 0x3F]);
+                out.push_back(alphabet[(b >> 12) & 0x3F]);
+                out.push_back(alphabet[(b >> 6)  & 0x3F]);
+                out.push_back(alphabet[b & 0x3F]);
+                k += 3;
+            }
+            if (k < s.size()) {
+                uint32_t b = static_cast<unsigned char>(s[k]) << 16;
+                if (k + 1 < s.size()) b |= static_cast<unsigned char>(s[k+1]) << 8;
+                out.push_back(alphabet[(b >> 18) & 0x3F]);
+                out.push_back(alphabet[(b >> 12) & 0x3F]);
+                out.push_back(k + 1 < s.size() ? alphabet[(b >> 6) & 0x3F] : '=');
+                out.push_back('=');
+            }
+            result.SetValue(i, Value::VARCHAR(out));
+        }
+        return;
+    }
+
+    // BASE64_DECODE / FROM_BASE64 — RFC 4648 standard alphabet.
+    // Strict: length must be a multiple of 4, all chars in alphabet or
+    // padding. Invalid input -> NULL (row-level), not engine error.
+    if (name == "BASE64_DECODE" || name == "FROM_BASE64") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        auto decode_char = [](char c) -> int {
+            if (c >= 'A' && c <= 'Z') return c - 'A';
+            if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+            if (c >= '0' && c <= '9') return c - '0' + 52;
+            if (c == '+') return 62;
+            if (c == '/') return 63;
+            return -1;
+        };
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            auto s = v.GetValue<std::string>();
+            if (s.empty()) {
+                result.SetValue(i, Value::VARCHAR(""));
+                continue;
+            }
+            if (s.size() % 4 != 0) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            std::string out;
+            out.reserve((s.size() / 4) * 3);
+            bool ok = true;
+            for (size_t k = 0; k < s.size(); k += 4) {
+                int v0 = decode_char(s[k]);
+                int v1 = decode_char(s[k+1]);
+                int v2 = (s[k+2] == '=') ? -2 : decode_char(s[k+2]);
+                int v3 = (s[k+3] == '=') ? -2 : decode_char(s[k+3]);
+                if (v0 < 0 || v1 < 0 || v2 == -1 || v3 == -1) { ok = false; break; }
+                // Padding only allowed in last group.
+                if ((v2 == -2 || v3 == -2) && k + 4 != s.size()) { ok = false; break; }
+                if (v2 == -2 && v3 != -2) { ok = false; break; }
+                uint32_t b = (static_cast<uint32_t>(v0) << 18) |
+                             (static_cast<uint32_t>(v1) << 12);
+                out.push_back(static_cast<char>((b >> 16) & 0xFF));
+                if (v2 != -2) {
+                    b |= static_cast<uint32_t>(v2) << 6;
+                    out.push_back(static_cast<char>((b >> 8) & 0xFF));
+                    if (v3 != -2) {
+                        b |= static_cast<uint32_t>(v3);
+                        out.push_back(static_cast<char>(b & 0xFF));
+                    }
+                }
+            }
+            if (!ok) {
+                result.GetValidity().SetInvalid(i);
+            } else {
+                result.SetValue(i, Value::VARCHAR(out));
+            }
+        }
+        return;
+    }
+
     // HEX / TO_HEX / UNHEX — hex encode/decode. HEX/TO_HEX accept either
     // an integer (returns lowercase hex digits, no leading zeros for
     // positive; two's-complement at input width for negative) or a
