@@ -842,6 +842,49 @@ BoundExprPtr Binder::BindArithmetic(const ArithmeticExpression &expr, BindContex
         return std::make_unique<BoundArithmetic>(expr.op, std::move(left), std::move(right),
                                                   LogicalType::VARCHAR());
     }
+    // DATE arithmetic per SQL standard:
+    //   DATE + integer  -> DATE   (commutative)
+    //   DATE - integer  -> DATE   (DATE on left only)
+    //   DATE - DATE     -> INTEGER (days between)
+    //   DATE * / / etc. -> error
+    // Without this, every DATE math expression returned raw epoch days
+    // (DATE '2024-01-01' + 5 -> 19728 instead of 2024-01-06) because
+    // ResolveArithmeticType fell through to the INTEGER branch.
+    auto left_id = left->GetReturnType().id();
+    auto right_id = right->GetReturnType().id();
+    bool left_date  = (left_id  == LogicalTypeId::DATE);
+    bool right_date = (right_id == LogicalTypeId::DATE);
+    auto is_int_id = [](LogicalTypeId t) {
+        return t == LogicalTypeId::TINYINT  || t == LogicalTypeId::SMALLINT ||
+               t == LogicalTypeId::INTEGER  || t == LogicalTypeId::BIGINT;
+    };
+    if (left_date || right_date) {
+        if (expr.op == "+") {
+            // DATE + INT or INT + DATE
+            if (left_date && (is_int_id(right_id) || right_id == LogicalTypeId::SQLNULL)) {
+                return std::make_unique<BoundArithmetic>(
+                    expr.op, std::move(left), std::move(right), LogicalType::DATE());
+            }
+            if (right_date && (is_int_id(left_id) || left_id == LogicalTypeId::SQLNULL)) {
+                return std::make_unique<BoundArithmetic>(
+                    expr.op, std::move(left), std::move(right), LogicalType::DATE());
+            }
+        } else if (expr.op == "-") {
+            // DATE - INT -> DATE; DATE - DATE -> INTEGER (days).
+            if (left_date && right_date) {
+                return std::make_unique<BoundArithmetic>(
+                    expr.op, std::move(left), std::move(right), LogicalType::INTEGER());
+            }
+            if (left_date && (is_int_id(right_id) || right_id == LogicalTypeId::SQLNULL)) {
+                return std::make_unique<BoundArithmetic>(
+                    expr.op, std::move(left), std::move(right), LogicalType::DATE());
+            }
+        }
+        // Any other DATE-involving combination is a type error.
+        throw BinderException(ErrorCode::TYPE_MISMATCH,
+            "Invalid DATE arithmetic: " + left->GetReturnType().ToString() +
+            " " + expr.op + " " + right->GetReturnType().ToString());
+    }
     auto result_type = ResolveArithmeticType(left->GetReturnType(), right->GetReturnType());
     return std::make_unique<BoundArithmetic>(expr.op, std::move(left), std::move(right),
                                              result_type);
