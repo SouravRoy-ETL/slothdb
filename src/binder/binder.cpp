@@ -1250,7 +1250,7 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
     } else if (name == "CEIL" || name == "CEILING" || name == "FLOOR" ||
                name == "ROUND" || name == "SQRT" || name == "CBRT" ||
-               name == "POWER" || name == "MOD") {
+               name == "POWER" || name == "POW" || name == "MOD") {
         return_type = LogicalType::DOUBLE();
     } else if (name == "COALESCE" || name == "IFNULL" || name == "NVL") {
         // Result type unifies across all args via SQL numeric promotion
@@ -1432,8 +1432,13 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     } else if (name == "IN" || name == "BETWEEN") {
         return_type = LogicalType::BOOLEAN();
     } else if (name == "NOW" || name == "CURRENT_TIMESTAMP" ||
-               name == "MAKE_TIMESTAMP") {
+               name == "LOCALTIMESTAMP" || name == "MAKE_TIMESTAMP") {
         return_type = LogicalType::TIMESTAMP();
+    } else if (name == "CURRENT_USER" || name == "SESSION_USER" ||
+               name == "USER" || name == "CURRENT_SCHEMA" ||
+               name == "CURRENT_DATABASE" || name == "VERSION" ||
+               name == "UUID" || name == "GEN_RANDOM_UUID") {
+        return_type = LogicalType::VARCHAR();
     } else if (name == "TO_TIMESTAMP" || name == "DATE_TRUNC") {
         return_type = LogicalType::BIGINT(); // microseconds since epoch
     } else if (name == "CURRENT_DATE") {

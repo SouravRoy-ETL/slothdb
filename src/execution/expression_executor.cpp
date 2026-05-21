@@ -2408,7 +2408,12 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
-    if (name == "SQRT" || name == "CBRT" || name == "POWER" || name == "MOD") {
+    if (name == "POW") {
+        // PG/MySQL alias for POWER.
+        const_cast<BoundFunction &>(expr).function_name = "POWER";
+    }
+    if (name == "SQRT" || name == "CBRT" || name == "POWER" || name == "MOD" ||
+        name == "POW") {
         Vector arg1(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg1, count);
         if (name == "CBRT") {
@@ -3541,7 +3546,8 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 
     // ---- Timestamp/Date functions ----
 
-    if (name == "NOW" || name == "CURRENT_TIMESTAMP") {
+    if (name == "NOW" || name == "CURRENT_TIMESTAMP" ||
+        name == "LOCALTIMESTAMP") {
         // Return a typed TIMESTAMP so ToString renders as
         // 'YYYY-MM-DD HH:MM:SS' and downstream operators (cast,
         // comparison, EXTRACT) recognize it. Previously stored as
@@ -3552,6 +3558,55 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             now.time_since_epoch()).count();
         for (idx_t i = 0; i < count; i++) {
             result.SetValue(i, Value::TIMESTAMP(epoch));
+        }
+        return;
+    }
+
+    if (name == "CURRENT_USER" || name == "SESSION_USER" ||
+        name == "USER") {
+        for (idx_t i = 0; i < count; i++) {
+            result.SetValue(i, Value::VARCHAR("slothdb"));
+        }
+        return;
+    }
+    if (name == "CURRENT_SCHEMA") {
+        for (idx_t i = 0; i < count; i++) {
+            result.SetValue(i, Value::VARCHAR("main"));
+        }
+        return;
+    }
+    if (name == "CURRENT_DATABASE") {
+        for (idx_t i = 0; i < count; i++) {
+            result.SetValue(i, Value::VARCHAR("slothdb"));
+        }
+        return;
+    }
+    if (name == "VERSION") {
+        for (idx_t i = 0; i < count; i++) {
+            result.SetValue(i, Value::VARCHAR("slothdb"));
+        }
+        return;
+    }
+    if (name == "UUID" || name == "GEN_RANDOM_UUID") {
+        // RFC 4122 variant 1 / version 4: 128 random bits with the
+        // version nibble and variant bits patched in. Use the engine's
+        // existing RNG (rand()) — not cryptographically strong, but
+        // matches DuckDB / PG's gen_random_uuid() output shape.
+        static const char hex[] = "0123456789abcdef";
+        for (idx_t i = 0; i < count; i++) {
+            unsigned char b[16];
+            for (int k = 0; k < 16; k++) b[k] = static_cast<unsigned char>(rand() & 0xff);
+            b[6] = (b[6] & 0x0f) | 0x40; // version 4
+            b[8] = (b[8] & 0x3f) | 0x80; // variant 1
+            char buf[37];
+            char *p = buf;
+            for (int k = 0; k < 16; k++) {
+                *p++ = hex[(b[k] >> 4) & 0xf];
+                *p++ = hex[b[k] & 0xf];
+                if (k == 3 || k == 5 || k == 7 || k == 9) *p++ = '-';
+            }
+            *p = '\0';
+            result.SetValue(i, Value::VARCHAR(std::string(buf, 36)));
         }
         return;
     }
