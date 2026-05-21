@@ -2067,20 +2067,30 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             }
             auto s = sv.GetValue<std::string>();
             int32_t start_raw = start_vec.GetValue(i).GetValue<int32_t>();
-            int32_t len_raw = has_len ? len_vec.GetValue(i).GetValue<int32_t>()
-                                       : static_cast<int32_t>(s.size());
             // SQL standard: positions are 1-based; positions <1 are
             // clipped but the "missing" characters STILL count against
-            // len. So SUBSTRING('hello', -2, 5) covers logical
-            // positions -2,-1,0,1,2 → physical "he". A negative len
-            // produces empty. Out-of-range start produces empty.
-            if (len_raw <= 0) {
-                result.SetValue(i, Value::VARCHAR(""));
-                continue;
-            }
+            // len in the 3-arg form. SUBSTRING('hello', -2, 5) covers
+            // logical positions -2,-1,0,1,2 → physical "he". A negative
+            // len produces empty. Out-of-range start produces empty.
+            //
+            // 2-arg form (no length): suffix from max(start,1) to end
+            // of string. Previously len was set to s.size() and then
+            // added to start, so SUBSTRING('hello', -2) clipped to
+            // 'he' instead of returning 'hello'.
+            int64_t s_size_i = static_cast<int64_t>(s.size());
             int64_t effective_start = std::max<int32_t>(1, start_raw);
-            int64_t effective_end =
-                static_cast<int64_t>(start_raw) + static_cast<int64_t>(len_raw);
+            int64_t effective_end;
+            if (has_len) {
+                int32_t len_raw = len_vec.GetValue(i).GetValue<int32_t>();
+                if (len_raw <= 0) {
+                    result.SetValue(i, Value::VARCHAR(""));
+                    continue;
+                }
+                effective_end =
+                    static_cast<int64_t>(start_raw) + static_cast<int64_t>(len_raw);
+            } else {
+                effective_end = s_size_i + 1;
+            }
             if (effective_end <= 1) {
                 result.SetValue(i, Value::VARCHAR(""));
                 continue;
