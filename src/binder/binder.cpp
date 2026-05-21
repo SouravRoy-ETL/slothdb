@@ -1428,11 +1428,34 @@ BoundExprPtr Binder::BindSubquery(const SubqueryExpression &expr, BindContext &c
     case SubqueryType::NOT_EXISTS:
         subtype = BoundSubqueryExpression::Type::NOT_EXISTS;
         break;
-    case SubqueryType::SCALAR:
+    case SubqueryType::SCALAR: {
         subtype = BoundSubqueryExpression::Type::SCALAR;
-        // Try to determine return type from subquery.
-        return_type = LogicalType::SQLNULL();
+        // Bind the subquery to discover its first projection's type.
+        // Without this the return_type stays SQLNULL, which makes
+        // every `expr = (SELECT ...)` short-circuit to NULL via the
+        // SQLNULL-operand branch in ExecuteComparison. The inner
+        // binder is re-created so the subquery doesn't share our
+        // outer BindContext (correlated subqueries deferred).
+        if (expr.subquery) {
+            Binder inner_binder(catalog_);
+            try {
+                auto inner = inner_binder.Bind(*expr.subquery);
+                if (inner) {
+                    auto &bs = static_cast<BoundSelectStatement &>(*inner);
+                    if (!bs.result_types.empty()) {
+                        return_type = bs.result_types[0];
+                    }
+                }
+            } catch (...) {
+                // Fall back to SQLNULL — runtime path still works for
+                // EXPLAIN / catalog-dependent inner SELECT.
+                return_type = LogicalType::SQLNULL();
+            }
+        } else {
+            return_type = LogicalType::SQLNULL();
+        }
         break;
+    }
     case SubqueryType::IN_SUBQUERY:
         subtype = BoundSubqueryExpression::Type::IN_SUBQUERY;
         break;

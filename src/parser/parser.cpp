@@ -1182,8 +1182,16 @@ ParsedExprPtr Parser::ParseUnary() {
 }
 
 ParsedExprPtr Parser::ParsePrimary() {
-    // Parenthesized expression.
+    // Parenthesized expression OR scalar subquery (SELECT ...) / (WITH ...).
     if (Match(TokenType::LPAREN)) {
+        if (CheckKeyword(TokenType::KW_SELECT) || CheckKeyword(TokenType::KW_WITH)) {
+            auto inner = ParseSelectStatement();
+            Expect(TokenType::RPAREN, "after scalar subquery");
+            return std::make_unique<SubqueryExpression>(
+                SubqueryType::SCALAR,
+                std::unique_ptr<SelectStatement>(
+                    static_cast<SelectStatement *>(inner.release())));
+        }
         auto expr = ParseExpression();
         Expect(TokenType::RPAREN, "after expression");
         return expr;
