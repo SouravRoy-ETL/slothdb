@@ -635,6 +635,7 @@ BoundStmtPtr Binder::BindUpdate(const UpdateStatement &stmt) {
     BindContext context;
     context.AddTable(stmt.table_name, entry);
 
+    auto col_types = entry->GetTypes();
     for (auto &assign : stmt.assignments) {
         auto idx = entry->GetColumnIndex(assign.column_name);
         if (idx == INVALID_INDEX) {
@@ -647,6 +648,20 @@ BoundStmtPtr Binder::BindUpdate(const UpdateStatement &stmt) {
         if (ContainsAggregate(*ba.value)) {
             throw BinderException(ErrorCode::AGGREGATE_IN_WHERE,
                 "aggregate functions are not allowed in UPDATE assignment");
+        }
+        // Wrap the RHS in a BoundCast when its bound type doesn't
+        // match the target column type. Mirrors the INSERT VALUES
+        // fix (fe38e2d): previously UPDATE silently bit-wrapped a
+        // BIGINT into an INTEGER column (9999999999 -> 1410065407)
+        // or wrote a VARCHAR-typed Value into a DATE slot which
+        // read back as epoch.
+        if (idx < col_types.size()) {
+            auto src_id = ba.value->GetReturnType().id();
+            auto dst_id = col_types[idx].id();
+            if (src_id != dst_id && src_id != LogicalTypeId::SQLNULL) {
+                ba.value = std::make_unique<BoundCast>(
+                    std::move(ba.value), col_types[idx]);
+            }
         }
         result->assignments.push_back(std::move(ba));
     }
