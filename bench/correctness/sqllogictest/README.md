@@ -272,6 +272,55 @@ number is not re-measured. Sixteen more general engine fixes landed:
     canonical SQL spelling for date/timestamp constants was
     rejected by the parser. Now produces typed DATE/TIMESTAMP
     constants via the existing parse helpers.
+13. **EXTRACT MILLISECOND/MICROSECOND** — were silently 0 for any
+    sub-second part. Fixed.
+13. **Top-level parenthesised query expression** — `(SELECT 1)`,
+    `(SELECT ...) UNION (SELECT ...)`, ORDER-BY/LIMIT tail on the
+    outer were rejected at column 1. Fixed.
+13. **DATE arithmetic** — `DATE + N` / `DATE - N` returned raw
+    epoch days; `DATE - DATE` already worked. Now produces typed
+    DATE; rejects invalid ops with clear errors.
+13. **ABS overflow + TINYINT/SMALLINT** — overflow at min was UB
+    (returned negative); TINYINT/SMALLINT dispatch missing. Fixed.
+13. **Simple CASE form** — `CASE scrutinee WHEN val THEN ...` was
+    rejected. Rewritten at parse time via scrutinee re-parse.
+13. **DATE_DIFF / DATE_ADD for DATE inputs** — returned 0 because
+    the executor read DATE Values as int64. Plus added MONTH /
+    QUARTER / YEAR support with leap-year clamping.
+13. **INITCAP NULL crash** — propagates NULL now.
+13. **REGEXP_MATCH/REPLACE/EXTRACT NULL** — propagates NULL.
+13. **SIGN integer widths** — TINYINT/SMALLINT/BIGINT now work;
+    NaN → NULL.
+13. **CHAR_LENGTH / CHARACTER_LENGTH alias** — bind-level
+    normalization to LENGTH.
+13. **CURRENT_DATE / CURRENT_TIMESTAMP / NOW typed** — were
+    INTEGER YYYYMMDD / BIGINT micros; now real DATE / TIMESTAMP.
+13. **OCTET_LENGTH / BIT_LENGTH** added.
+13. **HEX / TO_HEX / UNHEX** added.
+13. **MD5 / SHA1 / SHA256 / SHA512** added (RFC 1321 / FIPS 180-4).
+13. **CBRT** added.
+13. **GREATEST / LEAST type unification** — mixed numeric/NULL
+    returned wrong values.
+13. **BASE64_ENCODE / BASE64_DECODE** added (RFC 4648).
+13. **Scalar subquery** — `(SELECT ...)` in expression position
+    was rejected by the parser. Binder + executor now route it.
+13. **TIMESTAMP arithmetic** — TIMESTAMP +/- N seconds and
+    TIMESTAMP - TIMESTAMP -> BIGINT seconds. Was int32-truncated.
+13. **HAVING without GROUP BY** silently dropped, returning every
+    base row. Now implies single-group aggregation.
+13. **DATE vs TIMESTAMP comparison** — inequalities silently
+    returned false (stod-truncated to year-only). Fixed.
+13. **DATE/TIMESTAMP vs VARCHAR comparison** — same year-only
+    bug for date-string literals; every `WHERE ts < '2024-12-31'`
+    was returning wrong rows.
+13. **EXTRACT WEEK/QUARTER/DOY/CENTURY/MILLENNIUM/DECADE/ISODOW/
+    ISOYEAR** — silently returned 0. Unknown part now errors.
+13. **INSERT VARCHAR -> INT strict parse** — '1.5' silently stored
+    as 1 (data corruption); 'abc' / out-of-range leaked raw stoi
+    exceptions. Now classified ConversionException with full-
+    consumption check.
+13. **DATE_TRUNC on DATE input** silently produced 1970-01-01 +
+    28 min (output scale mismatch). Always emits micros now.
 
 Reading the numbers honestly:
 
