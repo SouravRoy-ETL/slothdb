@@ -590,7 +590,18 @@ Value ExpressionExecutor::ExecuteScalar(const BoundExpression &expr) {
         default: return Value::VARCHAR(str);
         }
     }
-    throw InternalException("ExecuteScalar only supports constants and unary minus");
+    // Fallback: evaluate any expression that doesn't depend on input
+    // columns by running the full Execute() pipeline against an empty
+    // input chunk into a single-row result vector. Lets INSERT VALUES
+    // accept arithmetic / functions / CASE / COALESCE / IF / etc.
+    // instead of throwing "ExecuteScalar only supports constants and
+    // unary minus". An expression that references a column will hit
+    // ExecuteColumnRef and throw inside Execute(); that's the
+    // appropriate error for INSERT VALUES context anyway.
+    DataChunk empty_input;
+    Vector out(expr.GetReturnType(), 1);
+    Execute(expr, empty_input, out, 1);
+    return out.GetValue(0);
 }
 
 void ExpressionExecutor::ExecuteColumnRef(const BoundColumnRef &expr, DataChunk &input,
