@@ -2990,7 +2990,48 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return dim[m - 1];
     };
 
-    if (name == "DATE_DIFF" || name == "DATEDIFF") {
+    // AGE(ts1, ts2) — microsecond difference (ts1 - ts2) as BIGINT.
+    // Postgres returns INTERVAL; slothdb has no INTERVAL type so the
+    // microsecond BIGINT is the natural substitute (callers can /1e6
+    // for seconds, divide by 86400e6 for days, etc.). Accepts DATE
+    // and TIMESTAMP for either arg.
+    if (name == "AGE") {
+        if (expr.arguments.size() != 2) {
+            throw NotImplementedException("AGE requires 2 arguments");
+        }
+        Vector a(expr.arguments[0]->GetReturnType(), count);
+        Vector b(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, a, count);
+        Execute(*expr.arguments[1], input, b, count);
+        auto age_to_micros = [](const Value &v) -> int64_t {
+            auto tid = v.type().id();
+            if (tid == LogicalTypeId::DATE) {
+                return static_cast<int64_t>(v.GetValue<int32_t>()) * 86400LL * 1000000LL;
+            }
+            if (tid == LogicalTypeId::TIMESTAMP || tid == LogicalTypeId::TIMESTAMP_TZ) {
+                return v.GetValue<int64_t>();
+            }
+            if (tid == LogicalTypeId::BIGINT) {
+                int64_t raw = v.GetValue<int64_t>();
+                int64_t abs_raw = raw < 0 ? -raw : raw;
+                return (abs_raw >= 10000000000000LL) ? raw : raw * 1000000LL;
+            }
+            return 0;
+        };
+        for (idx_t i = 0; i < count; i++) {
+            auto va = a.GetValue(i);
+            auto vb = b.GetValue(i);
+            if (va.IsNull() || vb.IsNull()) {
+                result.GetValidity().SetInvalid(i); continue;
+            }
+            int64_t ma = age_to_micros(va);
+            int64_t mb = age_to_micros(vb);
+            result.SetValue(i, Value::BIGINT(ma - mb));
+        }
+        return;
+    }
+
+    if (name == "DATE_DIFF" || name == "DATEDIFF" || name == "TIMESTAMPDIFF") {
         auto part = StringUtil::Upper(
             ExpressionExecutor::ExecuteScalar(*expr.arguments[0]).GetValue<std::string>());
         Vector ts1(expr.arguments[1]->GetReturnType(), count);

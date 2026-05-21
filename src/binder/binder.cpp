@@ -1362,7 +1362,8 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         }
     }
     // Additional date functions.
-    else if (name == "DATE_DIFF" || name == "DATEDIFF") {
+    else if (name == "DATE_DIFF" || name == "DATEDIFF" || name == "TIMESTAMPDIFF" ||
+             name == "AGE") {
         return_type = LogicalType::BIGINT();
     } else if (name == "DATE_ADD" || name == "DATEADD") {
         // Return type:
