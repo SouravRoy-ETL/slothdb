@@ -19,6 +19,80 @@ namespace slothdb {
 
 static bool LikeMatch(const std::string &str, const std::string &pattern);
 
+// Self-contained SHA-256 (FIPS 180-4) over arbitrary-length bytes.
+// Verified against the FIPS-180 test vectors:
+//   SHA256("")    = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+//   SHA256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+static std::string Sha256Hex(const std::string &input) {
+    static const uint32_t K[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+    uint32_t H[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    };
+    auto ror = [](uint32_t x, int n) -> uint32_t {
+        return (x >> n) | (x << (32 - n));
+    };
+    // Pad input: append 0x80, zero-pad to 56 mod 64, then 64-bit
+    // big-endian bit length.
+    uint64_t bit_len = static_cast<uint64_t>(input.size()) * 8;
+    std::string msg = input;
+    msg.push_back(static_cast<char>(0x80));
+    while (msg.size() % 64 != 56) msg.push_back(0);
+    for (int i = 7; i >= 0; i--) {
+        msg.push_back(static_cast<char>((bit_len >> (i * 8)) & 0xFF));
+    }
+    for (size_t chunk = 0; chunk < msg.size(); chunk += 64) {
+        uint32_t W[64];
+        for (int i = 0; i < 16; i++) {
+            const unsigned char *p = reinterpret_cast<const unsigned char *>(&msg[chunk + i * 4]);
+            W[i] = (static_cast<uint32_t>(p[0]) << 24) |
+                   (static_cast<uint32_t>(p[1]) << 16) |
+                   (static_cast<uint32_t>(p[2]) << 8) |
+                    static_cast<uint32_t>(p[3]);
+        }
+        for (int i = 16; i < 64; i++) {
+            uint32_t s0 = ror(W[i-15], 7) ^ ror(W[i-15], 18) ^ (W[i-15] >> 3);
+            uint32_t s1 = ror(W[i-2], 17) ^ ror(W[i-2], 19) ^ (W[i-2] >> 10);
+            W[i] = W[i-16] + s0 + W[i-7] + s1;
+        }
+        uint32_t a=H[0], b=H[1], c=H[2], d=H[3], e=H[4], f=H[5], g=H[6], h=H[7];
+        for (int i = 0; i < 64; i++) {
+            uint32_t S1 = ror(e, 6) ^ ror(e, 11) ^ ror(e, 25);
+            uint32_t ch = (e & f) ^ (~e & g);
+            uint32_t t1 = h + S1 + ch + K[i] + W[i];
+            uint32_t S0 = ror(a, 2) ^ ror(a, 13) ^ ror(a, 22);
+            uint32_t mj = (a & b) ^ (a & c) ^ (b & c);
+            uint32_t t2 = S0 + mj;
+            h = g; g = f; f = e;
+            e = d + t1;
+            d = c; c = b; b = a;
+            a = t1 + t2;
+        }
+        H[0] += a; H[1] += b; H[2] += c; H[3] += d;
+        H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+    }
+    static const char *digs = "0123456789abcdef";
+    std::string out;
+    out.reserve(64);
+    for (int i = 0; i < 8; i++) {
+        for (int byte = 3; byte >= 0; byte--) {
+            unsigned char b = (H[i] >> (byte * 8)) & 0xFF;
+            out.push_back(digs[b >> 4]);
+            out.push_back(digs[b & 0xF]);
+        }
+    }
+    return out;
+}
+
 // Self-contained MD5 (RFC 1321) over arbitrary-length bytes.
 // Verified against RFC 1321 test suite:
 //   MD5("")        = d41d8cd98f00b204e9800998ecf8427e
@@ -1188,6 +1262,19 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto v = arg.GetValue(i);
             if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             result.SetValue(i, Value::VARCHAR(Md5Hex(v.GetValue<std::string>())));
+        }
+        return;
+    }
+
+    // SHA256 / SHA2_256 — FIPS-180-4 message digest. Returns 64
+    // lowercase hex chars. NULL input -> NULL.
+    if (name == "SHA256" || name == "SHA2_256") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            result.SetValue(i, Value::VARCHAR(Sha256Hex(v.GetValue<std::string>())));
         }
         return;
     }
