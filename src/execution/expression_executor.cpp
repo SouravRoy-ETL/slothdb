@@ -1093,6 +1093,99 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
+    // HEX / TO_HEX / UNHEX — hex encode/decode. HEX/TO_HEX accept either
+    // an integer (returns lowercase hex digits, no leading zeros for
+    // positive; two's-complement at input width for negative) or a
+    // VARCHAR (two lowercase hex chars per byte). UNHEX consumes a hex
+    // string (case-insensitive); odd length / non-hex chars produce
+    // NULL. NULL operand always returns NULL.
+    if (name == "HEX" || name == "TO_HEX" || name == "UNHEX") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        auto arg_id = expr.arguments[0]->GetReturnType().id();
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            if (name == "UNHEX") {
+                auto s = v.GetValue<std::string>();
+                if (s.size() % 2 != 0) {
+                    result.GetValidity().SetInvalid(i);
+                    continue;
+                }
+                std::string out;
+                out.reserve(s.size() / 2);
+                bool ok = true;
+                auto hex_val = [](char c, int &outv) {
+                    if (c >= '0' && c <= '9') { outv = c - '0'; return true; }
+                    if (c >= 'a' && c <= 'f') { outv = c - 'a' + 10; return true; }
+                    if (c >= 'A' && c <= 'F') { outv = c - 'A' + 10; return true; }
+                    return false;
+                };
+                for (size_t k = 0; k < s.size(); k += 2) {
+                    int hi, lo;
+                    if (!hex_val(s[k], hi) || !hex_val(s[k+1], lo)) { ok = false; break; }
+                    out.push_back(static_cast<char>((hi << 4) | lo));
+                }
+                if (!ok) {
+                    result.GetValidity().SetInvalid(i);
+                } else {
+                    result.SetValue(i, Value::VARCHAR(out));
+                }
+                continue;
+            }
+            // HEX / TO_HEX
+            if (arg_id == LogicalTypeId::VARCHAR) {
+                auto s = v.GetValue<std::string>();
+                static const char *digs = "0123456789abcdef";
+                std::string out;
+                out.reserve(s.size() * 2);
+                for (unsigned char b : s) {
+                    out.push_back(digs[b >> 4]);
+                    out.push_back(digs[b & 0xF]);
+                }
+                result.SetValue(i, Value::VARCHAR(out));
+            } else {
+                // Numeric: format as lowercase hex. Negatives use the
+                // two's-complement representation at the input's width.
+                int64_t val = 0;
+                int width_bytes = 8;
+                switch (arg_id) {
+                case LogicalTypeId::TINYINT:
+                    val = v.GetValue<int8_t>();  width_bytes = 1; break;
+                case LogicalTypeId::SMALLINT:
+                    val = v.GetValue<int16_t>(); width_bytes = 2; break;
+                case LogicalTypeId::INTEGER:
+                    val = v.GetValue<int32_t>(); width_bytes = 4; break;
+                case LogicalTypeId::BIGINT:
+                    val = v.GetValue<int64_t>(); width_bytes = 8; break;
+                default:
+                    throw NotImplementedException(
+                        "HEX for type " + v.type().ToString());
+                }
+                static const char *digs = "0123456789abcdef";
+                std::string out;
+                if (val == 0) {
+                    out = "0";
+                } else if (val > 0) {
+                    while (val) {
+                        out.push_back(digs[val & 0xF]);
+                        val = static_cast<int64_t>(static_cast<uint64_t>(val) >> 4);
+                    }
+                    std::reverse(out.begin(), out.end());
+                } else {
+                    // Mask to width's worth of bits.
+                    uint64_t mask = width_bytes >= 8 ? ~0ULL : ((1ULL << (width_bytes * 8)) - 1);
+                    uint64_t uval = static_cast<uint64_t>(val) & mask;
+                    for (int k = width_bytes * 2 - 1; k >= 0; k--) {
+                        out.push_back(digs[(uval >> (k * 4)) & 0xF]);
+                    }
+                }
+                result.SetValue(i, Value::VARCHAR(out));
+            }
+        }
+        return;
+    }
+
     // OCTET_LENGTH(s) — byte count, identical to LENGTH today (slothdb
     // is byte-oriented). BIT_LENGTH(s) returns byte_count * 8.
     if (name == "OCTET_LENGTH" || name == "BIT_LENGTH") {

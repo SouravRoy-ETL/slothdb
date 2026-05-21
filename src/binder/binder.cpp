@@ -969,7 +969,8 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     } else if (name == "UPPER" || name == "LOWER" || name == "TRIM" ||
                name == "LTRIM" || name == "RTRIM" || name == "REPLACE" ||
                name == "SUBSTRING" || name == "SUBSTR" || name == "CONCAT" ||
-               name == "CONCAT_WS" || name == "CHR") {
+               name == "CONCAT_WS" || name == "CHR" ||
+               name == "HEX" || name == "TO_HEX" || name == "UNHEX") {
         return_type = LogicalType::VARCHAR();
     } else if (name == "ABS") {
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
