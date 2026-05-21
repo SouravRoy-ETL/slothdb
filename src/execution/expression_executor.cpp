@@ -3386,7 +3386,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         // microseconds (|raw| >= 1e13). Previously the EXTRACT branch
         // didn't list these, so MILLI/MICROSECOND silently returned 0.
         bool is_arith = (part == "HOUR" || part == "MINUTE" || part == "SECOND" ||
-                         part == "EPOCH" || part == "DOW" ||
+                         part == "EPOCH" || part == "DOW" || part == "DAYOFWEEK" ||
                          part == "MILLISECOND" || part == "MILLISECONDS" ||
                          part == "MICROSECOND" || part == "MICROSECONDS");
         bool is_calendar = (part == "YEAR" || part == "MONTH" || part == "DAY");
@@ -3436,7 +3436,8 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 else if (part == "MINUTE") extracted = floor_mod(floor_div(seconds, 60), 60);
                 else if (part == "HOUR") extracted = floor_mod(floor_div(seconds, 3600), 24);
                 else if (part == "EPOCH") extracted = seconds;
-                else if (part == "DOW") extracted = floor_mod(floor_div(seconds, 86400) + 4, 7);
+                else if (part == "DOW" || part == "DAYOFWEEK")
+                    extracted = floor_mod(floor_div(seconds, 86400) + 4, 7);
                 else if (part == "MICROSECOND" || part == "MICROSECONDS") {
                     extracted = is_micros ? floor_mod(raw, 1000000) : 0;
                 } else if (part == "MILLISECOND" || part == "MILLISECONDS") {
@@ -3503,7 +3504,8 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 else if (part == "MINUTE") extracted = floor_mod(floor_div(seconds, 60), 60);
                 else if (part == "HOUR") extracted = floor_mod(floor_div(seconds, 3600), 24);
                 else if (part == "EPOCH") extracted = seconds;
-                else if (part == "DOW") extracted = floor_mod(floor_div(seconds, 86400) + 4, 7);
+                else if (part == "DOW" || part == "DAYOFWEEK")
+                    extracted = floor_mod(floor_div(seconds, 86400) + 4, 7);
             } else if (is_calendar || is_calendar_ext) {
                 // Decompose seconds into civil (year, month, day, day-
                 // of-year) via Hinnant days_from_civil reverse — used
@@ -3594,8 +3596,9 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 throw NotImplementedException(
                     "EXTRACT field '" + part + "' not supported "
                     "(supported: YEAR, MONTH, DAY, HOUR, MINUTE, SECOND, "
-                    "MILLISECOND, MICROSECOND, EPOCH, DOW, ISODOW, DOY, "
-                    "WEEK, QUARTER, DECADE, CENTURY, MILLENNIUM, ISOYEAR)");
+                    "MILLISECOND, MICROSECOND, EPOCH, DOW, DAYOFWEEK, "
+                    "ISODOW, DOY, DAYOFYEAR, WEEK, QUARTER, DECADE, "
+                    "CENTURY, MILLENNIUM, ISOYEAR)");
             }
             result.SetValue(i, Value::BIGINT(extracted));
         }
