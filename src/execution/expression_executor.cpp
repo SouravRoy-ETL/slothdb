@@ -687,6 +687,43 @@ void ExpressionExecutor::ExecuteComparison(const BoundComparison &expr, DataChun
         return;
     }
 
+    // DATE vs TIMESTAMP mixed compare: convert the DATE side to
+    // micros-since-epoch (days * 86400 * 1e6) so the int64 compare
+    // operates on the same scale. Previously the mixed-type branch
+    // fell through to stod(ToString()) which silently truncated and
+    // returned wrong answers — e.g. DATE '2024-01-01' < TIMESTAMP
+    // '2024-06-15 12:00:00' returned false.
+    {
+        auto lid = left.GetType().id();
+        auto rid = right.GetType().id();
+        bool l_date = (lid == LogicalTypeId::DATE);
+        bool r_date = (rid == LogicalTypeId::DATE);
+        bool l_ts = (lid == LogicalTypeId::TIMESTAMP || lid == LogicalTypeId::TIMESTAMP_TZ);
+        bool r_ts = (rid == LogicalTypeId::TIMESTAMP || rid == LogicalTypeId::TIMESTAMP_TZ);
+        if ((l_date && r_ts) || (l_ts && r_date)) {
+            // Promote the DATE side to TIMESTAMP-micros in a fresh
+            // Vector so the typed int64 path below handles it.
+            Vector promoted(LogicalType::TIMESTAMP(), count);
+            Vector *date_vec = l_date ? &left : &right;
+            auto *src = date_vec->GetData<int32_t>();
+            auto *dst = promoted.GetData<int64_t>();
+            for (idx_t i = 0; i < count; i++) {
+                if (date_vec->GetValidity().RowIsValid(i)) {
+                    dst[i] = static_cast<int64_t>(src[i]) * 86400LL * 1000000LL;
+                } else {
+                    promoted.GetValidity().SetInvalid(i);
+                    dst[i] = 0;
+                }
+            }
+            if (l_date) {
+                left = std::move(promoted);
+            } else {
+                right = std::move(promoted);
+            }
+            // Both sides are now INT64-physical TIMESTAMPs.
+        }
+    }
+
     auto left_phys = left.GetType().GetInternalType();
     auto right_phys = right.GetType().GetInternalType();
 
