@@ -19,6 +19,61 @@ namespace slothdb {
 
 static bool LikeMatch(const std::string &str, const std::string &pattern);
 
+// Self-contained SHA-1 (FIPS 180-4) over arbitrary-length bytes.
+// Verified vectors:
+//   SHA1("")    = da39a3ee5e6b4b0d3255bfef95601890afd80709
+//   SHA1("abc") = a9993e364706816aba3e25717850c26c9cd0d89b
+//   SHA1("The quick brown fox jumps over the lazy dog")
+//             = 2fd4e1c67a2d28fced849ee1bb76e7391b93eb12
+static std::string Sha1Hex(const std::string &input) {
+    uint32_t H[5] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
+    auto rol = [](uint32_t x, int n) -> uint32_t {
+        return (x << n) | (x >> (32 - n));
+    };
+    uint64_t bit_len = static_cast<uint64_t>(input.size()) * 8;
+    std::string msg = input;
+    msg.push_back(static_cast<char>(0x80));
+    while (msg.size() % 64 != 56) msg.push_back(0);
+    for (int i = 7; i >= 0; i--) {
+        msg.push_back(static_cast<char>((bit_len >> (i * 8)) & 0xFF));
+    }
+    for (size_t chunk = 0; chunk < msg.size(); chunk += 64) {
+        uint32_t W[80];
+        for (int i = 0; i < 16; i++) {
+            const unsigned char *p = reinterpret_cast<const unsigned char *>(&msg[chunk + i * 4]);
+            W[i] = (static_cast<uint32_t>(p[0]) << 24) |
+                   (static_cast<uint32_t>(p[1]) << 16) |
+                   (static_cast<uint32_t>(p[2]) << 8) |
+                    static_cast<uint32_t>(p[3]);
+        }
+        for (int i = 16; i < 80; i++) {
+            W[i] = rol(W[i-3] ^ W[i-8] ^ W[i-14] ^ W[i-16], 1);
+        }
+        uint32_t a=H[0], b=H[1], c=H[2], d=H[3], e=H[4];
+        for (int i = 0; i < 80; i++) {
+            uint32_t f, k;
+            if (i < 20)      { f = (b & c) | (~b & d);            k = 0x5A827999; }
+            else if (i < 40) { f = b ^ c ^ d;                     k = 0x6ED9EBA1; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d);   k = 0x8F1BBCDC; }
+            else             { f = b ^ c ^ d;                     k = 0xCA62C1D6; }
+            uint32_t t = rol(a, 5) + f + e + k + W[i];
+            e = d; d = c; c = rol(b, 30); b = a; a = t;
+        }
+        H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e;
+    }
+    static const char *digs = "0123456789abcdef";
+    std::string out;
+    out.reserve(40);
+    for (int i = 0; i < 5; i++) {
+        for (int byte = 3; byte >= 0; byte--) {
+            unsigned char b = (H[i] >> (byte * 8)) & 0xFF;
+            out.push_back(digs[b >> 4]);
+            out.push_back(digs[b & 0xF]);
+        }
+    }
+    return out;
+}
+
 // Self-contained SHA-256 (FIPS 180-4) over arbitrary-length bytes.
 // Verified against the FIPS-180 test vectors:
 //   SHA256("")    = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
@@ -1262,6 +1317,19 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto v = arg.GetValue(i);
             if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             result.SetValue(i, Value::VARCHAR(Md5Hex(v.GetValue<std::string>())));
+        }
+        return;
+    }
+
+    // SHA1 / SHA_1 — FIPS-180-4 message digest. Returns 40 lowercase
+    // hex chars. NULL input -> NULL. Same NULL pattern as MD5/SHA256.
+    if (name == "SHA1" || name == "SHA_1") {
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            result.SetValue(i, Value::VARCHAR(Sha1Hex(v.GetValue<std::string>())));
         }
         return;
     }

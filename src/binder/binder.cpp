@@ -971,7 +971,8 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
                name == "SUBSTRING" || name == "SUBSTR" || name == "CONCAT" ||
                name == "CONCAT_WS" || name == "CHR" ||
                name == "HEX" || name == "TO_HEX" || name == "UNHEX" ||
-               name == "MD5" || name == "SHA256" || name == "SHA2_256") {
+               name == "MD5" || name == "SHA1" || name == "SHA_1" ||
+               name == "SHA256" || name == "SHA2_256") {
         return_type = LogicalType::VARCHAR();
     } else if (name == "ABS") {
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
