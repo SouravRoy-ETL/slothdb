@@ -576,10 +576,18 @@ BoundStmtPtr Binder::BindInsert(const InsertStatement &stmt) {
         }
     }
     auto &table_cols = entry->GetColumns();
+    // Bind-time NULL detection: peel BoundCast wrappers (added by
+    // wrap_for_target) so CAST(NULL AS INT) and similar are also
+    // caught. Without the peel, `INSERT INTO nn VALUES (CAST(NULL
+    // AS INT))` silently accepted NULL into a NOT NULL column.
     auto check_not_null = [&](const BoundExpression &val, idx_t col) {
         if (col >= table_cols.size() || !table_cols[col].not_null) return;
-        if (val.GetExpressionType() != BoundExpressionType::CONSTANT) return;
-        auto &bc = static_cast<const BoundConstant &>(val);
+        const BoundExpression *cur = &val;
+        while (cur && cur->GetExpressionType() == BoundExpressionType::CAST) {
+            cur = static_cast<const BoundCast &>(*cur).child.get();
+        }
+        if (!cur || cur->GetExpressionType() != BoundExpressionType::CONSTANT) return;
+        auto &bc = static_cast<const BoundConstant &>(*cur);
         if (bc.value.IsNull()) {
             throw BinderException(ErrorCode::TYPE_MISMATCH,
                 "NOT NULL constraint violation: column '" +
@@ -683,16 +691,22 @@ BoundStmtPtr Binder::BindUpdate(const UpdateStatement &stmt) {
             }
         }
         // NOT NULL constraint: reject literal NULL into a NOT NULL
-        // column at bind time. Computed NULLs evaluated at runtime
-        // are not caught here (deferred to executor-side enforcement).
+        // column at bind time. Peel BoundCast wrappers so CAST(NULL
+        // AS INT) is also caught. Computed NULLs at runtime are not
+        // caught here (deferred to executor-side enforcement).
         auto &upd_cols = entry->GetColumns();
-        if (idx < upd_cols.size() && upd_cols[idx].not_null &&
-            ba.value->GetExpressionType() == BoundExpressionType::CONSTANT) {
-            auto &bc = static_cast<const BoundConstant &>(*ba.value);
-            if (bc.value.IsNull()) {
-                throw BinderException(ErrorCode::TYPE_MISMATCH,
-                    "NOT NULL constraint violation: column '" +
-                    upd_cols[idx].name + "'");
+        if (idx < upd_cols.size() && upd_cols[idx].not_null) {
+            const BoundExpression *cur = ba.value.get();
+            while (cur && cur->GetExpressionType() == BoundExpressionType::CAST) {
+                cur = static_cast<const BoundCast &>(*cur).child.get();
+            }
+            if (cur && cur->GetExpressionType() == BoundExpressionType::CONSTANT) {
+                auto &bc = static_cast<const BoundConstant &>(*cur);
+                if (bc.value.IsNull()) {
+                    throw BinderException(ErrorCode::TYPE_MISMATCH,
+                        "NOT NULL constraint violation: column '" +
+                        upd_cols[idx].name + "'");
+                }
             }
         }
         result->assignments.push_back(std::move(ba));
