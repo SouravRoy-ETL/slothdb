@@ -354,6 +354,68 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         // drops the predicate, returning every base-table row instead
         // of the SQL-standard implicit single-group result.
         result->has_aggregation = true;
+        // Reject ungrouped non-aggregated column references in HAVING.
+        // Previously `HAVING b > 5` (b not in GROUP BY, not in agg)
+        // silently returned 0 rows — wrong-result, undetectable from
+        // output.
+        std::function<bool(const BoundExpression &)> bad_col =
+            [&](const BoundExpression &e) -> bool {
+            switch (e.GetExpressionType()) {
+            case BoundExpressionType::COLUMN_REF: {
+                auto &cr = static_cast<const BoundColumnRef &>(e);
+                for (auto &g : result->group_by) {
+                    if (g && g->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                        auto &gcr = static_cast<const BoundColumnRef &>(*g);
+                        if (gcr.column_index == cr.column_index) return false;
+                    }
+                }
+                return true;
+            }
+            case BoundExpressionType::FUNCTION: {
+                auto &fn = static_cast<const BoundFunction &>(e);
+                if (fn.is_aggregate) return false; // aggregate consumes column refs
+                for (auto &a : fn.arguments) {
+                    if (a && bad_col(*a)) return true;
+                }
+                if (fn.filter && bad_col(*fn.filter)) return true;
+                return false;
+            }
+            case BoundExpressionType::COMPARISON: {
+                auto &c = static_cast<const BoundComparison &>(e);
+                return (c.left && bad_col(*c.left)) ||
+                       (c.right && bad_col(*c.right));
+            }
+            case BoundExpressionType::CONJUNCTION: {
+                auto &c = static_cast<const BoundConjunction &>(e);
+                return (c.left && bad_col(*c.left)) ||
+                       (c.right && bad_col(*c.right));
+            }
+            case BoundExpressionType::NEGATION:
+                return bad_col(*static_cast<const BoundNegation &>(e).child);
+            case BoundExpressionType::IS_NULL:
+                return bad_col(*static_cast<const BoundIsNull &>(e).child);
+            case BoundExpressionType::IS_BOOL:
+                return bad_col(*static_cast<const BoundIsBool &>(e).child);
+            case BoundExpressionType::ARITHMETIC: {
+                auto &a = static_cast<const BoundArithmetic &>(e);
+                return (a.left && bad_col(*a.left)) ||
+                       (a.right && bad_col(*a.right));
+            }
+            case BoundExpressionType::UNARY_MINUS:
+                return bad_col(*static_cast<const BoundUnaryMinus &>(e).child);
+            case BoundExpressionType::CAST:
+                return bad_col(*static_cast<const BoundCast &>(e).child);
+            case BoundExpressionType::SUBQUERY:
+                return false; // subqueries are independent scopes
+            default:
+                return false;
+            }
+        };
+        if (bad_col(*result->having_clause)) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "column reference in HAVING must appear in GROUP BY "
+                "or be used in an aggregate function");
+        }
     }
 
     // Bind QUALIFY.
