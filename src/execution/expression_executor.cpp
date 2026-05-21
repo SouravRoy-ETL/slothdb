@@ -2319,12 +2319,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[1], input, pat_vec, count);
         auto *out = result.GetData<bool>();
         for (idx_t i = 0; i < count; i++) {
-            if (!str_vec.GetValidity().RowIsValid(i)) {
+            auto sv = str_vec.GetValue(i);
+            auto pv = pat_vec.GetValue(i);
+            if (sv.IsNull() || pv.IsNull()) {
                 result.GetValidity().SetInvalid(i);
                 continue;
             }
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto p = pat_vec.GetValue(i).GetValue<std::string>();
+            auto s = sv.GetValue<std::string>();
+            auto p = pv.GetValue<std::string>();
             try {
                 std::regex re(p);
                 out[i] = std::regex_search(s, re);
@@ -2381,9 +2383,16 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         std::string cached_pattern;
         bool have_cached = false;
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto p = pat_vec.GetValue(i).GetValue<std::string>();
-            auto r = rep_vec.GetValue(i).GetValue<std::string>();
+            auto sv = str_vec.GetValue(i);
+            auto pv = pat_vec.GetValue(i);
+            auto rv = rep_vec.GetValue(i);
+            if (sv.IsNull() || pv.IsNull() || rv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto p = pv.GetValue<std::string>();
+            auto r = rv.GetValue<std::string>();
             try {
                 if (!have_cached || cached_pattern != p) {
                     have_cached = false;
@@ -2406,8 +2415,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[0], input, str_vec, count);
         Execute(*expr.arguments[1], input, pat_vec, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = str_vec.GetValue(i).GetValue<std::string>();
-            auto p = pat_vec.GetValue(i).GetValue<std::string>();
+            auto sv = str_vec.GetValue(i);
+            auto pv = pat_vec.GetValue(i);
+            if (sv.IsNull() || pv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto p = pv.GetValue<std::string>();
             try {
                 std::regex re(p);
                 std::smatch m;
