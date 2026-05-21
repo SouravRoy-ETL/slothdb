@@ -304,6 +304,14 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         }
         result->having_clause = BindExpression(*stmt.having_clause, context);
         context.select_list_aliases.clear();
+        // HAVING implies aggregation even when there's no GROUP BY and
+        // no aggregate in the SELECT list:
+        //   SELECT 1 FROM t HAVING COUNT(*) > 100
+        // Without this, the planner's HAVING-emit block at
+        // planner.cpp:583-609 is gated on has_aggregation and silently
+        // drops the predicate, returning every base-table row instead
+        // of the SQL-standard implicit single-group result.
+        result->has_aggregation = true;
     }
 
     // Bind QUALIFY.
