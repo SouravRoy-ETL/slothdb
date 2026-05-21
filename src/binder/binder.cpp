@@ -1218,7 +1218,10 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
                 if (bc->value.type().id() == LogicalTypeId::VARCHAR) {
                     auto part = StringUtil::Upper(bc->value.GetValue<std::string>());
                     day_grain = (part == "DAY" || part == "DAYS" ||
-                                 part == "WEEK" || part == "WEEKS");
+                                 part == "WEEK" || part == "WEEKS" ||
+                                 part == "MONTH" || part == "MONTHS" ||
+                                 part == "QUARTER" || part == "QUARTERS" ||
+                                 part == "YEAR" || part == "YEARS");
                 }
             }
         }

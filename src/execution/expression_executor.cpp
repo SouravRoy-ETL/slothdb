@@ -2077,6 +2077,37 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return 0;
     };
 
+    // Hinnant civil-from-days helpers used by month/year arithmetic.
+    // Reference: http://howardhinnant.github.io/date_algorithms.html
+    auto days_to_civil = [](int64_t days_since_epoch, int &y, unsigned &m, unsigned &d) {
+        int64_t z = days_since_epoch + 719468;
+        int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+        unsigned doe = static_cast<unsigned>(z - era * 146097);
+        unsigned yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+        int yi = static_cast<int>(yoe) + static_cast<int>(era) * 400;
+        unsigned doy = doe - (365*yoe + yoe/4 - yoe/100);
+        unsigned mp = (5*doy + 2) / 153;
+        d = doy - (153*mp + 2) / 5 + 1;
+        m = mp < 10 ? mp + 3 : mp - 9;
+        y = yi + (m <= 2 ? 1 : 0);
+    };
+    auto civil_to_days = [](int y, unsigned m, unsigned d) -> int64_t {
+        y -= (m <= 2 ? 1 : 0);
+        int64_t era = (y >= 0 ? y : y - 399) / 400;
+        unsigned yoe = static_cast<unsigned>(y - era * 400);
+        unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+        unsigned doe = yoe * 365 + yoe/4 - yoe/100 + doy;
+        return era * 146097 + static_cast<int64_t>(doe) - 719468;
+    };
+    auto last_day_of_month = [](int y, unsigned m) -> unsigned {
+        static const unsigned dim[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+        if (m == 2) {
+            bool leap = (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
+            return leap ? 29u : 28u;
+        }
+        return dim[m - 1];
+    };
+
     if (name == "DATE_DIFF" || name == "DATEDIFF") {
         auto part = StringUtil::Upper(
             ExpressionExecutor::ExecuteScalar(*expr.arguments[0]).GetValue<std::string>());
@@ -2099,10 +2130,34 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             else if (part == "WEEK" || part == "WEEKS") r = diff_sec / (86400 * 7);
             else if (part == "MILLISECOND" || part == "MILLISECONDS") r = diff_micros / 1000;
             else if (part == "MICROSECOND" || part == "MICROSECONDS") r = diff_micros;
+            else if (part == "MONTH" || part == "MONTHS" ||
+                     part == "QUARTER" || part == "QUARTERS" ||
+                     part == "YEAR" || part == "YEARS") {
+                // Calendar-aware month/quarter/year diff. Convert both
+                // operands to civil (Y, M, D), then:
+                //   month_diff = (Y2-Y1)*12 + (M2-M1)
+                //              - (D2 < D1 ? 1 : 0)
+                // matches Postgres semantics: "full months elapsed".
+                int64_t days1 = m1 / (86400LL * 1000000LL);
+                if (m1 < 0 && (m1 % (86400LL * 1000000LL)) != 0) days1--;
+                int64_t days2 = m2 / (86400LL * 1000000LL);
+                if (m2 < 0 && (m2 % (86400LL * 1000000LL)) != 0) days2--;
+                int y1, y2; unsigned mo1, mo2, d1, d2;
+                days_to_civil(days1, y1, mo1, d1);
+                days_to_civil(days2, y2, mo2, d2);
+                int64_t month_diff = (int64_t)(y2 - y1) * 12 +
+                                     (int64_t)mo2 - (int64_t)mo1;
+                if (month_diff > 0 && d2 < d1) month_diff--;
+                if (month_diff < 0 && d2 > d1) month_diff++;
+                if (part == "MONTH" || part == "MONTHS") r = month_diff;
+                else if (part == "QUARTER" || part == "QUARTERS") r = month_diff / 3;
+                else r = month_diff / 12;  // YEAR/YEARS
+            }
             else {
                 throw NotImplementedException(
                     "DATE_DIFF unit '" + part + "' not yet supported "
-                    "(supported: SECOND, MINUTE, HOUR, DAY, WEEK, MILLISECOND, MICROSECOND)");
+                    "(supported: SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, "
+                    "QUARTER, YEAR, MILLISECOND, MICROSECOND)");
             }
             result.SetValue(i, Value::BIGINT(r));
         }
@@ -2118,8 +2173,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[2], input, ts_vec, count);
         auto ts_type = expr.arguments[2]->GetReturnType().id();
         bool day_grain = (part == "DAY" || part == "DAYS" ||
-                          part == "WEEK" || part == "WEEKS");
+                          part == "WEEK" || part == "WEEKS" ||
+                          part == "MONTH" || part == "MONTHS" ||
+                          part == "QUARTER" || part == "QUARTERS" ||
+                          part == "YEAR" || part == "YEARS");
         bool preserve_date = (ts_type == LogicalTypeId::DATE) && day_grain;
+        bool calendar_unit = (part == "MONTH" || part == "MONTHS" ||
+                              part == "QUARTER" || part == "QUARTERS" ||
+                              part == "YEAR" || part == "YEARS");
         for (idx_t i = 0; i < count; i++) {
             auto n_val = n_vec.GetValue(i);
             auto ts_val = ts_vec.GetValue(i);
@@ -2130,23 +2191,50 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             int64_t n = (n_val.type().id() == LogicalTypeId::INTEGER)
                 ? n_val.GetValue<int32_t>() : n_val.GetValue<int64_t>();
             int64_t ts_micros = to_micros_any(ts_val);
-            int64_t add_micros = 0;
-            if (part == "SECOND" || part == "SECONDS") add_micros = n * 1000000LL;
-            else if (part == "MINUTE" || part == "MINUTES") add_micros = n * 60LL * 1000000LL;
-            else if (part == "HOUR" || part == "HOURS") add_micros = n * 3600LL * 1000000LL;
-            else if (part == "DAY" || part == "DAYS") add_micros = n * 86400LL * 1000000LL;
-            else if (part == "WEEK" || part == "WEEKS") add_micros = n * 7LL * 86400LL * 1000000LL;
-            else if (part == "MILLISECOND" || part == "MILLISECONDS") add_micros = n * 1000LL;
-            else if (part == "MICROSECOND" || part == "MICROSECONDS") add_micros = n;
-            else {
-                throw NotImplementedException(
-                    "DATE_ADD unit '" + part + "' not yet supported "
-                    "(supported: SECOND, MINUTE, HOUR, DAY, WEEK, MILLISECOND, MICROSECOND)");
+            int64_t result_micros = 0;
+            if (calendar_unit) {
+                // Decompose ts_micros into civil date + intra-day micros,
+                // add to month component, clamp day to month length (so
+                // 2024-01-31 + 1 month -> 2024-02-29), re-encode.
+                int64_t day_micros = 86400LL * 1000000LL;
+                int64_t days = ts_micros / day_micros;
+                int64_t rem = ts_micros - days * day_micros;
+                if (rem < 0) { days--; rem += day_micros; }
+                int y; unsigned m, d;
+                days_to_civil(days, y, m, d);
+                int64_t months_to_add = n;
+                if (part == "QUARTER" || part == "QUARTERS") months_to_add = n * 3;
+                else if (part == "YEAR" || part == "YEARS") months_to_add = n * 12;
+                // Add months, normalize to [1,12].
+                int64_t total_months = (int64_t)(y) * 12 + (int64_t)(m - 1) + months_to_add;
+                int64_t new_y_signed = total_months >= 0 ? total_months / 12
+                                                          : (total_months - 11) / 12;
+                int64_t new_m_zero = total_months - new_y_signed * 12;
+                unsigned new_m = static_cast<unsigned>(new_m_zero + 1);
+                int new_y = static_cast<int>(new_y_signed);
+                unsigned max_d = last_day_of_month(new_y, new_m);
+                unsigned new_d = d > max_d ? max_d : d;
+                int64_t new_days = civil_to_days(new_y, new_m, new_d);
+                result_micros = new_days * day_micros + rem;
+            } else {
+                int64_t add_micros = 0;
+                if (part == "SECOND" || part == "SECONDS") add_micros = n * 1000000LL;
+                else if (part == "MINUTE" || part == "MINUTES") add_micros = n * 60LL * 1000000LL;
+                else if (part == "HOUR" || part == "HOURS") add_micros = n * 3600LL * 1000000LL;
+                else if (part == "DAY" || part == "DAYS") add_micros = n * 86400LL * 1000000LL;
+                else if (part == "WEEK" || part == "WEEKS") add_micros = n * 7LL * 86400LL * 1000000LL;
+                else if (part == "MILLISECOND" || part == "MILLISECONDS") add_micros = n * 1000LL;
+                else if (part == "MICROSECOND" || part == "MICROSECONDS") add_micros = n;
+                else {
+                    throw NotImplementedException(
+                        "DATE_ADD unit '" + part + "' not yet supported "
+                        "(supported: SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, "
+                        "QUARTER, YEAR, MILLISECOND, MICROSECOND)");
+                }
+                result_micros = ts_micros + add_micros;
             }
-            int64_t result_micros = ts_micros + add_micros;
             if (preserve_date) {
                 int64_t days = result_micros / (86400LL * 1000000LL);
-                // Floor division for negative dates.
                 if (result_micros < 0 && (result_micros % (86400LL * 1000000LL)) != 0) {
                     days--;
                 }
