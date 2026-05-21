@@ -673,26 +673,25 @@ QueryResult Connection::Query(const std::string &sql) {
                     continue;
                 }
 
-                // Extract the SELECT SQL from the original statement.
-                std::string select_sql;
-                {
-                    auto upper_sql = StringUtil::Upper(sql);
-                    auto as_pos = upper_sql.find(" AS ");
-                    if (as_pos != std::string::npos) {
-                        select_sql = sql.substr(as_pos + 4);
-                        while (!select_sql.empty() &&
-                               (select_sql.back() == ';' || select_sql.back() == ' ' ||
-                                select_sql.back() == '\n' || select_sql.back() == '\r')) {
-                            select_sql.pop_back();
-                        }
-                    }
-                }
-                if (select_sql.empty()) {
-                    throw BinderException(
-                        "CREATE TABLE AS SELECT: could not extract SELECT text");
-                }
+                // Bind/Plan/Execute the parsed SELECT directly. The
+                // previous implementation extracted the SELECT text
+                // via a `" AS "` substring search on the *raw input
+                // string*, which silently captured any trailing
+                // statements (e.g. `; SELECT * FROM dst`) into the
+                // CTAS body. Multi-statement CTAS then threw
+                // "Table 'dst' not found" because the trailing select
+                // ran against a catalog where the new table didn't
+                // exist yet. Mirrors the INSERT...SELECT pipeline.
+                Binder sel_binder(db_.GetCatalog());
+                auto sel_bound = sel_binder.Bind(*ct.query);
+                auto sel_logical = Planner::Plan(*sel_bound);
+                PhysicalPlanner sel_pp(db_.GetCatalog());
+                auto sel_physical = sel_pp.Plan(*sel_logical);
+                sel_physical->Init();
 
-                auto ctas_result = Query(select_sql);
+                auto &sel_select = static_cast<BoundSelectStatement &>(*sel_bound);
+                std::vector<std::string> col_names = sel_select.result_names;
+                std::vector<LogicalType> col_types = sel_select.result_types;
 
                 if (ct.or_replace) db_.GetCatalog().DropTable(ct.table_name);
                 if (db_.GetCatalog().GetTable(ct.table_name)) {
@@ -701,15 +700,17 @@ QueryResult Connection::Query(const std::string &sql) {
                 }
 
                 std::vector<ColumnDefinition> cols;
-                for (idx_t i = 0; i < ctas_result.column_names.size(); i++) {
-                    cols.emplace_back(ctas_result.column_names[i],
-                                      ctas_result.column_types[i]);
+                cols.reserve(col_names.size());
+                for (idx_t i = 0; i < col_names.size(); i++) {
+                    cols.emplace_back(col_names[i], col_types[i]);
                 }
                 auto &entry = db_.GetCatalog().CreateTable(ct.table_name,
                                                            std::move(cols));
-                auto storage = std::make_shared<DataTable>(ctas_result.column_types);
-                ctas_result.MaterialiseRows();
-                BulkLoadRows(*storage, ctas_result.column_types, ctas_result.rows);
+                auto storage = std::make_shared<DataTable>(col_types);
+                DataChunk chunk;
+                while (sel_physical->GetData(chunk)) {
+                    storage->Append(chunk);
+                }
                 entry.SetStorage(storage);
                 continue;
             }
