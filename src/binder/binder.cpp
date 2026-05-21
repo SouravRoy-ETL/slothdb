@@ -1207,10 +1207,10 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         }
     } else if (name == "IN" || name == "BETWEEN") {
         return_type = LogicalType::BOOLEAN();
-    } else if (name == "NOW" || name == "CURRENT_TIMESTAMP") {
+    } else if (name == "NOW" || name == "CURRENT_TIMESTAMP" ||
+               name == "MAKE_TIMESTAMP") {
         return_type = LogicalType::TIMESTAMP();
-    } else if (name == "TO_TIMESTAMP" ||
-               name == "MAKE_TIMESTAMP" || name == "DATE_TRUNC") {
+    } else if (name == "TO_TIMESTAMP" || name == "DATE_TRUNC") {
         return_type = LogicalType::BIGINT(); // microseconds since epoch
     } else if (name == "CURRENT_DATE") {
         return_type = LogicalType::DATE();
@@ -1344,7 +1344,7 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
                name == "MONTHNAME" || name == "DAYNAME") {
         return_type = LogicalType::VARCHAR();
     } else if (name == "LAST_DAY") {
-        return_type = LogicalType::BIGINT(); // microseconds since epoch
+        return_type = LogicalType::DATE();
     } else if (name == "MAKE_DATE") {
         return_type = LogicalType::DATE();
     }

@@ -3709,7 +3709,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
-    if (name == "TO_TIMESTAMP" || name == "MAKE_TIMESTAMP") {
+    if (name == "TO_TIMESTAMP") {
         // Convert epoch seconds to timestamp (microseconds).
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
@@ -3724,6 +3724,80 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             else if (val.type().id() == LogicalTypeId::DOUBLE)
                 epoch_sec = static_cast<int64_t>(val.GetValue<double>());
             result.SetValue(i, Value::BIGINT(epoch_sec * 1000000));
+        }
+        return;
+    }
+
+    if (name == "MAKE_TIMESTAMP") {
+        // MAKE_TIMESTAMP(year,month,day,hour,minute,second) -> TIMESTAMP.
+        // Previously emitted YYYYMMDD-style INT garbage; now properly
+        // typed TIMESTAMP via civil_from_days + intra-day micros.
+        if (expr.arguments.size() != 6) {
+            throw NotImplementedException(
+                "MAKE_TIMESTAMP requires 6 arguments: year, month, day, hour, minute, second");
+        }
+        std::vector<Vector> vecs;
+        vecs.reserve(6);
+        for (size_t a = 0; a < 6; a++) {
+            vecs.emplace_back(expr.arguments[a]->GetReturnType(), count);
+            Execute(*expr.arguments[a], input, vecs.back(), count);
+        }
+        auto last_day_of = [](int y, unsigned m) -> unsigned {
+            static const unsigned dim[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+            if (m == 2) {
+                bool leap = (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
+                return leap ? 29u : 28u;
+            }
+            return dim[m - 1];
+        };
+        for (idx_t i = 0; i < count; i++) {
+            Value vs[6];
+            bool any_null = false;
+            for (int a = 0; a < 6; a++) {
+                vs[a] = vecs[a].GetValue(i);
+                if (vs[a].IsNull()) { any_null = true; break; }
+            }
+            if (any_null) { result.GetValidity().SetInvalid(i); continue; }
+            auto to_i32 = [](const Value &v) -> int32_t {
+                return v.type().id() == LogicalTypeId::BIGINT
+                    ? static_cast<int32_t>(v.GetValue<int64_t>())
+                    : v.GetValue<int32_t>();
+            };
+            int32_t y = to_i32(vs[0]);
+            int32_t mo = to_i32(vs[1]);
+            int32_t d = to_i32(vs[2]);
+            int32_t h = to_i32(vs[3]);
+            int32_t mi = to_i32(vs[4]);
+            // SECOND can be DOUBLE (sub-second fraction) per Postgres.
+            double sec = (vs[5].type().id() == LogicalTypeId::DOUBLE ||
+                          vs[5].type().id() == LogicalTypeId::FLOAT)
+                ? vs[5].GetValue<double>()
+                : static_cast<double>(to_i32(vs[5]));
+            if (mo < 1 || mo > 12) {
+                throw ConversionException("MAKE_TIMESTAMP: month out of range: " +
+                                          std::to_string(mo));
+            }
+            unsigned max_d = last_day_of(y, static_cast<unsigned>(mo));
+            if (d < 1 || static_cast<unsigned>(d) > max_d) {
+                throw ConversionException("MAKE_TIMESTAMP: day " + std::to_string(d) +
+                                          " out of range for " +
+                                          std::to_string(y) + "-" + std::to_string(mo));
+            }
+            if (h < 0 || h > 23 || mi < 0 || mi > 59 || sec < 0.0 || sec >= 60.0) {
+                throw ConversionException("MAKE_TIMESTAMP: time component out of range");
+            }
+            // civil_from_days.
+            int y_adj = y - (mo <= 2 ? 1 : 0);
+            int era = (y_adj >= 0 ? y_adj : y_adj - 399) / 400;
+            unsigned yoe = static_cast<unsigned>(y_adj - era * 400);
+            unsigned doy = (153 * (mo > 2 ? mo - 3 : mo + 9) + 2) / 5 + d - 1;
+            unsigned doe = yoe * 365 + yoe/4 - yoe/100 + doy;
+            int64_t days = era * 146097LL + static_cast<int64_t>(doe) - 719468;
+            int64_t intra_day_micros = (static_cast<int64_t>(h) * 3600LL +
+                                        static_cast<int64_t>(mi) * 60LL) * 1000000LL +
+                                       static_cast<int64_t>(sec * 1000000.0);
+            int64_t micros = days * 86400LL * 1000000LL + intra_day_micros;
+            result.SetValue(i, Value::TIMESTAMP(micros));
         }
         return;
     }
@@ -3777,33 +3851,59 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     }
 
     if (name == "LAST_DAY") {
-        // Return the timestamp (microseconds) of the last day of the month at 00:00 UTC.
+        // Return the DATE of the last day of the month. Accepts DATE
+        // or TIMESTAMP input. Previously read everything as int64
+        // micros, which gave nonsense (the same number for every
+        // input) for DATE inputs.
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
+        auto last_day_of = [](int y, unsigned m) -> unsigned {
+            static const unsigned dim[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+            if (m == 2) {
+                bool leap = (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
+                return leap ? 29u : 28u;
+            }
+            return dim[m - 1];
+        };
         for (idx_t i = 0; i < count; i++) {
             auto val = arg.GetValue(i);
             if (val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
-            int64_t micros = val.GetValue<int64_t>();
-            auto seconds = micros / 1000000;
-            auto time_t_val = static_cast<time_t>(seconds);
-            struct tm tm_buf;
-#ifdef _MSC_VER
-            gmtime_s(&tm_buf, &time_t_val);
-#else
-            gmtime_r(&time_t_val, &tm_buf);
-#endif
-            // Day 0 of the following month is the last day of this month (mkgmtime normalizes).
-            tm_buf.tm_mon += 1;
-            tm_buf.tm_mday = 0;
-            tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
-            auto last = static_cast<int64_t>(
-#ifdef _MSC_VER
-                _mkgmtime(&tm_buf)
-#else
-                timegm(&tm_buf)
-#endif
-            ) * 1000000;
-            result.SetValue(i, Value::BIGINT(last));
+            int64_t days_in;
+            auto tid = val.type().id();
+            if (tid == LogicalTypeId::DATE) {
+                days_in = val.GetValue<int32_t>();
+            } else if (tid == LogicalTypeId::TIMESTAMP || tid == LogicalTypeId::TIMESTAMP_TZ) {
+                int64_t micros = val.GetValue<int64_t>();
+                days_in = micros / (86400LL * 1000000LL);
+                if (micros < 0 && (micros % (86400LL * 1000000LL)) != 0) days_in--;
+            } else {
+                // BIGINT input: treat as micros if magnitude warrants.
+                int64_t raw = val.GetValue<int64_t>();
+                int64_t abs_raw = raw < 0 ? -raw : raw;
+                days_in = (abs_raw >= 10000000000000LL)
+                    ? raw / (86400LL * 1000000LL)
+                    : raw / 86400;
+            }
+            // Decompose days_in -> civil (year, month).
+            int64_t z = days_in + 719468;
+            int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+            unsigned doe = static_cast<unsigned>(z - era * 146097);
+            unsigned yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+            int yi = static_cast<int>(yoe) + static_cast<int>(era) * 400;
+            unsigned dy = doe - (365*yoe + yoe/4 - yoe/100);
+            unsigned mp = (5*dy + 2) / 153;
+            unsigned m = mp < 10 ? mp + 3 : mp - 9;
+            int year = yi + (m <= 2 ? 1 : 0);
+            unsigned last_d = last_day_of(year, m);
+            // Re-encode (year, month, last_d) back to days.
+            int y_adj = year - (m <= 2 ? 1 : 0);
+            int era2 = (y_adj >= 0 ? y_adj : y_adj - 399) / 400;
+            unsigned yoe2 = static_cast<unsigned>(y_adj - era2 * 400);
+            unsigned doy2 = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + last_d - 1;
+            unsigned doe2 = yoe2 * 365 + yoe2/4 - yoe2/100 + doy2;
+            int32_t result_days = static_cast<int32_t>(
+                era2 * 146097LL + static_cast<int64_t>(doe2) - 719468);
+            result.SetValue(i, Value::DATE(result_days));
         }
         return;
     }
