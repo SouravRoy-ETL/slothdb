@@ -2054,6 +2054,29 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
 
     // ---- Additional date functions ----
 
+    // Helper used by both DATE_DIFF and DATE_ADD: convert a Value to
+    // microseconds-since-epoch regardless of whether the source type is
+    // DATE (int32 days), TIMESTAMP (int64 micros), or BIGINT (raw
+    // seconds or micros depending on magnitude).
+    auto to_micros_any = [](const Value &v) -> int64_t {
+        auto tid = v.type().id();
+        if (tid == LogicalTypeId::DATE) {
+            return static_cast<int64_t>(v.GetValue<int32_t>()) * 86400LL * 1000000LL;
+        }
+        if (tid == LogicalTypeId::TIMESTAMP || tid == LogicalTypeId::TIMESTAMP_TZ) {
+            return v.GetValue<int64_t>();
+        }
+        if (tid == LogicalTypeId::BIGINT) {
+            int64_t raw = v.GetValue<int64_t>();
+            int64_t abs_raw = raw < 0 ? -raw : raw;
+            return (abs_raw >= 10000000000000LL) ? raw : raw * 1000000LL;
+        }
+        if (tid == LogicalTypeId::INTEGER) {
+            return static_cast<int64_t>(v.GetValue<int32_t>()) * 1000000LL;
+        }
+        return 0;
+    };
+
     if (name == "DATE_DIFF" || name == "DATEDIFF") {
         auto part = StringUtil::Upper(
             ExpressionExecutor::ExecuteScalar(*expr.arguments[0]).GetValue<std::string>());
@@ -2064,13 +2087,23 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         for (idx_t i = 0; i < count; i++) {
             auto v1 = ts1.GetValue(i), v2 = ts2.GetValue(i);
             if (v1.IsNull() || v2.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
-            int64_t m1 = v1.GetValue<int64_t>(), m2 = v2.GetValue<int64_t>();
-            int64_t diff_sec = (m2 - m1) / 1000000;
+            int64_t m1 = to_micros_any(v1);
+            int64_t m2 = to_micros_any(v2);
+            int64_t diff_micros = m2 - m1;
+            int64_t diff_sec = diff_micros / 1000000;
             int64_t r = 0;
             if (part == "SECOND") r = diff_sec;
             else if (part == "MINUTE") r = diff_sec / 60;
             else if (part == "HOUR") r = diff_sec / 3600;
             else if (part == "DAY") r = diff_sec / 86400;
+            else if (part == "WEEK" || part == "WEEKS") r = diff_sec / (86400 * 7);
+            else if (part == "MILLISECOND" || part == "MILLISECONDS") r = diff_micros / 1000;
+            else if (part == "MICROSECOND" || part == "MICROSECONDS") r = diff_micros;
+            else {
+                throw NotImplementedException(
+                    "DATE_DIFF unit '" + part + "' not yet supported "
+                    "(supported: SECOND, MINUTE, HOUR, DAY, WEEK, MILLISECOND, MICROSECOND)");
+            }
             result.SetValue(i, Value::BIGINT(r));
         }
         return;
@@ -2083,19 +2116,44 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Vector ts_vec(expr.arguments[2]->GetReturnType(), count);
         Execute(*expr.arguments[1], input, n_vec, count);
         Execute(*expr.arguments[2], input, ts_vec, count);
+        auto ts_type = expr.arguments[2]->GetReturnType().id();
+        bool day_grain = (part == "DAY" || part == "DAYS" ||
+                          part == "WEEK" || part == "WEEKS");
+        bool preserve_date = (ts_type == LogicalTypeId::DATE) && day_grain;
         for (idx_t i = 0; i < count; i++) {
             auto n_val = n_vec.GetValue(i);
+            auto ts_val = ts_vec.GetValue(i);
+            if (n_val.IsNull() || ts_val.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
             int64_t n = (n_val.type().id() == LogicalTypeId::INTEGER)
                 ? n_val.GetValue<int32_t>() : n_val.GetValue<int64_t>();
-            auto ts_val = ts_vec.GetValue(i);
-            int64_t ts = (ts_val.type().id() == LogicalTypeId::INTEGER)
-                ? ts_val.GetValue<int32_t>() : ts_val.GetValue<int64_t>();
+            int64_t ts_micros = to_micros_any(ts_val);
             int64_t add_micros = 0;
-            if (part == "SECOND") add_micros = n * 1000000;
-            else if (part == "MINUTE") add_micros = n * 60 * 1000000;
-            else if (part == "HOUR") add_micros = n * 3600 * 1000000;
-            else if (part == "DAY") add_micros = n * 86400LL * 1000000;
-            result.SetValue(i, Value::BIGINT(ts + add_micros));
+            if (part == "SECOND" || part == "SECONDS") add_micros = n * 1000000LL;
+            else if (part == "MINUTE" || part == "MINUTES") add_micros = n * 60LL * 1000000LL;
+            else if (part == "HOUR" || part == "HOURS") add_micros = n * 3600LL * 1000000LL;
+            else if (part == "DAY" || part == "DAYS") add_micros = n * 86400LL * 1000000LL;
+            else if (part == "WEEK" || part == "WEEKS") add_micros = n * 7LL * 86400LL * 1000000LL;
+            else if (part == "MILLISECOND" || part == "MILLISECONDS") add_micros = n * 1000LL;
+            else if (part == "MICROSECOND" || part == "MICROSECONDS") add_micros = n;
+            else {
+                throw NotImplementedException(
+                    "DATE_ADD unit '" + part + "' not yet supported "
+                    "(supported: SECOND, MINUTE, HOUR, DAY, WEEK, MILLISECOND, MICROSECOND)");
+            }
+            int64_t result_micros = ts_micros + add_micros;
+            if (preserve_date) {
+                int64_t days = result_micros / (86400LL * 1000000LL);
+                // Floor division for negative dates.
+                if (result_micros < 0 && (result_micros % (86400LL * 1000000LL)) != 0) {
+                    days--;
+                }
+                result.SetValue(i, Value::DATE(static_cast<int32_t>(days)));
+            } else {
+                result.SetValue(i, Value::TIMESTAMP(result_micros));
+            }
         }
         return;
     }

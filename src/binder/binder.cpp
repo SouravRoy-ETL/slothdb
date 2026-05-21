@@ -1191,9 +1191,42 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
     }
     // Additional date functions.
-    else if (name == "DATE_DIFF" || name == "DATEDIFF" || name == "DATE_ADD" ||
-             name == "DATEADD") {
+    else if (name == "DATE_DIFF" || name == "DATEDIFF") {
         return_type = LogicalType::BIGINT();
+    } else if (name == "DATE_ADD" || name == "DATEADD") {
+        // Return type:
+        // - TIMESTAMP if input is TIMESTAMP, or if the unit is sub-day
+        //   (HOUR/MINUTE/SECOND/MILLISECOND/MICROSECOND) — the result
+        //   no longer aligns to a DATE.
+        // - DATE if input is DATE AND unit is DAY/WEEK (statically
+        //   determinable from a literal first arg).
+        // The executor independently re-checks the unit so a non-literal
+        // part still produces correct values at runtime; the binder
+        // sets the static upper-bound type so downstream consumers
+        // (CAST, comparisons, storage) see the correct shape.
+        bool input_is_date = false;
+        if (args.size() >= 3 &&
+            args[2]->GetReturnType().id() == LogicalTypeId::DATE) {
+            input_is_date = true;
+        }
+        bool day_grain = false;
+        if (input_is_date && !args.empty()) {
+            // Peek if the first arg is a string literal we can read at
+            // bind time. If so, decide DATE vs TIMESTAMP; if not, fall
+            // back to TIMESTAMP to be safe.
+            if (auto *bc = dynamic_cast<BoundConstant *>(args[0].get())) {
+                if (bc->value.type().id() == LogicalTypeId::VARCHAR) {
+                    auto part = StringUtil::Upper(bc->value.GetValue<std::string>());
+                    day_grain = (part == "DAY" || part == "DAYS" ||
+                                 part == "WEEK" || part == "WEEKS");
+                }
+            }
+        }
+        if (input_is_date && day_grain) {
+            return_type = LogicalType::DATE();
+        } else {
+            return_type = LogicalType::TIMESTAMP();
+        }
     } else if (name == "STRFTIME" || name == "FORMAT_TIMESTAMP" ||
                name == "MONTHNAME" || name == "DAYNAME") {
         return_type = LogicalType::VARCHAR();
