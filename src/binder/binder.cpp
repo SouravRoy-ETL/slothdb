@@ -1346,7 +1346,7 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     } else if (name == "LAST_DAY") {
         return_type = LogicalType::BIGINT(); // microseconds since epoch
     } else if (name == "MAKE_DATE") {
-        return_type = LogicalType::INTEGER(); // YYYYMMDD
+        return_type = LogicalType::DATE();
     }
     // Aggregate functions that work both as window and regular.
     else if (name == "STRING_AGG" || name == "LISTAGG" || name == "GROUP_CONCAT") {

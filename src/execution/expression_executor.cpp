@@ -3809,7 +3809,9 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     }
 
     if (name == "MAKE_DATE") {
-        // MAKE_DATE(year, month, day) -> INTEGER (YYYYMMDD, matches CURRENT_DATE encoding).
+        // MAKE_DATE(year, month, day) -> DATE (epoch days). Previously
+        // returned a YYYYMMDD INTEGER which broke EXTRACT and DATE
+        // arithmetic — same bug that CURRENT_DATE had before 2dddb51.
         if (expr.arguments.size() != 3) {
             throw NotImplementedException("MAKE_DATE requires 3 arguments: year, month, day");
         }
@@ -3819,6 +3821,14 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Execute(*expr.arguments[0], input, y_vec, count);
         Execute(*expr.arguments[1], input, m_vec, count);
         Execute(*expr.arguments[2], input, d_vec, count);
+        auto last_day_of = [](int y, unsigned m) -> unsigned {
+            static const unsigned dim[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+            if (m == 2) {
+                bool leap = (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
+                return leap ? 29u : 28u;
+            }
+            return dim[m - 1];
+        };
         for (idx_t i = 0; i < count; i++) {
             auto yv = y_vec.GetValue(i);
             auto mv = m_vec.GetValue(i);
@@ -3832,7 +3842,25 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 ? static_cast<int32_t>(mv.GetValue<int64_t>()) : mv.GetValue<int32_t>();
             int32_t d = dv.type().id() == LogicalTypeId::BIGINT
                 ? static_cast<int32_t>(dv.GetValue<int64_t>()) : dv.GetValue<int32_t>();
-            result.SetValue(i, Value::INTEGER(y * 10000 + m * 100 + d));
+            if (m < 1 || m > 12) {
+                throw ConversionException("MAKE_DATE: month out of range: " +
+                                          std::to_string(m));
+            }
+            unsigned max_d = last_day_of(y, static_cast<unsigned>(m));
+            if (d < 1 || static_cast<unsigned>(d) > max_d) {
+                throw ConversionException("MAKE_DATE: day " + std::to_string(d) +
+                                          " out of range for " +
+                                          std::to_string(y) + "-" + std::to_string(m));
+            }
+            // Hinnant civil_from_days.
+            int y_adj = y - (m <= 2 ? 1 : 0);
+            int era = (y_adj >= 0 ? y_adj : y_adj - 399) / 400;
+            unsigned yoe = static_cast<unsigned>(y_adj - era * 400);
+            unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+            unsigned doe = yoe * 365 + yoe/4 - yoe/100 + doy;
+            int32_t days = static_cast<int32_t>(era * 146097LL +
+                                                 static_cast<int64_t>(doe) - 719468);
+            result.SetValue(i, Value::DATE(days));
         }
         return;
     }
