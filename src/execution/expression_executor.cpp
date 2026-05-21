@@ -4241,6 +4241,49 @@ void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
                 result.SetValue(i, Value::DATE(static_cast<int32_t>(days)));
                 continue;
             }
+            // Numeric -> BOOLEAN (Postgres/DuckDB rule): nonzero is true,
+            // zero is false, NaN/Inf rejected (TRY_CAST -> NULL).
+            // Previously the cast string-roundtripped: "5" was rejected
+            // as not in the {true,false,t,f,1,0,yes,no} word list.
+            if (to_type == LogicalTypeId::BOOLEAN &&
+                (from_type == LogicalTypeId::TINYINT ||
+                 from_type == LogicalTypeId::SMALLINT ||
+                 from_type == LogicalTypeId::INTEGER ||
+                 from_type == LogicalTypeId::BIGINT ||
+                 from_type == LogicalTypeId::UTINYINT ||
+                 from_type == LogicalTypeId::USMALLINT ||
+                 from_type == LogicalTypeId::UINTEGER ||
+                 from_type == LogicalTypeId::UBIGINT ||
+                 from_is_double)) {
+                if (from_is_double) {
+                    double d = val.GetValue<double>();
+                    if (!std::isfinite(d)) {
+                        throw ConversionException(
+                            "Cannot cast " + val.ToString() + " to BOOLEAN");
+                    }
+                    result.SetValue(i, Value::BOOLEAN(d != 0.0));
+                } else if (from_type == LogicalTypeId::UTINYINT ||
+                           from_type == LogicalTypeId::USMALLINT ||
+                           from_type == LogicalTypeId::UINTEGER ||
+                           from_type == LogicalTypeId::UBIGINT) {
+                    uint64_t u = val.GetValue<uint64_t>();
+                    result.SetValue(i, Value::BOOLEAN(u != 0));
+                } else {
+                    int64_t v;
+                    switch (from_type) {
+                    case LogicalTypeId::TINYINT:
+                        v = val.GetValue<int8_t>(); break;
+                    case LogicalTypeId::SMALLINT:
+                        v = val.GetValue<int16_t>(); break;
+                    case LogicalTypeId::INTEGER:
+                        v = val.GetValue<int32_t>(); break;
+                    default:
+                        v = val.GetValue<int64_t>(); break;
+                    }
+                    result.SetValue(i, Value::BOOLEAN(v != 0));
+                }
+                continue;
+            }
             auto str = val.ToString();
             switch (to_type) {
             case LogicalTypeId::TINYINT:
