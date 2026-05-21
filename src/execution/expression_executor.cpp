@@ -1906,11 +1906,17 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
         for (idx_t i = 0; i < count; i++) {
-            auto s = arg.GetValue(i).GetValue<std::string>();
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto s = v.GetValue<std::string>();
             bool cap_next = true;
             for (auto &c : s) {
-                if (std::isalpha(c)) {
-                    c = cap_next ? static_cast<char>(std::toupper(c)) : static_cast<char>(std::tolower(c));
+                if (std::isalpha(static_cast<unsigned char>(c))) {
+                    c = cap_next ? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
+                                 : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                     cap_next = false;
                 } else {
                     cap_next = true;
