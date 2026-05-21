@@ -3586,7 +3586,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     // ---- Timestamp/Date functions ----
 
     if (name == "NOW" || name == "CURRENT_TIMESTAMP" ||
-        name == "LOCALTIMESTAMP") {
+        name == "LOCALTIMESTAMP" || name == "GETDATE") {
         // Return a typed TIMESTAMP so ToString renders as
         // 'YYYY-MM-DD HH:MM:SS' and downstream operators (cast,
         // comparison, EXTRACT) recognize it. Previously stored as
@@ -3626,6 +3626,82 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         }
         return;
     }
+    if (name == "CURTIME") {
+        // Current local time as 'HH:MM:SS' string.
+        auto now = std::chrono::system_clock::now();
+        auto time_t_now = std::chrono::system_clock::to_time_t(now);
+        struct tm tm_buf;
+#ifdef _MSC_VER
+        localtime_s(&tm_buf, &time_t_now);
+#else
+        localtime_r(&time_t_now, &tm_buf);
+#endif
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d",
+                      tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+        std::string s(buf);
+        for (idx_t i = 0; i < count; i++) {
+            result.SetValue(i, Value::VARCHAR(s));
+        }
+        return;
+    }
+    if (name == "UNIX_TIMESTAMP") {
+        // Zero-arg: current epoch seconds. One-arg: convert DATE/
+        // TIMESTAMP/BIGINT to epoch seconds.
+        if (expr.arguments.empty()) {
+            auto now = std::chrono::system_clock::now();
+            auto epoch = std::chrono::duration_cast<std::chrono::seconds>(
+                now.time_since_epoch()).count();
+            for (idx_t i = 0; i < count; i++) {
+                result.SetValue(i, Value::BIGINT(epoch));
+            }
+            return;
+        }
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            auto tid = v.type().id();
+            int64_t seconds = 0;
+            if (tid == LogicalTypeId::DATE) {
+                seconds = static_cast<int64_t>(v.GetValue<int32_t>()) * 86400LL;
+            } else if (tid == LogicalTypeId::TIMESTAMP ||
+                       tid == LogicalTypeId::TIMESTAMP_TZ) {
+                seconds = v.GetValue<int64_t>() / 1000000LL;
+            } else if (tid == LogicalTypeId::BIGINT) {
+                int64_t raw = v.GetValue<int64_t>();
+                int64_t abs_raw = raw < 0 ? -raw : raw;
+                seconds = (abs_raw >= 10000000000000LL) ? raw / 1000000LL : raw;
+            } else if (tid == LogicalTypeId::INTEGER) {
+                seconds = v.GetValue<int32_t>();
+            } else {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            result.SetValue(i, Value::BIGINT(seconds));
+        }
+        return;
+    }
+    if (name == "FROM_UNIXTIME") {
+        // Epoch seconds (or micros, auto-detected) -> TIMESTAMP.
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto v = arg.GetValue(i);
+            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t raw = 0;
+            auto tid = v.type().id();
+            if (tid == LogicalTypeId::BIGINT) raw = v.GetValue<int64_t>();
+            else if (tid == LogicalTypeId::INTEGER) raw = v.GetValue<int32_t>();
+            else if (tid == LogicalTypeId::DOUBLE) raw = static_cast<int64_t>(v.GetValue<double>());
+            else { result.GetValidity().SetInvalid(i); continue; }
+            int64_t abs_raw = raw < 0 ? -raw : raw;
+            int64_t micros = (abs_raw >= 10000000000000LL) ? raw : raw * 1000000LL;
+            result.SetValue(i, Value::TIMESTAMP(micros));
+        }
+        return;
+    }
     if (name == "UUID" || name == "GEN_RANDOM_UUID") {
         // RFC 4122 variant 1 / version 4: 128 random bits with the
         // version nibble and variant bits patched in. Use the engine's
@@ -3650,7 +3726,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
-    if (name == "CURRENT_DATE") {
+    if (name == "CURRENT_DATE" || name == "CURDATE") {
         // Return a typed DATE (epoch days). Previously encoded as
         // YYYYMMDD INTEGER, which made EXTRACT(YEAR), DATE arithmetic,
         // and CAST-to-VARCHAR all misbehave. Compute epoch days
@@ -3682,20 +3758,37 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
-    if (name == "EXTRACT" || name == "DATE_PART") {
-        // EXTRACT(part, timestamp_expr)
-        // part is a string constant. The argument's unit is inferred per row:
-        //   |v| >= 1e13  -> microseconds since epoch (matches NOW/TO_TIMESTAMP)
-        //   otherwise    -> seconds since epoch (common epoch-second timestamps)
-        // Time-of-day parts (HOUR/MINUTE/SECOND/DOW/EPOCH) use direct integer
-        // arithmetic and avoid the gmtime round-trip; calendar parts
-        // (YEAR/MONTH/DAY) still go through gmtime_s/gmtime_r.
-        auto part_str = ExpressionExecutor::ExecuteScalar(*expr.arguments[0])
+    // PG/MySQL 1-arg date functions: YEAR(d), MONTH(d), DAY(d), etc.
+    // Reuse the existing EXTRACT pipeline by setting part_str from the
+    // function name and reading the timestamp from arguments[0] instead
+    // of arguments[1].
+    bool is_extract_alias =
+        (name == "YEAR" || name == "MONTH" || name == "DAY" ||
+         name == "DAYOFMONTH" || name == "DAYOFWEEK" || name == "DAYOFYEAR" ||
+         name == "HOUR" || name == "MINUTE" || name == "SECOND" ||
+         name == "WEEK" || name == "QUARTER" ||
+         name == "MILLENNIUM" || name == "CENTURY" || name == "DECADE" ||
+         name == "ISODOW" || name == "ISOYEAR") &&
+        expr.arguments.size() == 1;
+    if (name == "EXTRACT" || name == "DATE_PART" || is_extract_alias) {
+        // EXTRACT(part, timestamp_expr) / DATE_PART(part, timestamp_expr)
+        // YEAR(ts), MONTH(ts), DAY(ts), HOUR(ts), MINUTE(ts), SECOND(ts)
+        // etc. — 1-arg PG/MySQL aliases dispatch through this same body.
+        std::string part_str;
+        idx_t ts_arg_idx;
+        if (is_extract_alias) {
+            // DAYOFMONTH -> DAY (PG/DuckDB normalize).
+            part_str = (name == "DAYOFMONTH") ? std::string("DAY") : name;
+            ts_arg_idx = 0;
+        } else {
+            part_str = ExpressionExecutor::ExecuteScalar(*expr.arguments[0])
                             .GetValue<std::string>();
+            ts_arg_idx = 1;
+        }
         auto part = StringUtil::Upper(part_str);
 
-        Vector ts_vec(expr.arguments[1]->GetReturnType(), count);
-        Execute(*expr.arguments[1], input, ts_vec, count);
+        Vector ts_vec(expr.arguments[ts_arg_idx]->GetReturnType(), count);
+        Execute(*expr.arguments[ts_arg_idx], input, ts_vec, count);
 
         // Bucket parts: arithmetic (no gmtime) vs calendar (gmtime).
         // MILLISECOND / MICROSECOND need micros-of-second, derived from

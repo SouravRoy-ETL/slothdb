@@ -1506,18 +1506,29 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     } else if (name == "IN" || name == "BETWEEN") {
         return_type = LogicalType::BOOLEAN();
     } else if (name == "NOW" || name == "CURRENT_TIMESTAMP" ||
-               name == "LOCALTIMESTAMP" || name == "MAKE_TIMESTAMP") {
+               name == "LOCALTIMESTAMP" || name == "MAKE_TIMESTAMP" ||
+               name == "GETDATE" || name == "FROM_UNIXTIME") {
         return_type = LogicalType::TIMESTAMP();
     } else if (name == "CURRENT_USER" || name == "SESSION_USER" ||
                name == "USER" || name == "CURRENT_SCHEMA" ||
                name == "CURRENT_DATABASE" || name == "VERSION" ||
-               name == "UUID" || name == "GEN_RANDOM_UUID") {
+               name == "UUID" || name == "GEN_RANDOM_UUID" ||
+               name == "CURTIME") {
         return_type = LogicalType::VARCHAR();
     } else if (name == "TO_TIMESTAMP" || name == "DATE_TRUNC") {
         return_type = LogicalType::BIGINT(); // microseconds since epoch
-    } else if (name == "CURRENT_DATE") {
+    } else if (name == "CURRENT_DATE" || name == "CURDATE") {
         return_type = LogicalType::DATE();
-    } else if (name == "EXTRACT" || name == "DATE_PART") {
+    } else if (name == "EXTRACT" || name == "DATE_PART" ||
+               // PG/MySQL 1-arg date-part aliases — dispatched through the
+               // EXTRACT executor branch.
+               name == "YEAR" || name == "MONTH" || name == "DAY" ||
+               name == "DAYOFMONTH" || name == "DAYOFWEEK" || name == "DAYOFYEAR" ||
+               name == "HOUR" || name == "MINUTE" || name == "SECOND" ||
+               name == "WEEK" || name == "QUARTER" ||
+               name == "MILLENNIUM" || name == "CENTURY" || name == "DECADE" ||
+               name == "ISODOW" || name == "ISOYEAR" ||
+               name == "UNIX_TIMESTAMP") {
         return_type = LogicalType::BIGINT();
     } else if (name == "EPOCH_MS") {
         return_type = LogicalType::DOUBLE();
