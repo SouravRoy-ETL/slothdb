@@ -778,7 +778,14 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
         parse_optional_col_alias_list();
     } // close else block from regular table name path
 
-    // JOINs.
+    // JOINs. Tail-walk so a chain `a JOIN b ON ... JOIN c ON ...`
+    // attaches `c` to `b`, not to `a` overwriting `b`. Previously every
+    // outer iteration set `ref->right = right_table`, which silently
+    // dropped the middle table from the binder context (every
+    // 3-way INNER JOIN reported "Table 'b' not found"). CROSS chains
+    // happened to work because their inner ParseTableRef consumed the
+    // chain in one shot (no `ON` to break the recursion).
+    TableRef *tail = ref.get();
     while (true) {
         std::string join_type;
         if (MatchKeyword(TokenType::KW_INNER)) {
@@ -813,10 +820,14 @@ std::unique_ptr<TableRef> Parser::ParseTableRef() {
             on_cond = ParseExpression();
         }
 
-        // Attach JOIN to the existing ref (preserve is_table_function, function_args, etc).
-        ref->join_type = join_type;
-        ref->right = std::move(right_table);
-        ref->on_condition = std::move(on_cond);
+        // Attach JOIN at the current tail (preserves is_table_function,
+        // function_args, etc. on the chain's leftmost ref).
+        tail->join_type = join_type;
+        tail->right = std::move(right_table);
+        tail->on_condition = std::move(on_cond);
+        // Advance tail through any chain returned by ParseTableRef
+        // (e.g. parenthesised sub-chains, CROSS-chain inner recursion).
+        while (tail->right) tail = tail->right.get();
     }
 
     return ref;
