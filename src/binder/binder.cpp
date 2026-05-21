@@ -477,27 +477,81 @@ BoundStmtPtr Binder::BindInsert(const InsertStatement &stmt) {
 
     BindContext context;
     auto col_types = entry->GetTypes();
+    // Wrap each bound value in a BoundCast when the source type
+    // doesn't match the target column. Required for VARCHAR -> DATE /
+    // TIMESTAMP literals and for type-widening (SMALLINT -> INT, etc).
+    auto wrap_for_target = [&](BoundExprPtr bound, idx_t target) -> BoundExprPtr {
+        if (target >= col_types.size()) return bound;
+        auto src_id = bound->GetReturnType().id();
+        auto dst_id = col_types[target].id();
+        if (src_id != dst_id && src_id != LogicalTypeId::SQLNULL) {
+            bound = std::make_unique<BoundCast>(std::move(bound), col_types[target]);
+        }
+        return bound;
+    };
+    // Resolve the column-name list once, validating each name and
+    // detecting duplicates. When the user omits the column list, the
+    // default mapping is positional (column 0..N-1 in declared order).
+    std::vector<idx_t> target_indices;
+    if (!stmt.column_names.empty()) {
+        target_indices.reserve(stmt.column_names.size());
+        std::vector<bool> seen(col_types.size(), false);
+        for (auto &col_name : stmt.column_names) {
+            idx_t idx = entry->GetColumnIndex(col_name);
+            if (idx == INVALID_INDEX) {
+                throw BinderException(ErrorCode::COLUMN_NOT_FOUND,
+                    "Column '" + col_name + "' not found in table '" +
+                    stmt.table_name + "'");
+            }
+            if (seen[idx]) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    "Column '" + col_name + "' specified more than once "
+                    "in INSERT column list");
+            }
+            seen[idx] = true;
+            target_indices.push_back(idx);
+        }
+    }
     for (auto &row : stmt.values) {
-        std::vector<BoundExprPtr> bound_row;
-        for (idx_t c = 0; c < row.size(); c++) {
-            auto bound = BindExpression(*row[c], context);
-            // Wrap with BoundCast if value type doesn't match column
-            // type. Required for DATE / TIMESTAMP / TIME columns
-            // receiving VARCHAR literals — without the cast, the
-            // VARCHAR value is written directly into the INT32-typed
-            // DATE column at SetValue time and reads back as epoch
-            // (1970-01-01). Skip when source is SQLNULL (NULL is
-            // type-agnostic) or already matches target type.
-            if (c < col_types.size()) {
-                auto src_id = bound->GetReturnType().id();
-                auto dst_id = col_types[c].id();
-                if (src_id != dst_id && src_id != LogicalTypeId::SQLNULL) {
-                    bound = std::make_unique<BoundCast>(std::move(bound), col_types[c]);
+        if (!target_indices.empty()) {
+            // Permute: bound value at user position i lands at table
+            // column target_indices[i]. Unspecified columns default to
+            // typed NULL (matches SQL standard implicit-default-NULL).
+            if (row.size() != target_indices.size()) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    "INSERT value count (" + std::to_string(row.size()) +
+                    ") does not match column list count (" +
+                    std::to_string(target_indices.size()) + ")");
+            }
+            std::vector<BoundExprPtr> permuted(col_types.size());
+            for (idx_t i = 0; i < row.size(); i++) {
+                auto bound = BindExpression(*row[i], context);
+                idx_t tgt = target_indices[i];
+                permuted[tgt] = wrap_for_target(std::move(bound), tgt);
+            }
+            // Fill missing slots with NULL constants of the column's type.
+            for (idx_t c = 0; c < col_types.size(); c++) {
+                if (!permuted[c]) {
+                    permuted[c] = std::make_unique<BoundConstant>(Value());
                 }
             }
-            bound_row.push_back(std::move(bound));
+            result->values.push_back(std::move(permuted));
+        } else {
+            // Positional path: row[c] -> column c. Validate arity.
+            if (row.size() != col_types.size()) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    "INSERT value count (" + std::to_string(row.size()) +
+                    ") does not match column count (" +
+                    std::to_string(col_types.size()) + ")");
+            }
+            std::vector<BoundExprPtr> bound_row;
+            bound_row.reserve(row.size());
+            for (idx_t c = 0; c < row.size(); c++) {
+                auto bound = BindExpression(*row[c], context);
+                bound_row.push_back(wrap_for_target(std::move(bound), c));
+            }
+            result->values.push_back(std::move(bound_row));
         }
-        result->values.push_back(std::move(bound_row));
     }
     return result;
 }
