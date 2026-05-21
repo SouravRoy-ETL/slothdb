@@ -1326,11 +1326,53 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 result.GetValidity().SetInvalid(i);
                 continue;
             }
+            // Signed-integer ABS at the minimum value overflows (UB in
+            // C++; on x86 produces the same negative value back). SQL
+            // standard says overflow -> NULL. Matches the LN/SQRT/POWER
+            // domain-error idiom (set validity invalid). Also covers
+            // INT8/INT16 which previously fell through `default` and
+            // silently returned 0.
             switch (physical) {
-            case PhysicalType::INT32:
-                result.GetData<int32_t>()[i] = std::abs(arg.GetData<int32_t>()[i]); break;
-            case PhysicalType::INT64:
-                result.GetData<int64_t>()[i] = std::abs(arg.GetData<int64_t>()[i]); break;
+            case PhysicalType::INT8: {
+                auto v = arg.GetData<int8_t>()[i];
+                if (v == std::numeric_limits<int8_t>::min()) {
+                    result.GetValidity().SetInvalid(i);
+                    result.GetData<int8_t>()[i] = 0;
+                } else {
+                    result.GetData<int8_t>()[i] = static_cast<int8_t>(v < 0 ? -v : v);
+                }
+                break;
+            }
+            case PhysicalType::INT16: {
+                auto v = arg.GetData<int16_t>()[i];
+                if (v == std::numeric_limits<int16_t>::min()) {
+                    result.GetValidity().SetInvalid(i);
+                    result.GetData<int16_t>()[i] = 0;
+                } else {
+                    result.GetData<int16_t>()[i] = static_cast<int16_t>(v < 0 ? -v : v);
+                }
+                break;
+            }
+            case PhysicalType::INT32: {
+                auto v = arg.GetData<int32_t>()[i];
+                if (v == std::numeric_limits<int32_t>::min()) {
+                    result.GetValidity().SetInvalid(i);
+                    result.GetData<int32_t>()[i] = 0;
+                } else {
+                    result.GetData<int32_t>()[i] = std::abs(v);
+                }
+                break;
+            }
+            case PhysicalType::INT64: {
+                auto v = arg.GetData<int64_t>()[i];
+                if (v == std::numeric_limits<int64_t>::min()) {
+                    result.GetValidity().SetInvalid(i);
+                    result.GetData<int64_t>()[i] = 0;
+                } else {
+                    result.GetData<int64_t>()[i] = std::abs(v);
+                }
+                break;
+            }
             case PhysicalType::DOUBLE:
                 result.GetData<double>()[i] = std::abs(arg.GetData<double>()[i]); break;
             case PhysicalType::FLOAT:
