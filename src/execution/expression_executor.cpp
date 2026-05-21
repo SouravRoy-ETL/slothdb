@@ -441,7 +441,45 @@ Value ExpressionExecutor::ExecuteScalar(const BoundExpression &expr) {
                     "Could not convert string '" + s + "' to integer");
             }
         };
+        auto parse_strict_double = [&](const std::string &s) -> double {
+            try {
+                size_t pos = 0;
+                double d = std::stod(s, &pos);
+                while (pos < s.size() && (s[pos] == ' ' || s[pos] == '\t')) pos++;
+                if (pos != s.size()) {
+                    throw ConversionException(
+                        "Could not convert string '" + s + "' to floating-point");
+                }
+                return d;
+            } catch (const std::out_of_range &) {
+                throw ConversionException(
+                    "Value '" + s + "' out of range for floating-point");
+            } catch (const ConversionException &) {
+                throw;
+            } catch (const std::exception &) {
+                throw ConversionException(
+                    "Could not convert string '" + s + "' to floating-point");
+            }
+        };
         switch (cast.GetReturnType().id()) {
+        case LogicalTypeId::TINYINT: {
+            int64_t v = parse_strict_int64(str);
+            if (v < std::numeric_limits<int8_t>::min() ||
+                v > std::numeric_limits<int8_t>::max()) {
+                throw ConversionException(
+                    "Value '" + str + "' out of range for TINYINT");
+            }
+            return Value::TINYINT(static_cast<int8_t>(v));
+        }
+        case LogicalTypeId::SMALLINT: {
+            int64_t v = parse_strict_int64(str);
+            if (v < std::numeric_limits<int16_t>::min() ||
+                v > std::numeric_limits<int16_t>::max()) {
+                throw ConversionException(
+                    "Value '" + str + "' out of range for SMALLINT");
+            }
+            return Value::SMALLINT(static_cast<int16_t>(v));
+        }
         case LogicalTypeId::INTEGER: {
             int64_t v = parse_strict_int64(str);
             if (v < std::numeric_limits<int32_t>::min() ||
@@ -453,6 +491,60 @@ Value ExpressionExecutor::ExecuteScalar(const BoundExpression &expr) {
         }
         case LogicalTypeId::BIGINT:
             return Value::BIGINT(parse_strict_int64(str));
+        case LogicalTypeId::UTINYINT: {
+            int64_t v = parse_strict_int64(str);
+            if (v < 0 || v > std::numeric_limits<uint8_t>::max()) {
+                throw ConversionException(
+                    "Value '" + str + "' out of range for UTINYINT");
+            }
+            return Value::UTINYINT(static_cast<uint8_t>(v));
+        }
+        case LogicalTypeId::USMALLINT: {
+            int64_t v = parse_strict_int64(str);
+            if (v < 0 || v > std::numeric_limits<uint16_t>::max()) {
+                throw ConversionException(
+                    "Value '" + str + "' out of range for USMALLINT");
+            }
+            return Value::USMALLINT(static_cast<uint16_t>(v));
+        }
+        case LogicalTypeId::UINTEGER: {
+            int64_t v = parse_strict_int64(str);
+            if (v < 0 || v > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+                throw ConversionException(
+                    "Value '" + str + "' out of range for UINTEGER");
+            }
+            return Value::UINTEGER(static_cast<uint32_t>(v));
+        }
+        case LogicalTypeId::UBIGINT: {
+            int64_t v = parse_strict_int64(str);
+            if (v < 0) {
+                throw ConversionException(
+                    "Value '" + str + "' is negative; cannot cast to UBIGINT");
+            }
+            return Value::UBIGINT(static_cast<uint64_t>(v));
+        }
+        case LogicalTypeId::FLOAT: {
+            double d = parse_strict_double(str);
+            if (d > static_cast<double>(std::numeric_limits<float>::max()) ||
+                d < -static_cast<double>(std::numeric_limits<float>::max())) {
+                throw ConversionException(
+                    "Value '" + str + "' out of range for FLOAT");
+            }
+            return Value::FLOAT(static_cast<float>(d));
+        }
+        case LogicalTypeId::BOOLEAN: {
+            std::string lower;
+            lower.reserve(str.size());
+            for (char c : str) lower += (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+            if (lower == "true" || lower == "t" || lower == "yes" || lower == "y" || lower == "1") {
+                return Value::BOOLEAN(true);
+            }
+            if (lower == "false" || lower == "f" || lower == "no" || lower == "n" || lower == "0") {
+                return Value::BOOLEAN(false);
+            }
+            throw ConversionException(
+                "Could not convert string '" + str + "' to BOOLEAN");
+        }
         case LogicalTypeId::DOUBLE: {
             try {
                 size_t pos = 0;
