@@ -3327,6 +3327,15 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         bool is_calendar = (part == "YEAR" || part == "MONTH" || part == "DAY");
         bool is_sub_second = (part == "MILLISECOND" || part == "MILLISECONDS" ||
                                part == "MICROSECOND" || part == "MICROSECONDS");
+        // Calendar-extended parts that need full civil decomposition
+        // (week, quarter, day-of-year, century, etc.). Each is silently
+        // returning 0 before this commit.
+        bool is_calendar_ext = (part == "WEEK" || part == "WEEKS" ||
+                                part == "QUARTER" || part == "QUARTERS" ||
+                                part == "DOY" || part == "DAYOFYEAR" ||
+                                part == "ISODOW" || part == "ISOYEAR" ||
+                                part == "CENTURY" || part == "DECADE" ||
+                                part == "MILLENNIUM");
 
         auto floor_mod = [](int64_t a, int64_t m) -> int64_t {
             int64_t r = a % m;
@@ -3430,33 +3439,99 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 else if (part == "HOUR") extracted = floor_mod(floor_div(seconds, 3600), 24);
                 else if (part == "EPOCH") extracted = seconds;
                 else if (part == "DOW") extracted = floor_mod(floor_div(seconds, 86400) + 4, 7);
-            } else if (is_calendar) {
-                if (part == "YEAR") {
-                    // Hinnant days-from-civil reverse: avoid per-row gmtime.
-                    int64_t days = seconds / 86400;
-                    if (seconds < 0 && (seconds % 86400) != 0) --days;
-                    days += 719468;
-                    int era = (int)((days >= 0 ? days : days - 146096) / 146097);
-                    unsigned doe = (unsigned)(days - (int64_t)era * 146097);
+            } else if (is_calendar || is_calendar_ext) {
+                // Decompose seconds into civil (year, month, day, day-
+                // of-year) via Hinnant days_from_civil reverse — used
+                // by YEAR/MONTH/DAY and the new WEEK/QUARTER/DOY/
+                // ISO*/CENTURY/DECADE/MILLENNIUM parts.
+                int64_t days = seconds / 86400;
+                if (seconds < 0 && (seconds % 86400) != 0) --days;
+                int year; unsigned mo, d, doy;
+                {
+                    int64_t z = days + 719468;
+                    int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+                    unsigned doe = static_cast<unsigned>(z - era * 146097);
                     unsigned yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
-                    int year = (int)yoe + era * 400;
-                    unsigned doy = doe - (365*yoe + yoe/4 - yoe/100);
-                    unsigned mp = (5*doy + 2) / 153;
-                    if (mp >= 10) ++year;
-                    extracted = year;
-                } else {
-                    auto time_t_val = static_cast<time_t>(seconds);
-                    struct tm tm_buf;
-#ifdef _MSC_VER
-                    gmtime_s(&tm_buf, &time_t_val);
-#else
-                    gmtime_r(&time_t_val, &tm_buf);
-#endif
-                    if (part == "MONTH") extracted = tm_buf.tm_mon + 1;
-                    else if (part == "DAY") extracted = tm_buf.tm_mday;
+                    int yi = static_cast<int>(yoe) + static_cast<int>(era) * 400;
+                    unsigned dy = doe - (365*yoe + yoe/4 - yoe/100);
+                    unsigned mp = (5*dy + 2) / 153;
+                    d = dy - (153*mp + 2) / 5 + 1;
+                    mo = mp < 10 ? mp + 3 : mp - 9;
+                    year = yi + (mo <= 2 ? 1 : 0);
+                    // Compute day-of-year (1-based).
+                    // Days at month start for non-leap year:
+                    static const unsigned mdays[12] =
+                        {0,31,59,90,120,151,181,212,243,273,304,334};
+                    bool leap = (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0);
+                    doy = mdays[mo - 1] + d + (leap && mo > 2 ? 1u : 0u);
+                }
+                if (part == "YEAR")        extracted = year;
+                else if (part == "MONTH")  extracted = mo;
+                else if (part == "DAY")    extracted = d;
+                else if (part == "DOY" || part == "DAYOFYEAR")
+                                            extracted = doy;
+                else if (part == "QUARTER" || part == "QUARTERS")
+                                            extracted = (mo - 1) / 3 + 1;
+                else if (part == "DECADE") extracted = year / 10;
+                else if (part == "CENTURY")    extracted = (year > 0 ? (year - 1) / 100 + 1
+                                                                    : year / 100);
+                else if (part == "MILLENNIUM") extracted = (year > 0 ? (year - 1) / 1000 + 1
+                                                                    : year / 1000);
+                else if (part == "ISODOW") {
+                    // ISO day-of-week: Mon=1..Sun=7.
+                    int64_t dow_zero = floor_mod(floor_div(seconds, 86400) + 4, 7); // Sun=0..Sat=6
+                    extracted = ((dow_zero + 6) % 7) + 1;
+                }
+                else if (part == "WEEK" || part == "WEEKS" || part == "ISOYEAR") {
+                    // ISO 8601 week: week containing Thursday determines
+                    // year. Compute the Thursday of the same ISO week.
+                    int64_t dow_zero = floor_mod(floor_div(seconds, 86400) + 4, 7); // Sun=0
+                    int64_t iso_dow = ((dow_zero + 6) % 7) + 1; // Mon=1..Sun=7
+                    int64_t thursday_days = days + (4 - iso_dow);
+                    // Decompose Thursday_days to civil.
+                    int64_t tz = thursday_days + 719468;
+                    int64_t tera = (tz >= 0 ? tz : tz - 146096) / 146097;
+                    unsigned tdoe = static_cast<unsigned>(tz - tera * 146097);
+                    unsigned tyoe = (tdoe - tdoe/1460 + tdoe/36524 - tdoe/146096) / 365;
+                    int tyi = static_cast<int>(tyoe) + static_cast<int>(tera) * 400;
+                    unsigned tdy = tdoe - (365*tyoe + tyoe/4 - tyoe/100);
+                    unsigned tmp = (5*tdy + 2) / 153;
+                    unsigned tmo = tmp < 10 ? tmp + 3 : tmp - 9;
+                    int thursday_year = tyi + (tmo <= 2 ? 1 : 0);
+                    if (part == "ISOYEAR") {
+                        extracted = thursday_year;
+                    } else {
+                        // Find the ordinal of Jan 1 of thursday_year and
+                        // compute the week number as ((thursday_days -
+                        // jan1_thursday_of_year_days)/7) + 1.
+                        // Days-from-civil for jan 1 of thursday_year:
+                        int y = thursday_year;
+                        unsigned m_ = 1u, d_ = 1u;
+                        int y_adj = y - (m_ <= 2 ? 1 : 0);
+                        int era1 = (y_adj >= 0 ? y_adj : y_adj - 399) / 400;
+                        unsigned yoe1 = static_cast<unsigned>(y_adj - era1 * 400);
+                        unsigned doy1 = (153 * (m_ > 2 ? m_ - 3 : m_ + 9) + 2) / 5 + d_ - 1;
+                        unsigned doe1 = yoe1 * 365 + yoe1/4 - yoe1/100 + doy1;
+                        int64_t jan1_days = era1 * 146097LL + static_cast<int64_t>(doe1) - 719468;
+                        // Move to thursday of week 1 (the Thursday on
+                        // or after jan 1).
+                        int64_t jan1_dow_zero = floor_mod(jan1_days + 4, 7);
+                        int64_t jan1_iso_dow = ((jan1_dow_zero + 6) % 7) + 1;
+                        int64_t week1_thursday = jan1_days + (4 - jan1_iso_dow);
+                        extracted = (thursday_days - week1_thursday) / 7 + 1;
+                    }
                 }
             }
 
+            // Unknown part — silent 0 was hiding bugs. Surface clearly.
+            if (!is_arith && !is_sub_second && !is_calendar &&
+                !is_calendar_ext) {
+                throw NotImplementedException(
+                    "EXTRACT field '" + part + "' not supported "
+                    "(supported: YEAR, MONTH, DAY, HOUR, MINUTE, SECOND, "
+                    "MILLISECOND, MICROSECOND, EPOCH, DOW, ISODOW, DOY, "
+                    "WEEK, QUARTER, DECADE, CENTURY, MILLENNIUM, ISOYEAR)");
+            }
             result.SetValue(i, Value::BIGINT(extracted));
         }
         return;
