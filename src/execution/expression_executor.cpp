@@ -1093,6 +1093,30 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
+    // OCTET_LENGTH(s) — byte count, identical to LENGTH today (slothdb
+    // is byte-oriented). BIT_LENGTH(s) returns byte_count * 8.
+    if (name == "OCTET_LENGTH" || name == "BIT_LENGTH") {
+        auto *out = result.GetData<int32_t>();
+        Vector arg(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, arg, count);
+        bool mult8 = (name == "BIT_LENGTH");
+        for (idx_t i = 0; i < count; i++) {
+            if (!arg.GetValidity().RowIsValid(i)) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            int64_t bytes = static_cast<int64_t>(arg.GetData<string_t>()[i].GetSize());
+            int64_t v = mult8 ? bytes * 8 : bytes;
+            if (v > std::numeric_limits<int32_t>::max()) {
+                result.GetValidity().SetInvalid(i);
+                out[i] = 0;
+            } else {
+                out[i] = static_cast<int32_t>(v);
+            }
+        }
+        return;
+    }
+
     // ASCII(s) — code point of first byte (1-byte semantics; multibyte
     // returns the first byte's value, matching slothdb's byte-oriented
     // LEFT/RIGHT/SUBSTRING). NULL -> NULL; empty -> 0.

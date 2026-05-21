@@ -963,7 +963,8 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
     }
     // Scalar function return types.
-    else if (name == "LENGTH" || name == "STRLEN" || name == "ASCII") {
+    else if (name == "LENGTH" || name == "STRLEN" || name == "ASCII" ||
+             name == "OCTET_LENGTH" || name == "BIT_LENGTH") {
         return_type = LogicalType::INTEGER();
     } else if (name == "UPPER" || name == "LOWER" || name == "TRIM" ||
                name == "LTRIM" || name == "RTRIM" || name == "REPLACE" ||
