@@ -1041,6 +1041,40 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         args.push_back(BindExpression(*arg, context));
     }
 
+    // Validate aggregate arity. SQL standard: most aggregates take
+    // exactly one operand. COUNT additionally allows zero args via
+    // the COUNT(*) form (parser sets expr.is_star). Without these
+    // checks, COUNT(a,b) silently returned COUNT(a) — silent wrong
+    // result that hid data-quality issues — and MIN() / SUM() with
+    // zero args silently returned NULL/0.
+    if (is_agg) {
+        size_t n = args.size();
+        auto need = [&](size_t lo, size_t hi) {
+            if (n < lo || n > hi) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    name + " expects " +
+                    (lo == hi ? std::to_string(lo)
+                              : std::to_string(lo) + "-" + std::to_string(hi)) +
+                    " argument(s), got " + std::to_string(n));
+            }
+        };
+        if (name == "COUNT") {
+            if (!expr.is_star) need(1, 1);
+            // else 0 args is fine
+        } else if (name == "STRING_AGG" || name == "LISTAGG" ||
+                   name == "GROUP_CONCAT") {
+            need(1, 2);
+        } else if (name == "BOOL_AND" || name == "BOOL_OR" ||
+                   name == "MIN" || name == "MAX" ||
+                   name == "SUM" || name == "AVG" ||
+                   name == "MEDIAN" ||
+                   name == "STDDEV" || name == "STDDEV_SAMP" ||
+                   name == "STDDEV_POP" || name == "VARIANCE" ||
+                   name == "VAR_SAMP" || name == "VAR_POP") {
+            need(1, 1);
+        }
+    }
+
     // Determine return type.
     LogicalType return_type = LogicalType::INTEGER(); // default
     if (name == "COUNT") {

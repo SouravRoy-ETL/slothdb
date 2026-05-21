@@ -93,6 +93,10 @@ public:
     std::vector<ParsedExprPtr> arguments;
     bool is_distinct;
     ParsedExprPtr filter;
+    // True iff this was parsed as COUNT(*). Distinguishes COUNT(*)
+    // (0 args, valid) from COUNT() (0 args, error). Other functions
+    // ignore this flag.
+    bool is_star = false;
 };
 
 // Comparison: left op right (=, <, >, <=, >=, !=, LIKE).

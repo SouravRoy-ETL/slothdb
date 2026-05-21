@@ -1433,10 +1433,12 @@ ParsedExprPtr Parser::ParseFunctionCall(const std::string &name) {
     std::vector<ParsedExprPtr> args;
     bool distinct = false;
 
+    bool count_star = false;
     if (!Check(TokenType::RPAREN)) {
         // COUNT(*) special case.
         if (StringUtil::Upper(name) == "COUNT" && Check(TokenType::STAR)) {
             Advance();
+            count_star = true;
         } else {
             if (MatchKeyword(TokenType::KW_DISTINCT)) {
                 distinct = true;
@@ -1535,9 +1537,11 @@ ParsedExprPtr Parser::ParseFunctionCall(const std::string &name) {
         return window;
     }
 
-    return std::make_unique<FunctionExpression>(StringUtil::Upper(name),
-                                                std::move(args), distinct,
-                                                std::move(filter_expr));
+    auto fn = std::make_unique<FunctionExpression>(StringUtil::Upper(name),
+                                                    std::move(args), distinct,
+                                                    std::move(filter_expr));
+    fn->is_star = count_star;
+    return fn;
 }
 
 // UPDATE table SET col = val, ... [WHERE ...]
