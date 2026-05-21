@@ -977,7 +977,8 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     } else if (name == "ABS") {
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
     } else if (name == "CEIL" || name == "CEILING" || name == "FLOOR" ||
-               name == "ROUND" || name == "SQRT" || name == "POWER" || name == "MOD") {
+               name == "ROUND" || name == "SQRT" || name == "CBRT" ||
+               name == "POWER" || name == "MOD") {
         return_type = LogicalType::DOUBLE();
     } else if (name == "COALESCE" || name == "IFNULL" || name == "NVL") {
         // Result type unifies across all args via SQL numeric promotion

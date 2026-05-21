@@ -1797,9 +1797,32 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
-    if (name == "SQRT" || name == "POWER" || name == "MOD") {
+    if (name == "SQRT" || name == "CBRT" || name == "POWER" || name == "MOD") {
         Vector arg1(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg1, count);
+        if (name == "CBRT") {
+            // Real-valued cube root: total over the reals (handles
+            // negatives correctly — distinguishes it from SQRT).
+            for (idx_t i = 0; i < count; i++) {
+                auto val = arg1.GetValue(i);
+                if (val.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+                double d;
+                auto tid = val.type().id();
+                if (tid == LogicalTypeId::INTEGER) d = val.GetValue<int32_t>();
+                else if (tid == LogicalTypeId::BIGINT) d = static_cast<double>(val.GetValue<int64_t>());
+                else if (tid == LogicalTypeId::SMALLINT) d = val.GetValue<int16_t>();
+                else if (tid == LogicalTypeId::TINYINT) d = val.GetValue<int8_t>();
+                else if (tid == LogicalTypeId::FLOAT) d = val.GetValue<float>();
+                else d = val.GetValue<double>();
+                double r = std::cbrt(d);
+                if (std::isnan(r) || std::isinf(r)) {
+                    result.GetValidity().SetInvalid(i);
+                } else {
+                    result.GetData<double>()[i] = r;
+                }
+            }
+            return;
+        }
         if (name == "SQRT") {
             for (idx_t i = 0; i < count; i++) {
                 auto val = arg1.GetValue(i);
