@@ -4053,7 +4053,10 @@ void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
                     throw ConversionException("Value " + val.ToString() +
                         " is out of range for the destination type");
                 }
-                int64_t v = static_cast<int64_t>(std::trunc(d));
+                // Round half-to-even (banker's rounding) per PG/DuckDB
+                // convention. Previously truncated toward zero — every
+                // CAST(1.6 AS INT) produced 1 instead of 2.
+                int64_t v = static_cast<int64_t>(std::nearbyint(d));
                 switch (to_type) {
                 case LogicalTypeId::TINYINT:
                     if (v < std::numeric_limits<int8_t>::min() || v > std::numeric_limits<int8_t>::max())
