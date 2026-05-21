@@ -3356,24 +3356,62 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
-    if (name == "STRFTIME" || name == "FORMAT_TIMESTAMP") {
-        // Simple format: return ISO-like string.
-        Vector ts_vec(expr.arguments.size() > 1 ? expr.arguments[1]->GetReturnType()
-                                                 : expr.arguments[0]->GetReturnType(), count);
-        Execute(expr.arguments.size() > 1 ? *expr.arguments[1] : *expr.arguments[0], input, ts_vec, count);
+    if (name == "STRFTIME" || name == "FORMAT_TIMESTAMP" ||
+        name == "DATE_FORMAT") {
+        // STRFTIME(timestamp, format) or STRFTIME(format, timestamp).
+        // Previously this ignored the user's format string and
+        // returned a hardcoded '%Y-%m-%d %H:%M:%S' result, AND read
+        // DATE values via int64 GetValue (which returns 0 for an
+        // int32 DATE storage), so DATE input always produced
+        // '1970-01-01 00:00:00'.
+        //
+        // Detect order: if argument[0] is a VARCHAR (constant or
+        // column), treat it as the format (Postgres / MySQL
+        // DATE_FORMAT order). Otherwise it's the timestamp first
+        // (DuckDB STRFTIME order).
+        bool fmt_first = (expr.arguments[0]->GetReturnType().id() ==
+                          LogicalTypeId::VARCHAR);
+        auto &ts_expr = fmt_first ? *expr.arguments[1] : *expr.arguments[0];
+        auto &fmt_expr = fmt_first ? *expr.arguments[0] : *expr.arguments[1];
+        Vector ts_vec(ts_expr.GetReturnType(), count);
+        Vector fmt_vec(fmt_expr.GetReturnType(), count);
+        Execute(ts_expr, input, ts_vec, count);
+        Execute(fmt_expr, input, fmt_vec, count);
         for (idx_t i = 0; i < count; i++) {
             auto v = ts_vec.GetValue(i);
-            if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
-            int64_t micros = v.GetValue<int64_t>();
-            auto seconds = static_cast<time_t>(micros / 1000000);
+            auto fv = fmt_vec.GetValue(i);
+            if (v.IsNull() || fv.IsNull()) {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            int64_t seconds_total;
+            auto tid = v.type().id();
+            if (tid == LogicalTypeId::DATE) {
+                seconds_total = static_cast<int64_t>(v.GetValue<int32_t>()) * 86400LL;
+            } else if (tid == LogicalTypeId::TIMESTAMP ||
+                       tid == LogicalTypeId::TIMESTAMP_TZ) {
+                seconds_total = v.GetValue<int64_t>() / 1000000LL;
+            } else if (tid == LogicalTypeId::BIGINT) {
+                int64_t raw = v.GetValue<int64_t>();
+                int64_t abs_raw = raw < 0 ? -raw : raw;
+                seconds_total = (abs_raw >= 10000000000000LL)
+                    ? raw / 1000000LL : raw;
+            } else if (tid == LogicalTypeId::INTEGER) {
+                seconds_total = v.GetValue<int32_t>();
+            } else {
+                result.GetValidity().SetInvalid(i);
+                continue;
+            }
+            auto seconds_t = static_cast<time_t>(seconds_total);
             struct tm tm_buf;
 #ifdef _MSC_VER
-            gmtime_s(&tm_buf, &seconds);
+            gmtime_s(&tm_buf, &seconds_t);
 #else
-            gmtime_r(&seconds, &tm_buf);
+            gmtime_r(&seconds_t, &tm_buf);
 #endif
-            char buf[64];
-            std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_buf);
+            auto fmt = fv.GetValue<std::string>();
+            char buf[128];
+            std::strftime(buf, sizeof(buf), fmt.c_str(), &tm_buf);
             result.SetValue(i, Value::VARCHAR(std::string(buf)));
         }
         return;

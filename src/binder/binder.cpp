@@ -1646,6 +1646,7 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
             return_type = LogicalType::TIMESTAMP();
         }
     } else if (name == "STRFTIME" || name == "FORMAT_TIMESTAMP" ||
+               name == "DATE_FORMAT" ||
                name == "MONTHNAME" || name == "DAYNAME") {
         return_type = LogicalType::VARCHAR();
     } else if (name == "LAST_DAY") {
