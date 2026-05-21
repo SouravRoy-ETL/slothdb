@@ -3634,16 +3634,18 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             }
             int64_t micros = input_is_micros ? raw : raw * 1000000;
 
-            // Sub-second truncation needs no tm round-trip.
+            // Sub-second truncation needs no tm round-trip. DATE_TRUNC
+            // return type is BIGINT-microseconds-since-epoch (see
+            // binder.cpp DATE_TRUNC return_type), so always emit micros
+            // regardless of input scale. Previously the result was
+            // stored as seconds when input was DATE/INT, which the
+            // TIMESTAMP rendering interpreted as ~1970-01-01 + 28 min.
             if (part == "MICROSECOND" || part == "MICROSECONDS") {
-                int64_t out = input_is_micros ? micros : micros / 1000000;
-                result.SetValue(i, Value::BIGINT(out));
+                result.SetValue(i, Value::BIGINT(micros));
                 continue;
             }
             if (part == "MILLISECOND" || part == "MILLISECONDS") {
-                int64_t out_micros = (micros / 1000) * 1000;
-                int64_t out = input_is_micros ? out_micros : out_micros / 1000000;
-                result.SetValue(i, Value::BIGINT(out));
+                result.SetValue(i, Value::BIGINT((micros / 1000) * 1000));
                 continue;
             }
 
@@ -3698,8 +3700,11 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 timegm(&tm_buf)
 #endif
             );
-            int64_t truncated = input_is_micros ? trunc_secs * 1000000 : trunc_secs;
-            result.SetValue(i, Value::BIGINT(truncated));
+            // Always emit microseconds to match the BIGINT-micros
+            // return type bound by the binder. Previously DATE/INT
+            // inputs emitted seconds, which the TIMESTAMP renderer
+            // showed as ~1970-01-01 + 28 min.
+            result.SetValue(i, Value::BIGINT(trunc_secs * 1000000LL));
         }
         return;
     }
