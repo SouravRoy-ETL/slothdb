@@ -1,4 +1,5 @@
 #include "slothdb/main/connection.hpp"
+#include "slothdb/main/query_materialize.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/parser/parser.hpp"
 #include "slothdb/binder/binder.hpp"
@@ -482,6 +483,146 @@ static std::vector<std::string> SplitTopLevelStatements(const std::string &sql) 
         if (!only_ws) out.push_back(tail);
     }
     return out;
+}
+
+// Materialise a SelectStatement (incl. VALUES / set-op chains) into a
+// freshly-created catalog table named `dest_name`, returning its storage.
+// Shared by the top-level subquery-in-FROM / CTE paths (Connection::Query)
+// and by ExpressionExecutor::ExecuteSubquery (so derived-table FROM works
+// inside IN / scalar / EXISTS subqueries too). The planner has no logical
+// UNION node, so the set-op chain is walked here at materialise time.
+std::shared_ptr<DataTable> MaterializeSelectIntoTable(
+        Catalog &catalog, SelectStatement &sel, const std::string &dest_name) {
+    Binder lb(catalog);
+    auto lbound = lb.Bind(sel);
+    auto &lsel = static_cast<BoundSelectStatement &>(*lbound);
+
+    if (sel.set_op.empty()) {
+        std::vector<ColumnDefinition> cols;
+        for (idx_t i = 0; i < lsel.result_names.size(); i++)
+            cols.emplace_back(lsel.result_names[i], lsel.result_types[i]);
+        auto &entry = catalog.CreateTable(dest_name, std::move(cols));
+        auto storage = std::make_shared<DataTable>(lsel.result_types);
+        entry.SetStorage(storage);
+        auto llogical = Planner::Plan(*lbound);
+        llogical = Optimizer::Optimize(std::move(llogical));
+        PhysicalPlanner lpp(catalog);
+        auto lphysical = lpp.Plan(*llogical);
+        lphysical->Init();
+        DataChunk lchunk;
+        while (lphysical->GetData(lchunk)) storage->Append(lchunk);
+        return storage;
+    }
+
+    // Set-op chain: bind each branch, unify per-column types, drain +
+    // coerce + apply set semantics, write combined rows.
+    std::vector<std::unique_ptr<BoundStatement>> branch_bounds;
+    branch_bounds.push_back(std::move(lbound));
+    {
+        SelectStatement *cur = &sel;
+        while (!cur->set_op.empty() && cur->set_right) {
+            Binder rb(catalog);
+            branch_bounds.push_back(rb.Bind(*cur->set_right));
+            cur = cur->set_right.get();
+        }
+    }
+    std::vector<LogicalType> result_types;
+    std::vector<std::string> result_names;
+    {
+        auto &first = static_cast<BoundSelectStatement &>(*branch_bounds[0]);
+        result_types = first.result_types;
+        result_names = first.result_names;
+        for (size_t b = 1; b < branch_bounds.size(); b++) {
+            auto &bs = static_cast<BoundSelectStatement &>(*branch_bounds[b]);
+            if (bs.result_types.size() != result_types.size()) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    "each UNION/INTERSECT/EXCEPT query must return "
+                    "the same number of columns (" +
+                    std::to_string(result_types.size()) + " vs " +
+                    std::to_string(bs.result_types.size()) + ")");
+            }
+            for (idx_t c = 0; c < result_types.size(); c++)
+                result_types[c] = ComputeSetOpCommonType(result_types[c], bs.result_types[c]);
+        }
+    }
+    auto drain_branch_coerced = [&](BoundStatement &bound,
+                                    std::vector<std::vector<Value>> &out_rows) {
+        auto logical = Planner::Plan(bound);
+        logical = Optimizer::Optimize(std::move(logical));
+        PhysicalPlanner pp(catalog);
+        auto physical = pp.Plan(*logical);
+        physical->Init();
+        DataChunk chunk;
+        while (physical->GetData(chunk)) {
+            for (idx_t i = 0; i < chunk.size(); i++) {
+                std::vector<Value> row;
+                row.reserve(chunk.ColumnCount());
+                for (idx_t c = 0; c < chunk.ColumnCount(); c++)
+                    row.push_back(CoerceValueForSetOp(chunk.GetValue(c, i), result_types[c]));
+                out_rows.push_back(std::move(row));
+            }
+        }
+    };
+    std::vector<std::vector<Value>> rows;
+    drain_branch_coerced(*branch_bounds[0], rows);
+    {
+        SelectStatement *cur = &sel;
+        size_t branch_idx = 1;
+        while (!cur->set_op.empty() && cur->set_right) {
+            std::vector<std::vector<Value>> right_rows;
+            drain_branch_coerced(*branch_bounds[branch_idx++], right_rows);
+            const std::string &op = cur->set_op;
+            if (op == "UNION ALL") {
+                for (auto &r : right_rows) rows.push_back(std::move(r));
+            } else if (op == "UNION") {
+                SetOpRowSet seen;
+                for (auto &row : rows) seen.insert(row);
+                for (auto &row : right_rows)
+                    if (seen.insert(row).second) rows.push_back(std::move(row));
+            } else if (op == "INTERSECT") {
+                SetOpRowSet rk(right_rows.begin(), right_rows.end());
+                std::vector<std::vector<Value>> kept;
+                for (auto &row : rows) if (rk.count(row)) kept.push_back(std::move(row));
+                rows = std::move(kept);
+            } else if (op == "EXCEPT") {
+                SetOpRowSet rk(right_rows.begin(), right_rows.end());
+                std::vector<std::vector<Value>> kept;
+                for (auto &row : rows) if (!rk.count(row)) kept.push_back(std::move(row));
+                rows = std::move(kept);
+            }
+            cur = cur->set_right.get();
+        }
+    }
+    std::vector<ColumnDefinition> cols;
+    for (idx_t i = 0; i < result_names.size(); i++)
+        cols.emplace_back(result_names[i], result_types[i]);
+    auto &entry = catalog.CreateTable(dest_name, std::move(cols));
+    auto storage = std::make_shared<DataTable>(result_types);
+    entry.SetStorage(storage);
+    BulkLoadRows(*storage, result_types, rows);
+    return storage;
+}
+
+// Recursively materialise derived-table FROM sources (`FROM (SELECT..)`,
+// `FROM (VALUES..)`) into temp catalog tables, rewriting each TableRef to
+// the temp table name. Appends created names to `created` for cleanup.
+void MaterializeFromSubqueries(Catalog &catalog, TableRef &tref,
+                               std::vector<std::string> &created) {
+    if (tref.subquery) {
+        if (tref.subquery->from_table)
+            MaterializeFromSubqueries(catalog, *tref.subquery->from_table, created);
+        for (auto &cte : tref.subquery->ctes) {
+            if (cte.query && cte.query->from_table)
+                MaterializeFromSubqueries(catalog, *cte.query->from_table, created);
+        }
+        static int subq_unique_id = 0;
+        std::string subq_name = "__subq_" + std::to_string(++subq_unique_id) + "__";
+        MaterializeSelectIntoTable(catalog, *tref.subquery, subq_name);
+        created.push_back(subq_name);
+        tref.table_name = subq_name;
+        tref.subquery.reset();
+    }
+    if (tref.right) MaterializeFromSubqueries(catalog, *tref.right, created);
 }
 
 QueryResult Connection::Query(const std::string &sql) {
@@ -1026,6 +1167,24 @@ QueryResult Connection::Query(const std::string &sql) {
         if (stmt->GetType() == StatementType::INSERT) {
             auto &ins = static_cast<InsertStatement &>(*stmt);
             if (ins.select_source) {
+                // Materialise derived-table FROM sources in the SELECT
+                // (`INSERT INTO t SELECT ... FROM (VALUES..)` /
+                // `FROM (SELECT..)`) before binding. Previously the
+                // INSERT-SELECT path bound select_source directly and a
+                // derived-table FROM failed with "Table '' not found".
+                std::vector<std::string> ins_temp_tables;
+                struct InsTempGuard {
+                    Catalog *cat; std::vector<std::string> *names;
+                    ~InsTempGuard() { for (auto &n : *names) cat->DropTable(n); }
+                } _ins_guard{&db_.GetCatalog(), &ins_temp_tables};
+                if (ins.select_source->from_table)
+                    MaterializeFromSubqueries(db_.GetCatalog(),
+                                              *ins.select_source->from_table, ins_temp_tables);
+                for (auto &cte : ins.select_source->ctes) {
+                    if (cte.query && cte.query->from_table)
+                        MaterializeFromSubqueries(db_.GetCatalog(),
+                                                  *cte.query->from_table, ins_temp_tables);
+                }
                 // Execute the SELECT.
                 Binder sel_binder(db_.GetCatalog());
                 auto sel_bound = sel_binder.Bind(*ins.select_source);
@@ -2485,185 +2644,33 @@ QueryResult Connection::Query(const std::string &sql) {
         // writes the combined rows to storage with the common types.
         // The planner has no logical UNION node — set_op is walked at the
         // Connection layer.
+        // Thin wrappers over the file-scope free functions (shared with
+        // ExpressionExecutor::ExecuteSubquery so derived-table FROM works
+        // inside subqueries too). Behavior is identical to the prior
+        // inline lambdas.
         auto materialize_select_into_new_table = [&](
                 SelectStatement &sel,
                 const std::string &dest_name) -> std::shared_ptr<DataTable> {
-            Binder lb(db_.GetCatalog());
-            auto lbound = lb.Bind(sel);
-            auto &lsel = static_cast<BoundSelectStatement &>(*lbound);
-
-            // Fast path: no set_op chain — use LEFT types directly, drain
-            // chunks straight to storage.
-            if (sel.set_op.empty()) {
-                std::vector<ColumnDefinition> cols;
-                for (idx_t i = 0; i < lsel.result_names.size(); i++)
-                    cols.emplace_back(lsel.result_names[i], lsel.result_types[i]);
-                auto &entry = db_.GetCatalog().CreateTable(dest_name, std::move(cols));
-                auto storage = std::make_shared<DataTable>(lsel.result_types);
-                entry.SetStorage(storage);
-
-                auto llogical = Planner::Plan(*lbound);
-                llogical = Optimizer::Optimize(std::move(llogical));
-                PhysicalPlanner lpp(db_.GetCatalog());
-                auto lphysical = lpp.Plan(*llogical);
-                lphysical->Init();
-                DataChunk lchunk;
-                while (true) {
-                    if (!lphysical->GetData(lchunk)) break;
-                    storage->Append(lchunk);
-                }
-                return storage;
-            }
-
-            // Slow path. First pass: walk the set_op chain and bind every
-            // branch so we know each branch's types before any execution.
-            std::vector<std::unique_ptr<BoundStatement>> branch_bounds;
-            branch_bounds.push_back(std::move(lbound));
-            {
-                SelectStatement *cur = &sel;
-                while (!cur->set_op.empty() && cur->set_right) {
-                    Binder rb(db_.GetCatalog());
-                    branch_bounds.push_back(rb.Bind(*cur->set_right));
-                    cur = cur->set_right.get();
-                }
-            }
-
-            // Per-column common type via pairwise reduction across branches.
-            // Names come from the LEFT branch (SQL standard).
-            std::vector<LogicalType> result_types;
-            std::vector<std::string> result_names;
-            {
-                auto &first = static_cast<BoundSelectStatement &>(*branch_bounds[0]);
-                result_types = first.result_types;
-                result_names = first.result_names;
-                for (size_t b = 1; b < branch_bounds.size(); b++) {
-                    auto &bs = static_cast<BoundSelectStatement &>(*branch_bounds[b]);
-                    // SQL standard: all set-op branches must have equal
-                    // column counts. Previously the min-cap loop silently
-                    // fabricated NULL columns (left wider) or dropped
-                    // trailing columns (right wider).
-                    if (bs.result_types.size() != result_types.size()) {
-                        throw BinderException(ErrorCode::TYPE_MISMATCH,
-                            "each UNION/INTERSECT/EXCEPT query must return "
-                            "the same number of columns (" +
-                            std::to_string(result_types.size()) + " vs " +
-                            std::to_string(bs.result_types.size()) + ")");
-                    }
-                    for (idx_t c = 0; c < result_types.size(); c++) {
-                        result_types[c] = ComputeSetOpCommonType(result_types[c], bs.result_types[c]);
-                    }
-                }
-            }
-
-            // Drain a freshly-planned branch into row vectors, coercing
-            // each Value to the corresponding common type.
-            auto drain_branch_coerced = [&](BoundStatement &bound,
-                                             std::vector<std::vector<Value>> &out_rows) {
-                auto logical = Planner::Plan(bound);
-                logical = Optimizer::Optimize(std::move(logical));
-                PhysicalPlanner pp(db_.GetCatalog());
-                auto physical = pp.Plan(*logical);
-                physical->Init();
-                DataChunk chunk;
-                while (true) {
-                    if (!physical->GetData(chunk)) break;
-                    for (idx_t i = 0; i < chunk.size(); i++) {
-                        std::vector<Value> row;
-                        row.reserve(chunk.ColumnCount());
-                        for (idx_t c = 0; c < chunk.ColumnCount(); c++) {
-                            row.push_back(CoerceValueForSetOp(
-                                chunk.GetValue(c, i), result_types[c]));
-                        }
-                        out_rows.push_back(std::move(row));
-                    }
-                }
-            };
-
-            // LEFT branch into rows.
-            std::vector<std::vector<Value>> rows;
-            drain_branch_coerced(*branch_bounds[0], rows);
-
-            // Walk the chain applying set semantics with the new common types.
-            {
-                SelectStatement *cur = &sel;
-                size_t branch_idx = 1;
-                while (!cur->set_op.empty() && cur->set_right) {
-                    std::vector<std::vector<Value>> right_rows;
-                    drain_branch_coerced(*branch_bounds[branch_idx++], right_rows);
-
-                    const std::string &op = cur->set_op;
-                    if (op == "UNION ALL") {
-                        for (auto &r : right_rows) rows.push_back(std::move(r));
-                    } else if (op == "UNION") {
-                        SetOpRowSet seen;
-                        for (auto &row : rows) seen.insert(row);
-                        for (auto &row : right_rows) {
-                            if (seen.insert(row).second)
-                                rows.push_back(std::move(row));
-                        }
-                    } else if (op == "INTERSECT") {
-                        SetOpRowSet rk(right_rows.begin(), right_rows.end());
-                        std::vector<std::vector<Value>> kept;
-                        for (auto &row : rows) {
-                            if (rk.count(row)) kept.push_back(std::move(row));
-                        }
-                        rows = std::move(kept);
-                    } else if (op == "EXCEPT") {
-                        SetOpRowSet rk(right_rows.begin(), right_rows.end());
-                        std::vector<std::vector<Value>> kept;
-                        for (auto &row : rows) {
-                            if (!rk.count(row)) kept.push_back(std::move(row));
-                        }
-                        rows = std::move(kept);
-                    }
-                    cur = cur->set_right.get();
-                }
-            }
-
-            // Create storage with the common types and write rows.
-            std::vector<ColumnDefinition> cols;
-            for (idx_t i = 0; i < result_names.size(); i++)
-                cols.emplace_back(result_names[i], result_types[i]);
-            auto &entry = db_.GetCatalog().CreateTable(dest_name, std::move(cols));
-            auto storage = std::make_shared<DataTable>(result_types);
-            entry.SetStorage(storage);
-            BulkLoadRows(*storage, result_types, rows);
-            return storage;
+            return MaterializeSelectIntoTable(db_.GetCatalog(), sel, dest_name);
         };
-
-        // Materialize FROM-clause subqueries — `FROM (SELECT ...) AS s` —
-        // into temp tables before binding. Recurses bottom-up so nested
-        // subqueries are materialized first. Subquery becomes a regular
-        // catalog table named `__subq_N__`; the TableRef keeps the
-        // user-provided alias so column refs like `s.a` resolve normally.
         std::function<void(TableRef &)> materialize_from_subqueries =
                 [&](TableRef &tref) {
-            if (tref.subquery) {
-                if (tref.subquery->from_table)
-                    materialize_from_subqueries(*tref.subquery->from_table);
-                for (auto &cte : tref.subquery->ctes) {
-                    if (cte.query && cte.query->from_table)
-                        materialize_from_subqueries(*cte.query->from_table);
-                }
-                static int subq_unique_id = 0;
-                std::string subq_name = "__subq_" +
-                        std::to_string(++subq_unique_id) + "__";
-
-                materialize_select_into_new_table(*tref.subquery, subq_name);
-                cte_tables.push_back(subq_name);
-
-                tref.table_name = subq_name;
-                tref.subquery.reset();
-            }
-            if (tref.right) materialize_from_subqueries(*tref.right);
+            MaterializeFromSubqueries(db_.GetCatalog(), tref, cte_tables);
         };
 
         if (stmt->GetType() == StatementType::SELECT) {
             auto &sel0 = static_cast<SelectStatement &>(*stmt);
-            if (sel0.from_table) materialize_from_subqueries(*sel0.from_table);
-            for (auto &cte : sel0.ctes) {
-                if (cte.query && cte.query->from_table)
-                    materialize_from_subqueries(*cte.query->from_table);
+            // Walk the whole set-op chain so each branch's derived-table
+            // FROM is materialised — `A UNION B` where both A and B read
+            // from (VALUES..)/(SELECT..). Previously only the left
+            // branch's from_table was materialised; set_right branches
+            // failed with "Table '' not found".
+            for (SelectStatement *cur = &sel0; cur; cur = cur->set_right.get()) {
+                if (cur->from_table) materialize_from_subqueries(*cur->from_table);
+                for (auto &cte : cur->ctes) {
+                    if (cte.query && cte.query->from_table)
+                        materialize_from_subqueries(*cte.query->from_table);
+                }
             }
         }
 

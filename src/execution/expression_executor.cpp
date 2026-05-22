@@ -2,6 +2,8 @@
 #include "slothdb/binder/binder.hpp"
 #include "slothdb/planner/planner.hpp"
 #include "slothdb/execution/physical_planner.hpp"
+#include "slothdb/main/query_materialize.hpp"
+#include "slothdb/catalog/catalog.hpp"
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/string_util.hpp"
 #include "slothdb/common/types/string_type.hpp"
@@ -4769,6 +4771,22 @@ void ExpressionExecutor::ExecuteSubquery(const BoundSubqueryExpression &expr,
     auto *parsed_query = static_cast<SelectStatement *>(expr.parsed_query.get());
     if (!parsed_query) {
         throw InternalException("Subquery has no parsed query");
+    }
+
+    // Derived-table FROM sources are normally materialised once at bind
+    // time (Binder::BindSubquery). This is a safety net for any path
+    // that reaches execution without that bind step: it is idempotent
+    // (a subquery already rewritten to a temp-table name has no
+    // remaining `subquery` node, so this is a no-op). Temp tables are
+    // intentionally NOT dropped here so re-execution across chunks
+    // reuses them.
+    std::vector<std::string> temp_tables;
+    if (parsed_query->from_table) {
+        MaterializeFromSubqueries(*catalog_, *parsed_query->from_table, temp_tables);
+    }
+    for (auto &cte : parsed_query->ctes) {
+        if (cte.query && cte.query->from_table)
+            MaterializeFromSubqueries(*catalog_, *cte.query->from_table, temp_tables);
     }
 
     // Bind and execute the subquery.

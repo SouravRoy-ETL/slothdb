@@ -2,6 +2,7 @@
 #include "slothdb/common/exception.hpp"
 #include "slothdb/common/string_util.hpp"
 #include "slothdb/execution/expression_executor.hpp"
+#include "slothdb/main/query_materialize.hpp"
 #include "slothdb/parser/expression/parsed_expression.hpp"
 #include <functional>
 
@@ -1869,6 +1870,25 @@ BoundExprPtr Binder::BindWindow(const WindowExpression &expr, BindContext &conte
 BoundExprPtr Binder::BindSubquery(const SubqueryExpression &expr, BindContext &context) {
     BoundSubqueryExpression::Type subtype;
     LogicalType return_type = LogicalType::BOOLEAN();
+
+    // Materialise any derived-table FROM sources inside the subquery
+    // (`(VALUES..)`, `(SELECT..)`) into temp catalog tables, rewriting
+    // the AST once. Without this the subquery failed to bind/execute
+    // ("Table '' not found"), and SCALAR return-type discovery below
+    // couldn't see the derived table (returned SQLNULL -> wrong NULL
+    // result). The rewrite persists so runtime re-execution is
+    // idempotent; the temp tables are not dropped (connection-lifetime;
+    // a known bounded leak for repeated distinct subqueries).
+    if (expr.subquery) {
+        auto *sq = const_cast<SelectStatement *>(expr.subquery.get());
+        std::vector<std::string> created;
+        if (sq->from_table)
+            MaterializeFromSubqueries(catalog_, *sq->from_table, created);
+        for (auto &cte : sq->ctes) {
+            if (cte.query && cte.query->from_table)
+                MaterializeFromSubqueries(catalog_, *cte.query->from_table, created);
+        }
+    }
 
     switch (expr.subquery_type) {
     case SubqueryType::EXISTS:
