@@ -487,6 +487,20 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         if (!resolved) {
             bound_item.expression = BindExpression(*item.expression, context);
         }
+        // Reject ungrouped non-aggregated columns in ORDER BY of an
+        // aggregated query — symmetric to the SELECT-list (f931ed3) and
+        // HAVING (4ae0b65) checks. `SELECT a, SUM(b) ... GROUP BY a
+        // ORDER BY b` silently sorted by a meaningless collapsed value.
+        // Ordinal (ORDER BY 2) and alias (ORDER BY s) forms have already
+        // re-bound to the grouped/aggregate expression above, so only
+        // genuinely ungrouped column refs trip this.
+        if (result->has_aggregation && !result->has_window &&
+            bound_item.expression &&
+            HasUngroupedColumn(*bound_item.expression, result->group_by)) {
+            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                "column in ORDER BY must appear in GROUP BY "
+                "or be used in an aggregate function");
+        }
         bound_item.ascending = item.ascending;
         bound_item.nulls_first = item.nulls_first;
         result->order_by.push_back(std::move(bound_item));
