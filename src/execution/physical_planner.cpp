@@ -4655,7 +4655,12 @@ private:
         int64_t ntile_buckets = 1;
         idx_t rank_order_col = INVALID_INDEX;
         LogicalTypeId rank_order_tid = LogicalTypeId::SQLNULL;
-        // Precomputed Value per partition (only for aggregate-shape windows).
+        // When the window has an ORDER BY, SUM/COUNT/AVG/MIN/MAX use the
+        // SQL default running frame (RANGE UNBOUNDED PRECEDING..CURRENT
+        // ROW) instead of the whole-partition aggregate.
+        bool has_order = false;
+        // Precomputed Value per partition (only for aggregate-shape windows
+        // with NO order — the whole-partition aggregate).
         std::vector<Value> part_value;
     };
 
@@ -4980,11 +4985,12 @@ private:
                 info.rank_order_tid = input_.types[info.rank_order_col];
         }
 
-        // SUM/COUNT/AVG/MIN/MAX over whole partition don't require sorted order
-        // (we treat ORDER BY as irrelevant for these - full-partition aggregate).
-        // FIRST/LAST_VALUE are computed on-demand at emit time (they need sorted order).
-        if (info.fn == WF_SUM || info.fn == WF_COUNT || info.fn == WF_AVG ||
-            info.fn == WF_MIN || info.fn == WF_MAX) {
+        // ORDER BY present => running frame (computed per-row at emit
+        // time in ComputeWindowAt). No ORDER BY => whole-partition
+        // aggregate, precomputed once here.
+        info.has_order = !win.order_by.empty();
+        if ((info.fn == WF_SUM || info.fn == WF_COUNT || info.fn == WF_AVG ||
+             info.fn == WF_MIN || info.fn == WF_MAX) && !info.has_order) {
             info.part_value.resize(partitions_.size());
             for (idx_t p = 0; p < partitions_.size(); p++) {
                 info.part_value[p] = ComputePartitionAggregate(info, partitions_[p]);
@@ -4992,8 +4998,13 @@ private:
         }
     }
 
-    Value ComputePartitionAggregate(const WinInfo &info, const std::vector<idx_t> &indices) {
+    // Aggregate over the first `limit` indices of `indices` (INVALID_INDEX
+    // = all). The running-frame path passes the peer-group end so the
+    // value is the RANGE UNBOUNDED PRECEDING..CURRENT ROW total.
+    Value ComputePartitionAggregate(const WinInfo &info, const std::vector<idx_t> &indices,
+                                    idx_t limit = INVALID_INDEX) {
         idx_t ps = indices.size();
+        if (limit != INVALID_INDEX && limit < ps) ps = limit;
         if (ps == 0) return Value();
         if (info.fn == WF_FIRST_VALUE) {
             if (info.arg_col == INVALID_INDEX) return Value();
@@ -5010,29 +5021,30 @@ private:
         if (info.arg_col == INVALID_INDEX) {
             count = static_cast<int64_t>(ps);
         } else if (info.arg_tid == LogicalTypeId::INTEGER) {
-            for (auto idx : indices) if (!input_.IsNull(idx, info.arg_col)) {
+            for (idx_t k = 0; k < ps; k++) { idx_t idx = indices[k]; if (!input_.IsNull(idx, info.arg_col)) {
                 double d = input_.GetInt32(idx, info.arg_col);
                 count++; sum += d;
                 if (!has_mm) { min_d = max_d = d; has_mm = true; }
                 else { if (d < min_d) min_d = d; if (d > max_d) max_d = d; }
-            }
+            } }
         } else if (info.arg_tid == LogicalTypeId::BIGINT) {
-            for (auto idx : indices) if (!input_.IsNull(idx, info.arg_col)) {
+            for (idx_t k = 0; k < ps; k++) { idx_t idx = indices[k]; if (!input_.IsNull(idx, info.arg_col)) {
                 double d = static_cast<double>(input_.GetInt64(idx, info.arg_col));
                 count++; sum += d;
                 if (!has_mm) { min_d = max_d = d; has_mm = true; }
                 else { if (d < min_d) min_d = d; if (d > max_d) max_d = d; }
-            }
+            } }
         } else if (info.arg_tid == LogicalTypeId::DOUBLE) {
-            for (auto idx : indices) if (!input_.IsNull(idx, info.arg_col)) {
+            for (idx_t k = 0; k < ps; k++) { idx_t idx = indices[k]; if (!input_.IsNull(idx, info.arg_col)) {
                 double d = input_.GetDouble(idx, info.arg_col);
                 count++; sum += d;
                 if (!has_mm) { min_d = max_d = d; has_mm = true; }
                 else { if (d < min_d) min_d = d; if (d > max_d) max_d = d; }
-            }
+            } }
         } else {
             Value min_v, max_v;
-            for (auto idx : indices) {
+            for (idx_t k = 0; k < ps; k++) {
+                idx_t idx = indices[k];
                 auto v = input_.Get(idx, info.arg_col);
                 if (!v.IsNull()) {
                     count++;
@@ -5126,6 +5138,22 @@ private:
         case WF_AVG:
         case WF_MIN:
         case WF_MAX:
+            if (info.has_order) {
+                // Running frame: aggregate rows [0 .. peer-end of pos].
+                // The partition is sorted; peers share the same order key
+                // (RANGE semantics). Without a usable single-column order
+                // key (rank_order_col == INVALID), fall back to ROWS
+                // (current row only) which coincides with RANGE when
+                // order keys are distinct.
+                idx_t peer_end = pos;
+                if (info.rank_order_col != INVALID_INDEX) {
+                    while (peer_end + 1 < ps &&
+                           OrderEqual(info, indices[pos], indices[peer_end + 1])) {
+                        peer_end++;
+                    }
+                }
+                return ComputePartitionAggregate(info, indices, peer_end + 1);
+            }
             return (part_idx < info.part_value.size()) ? info.part_value[part_idx] : Value();
         default:
             return Value();
