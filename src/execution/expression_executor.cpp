@@ -2188,10 +2188,16 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto s = sv.GetValue<std::string>();
             auto from = fv.GetValue<std::string>();
             auto to = tv.GetValue<std::string>();
-            size_t pos = 0;
-            while ((pos = s.find(from, pos)) != std::string::npos) {
-                s.replace(pos, from.length(), to);
-                pos += to.length();
+            // Empty search string: return input unchanged (Postgres
+            // semantics). Without this guard, s.find("", pos) always
+            // matches at pos and the loop inserts `to` forever — a
+            // hang on REPLACE(str, '', anything).
+            if (!from.empty()) {
+                size_t pos = 0;
+                while ((pos = s.find(from, pos)) != std::string::npos) {
+                    s.replace(pos, from.length(), to);
+                    pos += to.length();
+                }
             }
             result.SetValue(i, Value::VARCHAR(s));
         }
