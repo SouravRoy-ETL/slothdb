@@ -4792,18 +4792,43 @@ private:
                 partitions_[pi].push_back(i);
             }
         } else {
+            // Generic path: PARTITION BY may contain expressions
+            // (a%2, CASE.., LENGTH(s)), not just plain columns.
+            // Previously only COLUMN_REF keys were read — every other
+            // expression contributed nothing to the key, collapsing all
+            // rows into a single partition (PARTITION BY silently
+            // ignored). Now each partition expression is evaluated per
+            // row via a reusable single-row chunk.
+            auto in_types = children[0]->GetTypes();
+            DataChunk single;
+            single.Initialize(in_types);
+            single.SetCardinality(1);
+            bool need_eval = false;
+            for (auto &p : win.partition_by) {
+                if (p->GetExpressionType() != BoundExpressionType::COLUMN_REF) {
+                    need_eval = true; break;
+                }
+            }
             std::unordered_map<std::string, idx_t> k2p;
             k2p.reserve(n / 4 + 16);
             for (idx_t i = 0; i < n; i++) {
+                if (need_eval) {
+                    for (idx_t c = 0; c < input_.types.size(); c++)
+                        single.SetValue(c, 0, input_.Get(i, c));
+                }
                 std::string key;
                 for (auto &p : win.partition_by) {
+                    Value v;
                     if (p->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                        auto &ref = static_cast<BoundColumnRef &>(*p);
-                        auto v = input_.Get(i, ref.column_index);
-                        if (v.IsNull()) key += "\x01N";
-                        else key += v.ToString();
-                        key += '|';
+                        v = input_.Get(i, static_cast<BoundColumnRef &>(*p).column_index);
+                    } else {
+                        Vector res(p->GetReturnType());
+                        ExpressionExecutor::Execute(*p, single, res, 1);
+                        v = res.GetValue(0);
                     }
+                    if (v.IsNull()) key += "\x01N";
+                    else key += v.ToString();
+                    key += '|';
                 }
                 auto it = k2p.find(key);
                 idx_t pi;
