@@ -3264,6 +3264,26 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     }
 
     if (name == "DATE_DIFF" || name == "DATEDIFF" || name == "TIMESTAMPDIFF") {
+        // MySQL 2-arg form DATEDIFF(d1, d2) = whole-day difference
+        // (d1 - d2). The 3-arg form below is DATEDIFF(unit, d1, d2).
+        // Previously the 2-arg form hit "Expression executor for type"
+        // by reading a non-existent unit/third argument.
+        if (expr.arguments.size() == 2) {
+            Vector a1(expr.arguments[0]->GetReturnType(), count);
+            Vector a2(expr.arguments[1]->GetReturnType(), count);
+            Execute(*expr.arguments[0], input, a1, count);
+            Execute(*expr.arguments[1], input, a2, count);
+            for (idx_t i = 0; i < count; i++) {
+                auto v1 = a1.GetValue(i), v2 = a2.GetValue(i);
+                if (v1.IsNull() || v2.IsNull()) {
+                    result.GetValidity().SetInvalid(i); continue;
+                }
+                int64_t d1 = to_micros_any(v1) / (86400LL * 1000000LL);
+                int64_t d2 = to_micros_any(v2) / (86400LL * 1000000LL);
+                result.SetValue(i, Value::BIGINT(d1 - d2));
+            }
+            return;
+        }
         auto part = StringUtil::Upper(
             ExpressionExecutor::ExecuteScalar(*expr.arguments[0]).GetValue<std::string>());
         Vector ts1(expr.arguments[1]->GetReturnType(), count);
