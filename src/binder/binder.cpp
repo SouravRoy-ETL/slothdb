@@ -1290,6 +1290,20 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         args.push_back(BindExpression(*arg, context));
     }
 
+    // Reject nested aggregates (`SUM(COUNT(*))`, `AVG(SUM(x))`). SQL
+    // standard forbids aggregate calls inside aggregate arguments.
+    // Previously this crashed the executor with a misleading
+    // "Function execution for: COUNT" because the inner aggregate
+    // was handed to the per-row scalar evaluator.
+    if (is_agg) {
+        for (auto &a : args) {
+            if (a && ContainsAggregate(*a)) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    "aggregate function calls cannot be nested");
+            }
+        }
+    }
+
     // Validate aggregate arity. SQL standard: most aggregates take
     // exactly one operand. COUNT additionally allows zero args via
     // the COUNT(*) form (parser sets expr.is_star). Without these
