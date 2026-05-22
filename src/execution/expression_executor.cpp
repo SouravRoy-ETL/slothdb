@@ -4604,6 +4604,27 @@ void ExpressionExecutor::ExecuteCast(const BoundCast &expr, DataChunk &input,
                 }
                 continue;
             }
+            // BOOLEAN -> numeric (Postgres/DuckDB): true -> 1, false -> 0.
+            // Previously the cast string-roundtripped ('true'/'false')
+            // and the numeric parser rejected it.
+            if (from_type == LogicalTypeId::BOOLEAN &&
+                (to_type == LogicalTypeId::TINYINT ||
+                 to_type == LogicalTypeId::SMALLINT ||
+                 to_type == LogicalTypeId::INTEGER ||
+                 to_type == LogicalTypeId::BIGINT ||
+                 to_type == LogicalTypeId::FLOAT ||
+                 to_type == LogicalTypeId::DOUBLE)) {
+                bool b = val.GetValue<bool>();
+                switch (to_type) {
+                case LogicalTypeId::TINYINT:  result.SetValue(i, Value::TINYINT(b ? 1 : 0)); break;
+                case LogicalTypeId::SMALLINT: result.SetValue(i, Value::SMALLINT(b ? 1 : 0)); break;
+                case LogicalTypeId::INTEGER:  result.SetValue(i, Value::INTEGER(b ? 1 : 0)); break;
+                case LogicalTypeId::BIGINT:   result.SetValue(i, Value::BIGINT(b ? 1 : 0)); break;
+                case LogicalTypeId::FLOAT:    result.SetValue(i, Value::FLOAT(b ? 1.0f : 0.0f)); break;
+                default:                      result.SetValue(i, Value::DOUBLE(b ? 1.0 : 0.0)); break;
+                }
+                continue;
+            }
             auto str = val.ToString();
             switch (to_type) {
             case LogicalTypeId::TINYINT:
