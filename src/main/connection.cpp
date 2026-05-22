@@ -61,6 +61,16 @@ static LogicalType ComputeSetOpCommonType(const LogicalType &a, const LogicalTyp
     if (a.id() == LogicalTypeId::INVALID || a.id() == LogicalTypeId::SQLNULL) return b;
     if (b.id() == LogicalTypeId::INVALID || b.id() == LogicalTypeId::SQLNULL) return a;
 
+    // VARCHAR mixed with any other type unifies to VARCHAR — the only
+    // universal target the engine carries. Must come BEFORE the float
+    // branch: previously VARCHAR + DOUBLE/FLOAT returned a float type,
+    // and CoerceValueForSetOp then ran the string through a numeric
+    // coercion that returned 0.0 for non-numeric text — silently
+    // corrupting '1' -> 0 and 'x' -> 0 across UNION and VALUES.
+    if (a.id() == LogicalTypeId::VARCHAR || b.id() == LogicalTypeId::VARCHAR) {
+        return LogicalType(LogicalTypeId::VARCHAR);
+    }
+
     auto is_signed_int = [](LogicalTypeId id) {
         return id == LogicalTypeId::TINYINT || id == LogicalTypeId::SMALLINT ||
                id == LogicalTypeId::INTEGER || id == LogicalTypeId::BIGINT;
