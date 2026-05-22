@@ -326,6 +326,9 @@ std::vector<Token> Tokenizer::Tokenize() {
             } else if (!IsAtEnd() && Peek() == '>') {
                 Advance();
                 tokens.push_back(Token(TokenType::NOT_EQUALS, "<>", line_, tok_col));
+            } else if (!IsAtEnd() && Peek() == '<') {
+                Advance();
+                tokens.push_back(Token(TokenType::SHL, "<<", line_, tok_col));
             } else {
                 tokens.push_back(Token(TokenType::LESS_THAN, "<", line_, tok_col));
             }
@@ -334,6 +337,9 @@ std::vector<Token> Tokenizer::Tokenize() {
             if (!IsAtEnd() && Peek() == '=') {
                 Advance();
                 tokens.push_back(Token(TokenType::GREATER_EQUALS, ">=", line_, tok_col));
+            } else if (!IsAtEnd() && Peek() == '>') {
+                Advance();
+                tokens.push_back(Token(TokenType::SHR, ">>", line_, tok_col));
             } else {
                 tokens.push_back(Token(TokenType::GREATER_THAN, ">", line_, tok_col));
             }
@@ -354,12 +360,11 @@ std::vector<Token> Tokenizer::Tokenize() {
                 Advance();
                 tokens.push_back(Token(TokenType::PIPE, "||", line_, tok_col));
             } else {
-                auto ex = ParserException(ErrorCode::UNEXPECTED_TOKEN,
-                                           "Unexpected character '|'");
-                ex.SetQueryLocation(line_, tok_col);
-                throw ex;
+                tokens.push_back(Token(TokenType::BITOR, "|", line_, tok_col));
             }
             break;
+        case '&': tokens.push_back(Token(TokenType::AMP, "&", line_, tok_col)); break;
+        case '^': tokens.push_back(Token(TokenType::CARET, "^", line_, tok_col)); break;
         default: {
             auto ex = ParserException(ErrorCode::UNEXPECTED_TOKEN,
                                        "Unexpected character '" + std::string(1, c) + "'");
@@ -390,6 +395,11 @@ const char *TokenTypeToString(TokenType type) {
     case TokenType::LESS_EQUALS: return "LESS_EQUALS";
     case TokenType::GREATER_EQUALS: return "GREATER_EQUALS";
     case TokenType::PIPE: return "PIPE";
+    case TokenType::AMP: return "AMP";
+    case TokenType::BITOR: return "BITOR";
+    case TokenType::CARET: return "CARET";
+    case TokenType::SHL: return "SHL";
+    case TokenType::SHR: return "SHR";
     case TokenType::DOUBLE_COLON: return "DOUBLE_COLON";
     case TokenType::LPAREN: return "LPAREN";
     case TokenType::RPAREN: return "RPAREN";

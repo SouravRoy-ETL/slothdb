@@ -26,6 +26,11 @@ enum class TokenType : uint8_t {
     LESS_EQUALS,    // <=
     GREATER_EQUALS, // >=
     PIPE,           // ||  (string concat)
+    AMP,            // &   (bitwise AND)
+    BITOR,          // |   (bitwise OR)
+    CARET,          // ^   (bitwise XOR)
+    SHL,            // <<  (bitwise shift left)
+    SHR,            // >>  (bitwise shift right)
     DOUBLE_COLON,   // ::  (Postgres-style cast)
 
     // Punctuation

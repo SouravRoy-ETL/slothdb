@@ -1397,6 +1397,43 @@ void ExpressionExecutor::ExecuteArithmetic(const BoundArithmetic &expr, DataChun
         return;
     }
 
+    // Bitwise operators (& | ^ << >>) — integer-only. Operate on the
+    // int64 value of each operand; NULL propagates. Negative shift
+    // counts and counts >= 64 yield NULL (undefined behaviour guard).
+    if (expr.op == "&" || expr.op == "|" || expr.op == "^" ||
+        expr.op == "<<" || expr.op == ">>") {
+        auto &ov = result.GetValidity();
+        auto read_i64 = [](Vector &v, idx_t i, bool &ok) -> int64_t {
+            auto val = v.GetValue(i);
+            if (val.IsNull()) { ok = false; return 0; }
+            switch (val.type().id()) {
+            case LogicalTypeId::TINYINT:  return val.GetValue<int8_t>();
+            case LogicalTypeId::SMALLINT: return val.GetValue<int16_t>();
+            case LogicalTypeId::INTEGER:  return val.GetValue<int32_t>();
+            case LogicalTypeId::BIGINT:   return val.GetValue<int64_t>();
+            default: ok = false; return 0;
+            }
+        };
+        bool out_is_i64 = result.GetType().GetInternalType() == PhysicalType::INT64;
+        for (idx_t i = 0; i < count; i++) {
+            bool ok = true;
+            int64_t a = read_i64(left, i, ok);
+            int64_t b = read_i64(right, i, ok);
+            if (!ok) { ov.SetInvalid(i); continue; }
+            int64_t r;
+            if (expr.op == "&") r = a & b;
+            else if (expr.op == "|") r = a | b;
+            else if (expr.op == "^") r = a ^ b;
+            else { // shifts
+                if (b < 0 || b >= 64) { ov.SetInvalid(i); continue; }
+                r = (expr.op == "<<") ? (a << b) : (a >> b);
+            }
+            if (out_is_i64) result.GetData<int64_t>()[i] = r;
+            else result.GetData<int32_t>()[i] = static_cast<int32_t>(r);
+        }
+        return;
+    }
+
     // Handle || for string concatenation.
     if (expr.op == "||") {
         for (idx_t i = 0; i < count; i++) {

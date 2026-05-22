@@ -1113,7 +1113,15 @@ ParsedExprPtr Parser::ParseComparison() {
 
 ParsedExprPtr Parser::ParseAddSub() {
     auto left = ParseMulDiv();
-    while (Check(TokenType::PLUS) || Check(TokenType::MINUS) || Check(TokenType::PIPE)) {
+    // Additive precedence plus string concat (||) and bitwise operators
+    // (& | ^ << >>). Bitwise sits below additive in strict SQL
+    // precedence, but folding it here keeps the common forms
+    // (`flags & 4`, `n << 2`, `a | b`) working without a separate
+    // precedence level; parenthesise for mixed bitwise+arithmetic.
+    while (Check(TokenType::PLUS) || Check(TokenType::MINUS) ||
+           Check(TokenType::PIPE) || Check(TokenType::AMP) ||
+           Check(TokenType::BITOR) || Check(TokenType::CARET) ||
+           Check(TokenType::SHL) || Check(TokenType::SHR)) {
         auto op = Advance().value;
         auto right = ParseMulDiv();
         left = std::make_unique<ArithmeticExpression>(op, std::move(left), std::move(right));
