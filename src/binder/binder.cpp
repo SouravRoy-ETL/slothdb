@@ -266,8 +266,18 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
                     if (sl_idx < stmt.select_list.size() &&
                         stmt.select_list[sl_idx]->GetExpressionType()
                             != ExpressionType::STAR) {
-                        result->group_by.push_back(
-                            BindExpression(*stmt.select_list[sl_idx], context));
+                        auto gk = BindExpression(*stmt.select_list[sl_idx], context);
+                        // GROUP BY <ordinal> pointing at an aggregate
+                        // expression is illegal SQL. Previously this
+                        // pushed the bound aggregate as a group key and
+                        // the executor later crashed with a misleading
+                        // "Function execution for: COUNT". Reject with a
+                        // clean diagnostic instead.
+                        if (ContainsAggregate(*gk)) {
+                            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                                "aggregate functions are not allowed in GROUP BY");
+                        }
+                        result->group_by.push_back(std::move(gk));
                         resolved = true;
                     } else if (sl_idx < result->result_names.size()) {
                         // Star-expanded column: re-resolve by name.
@@ -295,8 +305,14 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
                                 == ExpressionType::STAR) {
                             break; // fall through to normal binding
                         }
-                        result->group_by.push_back(
-                            BindExpression(*stmt.select_list[sl_idx], context));
+                        auto gk = BindExpression(*stmt.select_list[sl_idx], context);
+                        // GROUP BY <alias> resolving to an aggregate is
+                        // illegal SQL — reject cleanly (see ordinal path).
+                        if (ContainsAggregate(*gk)) {
+                            throw BinderException(ErrorCode::TYPE_MISMATCH,
+                                "aggregate functions are not allowed in GROUP BY");
+                        }
+                        result->group_by.push_back(std::move(gk));
                         resolved = true;
                         break;
                     }
@@ -304,7 +320,13 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
             }
         }
         if (!resolved) {
-            result->group_by.push_back(BindExpression(*expr, context));
+            auto gk = BindExpression(*expr, context);
+            // Direct `GROUP BY COUNT(*)` / `GROUP BY SUM(x)` is illegal.
+            if (ContainsAggregate(*gk)) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    "aggregate functions are not allowed in GROUP BY");
+            }
+            result->group_by.push_back(std::move(gk));
         }
         result->has_aggregation = true;
     }
