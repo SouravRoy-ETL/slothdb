@@ -321,6 +321,59 @@ number is not re-measured. Sixteen more general engine fixes landed:
     consumption check.
 13. **DATE_TRUNC on DATE input** silently produced 1970-01-01 +
     28 min (output scale mismatch). Always emits micros now.
+13. **MAKE_DATE / LAST_DAY / MAKE_TIMESTAMP** returned raw int
+    encodings (YYYYMMDD / constant micros / garbage). Now typed
+    DATE / TIMESTAMP with input validation.
+13. **CAST(TIMESTAMP AS DATE)** threw / TRY_CAST returned NULL —
+    now floor-divides micros to epoch days.
+13. **DAYOFWEEK alias** for EXTRACT/DATE_PART DOW.
+13. **INSERT col-list reorder/subset** (`INSERT INTO t(c,a,b)
+    VALUES...` and the `... SELECT` form) silently wrote to wrong
+    columns or crashed. Now permuted + validated.
+13. **aggregate-in-WHERE** silently executed → clean BinderException.
+13. **aggregate arity** (`COUNT(DISTINCT a,b)`, `SUM(a,b)`, `MIN()`)
+    silently dropped extra/missing args → BinderException.
+13. **INSERT into TINYINT/SMALLINT/FLOAT/unsigned/BOOLEAN** silently
+    stored 0 (VARCHAR fallthrough in ExecuteScalar). Now typed.
+13. **SELECT \* with ORDER BY / GROUP BY ordinal** — spurious
+    out-of-range error / silent corruption from pre-expansion count.
+13. **UPDATE silent narrowing** — `SET int_col = 9999999999` wrapped
+    to 32-bit garbage. Now BoundCast-wrapped + range-checked.
+13. **CAST(numeric AS BOOLEAN)** rejected nonzero values; now
+    nonzero=true / zero=false.
+13. **TRIM 2-arg + SQL-92 `TRIM(LEADING|TRAILING|BOTH x FROM s)`** —
+    2nd-arg char set silently ignored; SQL-92 form rejected.
+13. **SUBSTRING(s, start)** with start <= 0 truncated the right end.
+13. **TINYINT/SMALLINT arithmetic** produced garbage (missing
+    CoerceVector widening); now correct.
+13. **CTAS / CREATE VIEW multi-statement** absorbed trailing
+    statements via a `" AS "` substring hack. Now bind/plan AST.
+13. **DOUBLE/FLOAT pretty-print** — '10' rendered '1e+01'. Now plain
+    decimal in the [1e-4, 1e16) range.
+13. **DECIMAL/NUMERIC columns** silently stored 0; aliased to DOUBLE.
+13. **NOT NULL constraint** completely ignored on INSERT/UPDATE/PK;
+    now enforced (incl. CAST(NULL) peel + INSERT-SELECT runtime).
+13. **INSERT VALUES (expr)** crashed with InternalException for any
+    non-trivial expression; now folds via the full executor.
+13. **POW + CURRENT_USER/SESSION_USER/CURRENT_SCHEMA/CURRENT_DATABASE/
+    VERSION/UUID/GEN_RANDOM_UUID/LOCALTIMESTAMP** added.
+13. **3-way+ INNER/LEFT/RIGHT/FULL JOIN chain** silently dropped the
+    middle table (overwrote ref->right). Now tail-walked.
+13. **LIMIT/OFFSET computed expression** silently returned all rows;
+    now folded + column-ref rejected.
+13. **REGEXP / REGEXP_LIKE aliases** for REGEXP_MATCH.
+13. **STRFTIME / FORMAT_TIMESTAMP** ignored the format string AND
+    returned 1970 epoch for DATE input. Now honors format + types.
+13. **PG/MySQL 1-arg date helpers** YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/
+    WEEK/QUARTER/etc + CURDATE/GETDATE/CURTIME/UNIX_TIMESTAMP/
+    FROM_UNIXTIME.
+13. **INSERT-SELECT silent type corruption** — BIGINT→INT, INT→BIGINT,
+    DOUBLE→INT, INT→VARCHAR produced shifted/bit-wrapped garbage.
+    Now coerced + range-checked per column.
+13. **Aggregate-column validation triad** — ungrouped non-aggregated
+    columns in HAVING, SELECT-list, and ORDER BY of an aggregated
+    query silently returned 0 rows / garbage / wrong sort. All three
+    now raise a clean BinderException.
 
 Reading the numbers honestly:
 
