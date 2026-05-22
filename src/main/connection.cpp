@@ -1236,10 +1236,12 @@ QueryResult Connection::Query(const std::string &sql) {
                     if (target_indices.empty()) {
                         auto coerced = build_coerced_chunk(chunk, nullptr);
                         check_not_null_chunk(coerced);
+                        entry->CheckPrimaryKeyForChunk(coerced);
                         entry->GetStorage().Append(coerced);
                     } else {
                         auto coerced = build_coerced_chunk(chunk, &target_indices);
                         check_not_null_chunk(coerced);
+                        entry->CheckPrimaryKeyForChunk(coerced);
                         entry->GetStorage().Append(coerced);
                     }
                 }

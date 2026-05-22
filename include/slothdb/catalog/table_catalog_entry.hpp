@@ -16,11 +16,15 @@ struct ColumnDefinition {
     std::string name;
     LogicalType type;
     bool not_null = false;
+    bool is_primary_key = false;
 
     ColumnDefinition(const std::string &name, const LogicalType &type)
         : name(name), type(type) {}
     ColumnDefinition(const std::string &name, const LogicalType &type, bool not_null_)
         : name(name), type(type), not_null(not_null_) {}
+    ColumnDefinition(const std::string &name, const LogicalType &type,
+                     bool not_null_, bool is_pk_)
+        : name(name), type(type), not_null(not_null_), is_primary_key(is_pk_) {}
 };
 
 // Catalog entry for a table. Owns the column definitions and
@@ -36,6 +40,21 @@ public:
 
     // Get column index by name. Returns INVALID_INDEX if not found.
     idx_t GetColumnIndex(const std::string &col_name) const;
+
+    // Indices of PRIMARY KEY columns (for uniqueness enforcement).
+    std::vector<idx_t> GetPrimaryKeyColumns() const {
+        std::vector<idx_t> pk;
+        for (idx_t i = 0; i < columns_.size(); i++) {
+            if (columns_[i].is_primary_key) pk.push_back(i);
+        }
+        return pk;
+    }
+
+    // Throw ConstraintException if appending `chunk` would create a
+    // duplicate PRIMARY KEY value — against existing storage rows or
+    // among rows within `chunk` itself. No-op when the table has no
+    // primary key or no storage. Only called from INSERT paths.
+    void CheckPrimaryKeyForChunk(class DataChunk &chunk) const;
 
     // Get the column types as a vector.
     std::vector<LogicalType> GetTypes() const;

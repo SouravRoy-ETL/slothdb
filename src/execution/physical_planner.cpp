@@ -4122,6 +4122,8 @@ public:
             }
         }
 
+        // Enforce PRIMARY KEY uniqueness before committing the rows.
+        table_->CheckPrimaryKeyForChunk(chunk);
         table_->GetStorage().Append(chunk);
         return false; // No result set.
     }

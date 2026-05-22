@@ -645,7 +645,10 @@ BoundStmtPtr Binder::BindCreateTable(const CreateTableStatement &stmt) {
 
     for (auto &col : stmt.columns) {
         auto type = ResolveTypeName(col.type_name);
-        result->columns.emplace_back(col.name, type, col.not_null);
+        // A PRIMARY KEY column is implicitly NOT NULL.
+        result->columns.emplace_back(col.name, type,
+                                     col.not_null || col.is_primary_key,
+                                     col.is_primary_key);
     }
     return result;
 }
