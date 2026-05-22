@@ -2035,8 +2035,77 @@ LogicalType Binder::ResolveArithmeticType(const LogicalType &left, const Logical
 // raise a clean BinderException instead of letting an aggregate slip
 // into row-context evaluation. Subqueries are NOT recursed into —
 // aggregates inside a correlated subquery are legal.
+// Structural equality of two bound expressions — used to recognize a
+// SELECT/HAVING/ORDER BY expression that matches a GROUP BY key
+// (e.g. GROUP BY a+1 with SELECT a+1, or GROUP BY CASE.. / LENGTH(s)).
+static bool BoundExprEqual(const BoundExpression &a, const BoundExpression &b) {
+    if (a.GetExpressionType() != b.GetExpressionType()) return false;
+    switch (a.GetExpressionType()) {
+    case BoundExpressionType::COLUMN_REF:
+        return static_cast<const BoundColumnRef &>(a).column_index ==
+               static_cast<const BoundColumnRef &>(b).column_index;
+    case BoundExpressionType::CONSTANT:
+        return static_cast<const BoundConstant &>(a).value ==
+               static_cast<const BoundConstant &>(b).value;
+    case BoundExpressionType::ARITHMETIC: {
+        auto &x = static_cast<const BoundArithmetic &>(a);
+        auto &y = static_cast<const BoundArithmetic &>(b);
+        return x.op == y.op && x.left && y.left && x.right && y.right &&
+               BoundExprEqual(*x.left, *y.left) && BoundExprEqual(*x.right, *y.right);
+    }
+    case BoundExpressionType::COMPARISON: {
+        auto &x = static_cast<const BoundComparison &>(a);
+        auto &y = static_cast<const BoundComparison &>(b);
+        return x.op == y.op && x.left && y.left && x.right && y.right &&
+               BoundExprEqual(*x.left, *y.left) && BoundExprEqual(*x.right, *y.right);
+    }
+    case BoundExpressionType::CONJUNCTION: {
+        auto &x = static_cast<const BoundConjunction &>(a);
+        auto &y = static_cast<const BoundConjunction &>(b);
+        return x.op == y.op && x.left && y.left && x.right && y.right &&
+               BoundExprEqual(*x.left, *y.left) && BoundExprEqual(*x.right, *y.right);
+    }
+    case BoundExpressionType::NEGATION:
+        return BoundExprEqual(*static_cast<const BoundNegation &>(a).child,
+                              *static_cast<const BoundNegation &>(b).child);
+    case BoundExpressionType::IS_NULL:
+        return BoundExprEqual(*static_cast<const BoundIsNull &>(a).child,
+                              *static_cast<const BoundIsNull &>(b).child);
+    case BoundExpressionType::UNARY_MINUS:
+        return BoundExprEqual(*static_cast<const BoundUnaryMinus &>(a).child,
+                              *static_cast<const BoundUnaryMinus &>(b).child);
+    case BoundExpressionType::CAST: {
+        auto &x = static_cast<const BoundCast &>(a);
+        auto &y = static_cast<const BoundCast &>(b);
+        return x.GetReturnType().id() == y.GetReturnType().id() &&
+               x.child && y.child && BoundExprEqual(*x.child, *y.child);
+    }
+    case BoundExpressionType::FUNCTION: {
+        auto &x = static_cast<const BoundFunction &>(a);
+        auto &y = static_cast<const BoundFunction &>(b);
+        if (x.function_name != y.function_name) return false;
+        if (x.arguments.size() != y.arguments.size()) return false;
+        for (size_t i = 0; i < x.arguments.size(); i++) {
+            if (!x.arguments[i] || !y.arguments[i] ||
+                !BoundExprEqual(*x.arguments[i], *y.arguments[i]))
+                return false;
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 static bool HasUngroupedColumn(const BoundExpression &expr,
                                const std::vector<BoundExprPtr> &group_by) {
+    // If the whole expression structurally matches a GROUP BY key, it's
+    // grouped — accept it without recursing. This handles GROUP BY on
+    // expressions (a+1, CASE.., LENGTH(s)) where the bare columns inside
+    // are not themselves group keys.
+    for (auto &g : group_by) {
+        if (g && BoundExprEqual(expr, *g)) return false;
+    }
     switch (expr.GetExpressionType()) {
     case BoundExpressionType::COLUMN_REF: {
         auto &cr = static_cast<const BoundColumnRef &>(expr);
