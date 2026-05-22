@@ -1705,7 +1705,8 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
     else if (name == "DATE_DIFF" || name == "DATEDIFF" || name == "TIMESTAMPDIFF" ||
              name == "AGE") {
         return_type = LogicalType::BIGINT();
-    } else if (name == "DATE_ADD" || name == "DATEADD") {
+    } else if (name == "DATE_ADD" || name == "DATEADD" ||
+               name == "TIMESTAMPADD" || name == "DATE_SUB" || name == "SUBDATE") {
         // Return type:
         // - TIMESTAMP if input is TIMESTAMP, or if the unit is sub-day
         //   (HOUR/MINUTE/SECOND/MILLISECOND/MICROSECOND) — the result

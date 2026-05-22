@@ -3319,11 +3319,15 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         return;
     }
 
-    if (name == "DATE_ADD" || name == "DATEADD") {
-        // Accept both arg orders: SQL-Server DATEADD(unit, N, date) and
-        // the dialect form DATE_ADD(date, N, unit). The unit is the
-        // VARCHAR argument; detect its position. Previously only the
-        // unit-first order worked — date-first failed with "unit ''".
+    if (name == "DATE_ADD" || name == "DATEADD" || name == "TIMESTAMPADD" ||
+        name == "DATE_SUB" || name == "SUBDATE") {
+        // DATE_SUB / SUBDATE negate the count (= DATE_ADD with -N).
+        // TIMESTAMPADD is an alias. Accept both arg orders: SQL-Server
+        // DATEADD(unit, N, date) and the dialect form DATE_ADD(date, N,
+        // unit). The unit is the VARCHAR argument; detect its position.
+        // Previously only the unit-first order worked — date-first
+        // failed with "unit ''".
+        bool negate = (name == "DATE_SUB" || name == "SUBDATE");
         idx_t unit_idx = 0, ts_idx = 2;
         if (expr.arguments[2]->GetReturnType().id() == LogicalTypeId::VARCHAR &&
             expr.arguments[0]->GetReturnType().id() != LogicalTypeId::VARCHAR) {
@@ -3354,6 +3358,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             }
             int64_t n = (n_val.type().id() == LogicalTypeId::INTEGER)
                 ? n_val.GetValue<int32_t>() : n_val.GetValue<int64_t>();
+            if (negate) n = -n;
             int64_t ts_micros = to_micros_any(ts_val);
             int64_t result_micros = 0;
             if (calendar_unit) {
