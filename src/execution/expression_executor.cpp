@@ -3320,13 +3320,22 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     }
 
     if (name == "DATE_ADD" || name == "DATEADD") {
+        // Accept both arg orders: SQL-Server DATEADD(unit, N, date) and
+        // the dialect form DATE_ADD(date, N, unit). The unit is the
+        // VARCHAR argument; detect its position. Previously only the
+        // unit-first order worked — date-first failed with "unit ''".
+        idx_t unit_idx = 0, ts_idx = 2;
+        if (expr.arguments[2]->GetReturnType().id() == LogicalTypeId::VARCHAR &&
+            expr.arguments[0]->GetReturnType().id() != LogicalTypeId::VARCHAR) {
+            unit_idx = 2; ts_idx = 0;
+        }
         auto part = StringUtil::Upper(
-            ExpressionExecutor::ExecuteScalar(*expr.arguments[0]).GetValue<std::string>());
+            ExpressionExecutor::ExecuteScalar(*expr.arguments[unit_idx]).GetValue<std::string>());
         Vector n_vec(expr.arguments[1]->GetReturnType(), count);
-        Vector ts_vec(expr.arguments[2]->GetReturnType(), count);
+        Vector ts_vec(expr.arguments[ts_idx]->GetReturnType(), count);
         Execute(*expr.arguments[1], input, n_vec, count);
-        Execute(*expr.arguments[2], input, ts_vec, count);
-        auto ts_type = expr.arguments[2]->GetReturnType().id();
+        Execute(*expr.arguments[ts_idx], input, ts_vec, count);
+        auto ts_type = expr.arguments[ts_idx]->GetReturnType().id();
         bool day_grain = (part == "DAY" || part == "DAYS" ||
                           part == "WEEK" || part == "WEEKS" ||
                           part == "MONTH" || part == "MONTHS" ||

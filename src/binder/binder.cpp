@@ -1716,17 +1716,26 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
         // part still produces correct values at runtime; the binder
         // sets the static upper-bound type so downstream consumers
         // (CAST, comparisons, storage) see the correct shape.
+        // Accept both arg orders (DATEADD(unit,N,date) and
+        // DATE_ADD(date,N,unit)) — mirror the executor's detection so
+        // the result type matches. The unit is the VARCHAR argument.
+        idx_t b_unit_idx = 0, b_date_idx = 2;
+        if (args.size() >= 3 &&
+            args[2]->GetReturnType().id() == LogicalTypeId::VARCHAR &&
+            args[0]->GetReturnType().id() != LogicalTypeId::VARCHAR) {
+            b_unit_idx = 2; b_date_idx = 0;
+        }
         bool input_is_date = false;
         if (args.size() >= 3 &&
-            args[2]->GetReturnType().id() == LogicalTypeId::DATE) {
+            args[b_date_idx]->GetReturnType().id() == LogicalTypeId::DATE) {
             input_is_date = true;
         }
         bool day_grain = false;
-        if (input_is_date && !args.empty()) {
-            // Peek if the first arg is a string literal we can read at
+        if (input_is_date && args.size() >= 3) {
+            // Peek if the unit arg is a string literal we can read at
             // bind time. If so, decide DATE vs TIMESTAMP; if not, fall
             // back to TIMESTAMP to be safe.
-            if (auto *bc = dynamic_cast<BoundConstant *>(args[0].get())) {
+            if (auto *bc = dynamic_cast<BoundConstant *>(args[b_unit_idx].get())) {
                 if (bc->value.type().id() == LogicalTypeId::VARCHAR) {
                     auto part = StringUtil::Upper(bc->value.GetValue<std::string>());
                     day_grain = (part == "DAY" || part == "DAYS" ||
