@@ -12626,6 +12626,12 @@ public:
         idx_t out = 0;
 
         auto emit = [&](idx_t build_idx) {
+            // Compound-ON: re-check residual conjuncts; skip non-matching
+            // pairs without marking the build row matched.
+            if (!residual_preds_.empty() && !ResidualPasses(build_idx)) {
+                return;
+            }
+            current_probe_matched_ = true;
             idx_t col = 0;
             auto set_if_needed = [&](const Value &v) {
                 if (needed_cols_.empty() || (col < needed_cols_.size() && needed_cols_[col])) {
@@ -12662,6 +12668,32 @@ public:
                     match_pos_++;
                 }
                 if (match_pos_ >= current_match_list_->size()) {
+                    // Compound-ON: hash key matched but every candidate
+                    // failed the residual. For a probe-side outer join,
+                    // the probe row still needs its NULL-padded output.
+                    if (!residual_preds_.empty() && !current_probe_matched_ &&
+                        out < VECTOR_SIZE) {
+                        bool want = false;
+                        if (!build_is_right_ &&
+                            (join_type_ == JoinType::RIGHT || join_type_ == JoinType::FULL)) want = true;
+                        if (build_is_right_ &&
+                            (join_type_ == JoinType::LEFT || join_type_ == JoinType::FULL)) want = true;
+                        if (want) {
+                            idx_t col = 0;
+                            if (build_is_right_) {
+                                for (idx_t c = 0; c < probe_chunk_.ColumnCount(); c++)
+                                    result.SetValue(col++, out, probe_chunk_.GetValue(c, current_probe_row_));
+                                for (idx_t c = 0; c < right_col_count_; c++)
+                                    result.SetValue(col++, out, Value());
+                            } else {
+                                for (idx_t c = 0; c < left_col_count_; c++)
+                                    result.SetValue(col++, out, Value());
+                                for (idx_t c = 0; c < probe_chunk_.ColumnCount(); c++)
+                                    result.SetValue(col++, out, probe_chunk_.GetValue(c, current_probe_row_));
+                            }
+                            out++;
+                        }
+                    }
                     current_match_list_ = nullptr;
                     probe_chunk_pos_++;
                     match_pos_ = 0;
@@ -12739,6 +12771,7 @@ public:
                 if (match_list && !match_list->empty()) {
                     current_match_list_ = match_list;
                     match_pos_ = 0;
+                    current_probe_matched_ = false; // reset for compound-ON tracking
                 } else {
                     // Outer join: emit probe row with NULLs for build side.
                     bool want = false;
@@ -12990,19 +13023,62 @@ private:
         // the right table's column first (e.g. `ON b.k = s.k`), so each side
         // of the comparison is classified by its combined column index.
         idx_t left_join_col = 0, right_join_col = 0;
-        if (condition_ && condition_->GetExpressionType() == BoundExpressionType::COMPARISON) {
-            auto &cmp = static_cast<BoundComparison &>(*condition_);
-            auto classify = [&](BoundExpression *e, idx_t &local) -> int {
-                if (!e || e->GetExpressionType() != BoundExpressionType::COLUMN_REF) return -1;
-                idx_t combined = static_cast<BoundColumnRef &>(*e).column_index;
-                if (combined >= left_col_count_) { local = combined - left_col_count_; return 1; }
-                local = combined; return 0;
-            };
+        residual_preds_.clear();
+        auto classify = [&](BoundExpression *e, idx_t &local) -> int {
+            if (!e || e->GetExpressionType() != BoundExpressionType::COLUMN_REF) return -1;
+            idx_t combined = static_cast<BoundColumnRef &>(*e).column_index;
+            if (combined >= left_col_count_) { local = combined - left_col_count_; return 1; }
+            local = combined; return 0;
+        };
+        // Try to use a single COLUMN_REF=COLUMN_REF comparison as the hash
+        // key. Returns true if the comparison was a usable equi-key.
+        auto try_equi_key = [&](BoundExpression *cond) -> bool {
+            if (!cond || cond->GetExpressionType() != BoundExpressionType::COMPARISON)
+                return false;
+            auto &cmp = static_cast<BoundComparison &>(*cond);
+            if (cmp.op != "=") return false;
             idx_t la = 0, ra = 0;
             int ls = classify(cmp.left.get(), la);
             int rs = classify(cmp.right.get(), ra);
-            if (ls == 0 && rs == 1)      { left_join_col = la; right_join_col = ra; }
-            else if (ls == 1 && rs == 0) { left_join_col = ra; right_join_col = la; }
+            if (ls == 0 && rs == 1) { left_join_col = la; right_join_col = ra; return true; }
+            if (ls == 1 && rs == 0) { left_join_col = ra; right_join_col = la; return true; }
+            return false;
+        };
+        if (condition_ && condition_->GetExpressionType() == BoundExpressionType::COMPARISON) {
+            try_equi_key(condition_.get());
+        } else if (condition_ &&
+                   condition_->GetExpressionType() == BoundExpressionType::CONJUNCTION) {
+            // Compound ON (`a.x=b.x AND a.y=b.y AND ...`). Flatten the
+            // AND-tree, use the first equi-comparison as the hash key,
+            // and keep every other conjunct as a residual predicate to
+            // re-check per matched pair. Previously every conjunct after
+            // the first was silently dropped — multi-condition joins
+            // returned wrong rows.
+            std::vector<BoundExpression *> conjs;
+            std::function<void(BoundExpression *)> flatten = [&](BoundExpression *e) {
+                if (!e) return;
+                if (e->GetExpressionType() == BoundExpressionType::CONJUNCTION) {
+                    auto &cj = static_cast<BoundConjunction &>(*e);
+                    if (cj.op == "AND") {
+                        flatten(cj.left.get());
+                        flatten(cj.right.get());
+                        return;
+                    }
+                }
+                conjs.push_back(e);
+            };
+            flatten(condition_.get());
+            bool key_set = false;
+            for (auto *c : conjs) {
+                if (!key_set && try_equi_key(c)) { key_set = true; continue; }
+                residual_preds_.push_back(c);
+            }
+        }
+        // Combined [left][right] schema for residual evaluation.
+        if (!residual_preds_.empty()) {
+            combined_types_.clear();
+            for (auto &t : children[0]->GetTypes()) combined_types_.push_back(t);
+            for (auto &t : children[1]->GetTypes()) combined_types_.push_back(t);
         }
 
         // Store state for streaming probe.
@@ -13153,6 +13229,47 @@ private:
     bool built_ = false;
     idx_t emit_pos_ = 0;
     std::vector<bool> needed_cols_;
+    // Compound-ON residual predicates (every AND-conjunct that isn't the
+    // hash equi-key). Non-owning pointers into condition_'s tree.
+    std::vector<BoundExpression *> residual_preds_;
+    std::vector<LogicalType> combined_types_;   // [left][right] schema
+    bool current_probe_matched_ = false;        // any residual-passing match this probe row
+
+    // Evaluate the residual predicates against the combined [left][right]
+    // row formed from build_rows_[build_idx] and the current probe row.
+    // Returns true when all residuals hold (or none exist).
+    bool ResidualPasses(idx_t build_idx) {
+        if (residual_preds_.empty()) return true;
+        DataChunk row;
+        row.Initialize(combined_types_);
+        row.SetCardinality(1);
+        // Combined canonical order is always [left cols][right cols].
+        const std::vector<Value> *left_row;
+        // probe row values, in probe-schema order.
+        auto probe_val = [&](idx_t c) {
+            return probe_chunk_.GetValue(c, current_probe_row_);
+        };
+        if (build_is_right_) {
+            // build = right, probe = left.
+            for (idx_t c = 0; c < left_col_count_; c++) row.SetValue(c, 0, probe_val(c));
+            auto &br = build_rows_[build_idx];
+            for (idx_t c = 0; c < br.size(); c++) row.SetValue(left_col_count_ + c, 0, br[c]);
+        } else {
+            // build = left, probe = right.
+            auto &br = build_rows_[build_idx];
+            for (idx_t c = 0; c < br.size(); c++) row.SetValue(c, 0, br[c]);
+            for (idx_t c = 0; c < right_col_count_; c++)
+                row.SetValue(left_col_count_ + c, 0, probe_val(c));
+        }
+        (void)left_row;
+        for (auto *pred : residual_preds_) {
+            Vector res(LogicalType::BOOLEAN(), 1);
+            ExpressionExecutor::Execute(*pred, row, res, 1);
+            auto v = res.GetValue(0);
+            if (v.IsNull() || !v.GetValue<bool>()) return false;
+        }
+        return true;
+    }
 };
 
 static PhysicalHashJoin *AsHashJoin(PhysicalOperator *op) {
