@@ -2526,7 +2526,18 @@ QueryResult Connection::Query(const std::string &sql) {
                 result_names = first.result_names;
                 for (size_t b = 1; b < branch_bounds.size(); b++) {
                     auto &bs = static_cast<BoundSelectStatement &>(*branch_bounds[b]);
-                    for (idx_t c = 0; c < result_types.size() && c < bs.result_types.size(); c++) {
+                    // SQL standard: all set-op branches must have equal
+                    // column counts. Previously the min-cap loop silently
+                    // fabricated NULL columns (left wider) or dropped
+                    // trailing columns (right wider).
+                    if (bs.result_types.size() != result_types.size()) {
+                        throw BinderException(ErrorCode::TYPE_MISMATCH,
+                            "each UNION/INTERSECT/EXCEPT query must return "
+                            "the same number of columns (" +
+                            std::to_string(result_types.size()) + " vs " +
+                            std::to_string(bs.result_types.size()) + ")");
+                    }
+                    for (idx_t c = 0; c < result_types.size(); c++) {
                         result_types[c] = ComputeSetOpCommonType(result_types[c], bs.result_types[c]);
                     }
                 }
@@ -2873,14 +2884,22 @@ QueryResult Connection::Query(const std::string &sql) {
 
                 // Per-column common type: start from LEFT branch's types
                 // (already materialised in final_result.column_types) and
-                // pairwise reduce against each right branch. Cap loop at
-                // min(left.cols, right.cols).
+                // pairwise reduce against each right branch.
                 auto result_types = final_result.column_types;
                 for (auto &rb_stmt : right_bounds) {
                     auto &rb = static_cast<BoundSelectStatement &>(*rb_stmt);
-                    for (idx_t c = 0;
-                         c < result_types.size() && c < rb.result_types.size();
-                         c++) {
+                    // SQL standard: equal column counts across branches.
+                    // The previous min-cap loop silently fabricated NULL
+                    // columns (left wider) or dropped trailing columns
+                    // (right wider).
+                    if (rb.result_types.size() != result_types.size()) {
+                        throw BinderException(ErrorCode::TYPE_MISMATCH,
+                            "each UNION/INTERSECT/EXCEPT query must return "
+                            "the same number of columns (" +
+                            std::to_string(result_types.size()) + " vs " +
+                            std::to_string(rb.result_types.size()) + ")");
+                    }
+                    for (idx_t c = 0; c < result_types.size(); c++) {
                         result_types[c] = ComputeSetOpCommonType(
                             result_types[c], rb.result_types[c]);
                     }
