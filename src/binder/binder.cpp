@@ -8,6 +8,12 @@
 namespace slothdb {
 
 static bool ContainsAggregate(const BoundExpression &expr);
+// Returns true if `expr` contains a column reference that is neither
+// listed in `group_by` (by column_index) nor enclosed in an aggregate
+// function. Used to reject ungrouped non-aggregated columns in SELECT
+// and HAVING of an aggregated query.
+static bool HasUngroupedColumn(const BoundExpression &expr,
+                               const std::vector<BoundExprPtr> &group_by);
 
 // ============================================================================
 // BindContext
@@ -358,63 +364,27 @@ BoundStmtPtr Binder::BindSelect(const SelectStatement &stmt) {
         // Previously `HAVING b > 5` (b not in GROUP BY, not in agg)
         // silently returned 0 rows — wrong-result, undetectable from
         // output.
-        std::function<bool(const BoundExpression &)> bad_col =
-            [&](const BoundExpression &e) -> bool {
-            switch (e.GetExpressionType()) {
-            case BoundExpressionType::COLUMN_REF: {
-                auto &cr = static_cast<const BoundColumnRef &>(e);
-                for (auto &g : result->group_by) {
-                    if (g && g->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
-                        auto &gcr = static_cast<const BoundColumnRef &>(*g);
-                        if (gcr.column_index == cr.column_index) return false;
-                    }
-                }
-                return true;
-            }
-            case BoundExpressionType::FUNCTION: {
-                auto &fn = static_cast<const BoundFunction &>(e);
-                if (fn.is_aggregate) return false; // aggregate consumes column refs
-                for (auto &a : fn.arguments) {
-                    if (a && bad_col(*a)) return true;
-                }
-                if (fn.filter && bad_col(*fn.filter)) return true;
-                return false;
-            }
-            case BoundExpressionType::COMPARISON: {
-                auto &c = static_cast<const BoundComparison &>(e);
-                return (c.left && bad_col(*c.left)) ||
-                       (c.right && bad_col(*c.right));
-            }
-            case BoundExpressionType::CONJUNCTION: {
-                auto &c = static_cast<const BoundConjunction &>(e);
-                return (c.left && bad_col(*c.left)) ||
-                       (c.right && bad_col(*c.right));
-            }
-            case BoundExpressionType::NEGATION:
-                return bad_col(*static_cast<const BoundNegation &>(e).child);
-            case BoundExpressionType::IS_NULL:
-                return bad_col(*static_cast<const BoundIsNull &>(e).child);
-            case BoundExpressionType::IS_BOOL:
-                return bad_col(*static_cast<const BoundIsBool &>(e).child);
-            case BoundExpressionType::ARITHMETIC: {
-                auto &a = static_cast<const BoundArithmetic &>(e);
-                return (a.left && bad_col(*a.left)) ||
-                       (a.right && bad_col(*a.right));
-            }
-            case BoundExpressionType::UNARY_MINUS:
-                return bad_col(*static_cast<const BoundUnaryMinus &>(e).child);
-            case BoundExpressionType::CAST:
-                return bad_col(*static_cast<const BoundCast &>(e).child);
-            case BoundExpressionType::SUBQUERY:
-                return false; // subqueries are independent scopes
-            default:
-                return false;
-            }
-        };
-        if (bad_col(*result->having_clause)) {
+        if (HasUngroupedColumn(*result->having_clause, result->group_by)) {
             throw BinderException(ErrorCode::TYPE_MISMATCH,
                 "column reference in HAVING must appear in GROUP BY "
                 "or be used in an aggregate function");
+        }
+    }
+
+    // Reject ungrouped non-aggregated columns in the SELECT list of an
+    // aggregated query. `SELECT a, SUM(b) FROM t` (a not in GROUP BY)
+    // silently overwrote `a` with the aggregate value — pure garbage,
+    // undetectable from output. SQL standard requires every SELECT-list
+    // column reference to be in GROUP BY or inside an aggregate when the
+    // query is aggregated. Window-only queries (has_window without
+    // has_aggregation) are a separate path and skipped.
+    if (result->has_aggregation && !result->has_window) {
+        for (auto &sel : result->select_list) {
+            if (sel && HasUngroupedColumn(*sel, result->group_by)) {
+                throw BinderException(ErrorCode::TYPE_MISMATCH,
+                    "column in SELECT list must appear in GROUP BY "
+                    "or be used in an aggregate function");
+            }
         }
     }
 
@@ -2012,6 +1982,60 @@ LogicalType Binder::ResolveArithmeticType(const LogicalType &left, const Logical
 // raise a clean BinderException instead of letting an aggregate slip
 // into row-context evaluation. Subqueries are NOT recursed into —
 // aggregates inside a correlated subquery are legal.
+static bool HasUngroupedColumn(const BoundExpression &expr,
+                               const std::vector<BoundExprPtr> &group_by) {
+    switch (expr.GetExpressionType()) {
+    case BoundExpressionType::COLUMN_REF: {
+        auto &cr = static_cast<const BoundColumnRef &>(expr);
+        for (auto &g : group_by) {
+            if (g && g->GetExpressionType() == BoundExpressionType::COLUMN_REF) {
+                auto &gcr = static_cast<const BoundColumnRef &>(*g);
+                if (gcr.column_index == cr.column_index) return false;
+            }
+        }
+        return true;
+    }
+    case BoundExpressionType::FUNCTION: {
+        auto &fn = static_cast<const BoundFunction &>(expr);
+        if (fn.is_aggregate) return false; // aggregate consumes its column refs
+        for (auto &a : fn.arguments) {
+            if (a && HasUngroupedColumn(*a, group_by)) return true;
+        }
+        if (fn.filter && HasUngroupedColumn(*fn.filter, group_by)) return true;
+        return false;
+    }
+    case BoundExpressionType::COMPARISON: {
+        auto &c = static_cast<const BoundComparison &>(expr);
+        return (c.left && HasUngroupedColumn(*c.left, group_by)) ||
+               (c.right && HasUngroupedColumn(*c.right, group_by));
+    }
+    case BoundExpressionType::CONJUNCTION: {
+        auto &c = static_cast<const BoundConjunction &>(expr);
+        return (c.left && HasUngroupedColumn(*c.left, group_by)) ||
+               (c.right && HasUngroupedColumn(*c.right, group_by));
+    }
+    case BoundExpressionType::NEGATION:
+        return HasUngroupedColumn(*static_cast<const BoundNegation &>(expr).child, group_by);
+    case BoundExpressionType::IS_NULL:
+        return HasUngroupedColumn(*static_cast<const BoundIsNull &>(expr).child, group_by);
+    case BoundExpressionType::IS_BOOL:
+        return HasUngroupedColumn(*static_cast<const BoundIsBool &>(expr).child, group_by);
+    case BoundExpressionType::ARITHMETIC: {
+        auto &a = static_cast<const BoundArithmetic &>(expr);
+        return (a.left && HasUngroupedColumn(*a.left, group_by)) ||
+               (a.right && HasUngroupedColumn(*a.right, group_by));
+    }
+    case BoundExpressionType::UNARY_MINUS:
+        return HasUngroupedColumn(*static_cast<const BoundUnaryMinus &>(expr).child, group_by);
+    case BoundExpressionType::CAST:
+        return HasUngroupedColumn(*static_cast<const BoundCast &>(expr).child, group_by);
+    case BoundExpressionType::SUBQUERY:
+        return false; // subqueries are independent scopes
+    default:
+        return false;
+    }
+}
+
 static bool ContainsAggregate(const BoundExpression &expr) {
     switch (expr.GetExpressionType()) {
     case BoundExpressionType::FUNCTION: {
