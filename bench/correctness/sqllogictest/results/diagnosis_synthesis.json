@@ -1,0 +1,224 @@
+{
+  "summary": "Diagnose sqllogictest disagreements per-file, cluster by root cause, synthesize a global fix ranking",
+  "agentCount": 13,
+  "logs": [],
+  "result": {
+    "root_causes": [
+      {
+        "title": "ReadDouble() lacks BOOLEAN and VARCHAR cases — corrupts MIN/MAX/bool_and/bool_or across grouped + ungrouped aggregates",
+        "description": "physical_planner.cpp ReadDouble() (verified at line 6162) switches on type and returns 0.0 for any type other than INT/BIGINT/DATE/TIME/TIMESTAMP/DOUBLE/FLOAT. BOOLEAN and VARCHAR both fall to `default: return 0.0`. Every aggregate that reads scalar values through this helper (MAX/MIN/bool_and/bool_or over BOOLEAN; MIN/MAX over VARCHAR on the single-col int-key GROUP BY fast path) therefore compares all values as 0.0, so the first row 'wins' and the real min/max/boolean reduction is never computed. The GENERIC grouped path already has a Value::operator< VARCHAR special-case (~L12434) but the fast int-key path at ~L7997 and the ungrouped/bool paths do not. These are GENUINE wrong-value bugs (not display noise): aggregate.slt L5192/L5263 (bool MAX/MIN), L5555/L5565 (bool_and/bool_or), L5300/L5308 (string MIN/MAX with int GROUP BY key).",
+        "fix_location": "src/execution/physical_planner.cpp ReadDouble() (~L6162) + single-col int-key GROUP BY MIN/MAX branch (~L7997-8011)",
+        "estimated_disagreements_fixed": 6,
+        "files_affected": [
+          "src/execution/physical_planner.cpp"
+        ],
+        "risk": "high",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "Add `case LogicalTypeId::BOOLEAN: return reinterpret_cast<const bool/int8_t*>(vec.GetData())[row] ? 1.0 : 0.0;` to ReadDouble (~L6162). Separately, for VARCHAR MIN/MAX, do NOT route through ReadDouble: in the single-col int-key GROUP BY MIN/MAX branch (~L7997-8011) add an `is_varchar` guard that compares via the existing string/Value path mirroring ~L12434. ReadDouble is in the aggregate hot loops — re-run the ClickBench sentinel set (Q1/Q7/Q8/Q30) for I-cache regression before committing, per the MEMORY warnings about physical_planner.cpp .text shifts.",
+        "priority_rank": 1
+      },
+      {
+        "title": "Non-equi / arithmetic JOIN ON silently degenerates to col0 = col0 equality (wrong join results)",
+        "description": "PhysicalPlanner::PlanJoin (physical_planner.cpp:14354) always emits a PhysicalHashJoin for any non-CROSS join. PhysicalHashJoin::Init() only extracts a hash key when the comparison op is '=' (try_equi_key, ~L13094). For a single-comparison inequality/arithmetic ON, try_equi_key returns false but its return value is ignored (~L13102-13103); left_join_col/right_join_col stay at default 0/0 and the condition is dropped WITHOUT being added as a residual predicate (residuals are only built in the CONJUNCTION branch). The join therefore silently runs as col0=col0 equality and returns wrong rows. Verified independently in the source findings: the same inequality as a CROSS JOIN + WHERE returns correct rows, proving the evaluation logic is fine and only the JOIN-ON planner path is broken. All 9 pwmj.slt disagreements share this single root cause (covers >, >=, <, <=, and arithmetic-RHS ON exprs).",
+        "fix_location": "src/execution/physical_planner.cpp PhysicalPlanner::PlanJoin (L14354) + PhysicalHashJoin::Init equi-key extraction (~L13088-13131)",
+        "estimated_disagreements_fixed": 9,
+        "files_affected": [
+          "src/execution/physical_planner.cpp"
+        ],
+        "risk": "high",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "In PlanJoin, when no equi-key can be extracted from the ON condition, route to a nested-loop join (or keep the full ON expression as a residual predicate evaluated over the cross product) instead of falling back to col0=col0. Arithmetic ON operands (e.g. t2_id+1, t1.id+t2.id) must take the same nested-loop/residual path since classify() returns -1 for non-COLUMN_REF operands. This is in the join operator (PhysicalHashJoin/PlanJoin), not the SELECT scalar fast-path dispatch, so dispatch flag is false — but it IS an aggregate/join hot operator, so treat as high risk and verify ClickBench join-heavy queries.",
+        "priority_rank": 2
+      },
+      {
+        "title": "CTAS multi-row VALUES / set-op row loss — ALREADY FIXED in working tree; dump is stale. Rebuild + re-measure.",
+        "description": "Multiple files report CREATE TABLE AS <multi-row VALUES> storing only the first row (VALUES desugars to a UNION ALL chain; the old CTAS path drained only the head SelectStatement). VERIFIED: this is already fixed in the current uncommitted working tree — connection.cpp:879-922 now routes CTAS through MaterializeSelectIntoTable and walks the set_op/set_right chain (loop at L903) plus materializes derived-table FROMs. The findings for functions.slt L860/L882 and scalar.slt L1805 explicitly note the dump was produced against a stale 2026-05-22 binary. So these ~17 disagreements (dml_update L31/50/91/111/131/175/220/239 = 8; dml_delete L31/65/83/101/176/194 = 6; order.slt L438 = 1; functions.slt L860/882 = 2) are NOT open bugs — they need a FORCE-CLEAN REBUILD (purge connection.obj + exe per MEMORY's force-clean note) and a re-run to confirm they clear. Treat as zero-code, verify-only.",
+        "fix_location": "src/main/connection.cpp CTAS handler (already fixed, ~L877-924) — force-clean rebuild + re-dump required, no new code",
+        "estimated_disagreements_fixed": 17,
+        "files_affected": [
+          "src/main/connection.cpp"
+        ],
+        "risk": "low",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "No code change. rm connection.obj + slothdb.exe + .lib (MSBuild .obj cache lies per MEMORY), cmake rebuild, regenerate the 12 dumps. Expect the 17 CTAS-cascade disagreements to disappear. If any remain, the residual is a real derived-table-FROM-in-set-op gap (see union.slt L1015/L1032 CTE-body case which is a SEPARATE, still-open variant — that one walks the TOP-LEVEL set-op but not the CTE body's set-op chain).",
+        "priority_rank": 3
+      },
+      {
+        "title": "DML statements (INSERT / UPDATE / DELETE) return no affected-row-count result set",
+        "description": "DuckDB's Python driver returns a single-row BIGINT [(count,)] for INSERT/UPDATE/DELETE run as `query I`; SlothDB returns an empty result. PhysicalUpdate::GetData (~L13846) and PhysicalDelete::GetData (~L13933-13975) mutate storage then always return false with no output chunk; the INSERT paths in connection.cpp likewise append rows and `continue` without populating final_result. In every case the underlying table state is verified correct (multi-row INSERT works, UPDATE/DELETE predicates incl. three-valued logic are correct) — this is purely a missing return value, not a data bug. Spans aggregate.slt L7038; dml_update L67/151/192/273 (4); dml_delete L43/117/143 (3); math.slt L604; union.slt L732/737/742/747/752 (5). This is a large, contained, low-risk win that is currently inflating the disagreement count across many files.",
+        "fix_location": "src/execution/physical_planner.cpp PhysicalUpdate::GetData (~L13846), PhysicalDelete::GetData (~L13933-13975); src/main/connection.cpp INSERT execution paths (~L1407 INSERT-SELECT, ~L2816 INSERT VALUES)",
+        "estimated_disagreements_fixed": 14,
+        "files_affected": [
+          "src/execution/physical_planner.cpp",
+          "src/main/connection.cpp"
+        ],
+        "risk": "low",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "In PhysicalUpdate::GetData and PhysicalDelete::GetData, tally matched/affected rows during the rebuild scan and, on the first GetData call, emit a single-row chunk with one BIGINT column = count; return that chunk then false thereafter. In connection.cpp INSERT paths, populate final_result.column_names/types with a single BIGINT 'Count' column and one row = appended count. These are operator bodies + connection plumbing, NOT the SELECT fast-path dispatch, so dispatch flag is false and risk is low. (Note: harness may instead choose to ignore DML rowcounts — coordinate whether to fix engine or harness, but engine-side matches DuckDB.)",
+        "priority_rank": 4
+      },
+      {
+        "title": "Boolean display normalization: SlothDB renders lowercase 'true'/'false' vs DuckDB Python 'True'/'False' — harness noise, fix the comparator once",
+        "description": "The single largest disagreement bucket and almost entirely NOT engine bugs. SlothDB prints SQL-standard lowercase booleans (correct, matches DuckDB CLI and .slt expected text); the verify harness compares against DuckDB's Python repr 'True'/'False'. ~40 disagreements across expr.slt (22), aggregate.slt (the value-correct subset ~6 incl. INSERT-rowcount L7038 already counted elsewhere), math.slt (4), functions.slt (3), select.slt (5), union.slt (1), scalar.slt (2). One fix in the harness normalize_value (add a case-insensitive / type-'B' boolean branch) clears all of them at once. NOTE: a couple of lines flagged as boolean-display actually hide REAL value bugs (aggregate.slt L5206/L5249 mask the ReadDouble-BOOLEAN bug from root cause #1; scalar.slt L1824 is a genuine CASE-type-inference bug — see #8) — those are NOT cleared by the harness fix and are counted under their real root causes.",
+        "fix_location": "bench/correctness/sqllogictest verify harness normalize_value (add boolean/type-'B' case-fold branch); do NOT change engine value rendering",
+        "estimated_disagreements_fixed": 36,
+        "files_affected": [
+          "bench/correctness/sqllogictest/runner.py"
+        ],
+        "risk": "low",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "In the harness normalize_value, add a branch that lowercases (or maps to Python bool) when the column type is boolean / the string is exactly 'true'/'false'/'True'/'False'. This is the highest raw-count cheap win but it is pure display noise, so it is ranked below the real correctness bugs and the free rebuild win, per the de-prioritization instruction. Keep engine rendering lowercase (SQL-standard).",
+        "priority_rank": 5
+      },
+      {
+        "title": "Tokenizer / numeric-literal parsing gaps: trailing-dot, leading-dot, malformed-exponent, double overflow/underflow, i64::MIN magnitude",
+        "description": "A family of number-parsing gaps. (a) Trailing-dot float '0.'/'2.e-1' and leading-dot '.0002E+3' rejected by ReadNumber (only consumes '.' when followed by a digit, and Tokenize doesn't dispatch leading '.') — breaks math.slt INSERT L476 (cascading to L485/493/501/509 = 5) and scalar.slt L1805. PARTIALLY FIXED in working tree per scalar.slt finding — needs rebuild to confirm. (b) Malformed exponent '1ea' throws instead of backing off (scalar.slt L1818). (c) DOUBLE literal overflow/underflow throws ParserException instead of clamping to +/-inf / 0 (scalar.slt L1812, binder.cpp:1011-1014). (d) i64::MIN magnitude '9223372036854775808' overflows std::stoll before unary-minus folding (math.slt L660, binder.cpp:991). These are all contained tokenizer/binder literal fixes.",
+        "fix_location": "src/parser/tokenizer.cpp ReadNumber/Tokenize (~L190-211, ~L272); src/binder/binder.cpp FLOAT_LITERAL (~L1011-1014) and integer literal (~L991-1001)",
+        "estimated_disagreements_fixed": 9,
+        "files_affected": [
+          "src/parser/tokenizer.cpp",
+          "src/binder/binder.cpp"
+        ],
+        "risk": "low",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "ReadNumber: consume a trailing '.' even when not followed by a digit, dispatch a leading '.' from Tokenize, and on a malformed exponent rewind to before 'e' (emit number + identifier) instead of throwing. binder.cpp FLOAT_LITERAL: catch std::out_of_range from stod and emit signed inf (overflow) or 0 (underflow). binder.cpp integer literal: special-case the i64::MIN magnitude or fold unary minus before stoll. First rebuild to confirm the trailing/leading-dot portion already landed (working-tree edit noted), then add the remaining exponent/overflow/i64::MIN cases.",
+        "priority_rank": 6
+      },
+      {
+        "title": "Missing scalar functions: TRANSLATE, GCD, LCM, FACTORIAL (+ scalar AVG routing)",
+        "description": "Several named scalar functions are recognized but fall through to the catch-all NotImplementedException (expression_executor.cpp ~L4460/4464). TRANSLATE (functions.slt L217/227/232/237 = 4), GCD (math.slt L648/654/660 = 3, though L660 also needs the i64::MIN literal fix), LCM (math.slt L699/705/916/921 = 4), FACTORIAL (scalar.slt L464/470 = 2). Separately, AVG over a constant with no FROM/GROUP BY is routed to the scalar executor which has no AVG handler (scalar.slt L2102) — SUM/MIN/COUNT work there but AVG doesn't. All are self-contained executor additions.",
+        "fix_location": "src/execution/expression_executor.cpp integer/string-math blocks (~L2347-2460) + the catch-all fall-through (~L4460); scalar-aggregate routing for AVG",
+        "estimated_disagreements_fixed": 14,
+        "files_affected": [
+          "src/execution/expression_executor.cpp"
+        ],
+        "risk": "low",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "Add TRANSLATE (char-map with deletion when to-string is shorter), GCD/LCM (Euclid; LCM via a/gcd*b with overflow awareness; NULL-propagating), and FACTORIAL (i64, NULL-propagating) handlers before the NotImplementedException. For scalar AVG, either add an AVG branch in the scalar executor or route single-group constant aggregates through the aggregate operator. Pure additive executor branches — low risk, no dispatch change.",
+        "priority_rank": 7
+      },
+      {
+        "title": "STRING_AGG: delimiter ignored + DISTINCT ignored + no-FROM constant returns NULL",
+        "description": "Three bugs in the STRING_AGG aggregate path. (1) AggExtras.str_delim is declared and read (`x.str_delim.empty() ? \",\" : x.str_delim`) but NEVER assigned, so the 2nd (delimiter) argument is ignored and ',' is always used (aggregate.slt L7043/7097). (2) STRING_AGG never checks info.is_distinct / distinct_set, so DISTINCT variants emit duplicates (L7086/L7109). (3) STRING_AGG (and MIN/MAX) of constant args with no FROM routes through the aggregate complex-expression fallback branch (~L12489-12508) which only implements COUNT/SUM/AVG, returning NULL (L7010/7015/7020). All in the STRING_AGG agg loop region (~L12479-12508).",
+        "fix_location": "src/execution/physical_planner.cpp STRING_AGG agg loop (~L12479-12487) + ungrouped complex-expression fallback (~L12489-12508)",
+        "estimated_disagreements_fixed": 8,
+        "files_affected": [
+          "src/execution/physical_planner.cpp"
+        ],
+        "risk": "medium",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "Wire str_delim from the function's 2nd argument literal into AggExtras (assign where the agg is set up, near str_delim decl ~L6069); honor info.is_distinct via the existing distinct_set (~L6073) in the STRING_AGG accumulate step; and extend the no-FROM complex-expression fallback to handle STRING_AGG/MIN/MAX in addition to COUNT/SUM/AVG. These are aggregate-operator bodies (not SELECT dispatch), but they touch the agg loop region so verify no I-cache regression on ClickBench string-agg-adjacent queries — hence medium risk.",
+        "priority_rank": 8
+      },
+      {
+        "title": "Parser: VALUES / set-op / derived-table structural gaps (bare FROM VALUES, parenthesized set-op operands, CTE-body set-op derived FROM, parenthesized-derived-table set-ops)",
+        "description": "A cluster of parser limitations around VALUES, set operations, and derived tables. (a) Bare `FROM VALUES (...) AS t(cols)` without enclosing parens not accepted (math.slt L793/806). (b) Parenthesized query expression rejected as the RIGHT operand of UNION/INTERSECT/EXCEPT — the recursive set-op tail Expect(KW_SELECT) chokes on '(' (union.slt L272). (c) Parenthesized derived table containing a set operation `((SELECT..) EXCEPT (SELECT..)) alias` not handled (expr.slt L1819). (d) Derived-table FROM (VALUES/SELECT) inside NON-LEFT branches of a CTE body's set-op chain not materialized → 'Table \"\" not found' (union.slt L1015/L1032 — a still-open variant distinct from the already-fixed top-level CTAS case). These are related ParseTableRef / ParseSelectStatement set-op-tail fixes.",
+        "fix_location": "src/parser/parser.cpp ParseTableRef (~L696-776) + ParseSelectStatement set-op tail (~L576, ~L445); src/main/connection.cpp SELECT pre-pass CTE loop (~L2669-2672) for the CTE-body derived-FROM case",
+        "estimated_disagreements_fixed": 7,
+        "files_affected": [
+          "src/parser/parser.cpp",
+          "src/main/connection.cpp"
+        ],
+        "risk": "medium",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "ParseTableRef: accept a bare KW_VALUES as a table source (route to ParseValuesAsSelect) and handle '(' + inner set-op as a parenthesized derived table. ParseSelectStatement set-op tail: accept a leading LPAREN parenthesized subquery as the right operand (mirror the top-level LPAREN branch). connection.cpp SELECT pre-pass: in the CTE loop walk cte.query's full set_right chain (not just from_table) so non-left CTE-body derived FROMs get materialized; harden MaterializeFromSubqueries to recurse into subquery->set_right. Parser changes are isolated from runtime dispatch — medium risk only because set-op parsing is broadly exercised; add regression tests.",
+        "priority_rank": 9
+      },
+      {
+        "title": "ORDER BY default NULL placement is NULLS FIRST for DESC — should be NULLS LAST (DuckDB/Postgres) for both directions",
+        "description": "SlothDB sets nulls_first = !ascending (so DESC -> NULLS FIRST) in two ORDER BY parse sites (parser.cpp:251 and :540); DuckDB/Postgres default to NULLS LAST for BOTH ASC and DESC. The sort comparator (physical_planner.cpp:2028-2029) then honors the wrong flag. A misleading comment at parser.cpp:537-539 wrongly claims 'DESC -> NULLS FIRST'. order.slt L73/111/132/154/175 (the same query repeated under 5 harness modes) all stem from this. One-line default flip in two parser sites.",
+        "fix_location": "src/parser/parser.cpp ORDER BY default (L251 and L540; fix comment L537-539)",
+        "estimated_disagreements_fixed": 5,
+        "files_affected": [
+          "src/parser/parser.cpp"
+        ],
+        "risk": "low",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "Set item.nulls_first = false by default for both directions at parser.cpp:251 and :540, and correct the misleading comment at :537-539. Pure default change in the parser; the comparator already honors the flag. Low risk; add an ORDER BY ... DESC NULL-placement regression test.",
+        "priority_rank": 10
+      },
+      {
+        "title": "Window function semantic gaps: const/NULL args & partition keys, NTILE remainder, LEAD/LAG default arg, RANK with no order key (incl. crashes)",
+        "description": "A set of window-operator semantic bugs in physical_planner.cpp window emit (~L5100-5910). (a) SUM/AVG of a constant over a window returns 0 because only COLUMN_REF args are read into arg_col; constants leave arg_col==INVALID and are dropped (window.slt L3621). (b) NTILE remainder distribution is wrong: uses pos*buckets/ps giving smaller buckets first; SQL requires larger (ceil) buckets first (L3850). (c) LEAD/LAG ignore the 3rd default argument when the offset is out of range, emitting NULL instead (L4182/L4189). (d) Constant/NULL PARTITION BY keys and RANK/ROW_NUMBER with no effective ORDER BY are mishandled — should collapse to a single all-peers partition; some forms (`rank() over ()`) even crash with 'GetValue for type INVALID' / access violation (L4002/L4015 + the crash family in the cluster). High-value correctness work but spread across the window emit hot region.",
+        "fix_location": "src/execution/physical_planner.cpp window-aggregate emit (~L5791-5910), WF_NTILE (~L5752/5117), WF_LEAD/WF_LAG (~L5757-5775/5118-5124), BuildPartitions (~L4735-4843), WF_RANK emit",
+        "estimated_disagreements_fixed": 6,
+        "files_affected": [
+          "src/execution/physical_planner.cpp"
+        ],
+        "risk": "medium",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "Evaluate non-COLUMN_REF window args (constants/exprs) instead of dropping them when arg_col==INVALID; fix NTILE to give the first ps%buckets buckets ceil(ps/buckets) rows; in WF_LEAD/WF_LAG evaluate and emit arg[2] when target is out of partition range; in BuildPartitions collapse constant & NULL PARTITION BY keys into one partition and guard the RANK emit against an INVALID-typed order key (fixes the crashes). These are PhysicalWindow operator bodies — explicitly safe per the task definition (not SELECT fast-path dispatch). Medium risk due to crash-prone edge cases; add window regression tests. NOTE: the much larger window FRAME-grammar cluster (23 lines) and named-window/nested-window/CTE-visibility clusters are missing-feature parser/binder work, separately tracked.",
+        "priority_rank": 11
+      },
+      {
+        "title": "UTF-8 / Unicode correctness in string functions: LENGTH, UPPER/LOWER, ASCII, CHR, SUBSTR negative start, split_part, TRIM default, strpos",
+        "description": "A family of byte-vs-codepoint and semantic string bugs. LENGTH returns byte count not codepoints (functions.slt L81). UPPER/LOWER apply std::toupper/tolower per byte, mangling multibyte UTF-8 (functions.slt L443/523). ASCII returns the first byte not the first codepoint (expr.slt L342/347/352). CHR masks to one byte and special-cases chr(0) to '' instead of UTF-8-encoding / emitting NUL (expr.slt L417/427). SUBSTR 2-arg clips negative start to 1 instead of offset-from-end (functions.slt L141). split_part lacks negative-index and empty-delimiter (char-split) semantics (expr.slt L694/704/709/714/719/761/771 = 7). TRIM no-arg default set is ' \\t\\n\\r' but DuckDB strips only space (functions.slt L596). to_hex uses lowercase digits + 4-byte width vs DuckDB uppercase + 64-bit (expr.slt L828/838/854/859 = 4). scalar.slt L2201 strpos is a NON-BUG (harness encoding artifact, already character-correct). All are contained expression_executor edits but numerous.",
+        "fix_location": "src/execution/expression_executor.cpp string-function branches: LENGTH (~L1816), UPPER/LOWER (~L2124-2139), ASCII (~L2090), CHR (~L2106), SUBSTR (~L2179-2191), SPLIT_PART (~L2785/2799), TRIM (~L2320), TO_HEX (~L2013-2055)",
+        "estimated_disagreements_fixed": 22,
+        "files_affected": [
+          "src/execution/expression_executor.cpp"
+        ],
+        "risk": "low",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "Add UTF-8 codepoint counting to LENGTH; codepoint-aware case folding to UPPER/LOWER; lead-byte decode to ASCII; UTF-8 encode (and NUL for 0) to CHR; offset-from-end handling for SUBSTR negative start; negative-index + empty-delimiter char-split to SPLIT_PART; change TRIM default to single space; uppercase digit table + 64-bit width to TO_HEX. All independent expression_executor branches, no dispatch change. Numerous but mechanical — batch them. Skip strpos (verified non-bug). Lower priority than correctness bugs that affect joins/aggregates since these are leaf scalar functions exercised mostly by the function test suites.",
+        "priority_rank": 12
+      },
+      {
+        "title": "String->TIME cast unimplemented (cascades to TIME MIN/MAX)",
+        "description": "ExecuteScalar's string-cast switch has no LogicalTypeId::TIME case, so '00:00:01'::TIME falls to default and becomes 00:00:00. All inserted TIME values store 0, cascading to MIN/MAX correctly returning 00:00:00 over all-zero data (aggregate.slt L5013/5028/5043). Root cause is the missing TIME string parser/cast, not the aggregate.",
+        "fix_location": "src/execution/expression_executor.cpp ExecuteScalar string-cast switch (~L571-592, add TIME case) + Value::TryParseTime helper in src/common/types/value.cpp",
+        "estimated_disagreements_fixed": 3,
+        "files_affected": [
+          "src/execution/expression_executor.cpp",
+          "src/common/types/value.cpp"
+        ],
+        "risk": "low",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "Add a LogicalTypeId::TIME case to the string-cast switch that calls a new Value::TryParseTime (parse HH:MM:SS[.frac] into the TIME representation). Contained binder/executor + value-type change, no dispatch impact.",
+        "priority_rank": 13
+      },
+      {
+        "title": "NaN total-ordering not applied in float/double comparison (IS DISTINCT FROM and ordering)",
+        "description": "SlothDB uses native IEEE semantics (NaN != NaN, NaN > 0 false) for float/double, but DuckDB total-orders NaN: NaN == NaN is true (NaN IS NOT DISTINCT FROM NaN = true) and NaN is the largest value (NaN > 0 = true). Affects select.slt L526 (IS DISTINCT FROM NaN) and L572 (NaN > 0 ordering). Source-located: IS DISTINCT FROM equality (~L767), CompareTyped<float/double> (~L705-715), stod fallback (~L1014-1020). Also math.slt L740/788 POWER collapses nan/inf results to NULL instead of returning nan/inf (a related but separate POWER-branch choice, ~L2530-2539).",
+        "fix_location": "src/execution/expression_executor.cpp CompareTyped<float/double> (~L705-715), IS DISTINCT FROM equality (~L767), stod fallback (~L1014-1020), POWER branch (~L2530-2539)",
+        "estimated_disagreements_fixed": 4,
+        "files_affected": [
+          "src/execution/expression_executor.cpp"
+        ],
+        "risk": "low",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "Apply DuckDB NaN-total-order comparison for float/double in CompareTyped, the IS DISTINCT FROM equality, and the stod fallback (treat NaN==NaN true, NaN as max). Separately, in the POWER branch return nan/inf instead of collapsing non-finite results to NULL. Contained comparison-helper edits, no dispatch impact.",
+        "priority_rank": 14
+      },
+      {
+        "title": "CTE name does not shadow a pre-existing catalog table (materialized-CTE collision)",
+        "description": "SlothDB materializes each non-recursive CTE as a REAL catalog table via CreateTable. When a CTE name collides with an existing table (e.g. table 't' created earlier in select.slt L722), CreateTable throws 'Table t already exists' (schema_catalog_entry.cpp:12). A CTE should shadow an existing table within the query scope. select.slt L1051/1057/1067/1076 (4). Reproduced standalone with 'CREATE TABLE t(a int); WITH t AS (SELECT 1) SELECT * FROM t'.",
+        "fix_location": "src/main/connection.cpp non-recursive CTE materialization (~L2756 materialize_select_into_new_table) and recursive path (~L2694)",
+        "estimated_disagreements_fixed": 4,
+        "files_affected": [
+          "src/main/connection.cpp"
+        ],
+        "risk": "medium",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "Before materializing a CTE, detect an existing catalog table with the same name, temporarily rename/shadow it for the query scope (TableCleanupGuard), and restore it on cleanup. Or give materialized CTEs scoped/unique internal names and bind references to them. Medium risk because it touches catalog mutation/restore ordering; add a CTE-shadows-table regression test.",
+        "priority_rank": 15
+      },
+      {
+        "title": "Missing parser features: list/array literals & subscript, INTERVAL literals, SUBSTRING(s FOR n), E'...' / '==' tokens, ORDER BY ALL, CTE column-alias list, star REPLACE/EXCLUDE",
+        "description": "A bundle of independent missing-feature parser/type gaps, each contained but additive. INTERVAL literals entirely unsupported (expr.slt L127-L312, the single biggest at ~37 lines) — needs INTERVAL keyword + literal rule + INTERVAL logical type. List/array literals '[...]' and subscript expr[i] unparseable (expr.slt L70/90; functions.slt L994/999/1192/1197 — GREATEST/LEAST over arrays) — needs LBRACKET in ParsePrimary + LIST type. SUBSTRING(s FOR n) without FROM rejected (expr.slt L1745). E'...' escape-string prefix not tokenized (expr.slt L2471). '==' equality digraph not tokenized (functions.slt L839). ORDER BY ALL unsupported (order.slt L1633/1641/1649). CTE column-alias list WITH name(c1,c2) parsed but discarded (order.slt L980). Star modifier `* REPLACE (expr AS col)` unsupported (functions.slt L666/675/684). CASE-type-inference: all-BOOLEAN branches mistyped INTEGER (select.slt L683 implicit 'true'->bool; scalar.slt L1824 BOOLEAN-only CASE renders '0').",
+        "fix_location": "src/parser/parser.cpp (ParsePrimary list/subscript ~L1368-1447, INTERVAL literal, SUBSTRING FOR ~L1473, ORDER BY ALL ~L246/531, CTE col-alias ~L388-392, star REPLACE ~L1362-1366), src/parser/tokenizer.cpp (E'...' ~L213/259, '==' ~L321), src/binder/binder.cpp (CASE type unification ~L1520-1574, INTERVAL/LIST types)",
+        "estimated_disagreements_fixed": 56,
+        "files_affected": [
+          "src/parser/parser.cpp",
+          "src/parser/tokenizer.cpp",
+          "src/binder/binder.cpp"
+        ],
+        "risk": "medium",
+        "touches_physical_planner_dispatch": false,
+        "fix_sketch": "These are distinct features; implement independently, biggest-bang-first: INTERVAL literal+type (~37 lines of expr.slt), then list/array literals+subscript+LIST type (covers expr.slt and GREATEST/LEAST), then the cheap tokenizer additions (E'...', '=='), SUBSTRING FOR, ORDER BY ALL, CTE column-alias capture (mirror derived-table alias logic at parser.cpp:686-687), star REPLACE/EXCLUDE, and the CASE BOOLEAN-branch type unification in the binder. None touch SELECT runtime dispatch. Ranked last because most are feature-additions (parity gaps) rather than wrong-result regressions; the CASE-type and '==' items are the closest to genuine bugs and could be pulled forward cheaply. INTERVAL is the single largest line-count item but is a substantial new logical type — scope accordingly.",
+        "priority_rank": 16
+      }
+    ],
+    "notes": "VERIFICATION CAVEATS (checked against live source, not just the dumps):\n\n1. CTAS set-op row-loss (root cause #3) is ALREADY FIXED in the uncommitted working tree. Verified at src/main/connection.cpp:879-922 — CTAS now routes through MaterializeSelectIntoTable and walks the set_right chain (loop L903), with derived-table FROM materialization. The ~17 disagreements in dml_update/dml_delete/order.slt/functions.slt that the dumps attribute to this are STALE (dumps were generated against a 2026-05-22 binary, as the functions.slt and scalar.slt findings themselves note). Action is a FORCE-CLEAN REBUILD (purge connection.obj + slothdb.exe + .lib per the user's MEMORY 'force-clean rebuild' note) and re-dump, NOT new code. This is the single biggest \"free\" disagreement reduction and should be done first operationally even though it is ranked #3 by leverage. The union.slt L1015/L1032 CTE-BODY derived-FROM case is a SEPARATE, still-open variant (top-level set-op is walked, CTE-body set-op is not) — folded into root cause #9.\n\n2. ReadDouble() default-returns-0.0 for BOOLEAN and VARCHAR is verified at physical_planner.cpp:6162 (read the switch directly). This is the only root cause flagged HIGH risk that lives in the genuine aggregate hot loop; per the extensive MEMORY warnings about I-cache shifts from any >20 LOC change to physical_planner.cpp hot paths, gate it on the ClickBench sentinel set (Q1/Q7/Q8/Q30 ±5%) before commit. Adding a BOOLEAN case to ReadDouble is tiny, but the VARCHAR MIN/MAX fix touches the grouped agg loop — keep it minimal.\n\n3. touches_physical_planner_dispatch is FALSE for every root cause. None of these fixes require changing the SELECT per-query fast-path dispatch. The high-risk items (#1 ReadDouble, #2 non-equi join) live in operator/helper bodies (PhysicalHashJoin::Init, ReadDouble helper, agg loops), which are safe per the task's definition — but #1 and #2 still carry runtime-perf risk because they are in hot loops, hence risk=high.\n\n4. DISAGREEMENT-COUNT HONESTY: of the roughly 200 raw disagreements across the 12 files, the largest single bucket (~36) is pure boolean-display harness noise (#5), and another ~14 are DML-rowcount protocol differences (#4) where table state is already correct. Combined, ~50 \"disagreements\" are NOT engine correctness bugs — they are harness/protocol normalization. The GENUINE wrong-result engine bugs that would surprise a user are: ReadDouble BOOLEAN/VARCHAR aggregates (#1, 6), non-equi joins (#2, 9), NaN ordering (#14, 4), window semantics (#11, 6), ORDER BY NULL default (#10, 5), and the string-cast/UTF-8 semantic set (#12/#13). I ranked real correctness bugs and the free rebuild above the cheap-but-noisy display fix, per the de-prioritization instruction, while still surfacing the display fix at #5 because of its raw count.\n\n5. estimated_disagreements_fixed counts cascades and de-duplicates lines double-attributed across clusters (e.g. aggregate.slt L7038 INSERT-rowcount is counted under #4 DML-rowcount, not under #5 boolean-display, to avoid double counting). The INTERVAL cluster (37) dominates #16's count; if INTERVAL is descoped as too large a new type, #16 drops to ~19 and should be split."
+  }
+}

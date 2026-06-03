@@ -1806,15 +1806,50 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     // ---- Scalar string functions ----
 
     if (name == "LENGTH" || name == "STRLEN") {
+        // LENGTH counts CHARACTERS (Unicode codepoints), matching DuckDB/
+        // PG — OCTET_LENGTH is bytes. Fast path: pure-ASCII strings have
+        // codepoint-count == byte-count, so we only do the codepoint scan
+        // (count bytes that aren't UTF-8 continuation bytes 0x80..0xBF)
+        // when a high byte is present. Keeps ASCII (e.g. ClickBench URLs)
+        // at strlen speed.
         auto *out = result.GetData<int32_t>();
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
         for (idx_t i = 0; i < count; i++) {
             if (!arg.GetValidity().RowIsValid(i)) {
                 result.GetValidity().SetInvalid(i);
-            } else {
-                out[i] = static_cast<int32_t>(arg.GetData<string_t>()[i].GetSize());
+                continue;
             }
+            const auto &st = arg.GetData<string_t>()[i];
+            const char *d = st.GetData();
+            uint32_t n = st.GetSize();
+            // Word-at-a-time ASCII detection: test 8 bytes per step for
+            // any high bit. Pure-ASCII strings (e.g. ClickBench URLs)
+            // return byte-count directly at ~n/8 cost; only genuinely
+            // multibyte strings pay the per-byte codepoint scan. Keeps
+            // STRLEN(URL) in the ClickBench hot aggregate fast.
+            uint32_t k = 0;
+            bool ascii = true;
+            for (; k + 8 <= n; k += 8) {
+                uint64_t w;
+                std::memcpy(&w, d + k, 8);
+                if (w & 0x8080808080808080ULL) { ascii = false; break; }
+            }
+            if (ascii) {
+                for (; k < n; k++) {
+                    if (static_cast<unsigned char>(d[k]) >= 0x80) { ascii = false; break; }
+                }
+            }
+            uint32_t cp;
+            if (ascii) {
+                cp = n;
+            } else {
+                cp = 0;
+                for (uint32_t j = 0; j < n; j++) {
+                    if ((static_cast<unsigned char>(d[j]) & 0xC0) != 0x80) cp++;
+                }
+            }
+            out[i] = static_cast<int32_t>(cp);
         }
         return;
     }
@@ -2007,10 +2042,10 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                 }
                 continue;
             }
-            // HEX / TO_HEX
+            // HEX / TO_HEX — uppercase hex (DuckDB convention).
             if (arg_id == LogicalTypeId::VARCHAR) {
                 auto s = v.GetValue<std::string>();
-                static const char *digs = "0123456789abcdef";
+                static const char *digs = "0123456789ABCDEF";
                 std::string out;
                 out.reserve(s.size() * 2);
                 for (unsigned char b : s) {
@@ -2036,7 +2071,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                     throw NotImplementedException(
                         "HEX for type " + v.type().ToString());
                 }
-                static const char *digs = "0123456789abcdef";
+                static const char *digs = "0123456789ABCDEF";
                 std::string out;
                 if (val == 0) {
                     out = "0";
@@ -2088,6 +2123,8 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
     // returns the first byte's value, matching slothdb's byte-oriented
     // LEFT/RIGHT/SUBSTRING). NULL -> NULL; empty -> 0.
     if (name == "ASCII") {
+        // Return the Unicode CODEPOINT of the first character (DuckDB/PG),
+        // not the first byte. ascii('é')=233, ascii('💯')=128175.
         auto *out = result.GetData<int32_t>();
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
@@ -2095,14 +2132,27 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto v = arg.GetValue(i);
             if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             auto s = v.GetValue<std::string>();
-            out[i] = s.empty() ? 0 : static_cast<int32_t>(static_cast<unsigned char>(s[0]));
+            if (s.empty()) { out[i] = 0; continue; }
+            unsigned char c0 = static_cast<unsigned char>(s[0]);
+            int32_t cp;
+            if (c0 < 0x80) cp = c0;
+            else if ((c0 >> 5) == 0x6 && s.size() >= 2)
+                cp = ((c0 & 0x1F) << 6) | (static_cast<unsigned char>(s[1]) & 0x3F);
+            else if ((c0 >> 4) == 0xE && s.size() >= 3)
+                cp = ((c0 & 0x0F) << 12) | ((static_cast<unsigned char>(s[1]) & 0x3F) << 6)
+                     | (static_cast<unsigned char>(s[2]) & 0x3F);
+            else if ((c0 >> 3) == 0x1E && s.size() >= 4)
+                cp = ((c0 & 0x07) << 18) | ((static_cast<unsigned char>(s[1]) & 0x3F) << 12)
+                     | ((static_cast<unsigned char>(s[2]) & 0x3F) << 6)
+                     | (static_cast<unsigned char>(s[3]) & 0x3F);
+            else cp = c0;
+            out[i] = cp;
         }
         return;
     }
 
-    // CHR(n) — character with byte value n. NULL -> NULL. Out-of-range
-    // values are clamped to 0..127 (7-bit ASCII) for now — full Unicode
-    // codepoint handling deferred to a multibyte-aware string layer.
+    // CHR(n) — UTF-8 character for Unicode codepoint n (DuckDB/PG).
+    // chr(128175)='💯'; chr(0) is a single NUL byte. NULL -> NULL.
     if (name == "CHR") {
         Vector arg(expr.arguments[0]->GetReturnType(), count);
         Execute(*expr.arguments[0], input, arg, count);
@@ -2110,13 +2160,23 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto v = arg.GetValue(i);
             if (v.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
             int32_t n = v.GetValue<int32_t>();
-            if (n == 0) {
-                result.SetValue(i, Value::VARCHAR(""));
+            std::string enc;
+            if (n == 0) enc = std::string(1, '\0');
+            else if (n < 0x80) enc = std::string(1, static_cast<char>(n));
+            else if (n < 0x800) {
+                enc += static_cast<char>(0xC0 | (n >> 6));
+                enc += static_cast<char>(0x80 | (n & 0x3F));
+            } else if (n < 0x10000) {
+                enc += static_cast<char>(0xE0 | (n >> 12));
+                enc += static_cast<char>(0x80 | ((n >> 6) & 0x3F));
+                enc += static_cast<char>(0x80 | (n & 0x3F));
             } else {
-                // Clip to 7-bit ASCII byte until multibyte support lands.
-                unsigned char byte = static_cast<unsigned char>(n & 0xFF);
-                result.SetValue(i, Value::VARCHAR(std::string(1, static_cast<char>(byte))));
+                enc += static_cast<char>(0xF0 | (n >> 18));
+                enc += static_cast<char>(0x80 | ((n >> 12) & 0x3F));
+                enc += static_cast<char>(0x80 | ((n >> 6) & 0x3F));
+                enc += static_cast<char>(0x80 | (n & 0x3F));
             }
+            result.SetValue(i, Value::VARCHAR(enc));
         }
         return;
     }
@@ -2783,7 +2843,17 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             // 'aXXbXXc', 'XX', 2) returned '' instead of 'b'.
             std::vector<std::string> parts;
             if (d.empty()) {
-                parts.push_back(s);
+                // Empty delimiter: DuckDB splits into individual UTF-8
+                // characters. split_part('a,b','',1)='a', (...,2)=',',
+                // (...,-1)='b'. Previously returned the whole string.
+                for (size_t k = 0; k < s.size();) {
+                    unsigned char c0 = static_cast<unsigned char>(s[k]);
+                    size_t len = (c0 < 0x80) ? 1 : (c0 >> 5) == 0x6 ? 2
+                               : (c0 >> 4) == 0xE ? 3 : (c0 >> 3) == 0x1E ? 4 : 1;
+                    if (k + len > s.size()) len = 1;
+                    parts.push_back(s.substr(k, len));
+                    k += len;
+                }
             } else {
                 size_t pos = 0;
                 while (pos <= s.size()) {
@@ -2796,10 +2866,89 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                     pos = next + d.size();
                 }
             }
-            if (idx >= 1 && idx <= static_cast<int32_t>(parts.size()))
-                result.SetValue(i, Value::VARCHAR(parts[idx - 1]));
+            // Negative index counts from the end (DuckDB): -1 is the last
+            // part. Previously negative indices returned ''.
+            int32_t np = static_cast<int32_t>(parts.size());
+            int32_t sel = idx;
+            if (sel < 0) sel = np + sel + 1;
+            if (sel >= 1 && sel <= np)
+                result.SetValue(i, Value::VARCHAR(parts[sel - 1]));
             else
                 result.SetValue(i, Value::VARCHAR(""));
+        }
+        return;
+    }
+
+    // TRANSLATE(s, from, to): replace each char of `s` that occurs in
+    // `from` with the char at the same position in `to`; chars whose
+    // `from`-position has no `to` counterpart are deleted. Byte-wise
+    // (matches DuckDB for ASCII). NULL in any arg -> NULL.
+    if (name == "TRANSLATE") {
+        Vector s_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector f_vec(expr.arguments[1]->GetReturnType(), count);
+        Vector t_vec(expr.arguments[2]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, s_vec, count);
+        Execute(*expr.arguments[1], input, f_vec, count);
+        Execute(*expr.arguments[2], input, t_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto sv = s_vec.GetValue(i), fv = f_vec.GetValue(i), tv = t_vec.GetValue(i);
+            if (sv.IsNull() || fv.IsNull() || tv.IsNull()) {
+                result.GetValidity().SetInvalid(i); continue;
+            }
+            auto s = sv.GetValue<std::string>();
+            auto from = fv.GetValue<std::string>();
+            auto to = tv.GetValue<std::string>();
+            std::string out;
+            out.reserve(s.size());
+            for (char c : s) {
+                auto p = from.find(c);
+                if (p == std::string::npos) out.push_back(c);
+                else if (p < to.size()) out.push_back(to[p]);
+                // else: delete (no counterpart)
+            }
+            result.SetValue(i, Value::VARCHAR(out));
+        }
+        return;
+    }
+
+    // GCD(a,b) / LCM(a,b): integer greatest-common-divisor / least-
+    // common-multiple. FACTORIAL(n): n!. NULL -> NULL.
+    if (name == "GCD" || name == "LCM") {
+        Vector a_vec(expr.arguments[0]->GetReturnType(), count);
+        Vector b_vec(expr.arguments[1]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, a_vec, count);
+        Execute(*expr.arguments[1], input, b_vec, count);
+        auto as_i64 = [](const Value &v) -> int64_t {
+            return v.type().id() == LogicalTypeId::INTEGER ? v.GetValue<int32_t>()
+                 : v.type().id() == LogicalTypeId::BIGINT  ? v.GetValue<int64_t>()
+                 : static_cast<int64_t>(v.GetValue<double>());
+        };
+        for (idx_t i = 0; i < count; i++) {
+            auto av = a_vec.GetValue(i), bv = b_vec.GetValue(i);
+            if (av.IsNull() || bv.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t a = std::llabs(as_i64(av)), b = std::llabs(as_i64(bv));
+            int64_t x = a, y = b;
+            while (y) { int64_t t = x % y; x = y; y = t; }
+            int64_t g = x; // gcd
+            if (name == "GCD") {
+                result.SetValue(i, Value::BIGINT(g));
+            } else {
+                result.SetValue(i, Value::BIGINT(g == 0 ? 0 : (a / g) * b));
+            }
+        }
+        return;
+    }
+    if (name == "FACTORIAL") {
+        Vector a_vec(expr.arguments[0]->GetReturnType(), count);
+        Execute(*expr.arguments[0], input, a_vec, count);
+        for (idx_t i = 0; i < count; i++) {
+            auto av = a_vec.GetValue(i);
+            if (av.IsNull()) { result.GetValidity().SetInvalid(i); continue; }
+            int64_t n = av.type().id() == LogicalTypeId::INTEGER ? av.GetValue<int32_t>()
+                      : av.GetValue<int64_t>();
+            int64_t f = 1;
+            for (int64_t k = 2; k <= n; k++) f *= k;
+            result.SetValue(i, Value::BIGINT(n < 0 ? 1 : f));
         }
         return;
     }

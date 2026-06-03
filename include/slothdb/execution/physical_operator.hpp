@@ -35,6 +35,12 @@ public:
     // Get the next chunk of data. Returns false when done.
     virtual bool GetData(DataChunk &result) = 0;
 
+    // DML affected-row count. -1 = not a DML statement (no count). INSERT/
+    // UPDATE/DELETE operators override this so Connection::Query can return
+    // the affected-row count as a single-row BIGINT result (matches DuckDB/
+    // DataFusion, which return [(count,)] for INSERT/UPDATE/DELETE).
+    virtual int64_t AffectedRows() const { return -1; }
+
     // Projection pushdown: mark which output columns consumers need.
     // Operators may use this to skip writing unneeded columns.
     virtual void SetNeededOutputs(const std::vector<bool> &) {}

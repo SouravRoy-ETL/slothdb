@@ -1404,8 +1404,11 @@ BoundExprPtr Binder::BindFunction(const FunctionExpression &expr, BindContext &c
                name == "SHA256" || name == "SHA2_256" ||
                name == "SHA512" || name == "SHA2_512" ||
                name == "BASE64_ENCODE" || name == "BASE64_DECODE" ||
-               name == "TO_BASE64" || name == "FROM_BASE64") {
+               name == "TO_BASE64" || name == "FROM_BASE64" ||
+               name == "TRANSLATE") {
         return_type = LogicalType::VARCHAR();
+    } else if (name == "GCD" || name == "LCM" || name == "FACTORIAL") {
+        return_type = LogicalType::BIGINT();
     } else if (name == "ABS") {
         return_type = args.empty() ? LogicalType::INTEGER() : args[0]->GetReturnType();
     } else if (name == "CEIL" || name == "CEILING" || name == "FLOOR" ||

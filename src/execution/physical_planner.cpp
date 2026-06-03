@@ -4083,7 +4083,8 @@ public:
         : PhysicalOperator(PhysicalOperatorType::INSERT, {}),
           table_(table), values_(std::move(values)) {}
 
-    void Init() override { done_ = false; }
+    void Init() override { done_ = false; affected_ = 0; }
+    int64_t AffectedRows() const override { return affected_; }
 
     bool GetData(DataChunk &result) override {
         if (done_) return false;
@@ -4092,6 +4093,7 @@ public:
         auto types = table_->GetTypes();
         DataChunk chunk;
         chunk.Initialize(types);
+        affected_ = static_cast<int64_t>(values_.size());
 
         // Pre-resolve VARCHAR(n) max lengths per column once, outside the
         // row loop. Cheaper than dynamic_cast per cell.
@@ -4132,6 +4134,7 @@ private:
     TableCatalogEntry *table_;
     std::vector<std::vector<BoundExprPtr>> values_;
     bool done_ = false;
+    int64_t affected_ = 0;
 };
 
 class PhysicalCreateTable : public PhysicalOperator {
@@ -13841,7 +13844,8 @@ public:
           table_(table), assignments_(std::move(assignments)),
           where_clause_(std::move(where_clause)) {}
 
-    void Init() override { done_ = false; }
+    void Init() override { done_ = false; affected_ = 0; }
+    int64_t AffectedRows() const override { return affected_; }
 
     bool GetData(DataChunk &result) override {
         if (done_) return false;
@@ -13883,6 +13887,7 @@ public:
             }
 
             if (matches) {
+                affected_++;
                 // Apply assignments - evaluate against current row.
                 DataChunk row_chunk;
                 row_chunk.Initialize(types);
@@ -13916,6 +13921,7 @@ private:
     std::vector<BoundUpdateAssignment> assignments_;
     BoundExprPtr where_clause_;
     bool done_ = false;
+    int64_t affected_ = 0;
 };
 
 // ============================================================================
@@ -13928,7 +13934,8 @@ public:
         : PhysicalOperator(PhysicalOperatorType::INSERT, {}),
           table_(table), where_clause_(std::move(where_clause)) {}
 
-    void Init() override { done_ = false; }
+    void Init() override { done_ = false; affected_ = 0; }
+    int64_t AffectedRows() const override { return affected_; }
 
     bool GetData(DataChunk &result) override {
         if (done_) return false;
@@ -13966,6 +13973,8 @@ public:
                     for (idx_t c = 0; c < chunk.ColumnCount(); c++)
                         keep.SetValue(c, 0, chunk.GetValue(c, i));
                     new_storage->Append(keep);
+                } else {
+                    affected_++;
                 }
             }
         }
@@ -13978,6 +13987,7 @@ private:
     TableCatalogEntry *table_;
     BoundExprPtr where_clause_;
     bool done_ = false;
+    int64_t affected_ = 0;
 };
 
 class PhysicalDummyScan : public PhysicalOperator {

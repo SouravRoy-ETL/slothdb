@@ -637,6 +637,10 @@ QueryResult Connection::Query(const std::string &sql) {
     QueryResult final_result;
     for (auto &stmt : statements) {
         idx_t stmt_idx = static_cast<idx_t>(&stmt - statements.data());
+        // A multi-statement batch returns the LAST statement's result
+        // (DuckDB/standard). Reset between statements so e.g. an INSERT's
+        // affected-row count doesn't leak into a following SELECT.
+        final_result = QueryResult{};
         // Handle transaction control.
         if (stmt->GetType() == StatementType::BEGIN_TXN) {
             BeginTransaction();
@@ -1389,8 +1393,10 @@ QueryResult Connection::Query(const std::string &sql) {
                 };
 
                 DataChunk chunk;
+                int64_t ins_count = 0;
                 while (true) {
                     if (!sel_physical->GetData(chunk)) break;
+                    ins_count += static_cast<int64_t>(chunk.size());
                     if (target_indices.empty()) {
                         auto coerced = build_coerced_chunk(chunk, nullptr);
                         check_not_null_chunk(coerced);
@@ -1403,6 +1409,10 @@ QueryResult Connection::Query(const std::string &sql) {
                         entry->GetStorage().Append(coerced);
                     }
                 }
+                // INSERT-SELECT affected-row count (matches DuckDB).
+                final_result.column_names = {"Count"};
+                final_result.column_types = {LogicalType::BIGINT()};
+                final_result.rows.push_back({Value::BIGINT(ins_count)});
                 continue;
             }
         }
@@ -2818,6 +2828,18 @@ QueryResult Connection::Query(const std::string &sql) {
             if (chunk.size() == 0) continue;
             final_result.chunks.push_back(std::move(chunk));
             chunk = DataChunk{};
+        }
+
+        // INSERT / UPDATE / DELETE: return the affected-row count as a
+        // single-row BIGINT result, matching DuckDB/DataFusion (their
+        // drivers return [(count,)] for DML run as a query). The operator
+        // performed the mutation during the GetData drain above.
+        int64_t affected = physical->AffectedRows();
+        if (affected >= 0 && final_result.chunks.empty() &&
+            final_result.rows.empty()) {
+            final_result.column_names = {"Count"};
+            final_result.column_types = {LogicalType::BIGINT()};
+            final_result.rows.push_back({Value::BIGINT(affected)});
         }
 
         // Re-tag DATE / TIMESTAMP result columns. The engine carries Parquet
