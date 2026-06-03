@@ -147,6 +147,15 @@ def normalize_value(v, type_letter):
     """Sqllogictest cell-normalisation: NULL, ints, reals to 3 dp, text."""
     if v is None:
         return "NULL"
+    # Boolean canonicalisation (comparison-normalisation, NOT an engine
+    # change): DuckDB's Python API returns native bool (str() -> 'True'/
+    # 'False') while SlothDB's binding returns lowercase 'true'/'false'
+    # strings — the SAME value rendered differently by the two clients.
+    # Canonicalise both sides to lowercase so a correct boolean result
+    # isn't counted as a disagreement. NB: bool is a subclass of int in
+    # Python, so this must precede the integer ('I') branch.
+    if isinstance(v, bool):
+        return "true" if v else "false"
     if type_letter == "I":
         try:
             return str(int(v))

@@ -881,45 +881,44 @@ QueryResult Connection::Query(const std::string &sql) {
                     continue;
                 }
 
-                // Bind/Plan/Execute the parsed SELECT directly. The
-                // previous implementation extracted the SELECT text
-                // via a `" AS "` substring search on the *raw input
-                // string*, which silently captured any trailing
-                // statements (e.g. `; SELECT * FROM dst`) into the
-                // CTAS body. Multi-statement CTAS then threw
-                // "Table 'dst' not found" because the trailing select
-                // ran against a catalog where the new table didn't
-                // exist yet. Mirrors the INSERT...SELECT pipeline.
-                Binder sel_binder(db_.GetCatalog());
-                auto sel_bound = sel_binder.Bind(*ct.query);
-                auto sel_logical = Planner::Plan(*sel_bound);
-                PhysicalPlanner sel_pp(db_.GetCatalog());
-                auto sel_physical = sel_pp.Plan(*sel_logical);
-                sel_physical->Init();
-
-                auto &sel_select = static_cast<BoundSelectStatement &>(*sel_bound);
-                std::vector<std::string> col_names = sel_select.result_names;
-                std::vector<LogicalType> col_types = sel_select.result_types;
+                // Route CTAS through the shared MaterializeSelectIntoTable.
+                // The previous implementation bound/planned/drained ct.query
+                // directly, which:
+                //  (a) only materialised the LEFT branch of a set-op chain,
+                //      so `CREATE TABLE t AS VALUES (1),(2),(3)` (VALUES
+                //      desugars to UNION ALL) kept only the FIRST row — a
+                //      huge cascade since CTAS-AS-VALUES is a common test
+                //      setup; every downstream SELECT then saw 1 row; and
+                //  (b) failed on a derived-table FROM in the SELECT
+                //      (`CREATE TABLE t AS SELECT * FROM (VALUES..)`)
+                //      with "Table '' not found".
+                // MaterializeSelectIntoTable handles the set-op chain and
+                // creates the table; we add derived-table FROM
+                // materialisation (walking the set-op chain) around it.
+                std::vector<std::string> ctas_temp;
+                struct CtasTempGuard {
+                    Catalog *cat; std::vector<std::string> *names;
+                    ~CtasTempGuard() { for (auto &n : *names) cat->DropTable(n); }
+                } _ctas_guard{&db_.GetCatalog(), &ctas_temp};
+                for (SelectStatement *cur = ct.query.get(); cur;
+                     cur = cur->set_right.get()) {
+                    if (cur->from_table)
+                        MaterializeFromSubqueries(db_.GetCatalog(),
+                                                  *cur->from_table, ctas_temp);
+                    for (auto &cte : cur->ctes) {
+                        if (cte.query && cte.query->from_table)
+                            MaterializeFromSubqueries(db_.GetCatalog(),
+                                                      *cte.query->from_table, ctas_temp);
+                    }
+                }
 
                 if (ct.or_replace) db_.GetCatalog().DropTable(ct.table_name);
                 if (db_.GetCatalog().GetTable(ct.table_name)) {
                     throw CatalogException("Table '" + ct.table_name +
                                            "' already exists");
                 }
-
-                std::vector<ColumnDefinition> cols;
-                cols.reserve(col_names.size());
-                for (idx_t i = 0; i < col_names.size(); i++) {
-                    cols.emplace_back(col_names[i], col_types[i]);
-                }
-                auto &entry = db_.GetCatalog().CreateTable(ct.table_name,
-                                                           std::move(cols));
-                auto storage = std::make_shared<DataTable>(col_types);
-                DataChunk chunk;
-                while (sel_physical->GetData(chunk)) {
-                    storage->Append(chunk);
-                }
-                entry.SetStorage(storage);
+                MaterializeSelectIntoTable(db_.GetCatalog(), *ct.query,
+                                           ct.table_name);
                 continue;
             }
         }

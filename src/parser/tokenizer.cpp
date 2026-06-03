@@ -187,7 +187,12 @@ Token Tokenizer::ReadNumber() {
     size_t start = pos_;
     bool is_float = false;
     while (!IsAtEnd() && std::isdigit(Peek())) Advance();
-    if (!IsAtEnd() && Peek() == '.' && std::isdigit(PeekNext())) {
+    // Decimal point. Accept a trailing dot (`0.`, `123.`) and a
+    // leading dot (`.5`, when ReadNumber is entered at the '.'),
+    // matching SQL/DuckDB. Guard against `..` (range) by checking
+    // the char after the dot isn't another dot. After leading digits
+    // a '.' is always a decimal point (numbers have no member access).
+    if (!IsAtEnd() && Peek() == '.' && PeekNext() != '.') {
         is_float = true;
         Advance(); // consume '.'
         while (!IsAtEnd() && std::isdigit(Peek())) Advance();
@@ -261,8 +266,11 @@ std::vector<Token> Tokenizer::Tokenize() {
             continue;
         }
 
-        // Numbers.
-        if (std::isdigit(c)) {
+        // Numbers, including leading-dot floats like `.5` (a '.'
+        // immediately followed by a digit). ReadNumber, entered at the
+        // dot, consumes it as the decimal point.
+        if (std::isdigit(c) ||
+            (c == '.' && std::isdigit(static_cast<unsigned char>(PeekNext())))) {
             tokens.push_back(ReadNumber());
             continue;
         }

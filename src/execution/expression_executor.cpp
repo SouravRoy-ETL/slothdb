@@ -2848,7 +2848,11 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
                     result.GetValidity().SetInvalid(i);
                     continue;
                 }
-                result.GetData<double>()[i] = std::log(d);
+                // 1-arg LOG(x) is log base 10 (DuckDB/Postgres/Oracle);
+                // LN(x) is the natural log. Previously LOG(x) wrongly
+                // returned ln(x) — LOG(100) gave 4.605 instead of 2.
+                result.GetData<double>()[i] =
+                    (name == "LOG") ? std::log10(d) : std::log(d);
             }
         }
         return;
