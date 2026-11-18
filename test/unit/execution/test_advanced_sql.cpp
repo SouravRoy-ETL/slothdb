@@ -190,7 +190,9 @@ TEST_CASE("Advanced - STRFTIME") {
     conn.Query("CREATE TABLE ts (t BIGINT)");
     conn.Query("INSERT INTO ts VALUES (1718451000000000)"); // 2024-06-15
 
-    auto r = conn.Query("SELECT STRFTIME(t) FROM ts");
+    // The one-argument form is refused, not a crash.
+    CHECK_THROWS(conn.Query("SELECT STRFTIME(t) FROM ts"));
+    auto r = conn.Query("SELECT STRFTIME(t, '%Y-%m-%d') FROM ts");
     auto val = r.GetValue(0, 0).GetValue<std::string>();
     CHECK(val.find("2024") != std::string::npos);
     CHECK(val.find("06") != std::string::npos);

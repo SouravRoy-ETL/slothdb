@@ -3601,6 +3601,12 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         // column), treat it as the format (Postgres / MySQL
         // DATE_FORMAT order). Otherwise it's the timestamp first
         // (DuckDB STRFTIME order).
+        // The two arguments are read below without a check, so
+        // STRFTIME(t) read past the argument list and crashed (upstream's
+        // own "Advanced - STRFTIME" case). Refuse it, as AGE does.
+        if (expr.arguments.size() != 2) {
+            throw NotImplementedException(name + " requires 2 arguments");
+        }
         bool fmt_first = (expr.arguments[0]->GetReturnType().id() ==
                           LogicalTypeId::VARCHAR);
         auto &ts_expr = fmt_first ? *expr.arguments[1] : *expr.arguments[0];
