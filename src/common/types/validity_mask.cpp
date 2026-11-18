@@ -13,20 +13,22 @@ ValidityMask::ValidityMask(idx_t count) : mask_(nullptr) {
     Initialize(count);
 }
 
-ValidityMask::ValidityMask(const ValidityMask &other) : mask_(nullptr) {
+ValidityMask::ValidityMask(const ValidityMask &other)
+    : mask_(nullptr), words_(other.words_) {
     if (other.mask_) {
-        owned_data_ = std::make_unique<validity_t[]>(STANDARD_MASK_SIZE);
+        owned_data_ = std::make_unique<validity_t[]>(words_);
         mask_ = owned_data_.get();
-        std::memcpy(mask_, other.mask_, STANDARD_MASK_SIZE * sizeof(validity_t));
+        std::memcpy(mask_, other.mask_, words_ * sizeof(validity_t));
     }
 }
 
 ValidityMask &ValidityMask::operator=(const ValidityMask &other) {
     if (this != &other) {
+        words_ = other.words_;
         if (other.mask_) {
-            owned_data_ = std::make_unique<validity_t[]>(STANDARD_MASK_SIZE);
+            owned_data_ = std::make_unique<validity_t[]>(words_);
             mask_ = owned_data_.get();
-            std::memcpy(mask_, other.mask_, STANDARD_MASK_SIZE * sizeof(validity_t));
+            std::memcpy(mask_, other.mask_, words_ * sizeof(validity_t));
         } else {
             owned_data_.reset();
             mask_ = nullptr;
@@ -36,7 +38,8 @@ ValidityMask &ValidityMask::operator=(const ValidityMask &other) {
 }
 
 ValidityMask::ValidityMask(ValidityMask &&other) noexcept
-    : mask_(other.mask_), owned_data_(std::move(other.owned_data_)) {
+    : mask_(other.mask_), owned_data_(std::move(other.owned_data_)),
+      words_(other.words_) {
     other.mask_ = nullptr;
 }
 
@@ -44,6 +47,7 @@ ValidityMask &ValidityMask::operator=(ValidityMask &&other) noexcept {
     if (this != &other) {
         owned_data_ = std::move(other.owned_data_);
         mask_ = other.mask_;
+        words_ = other.words_;
         other.mask_ = nullptr;
     }
     return *this;
@@ -51,14 +55,29 @@ ValidityMask &ValidityMask::operator=(ValidityMask &&other) noexcept {
 
 void ValidityMask::EnsureAllocated() {
     if (mask_) return;
-    owned_data_ = std::make_unique<validity_t[]>(STANDARD_MASK_SIZE);
+    owned_data_ = std::make_unique<validity_t[]>(words_);
     mask_ = owned_data_.get();
     // Set all bits to 1 (all valid).
-    std::memset(mask_, 0xFF, STANDARD_MASK_SIZE * sizeof(validity_t));
+    std::memset(mask_, 0xFF, words_ * sizeof(validity_t));
+}
+
+void ValidityMask::SetCapacity(idx_t count) {
+    // Grows the mask an allocated one keeps, all valid beyond.
+    idx_t words = (count + BITS_PER_VALUE - 1) / BITS_PER_VALUE;
+    if (words < STANDARD_MASK_SIZE) words = STANDARD_MASK_SIZE;
+    if (words <= words_) return;
+    if (mask_) {
+        auto grown = std::make_unique<validity_t[]>(words);
+        std::memcpy(grown.get(), mask_, words_ * sizeof(validity_t));
+        std::memset(grown.get() + words_, 0xFF, (words - words_) * sizeof(validity_t));
+        owned_data_ = std::move(grown);
+        mask_ = owned_data_.get();
+    }
+    words_ = words;
 }
 
 void ValidityMask::Initialize(idx_t count) {
-    (void)count;
+    SetCapacity(count);
     EnsureAllocated();
 }
 
