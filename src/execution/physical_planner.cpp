@@ -1368,7 +1368,13 @@ private:
 
     void StopWorkers() {
         if (workers_.empty()) return;
-        stop_.store(true);
+        // Set under mu_, which both condition variables wait
+        // with; otherwise a worker between its predicate and its wait
+        // misses the notify and join() hangs.
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            stop_.store(true);
+        }
         slot_ready_cv_.notify_all();
         slot_free_cv_.notify_all();
         for (auto &t : workers_) if (t.joinable()) t.join();
