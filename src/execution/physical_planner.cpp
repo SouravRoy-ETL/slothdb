@@ -1223,7 +1223,10 @@ private:
         if (work.cols_fallback.size() != num_cols) work.cols_fallback.resize(num_cols);
         // is_early[c]: whether column c is in the early-decode set.
         // Kept as thread_local to avoid per-RG allocation.
-        thread_local std::vector<uint8_t> is_early_tls;
+        // Not thread_local. MinGW runs thread_local destructors
+        // after emulated TLS has freed the object, so a worker's exit corrupted
+        // the heap; the scratch is local to the call.
+        std::vector<uint8_t> is_early_tls;
         is_early_tls.assign(num_cols, 0);
         for (idx_t c : two_phase_early_cols_) {
             if (c < num_cols) is_early_tls[c] = 1;
@@ -1247,7 +1250,10 @@ private:
             setup_and_decode(c, nullptr);
         }
         // Phase 2: build mask from early-decoded cols.
-        thread_local std::vector<uint8_t> phase_mask;
+        // Not thread_local. MinGW runs thread_local destructors
+        // after emulated TLS has freed the object, so a worker's exit corrupted
+        // the heap; the scratch is local to the call.
+        std::vector<uint8_t> phase_mask;
         phase_mask.clear();
         two_phase_build_mask_fn_(work.cols, phase_mask);
         const std::vector<uint8_t> *mask_ptr =

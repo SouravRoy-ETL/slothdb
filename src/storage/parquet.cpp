@@ -699,7 +699,10 @@ bool ZstdDecompress(const uint8_t *in, size_t in_size, size_t uncompressed_size,
         DCtxHolder() : ctx(ZSTD_createDCtx()) {}
         ~DCtxHolder() { if (ctx) ZSTD_freeDCtx(ctx); }
     };
-    static thread_local DCtxHolder holder;
+    // Not thread_local. MinGW runs thread_local destructors
+    // after emulated TLS has freed the object, so a worker's exit corrupted
+    // the heap; the scratch is local to the call.
+    DCtxHolder holder;
     if (!holder.ctx) {
         // First-call recovery: thread_local ctor failed to allocate the
         // context (very rare). Fall back to the simple API.
@@ -2001,7 +2004,10 @@ bool DecodeDataPageTyped(const ParqPageHeader &hdr, const uint8_t *data, size_t 
     // large RGs) and the destructor would free per page → ~1000
     // HeapAlloc/free pairs per RG × workers. On Windows HeapAlloc serializes
     // across threads, so amortizing this saves real wall time.
-    thread_local std::vector<uint8_t> def_mask_tls;
+    // Not thread_local. MinGW runs thread_local destructors
+    // after emulated TLS has freed the object, so a worker's exit corrupted
+    // the heap; the scratch is local to the call.
+    std::vector<uint8_t> def_mask_tls;
     def_mask_tls.clear();
     std::vector<uint8_t> &def_mask = def_mask_tls;
     int32_t non_null = n_values;
@@ -2593,7 +2599,10 @@ bool ParquetReader::ReadColumnInto(idx_t rg_idx, idx_t col_idx, ParquetColumnDat
     // thread_local. ReadColumnInto runs in the parquet worker thread; making
     // decomp thread_local saves another malloc per (RG, col) on Windows
     // HeapAlloc which serialises across threads.
-    thread_local std::vector<uint8_t> decomp;
+    // Not thread_local. MinGW runs thread_local destructors
+    // after emulated TLS has freed the object, so a worker's exit corrupted
+    // the heap; the scratch is local to the call.
+    std::vector<uint8_t> decomp;
     decomp.clear();
     while (rows_read < total_rows && cur_offset < (int64_t)file_size_) {
         ParqPageHeader hdr;
