@@ -54,6 +54,11 @@ public:
     // Initialize: allocate and set all valid.
     void Initialize(idx_t count);
 
+    // Size the mask for `count` rows (at least one vector's)
+    // without allocating it; a row group's column holds ROW_GROUP_SIZE rows,
+    // more than STANDARD_MASK_SIZE words cover.
+    void SetCapacity(idx_t count);
+
     // Reset to all-valid (no mask).
     void Reset();
 
@@ -66,6 +71,8 @@ private:
 
     validity_t *mask_;
     std::unique_ptr<validity_t[]> owned_data_;
+    // Words the mask holds once allocated.
+    idx_t words_ = STANDARD_MASK_SIZE;
 };
 
 } // namespace slothdb

@@ -8,6 +8,8 @@ namespace slothdb {
 
 ColumnData::ColumnData(const LogicalType &type, idx_t capacity)
     : type_(type), capacity_(capacity), count_(0) {
+    // One bit per row of the row group, not one vector's.
+    validity_.SetCapacity(capacity);
     idx_t type_size = TypeSize();
     if (type_size > 0) {
         data_ = std::make_unique<data_t[]>(capacity * type_size);

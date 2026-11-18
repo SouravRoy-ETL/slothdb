@@ -49,6 +49,9 @@ Vector &Vector::operator=(Vector &&other) noexcept {
 }
 
 void Vector::Initialize(idx_t capacity) {
+    // One validity bit per row of the capacity, not one
+    // vector's 2048; a statement's VALUES can make a larger vector.
+    validity_.SetCapacity(capacity);
     auto physical = type_.GetInternalType();
     idx_t type_size = GetTypeIdSize(physical);
     if (type_size > 0) {
