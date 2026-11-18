@@ -1155,7 +1155,10 @@ void RadixCount2ColIntStr::IngestRGTwoColCount(int tid,
     bool int_all_valid, bool str_all_valid,
     uint32_t nrows, const uint8_t* keep_mask) {
     if (dict_size == 0 || nrows == 0) return;
-    thread_local std::vector<size_t> dict_h;
+    // Not thread_local. MinGW runs thread_local destructors
+    // after emulated TLS has freed the object, so a worker's exit corrupted
+    // the heap; the scratch is local to the call.
+    std::vector<size_t> dict_h;
     if (dict_h.size() < dict_size) dict_h.resize(dict_size);
     for (uint32_t d = 0; d < dict_size; d++) {
         dict_h[d] = HashStr(dict_values[d].GetData(),
@@ -1272,7 +1275,10 @@ void RadixCount2ColIntStr::IngestRGTwoColCountSkipDi(int tid,
     if (dict_size == 0 || nrows == 0) return;
     // thread_local hash cache. dict_size ~30K typical for SearchPhrase RG;
     // per-RG std::vector alloc cost compounds across 95 RGs × 6 threads.
-    thread_local std::vector<size_t> dict_h;
+    // Not thread_local. MinGW runs thread_local destructors
+    // after emulated TLS has freed the object, so a worker's exit corrupted
+    // the heap; the scratch is local to the call.
+    std::vector<size_t> dict_h;
     if (dict_h.size() < dict_size) dict_h.resize(dict_size);
     for (uint32_t d = 0; d < dict_size; d++) {
         dict_h[d] = HashStr(dict_values[d].GetData(),
