@@ -67,8 +67,8 @@ TEST_CASE("Timestamp - CURRENT_DATE") {
     auto r = conn.Query("SELECT CURRENT_DATE");
     CHECK(r.RowCount() == 1);
     auto val = r.GetValue(0, 0).GetValue<int32_t>();
-    CHECK(val >= 20200101); // YYYYMMDD format
-    CHECK(val <= 20991231);
+    CHECK(val >= 18262); // DATE: days since 1970-01-01, 2020-01-01
+    CHECK(val <= 47481); // 2099-12-31
 }
 
 TEST_CASE("Timestamp - EXTRACT YEAR/MONTH/DAY") {

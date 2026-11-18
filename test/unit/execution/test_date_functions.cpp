@@ -138,7 +138,7 @@ TEST_CASE("LAST_DAY - March 2024 -> March 31") {
     Database db; Connection conn(db);
     // 2024-03-31 00:00:00 UTC = 1711843200 s.
     auto r = conn.Query("SELECT LAST_DAY(TO_TIMESTAMP(1710499845))");
-    CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 1711843200LL * 1000000LL);
+    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 19813); // DATE: days since 1970-01-01
 }
 
 TEST_CASE("LAST_DAY - leap February 2024 -> Feb 29") {
@@ -146,7 +146,7 @@ TEST_CASE("LAST_DAY - leap February 2024 -> Feb 29") {
     // 2024-02-10 12:00:00 UTC = 1707566400 s. Leap year -> last day Feb 29 = 2024-02-29.
     // 2024-02-29 00:00:00 UTC = 1709164800 s.
     auto r = conn.Query("SELECT LAST_DAY(TO_TIMESTAMP(1707566400))");
-    CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 1709164800LL * 1000000LL);
+    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 19782); // DATE: days since 1970-01-01
 }
 
 TEST_CASE("LAST_DAY - non-leap February 2023 -> Feb 28") {
@@ -154,7 +154,7 @@ TEST_CASE("LAST_DAY - non-leap February 2023 -> Feb 28") {
     // 2023-02-10 12:00:00 UTC = 1676030400 s. Last day Feb 28 = 2023-02-28.
     // 2023-02-28 00:00:00 UTC = 1677542400 s.
     auto r = conn.Query("SELECT LAST_DAY(TO_TIMESTAMP(1676030400))");
-    CHECK(r.GetValue(0, 0).GetValue<int64_t>() == 1677542400LL * 1000000LL);
+    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 19416); // DATE: days since 1970-01-01
 }
 
 // ============================================================================
@@ -164,17 +164,17 @@ TEST_CASE("LAST_DAY - non-leap February 2023 -> Feb 28") {
 TEST_CASE("MAKE_DATE - encodes YYYYMMDD") {
     Database db; Connection conn(db);
     auto r = conn.Query("SELECT MAKE_DATE(2024, 3, 15)");
-    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 20240315);
+    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 19797); // DATE: days since 1970-01-01
 }
 
 TEST_CASE("MAKE_DATE - single-digit month and day") {
     Database db; Connection conn(db);
     auto r = conn.Query("SELECT MAKE_DATE(2024, 1, 5)");
-    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 20240105);
+    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 19727); // DATE: days since 1970-01-01
 }
 
 TEST_CASE("MAKE_DATE - last day of year") {
     Database db; Connection conn(db);
     auto r = conn.Query("SELECT MAKE_DATE(2023, 12, 31)");
-    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 20231231);
+    CHECK(r.GetValue(0, 0).GetValue<int32_t>() == 19722); // DATE: days since 1970-01-01
 }
