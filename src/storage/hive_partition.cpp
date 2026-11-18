@@ -1,7 +1,7 @@
 #include "slothdb/storage/hive_partition.hpp"
 #include <algorithm>
 
-#ifdef _MSC_VER
+#ifdef _WIN32
 #include <direct.h>
 #define MKDIR(path) _mkdir(path)
 #else

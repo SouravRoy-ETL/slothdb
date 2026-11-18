@@ -3636,7 +3636,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             }
             auto seconds_t = static_cast<time_t>(seconds_total);
             struct tm tm_buf;
-#ifdef _MSC_VER
+#ifdef _WIN32
             gmtime_s(&tm_buf, &seconds_t);
 #else
             gmtime_r(&seconds_t, &tm_buf);
@@ -3863,7 +3863,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         auto now = std::chrono::system_clock::now();
         auto time_t_now = std::chrono::system_clock::to_time_t(now);
         struct tm tm_buf;
-#ifdef _MSC_VER
+#ifdef _WIN32
         localtime_s(&tm_buf, &time_t_now);
 #else
         localtime_r(&time_t_now, &tm_buf);
@@ -3968,7 +3968,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
         auto now = std::chrono::system_clock::now();
         auto time_t_now = std::chrono::system_clock::to_time_t(now);
         struct tm tm_buf;
-#ifdef _MSC_VER
+#ifdef _WIN32
         localtime_s(&tm_buf, &time_t_now);
 #else
         localtime_r(&time_t_now, &tm_buf);
@@ -4297,7 +4297,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto seconds = micros / 1000000;
             auto time_t_val = static_cast<time_t>(seconds);
             struct tm tm_buf;
-#ifdef _MSC_VER
+#ifdef _WIN32
             gmtime_s(&tm_buf, &time_t_val);
 #else
             gmtime_r(&time_t_val, &tm_buf);
@@ -4339,7 +4339,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             }
 
             int64_t trunc_secs = static_cast<int64_t>(
-#ifdef _MSC_VER
+#ifdef _WIN32
                 _mkgmtime(&tm_buf)
 #else
                 timegm(&tm_buf)
@@ -4477,7 +4477,7 @@ void ExpressionExecutor::ExecuteFunction(const BoundFunction &expr, DataChunk &i
             auto seconds = micros / 1000000;
             auto time_t_val = static_cast<time_t>(seconds);
             struct tm tm_buf;
-#ifdef _MSC_VER
+#ifdef _WIN32
             gmtime_s(&tm_buf, &time_t_val);
 #else
             gmtime_r(&time_t_val, &tm_buf);
